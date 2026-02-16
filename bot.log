@@ -24,3 +24,82 @@
 2026-02-16 22:50:02,846 - INFO - DataManager - Indexed: Paraluman
 2026-02-16 22:50:05,265 - INFO - DataManager - Indexed: Kakanggata
 2026-02-16 22:50:07,651 - INFO - DataManager - Indexed: Kundiman
+2026-02-16 22:50:10,089 - INFO - DataManager - Indexed: Kalawakan
+2026-02-16 22:50:12,421 - INFO - DataManager - Indexed: Kilig
+2026-02-16 22:50:14,891 - INFO - DataManager - Indexed: Tadhana
+2026-02-16 22:50:17,288 - INFO - DataManager - Indexed: Maharlika
+2026-02-16 22:50:19,645 - INFO - DataManager - Indexed: Pagsamo
+2026-02-16 22:50:21,989 - INFO - DataManager - Indexed: Babaylan
+2026-02-16 22:50:24,305 - INFO - DataManager - Indexed: Silakbo
+2026-02-16 22:50:26,739 - INFO - DataManager - Indexed: Amihan
+2026-02-16 22:50:29,198 - INFO - DataManager - Indexed: Bathala
+2026-02-16 22:50:31,649 - INFO - DataManager - Indexed: Harana
+2026-02-16 22:50:34,050 - INFO - DataManager - Indexed: Pagsuyo
+2026-02-16 22:50:36,416 - INFO - DataManager - Indexed: Dalangin
+2026-02-16 22:50:38,836 - INFO - DataManager - Indexed: Gunita
+2026-02-16 22:50:41,198 - INFO - DataManager - Indexed: Kaulayaw
+2026-02-16 22:50:43,540 - INFO - DataManager - Indexed: Tala
+2026-02-16 22:50:45,884 - INFO - DataManager - Indexed: Sinagtala
+2026-02-16 22:50:48,234 - INFO - DataManager - Indexed: Hiraya
+2026-02-16 22:50:50,565 - INFO - DataManager - Indexed: Tagumpay
+2026-02-16 22:50:52,958 - INFO - DataManager - Indexed: Bahaghari
+2026-02-16 22:50:55,310 - INFO - DataManager - Indexed: Alapaap
+2026-02-16 22:50:57,679 - INFO - DataManager - Indexed: Bituin
+2026-02-16 22:51:00,004 - INFO - DataManager - Indexed: Lakan
+2026-02-16 22:51:02,410 - INFO - DataManager - Indexed: Galak
+2026-02-16 22:51:04,826 - INFO - DataManager - Indexed: Aruga
+2026-02-16 22:51:07,206 - INFO - DataManager - Indexed: Likha
+2026-02-16 22:51:09,661 - INFO - DataManager - Indexed: Dalisay
+2026-02-16 22:51:12,018 - INFO - DataManager - Indexed: Tinig
+2026-02-16 22:51:14,380 - INFO - DataManager - Indexed: Marahuyo
+2026-02-16 22:51:16,713 - INFO - DataManager - Indexed: Bonita
+2026-02-16 22:51:19,135 - INFO - DataManager - Indexed: Gabay
+2026-02-16 22:51:21,163 - INFO - DataManager - [CACHE] Data saved to disk.
+2026-02-16 22:51:21,165 - INFO - DataManager - Scan complete. 5569 items loaded from 45 sheets (0 failed).
+2026-02-16 22:51:21,165 - INFO - Main - [DATA] Cache status: 5569 items ready ✓
+2026-02-16 22:51:21,168 - INFO - Main - [FLASK] Starting Flask API...
+2026-02-16 22:51:21,168 - INFO - Main - [MAIN] Flask API thread started ✓
+2026-02-16 22:51:21,169 - INFO - FlaskAPI - [FLASK] Starting API server on 0.0.0.0:8100...
+2026-02-16 22:51:21,185 - INFO - Main - [TWITCH] Starting Twitch bot...
+2026-02-16 22:51:21,185 - INFO - Main - [MAIN] Twitch bot thread started ✓
+2026-02-16 22:51:21,208 - INFO - Main - [DISCORD] Starting Discord bot...
+2026-02-16 22:51:21,208 - WARNING - discord.client - PyNaCl is not installed, voice will NOT be supported
+2026-02-16 22:51:21,210 - INFO - discord.client - logging in using static token
+2026-02-16 22:51:21,215 - INFO - werkzeug - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8100
+ * Running on http://192.168.100.10:8100
+2026-02-16 22:51:21,215 - INFO - werkzeug - [33mPress CTRL+C to quit[0m
+2026-02-16 22:51:22,963 - INFO - twitchio.websocket - Successfully logged onto Twitch WS: kuyachobot
+2026-02-16 22:51:22,989 - INFO - TwitchBot - [TWITCH] Logged in as: kuyachobot
+2026-02-16 22:51:22,989 - INFO - TwitchBot - [TWITCH] Monitoring channel: chopaeng
+2026-02-16 22:51:23,443 - INFO - discord.gateway - Shard ID None has connected to Gateway (Session ID: 096c794ec12ea9802d4efe6a0ef6eac2).
+2026-02-16 22:51:25,488 - INFO - FlightLogger - [FLIGHT] Dynamic Island Fetch Complete. Mapped 18 islands.
+2026-02-16 22:51:25,488 - INFO - DiscordCommandBot - [DISCORD] Dynamic Island Fetch Complete. Found 18 islands.
+2026-02-16 22:51:25,488 - INFO - DiscordCommandBot - [DISCORD] Logged in as: ChoBot#2871 (ID: 1450545961993633802)
+2026-02-16 22:51:25,489 - INFO - FlightLogger - [FLIGHT] Dynamic Island Fetch Complete. Mapped 18 islands.
+2026-02-16 22:51:25,489 - INFO - DiscordCommandBot - [DISCORD] Dynamic Island Fetch Complete. Found 18 islands.
+2026-02-16 22:51:27,916 - INFO - DiscordCommandBot - [DISCORD ChoPaeng Camp #🍄┋find-here] niniragh: !find stone
+2026-02-16 22:51:28,428 - INFO - DiscordCommandBot - [DISCORD] Item Hit: stone -> Found
+2026-02-16 22:51:38,724 - INFO - DiscordCommandBot - [DISCORD ChoPaeng Camp #🍄┋find-here] ChoBot#5304: 
+2026-02-16 22:52:17,098 - INFO - TwitchBot - [TWITCH CHAT] kuyachobot: I'm waiting for you @PinkyTheGhostie! You have 54 seconds to arrive. My island name is Sinta. Enter the number you whispered to me on https://berichan.github.io/GetDodoCode/?hash=Ew4RFR4 to get your dodo code. Click this link, not an old one or someone else's.
+2026-02-16 22:52:27,100 - WARNING - Main - [MAIN] Signal 2 received. Shutting down...
+2026-02-16 22:52:27,196 - WARNING - Main - [DISCORD] Stop signal received, closing bot...
+2026-02-16 22:52:29,346 - INFO - TwitchBot - [TWITCH CHAT] enidsia: !villager tia
+2026-02-16 22:52:29,633 - INFO - TwitchBot - [TWITCH CHAT] kuyachobot: Hey @enidsia, I found villager TIA on these Sub Islands: HIRAYA | MARAHUYO | ARUGA | BAHAGHARI
+2026-02-16 22:52:32,207 - WARNING - Main - [MAIN] Signal 2 received. Shutting down...
+2026-02-16 22:52:37,221 - WARNING - Main - [MAIN] Signal 2 received. Shutting down...
+2026-02-16 22:52:37,222 - INFO - Main - ======================================================================
+2026-02-16 22:52:37,222 - INFO - Main - APPLICATION SHUTDOWN COMPLETE
+2026-02-16 22:52:37,222 - INFO - Main - ======================================================================
+2026-02-16 22:53:16,701 - INFO - TwitchBot - [TWITCH CHAT] chopaeng: ACTION .｡ﾟ+..｡ Did you know that you can subscribe for free using Twitch Prime? Click the link to support Kuya kuyachoCho! https://twitch.amazon.com/prime VirtualHug kuyachoCho   ﾟ+..｡ﾟ
+2026-02-16 22:53:22,655 - INFO - TwitchBot - [TWITCH CHAT] enidsia: !find NMT
+2026-02-16 22:53:22,655 - INFO - TwitchBot - [TWITCH] Item Hit: nmt -> on these Free Islands: SILAKBO | KUNDIMAN | KILIG | PAGSUYO | KAKANGGATA | SINAGTALA | BABAYLAN | TALA | KALAWAKAN | TINIG | AMIHAN | HARANA and on these Sub Islands: TAGUMPAY | LIKHA | ARUGA | DALISAY | DIWA | HIRAYA | GALAK
+2026-02-16 22:53:22,918 - INFO - TwitchBot - [TWITCH CHAT] kuyachobot: Hey @enidsia, I couldn't find "nmt" or anything similar. Please check spelling. If not, try using !orderbot.
+2026-02-16 22:53:25,450 - INFO - TwitchBot - [TWITCH CHAT] badlyhurts: Hello! I am new here - where can I go sell my turnips?
+2026-02-16 22:53:25,683 - INFO - TwitchBot - [TWITCH CHAT] chopaeng: MAX BELLS: Go to any island. Get 1 stack of turnips. Sell it to Nooks Cranny on the same island. It should give you a negative value. You just need to proceed. Go back to your island and check your ABD.
+2026-02-16 22:53:30,465 - INFO - TwitchBot - [TWITCH CHAT] kuyachobot: @PinkyTheGhostie - Visitor failed to arrive. Your request has been removed.
+2026-02-16 22:53:42,713 - INFO - TwitchBot - [TWITCH CHAT] sirenbutterflyy: Code isn't working  says its in airplane mode what does that mean
+2026-02-16 22:54:06,824 - INFO - TwitchBot - [TWITCH CHAT] ruby0rogue: Just keep trying to get it
+2026-02-16 22:54:20,230 - INFO - TwitchBot - [TWITCH CHAT] sirenbutterflyy: Ohh okay thank you
+2026-02-16 22:54:21,892 - INFO - TwitchBot - [TWITCH CHAT] ruby0rogue: Sometimes it can take a while

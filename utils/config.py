@@ -37,8 +37,8 @@ class Config:
     # Villagers & Dodo
     VILLAGERS_DIR = os.getenv('VILLAGERS_DIR')
     TWITCH_VILLAGERS_DIR = os.getenv('TWITCH_VILLAGERS_DIR')
-    DIR_FREE = os.getenv('VILLAGERS_DIR')
-    DIR_VIP = os.getenv('TWITCH_VILLAGERS_DIR')
+    DIR_FREE = os.getenv('TWITCH_VILLAGERS_DIR')
+    DIR_VIP = os.getenv('VILLAGERS_DIR')
 
     # Island Lists
     SUB_ISLANDS = [

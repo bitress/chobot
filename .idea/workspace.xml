@@ -5,10 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="be65bb5b-cc74-461e-8936-5f0bb88df9aa" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/bots/discord_command_bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/bots/discord_command_bot.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/utils/data_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/data_manager.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/bot.log" beforeDir="false" afterPath="$PROJECT_DIR$/bot.log" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -95,6 +92,7 @@
       <workItem from="1770726284913" duration="1809000" />
       <workItem from="1770805559477" duration="161000" />
       <workItem from="1770861592841" duration="9000" />
+      <workItem from="1771252635840" duration="1248000" />
     </task>
     <servers />
   </component>
