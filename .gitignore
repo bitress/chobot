@@ -1,4 +1,4 @@
 .env
-.venv
-.idea
 service_account.json
+__pycache__/
+.venv/

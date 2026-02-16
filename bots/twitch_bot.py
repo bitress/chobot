@@ -9,7 +9,7 @@ from twitchio.ext import commands
 from thefuzz import process, fuzz
 
 from utils.config import Config
-from utils.helpers import format_locations_text
+from utils.helpers import format_locations_text, normalize_text
 
 logger = logging.getLogger("TwitchBot")
 
@@ -51,6 +51,11 @@ class TwitchBot(commands.Bot):
             if now - self.cooldowns[user_id] < cooldown_sec:
                 return True
         self.cooldowns[user_id] = now
+
+        # Periodic cleanup: prune entries older than 60s every 100 entries
+        if len(self.cooldowns) > 100:
+            self.cooldowns = {k: v for k, v in self.cooldowns.items() if now - v < 60}
+
         return False
 
     @commands.command(aliases=['locate', 'where'])
@@ -63,7 +68,7 @@ class TwitchBot(commands.Bot):
         if self.check_cooldown(str(ctx.author.id)):
             return
 
-        search_term = item.lower().strip()
+        search_term = normalize_text(item)
 
         with self.data_manager.lock:
             cache = self.data_manager.cache
@@ -107,7 +112,7 @@ class TwitchBot(commands.Bot):
         if self.check_cooldown(str(ctx.author.id)):
             return
 
-        search_term = name.lower().strip()
+        search_term = normalize_text(name)
         villager_map = self.data_manager.get_villagers([
             Config.VILLAGERS_DIR
         ])

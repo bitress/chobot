@@ -17,7 +17,7 @@ from flask_cors import CORS
 from thefuzz import process, fuzz
 
 from utils.config import Config
-from utils.helpers import format_locations_text, parse_locations_json
+from utils.helpers import format_locations_text, parse_locations_json, normalize_text
 
 
 logger = logging.getLogger("FlaskAPI")
@@ -173,7 +173,7 @@ def home():
 def find_item():
     """Text response for item search"""
     user = request.args.get('user', 'User')
-    query = request.args.get('q', '').strip().lower()
+    query = normalize_text(request.args.get('q', ''))
 
     if not query:
         return f"Hey {user}, type !find <item name> to search."
@@ -201,7 +201,7 @@ def find_item():
 def api_find_item():
     """JSON response for item search"""
     user = request.args.get('user', 'User')
-    query = request.args.get('q', '').strip().lower()
+    query = normalize_text(request.args.get('q', ''))
 
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !find <item name> to search."})
@@ -247,7 +247,7 @@ def api_find_item():
 def find_villager():
     """Text response for villager search"""
     user = request.args.get('user', 'User')
-    query = request.args.get('q', '').strip().lower()
+    query = normalize_text(request.args.get('q', ''))
 
     if not query:
         return f"Hey {user}, type !villager <n> to search."
@@ -273,7 +273,7 @@ def find_villager():
 def api_find_villager():
     """JSON response for villager search"""
     user = request.args.get('user', 'User')
-    query = request.args.get('q', '').strip().lower()
+    query = normalize_text(request.args.get('q', ''))
 
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !villager <n> to search."})

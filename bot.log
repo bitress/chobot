@@ -1,0 +1,26 @@
+2026-02-16 22:49:27,202 - INFO - Main - ======================================================================
+2026-02-16 22:49:27,202 - INFO - Main - UNIFIED BOT APPLICATION STARTING
+2026-02-16 22:49:27,202 - INFO - Main - ======================================================================
+2026-02-16 22:49:27,203 - INFO - Main - [CONFIG] All environment variables validated ✓
+2026-02-16 22:49:27,203 - INFO - Main - [DATA] Initializing data manager...
+2026-02-16 22:49:27,216 - INFO - DataManager - Google Sheets client initialized.
+2026-02-16 22:49:27,279 - INFO - DataManager - Image Catalog Loaded: 5138 images mapped.
+2026-02-16 22:49:27,281 - INFO - Main - [DATA] Loading initial cache...
+2026-02-16 22:49:27,281 - INFO - Main - [DATA] No local cache found. Fetching from Google Sheets...
+2026-02-16 22:49:27,282 - INFO - DataManager - Updating cache from Google Sheets...
+2026-02-16 22:49:33,122 - INFO - DataManager - Found 45 sheets. Scanning...
+2026-02-16 22:49:33,561 - INFO - DataManager - Indexed: Dangal
+2026-02-16 22:49:35,966 - INFO - DataManager - Indexed: Giting
+2026-02-16 22:49:38,284 - INFO - DataManager - Indexed: Pangarap
+2026-02-16 22:49:40,726 - INFO - DataManager - Indexed: Kariktan
+2026-02-16 22:49:43,153 - INFO - DataManager - Indexed: Kalangitan
+2026-02-16 22:49:45,575 - INFO - DataManager - Indexed: Dakila
+2026-02-16 22:49:47,962 - INFO - DataManager - Indexed: Banaag
+2026-02-16 22:49:50,393 - INFO - DataManager - Indexed: Sinag
+2026-02-16 22:49:52,729 - INFO - DataManager - Indexed: Malaya
+2026-02-16 22:49:55,257 - INFO - DataManager - Indexed: Diwa
+2026-02-16 22:49:57,651 - INFO - DataManager - Indexed: Matahom
+2026-02-16 22:50:00,129 - INFO - DataManager - Indexed: Marilag
+2026-02-16 22:50:02,846 - INFO - DataManager - Indexed: Paraluman
+2026-02-16 22:50:05,265 - INFO - DataManager - Indexed: Kakanggata
+2026-02-16 22:50:07,651 - INFO - DataManager - Indexed: Kundiman

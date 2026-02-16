@@ -64,11 +64,19 @@ class SuggestionSelect(discord.ui.Select):
 
         if found_locations:
             embed = self.cog.create_found_embed(interaction, display_name, found_locations, is_villager)
-            await interaction.response.edit_message(
-                content=f"Hey <@{interaction.user.id}>, look what I found!",
-                embed=embed,
-                view=None
-            )
+
+            if embed:
+                await interaction.response.edit_message(
+                    content=f"Hey <@{interaction.user.id}>, look what I found!",
+                    embed=embed,
+                    view=None
+                )
+            else:
+                await interaction.response.edit_message(
+                    content=f"**{display_name}** is not currently available on any Sub Island.",
+                    embed=None,
+                    view=None
+                )
         else:
             await interaction.response.send_message(
                 "Error: Item data lost. Please try searching again.",
@@ -145,6 +153,11 @@ class DiscordCommandCog(commands.Cog):
             if now - self.cooldowns[user_id] < cooldown_sec:
                 return True
         self.cooldowns[user_id] = now
+
+        # Periodic cleanup: prune entries older than 60s every 100 entries
+        if len(self.cooldowns) > 100:
+            self.cooldowns = {k: v for k, v in self.cooldowns.items() if now - v < 60}
+
         return False
 
     def create_found_embed(self, ctx_or_interaction, search_term, location_string, is_villager=False):
@@ -154,10 +167,11 @@ class DiscordCommandCog(commands.Cog):
         loc_list = sorted(list(set(location_string.split(", "))))
         sub_islands_found = []
 
-
         for loc in loc_list:
             loc_key = loc.strip().capitalize()
-            if loc_key.upper() in [name.upper() for name in Config.FREE_ISLANDS]:
+
+            # STRICT FILTER: Only allow islands explicitly listed in Config.SUB_ISLANDS
+            if loc_key not in Config.SUB_ISLANDS:
                 continue
 
             if loc_key in self.sub_island_lookup:
@@ -165,6 +179,10 @@ class DiscordCommandCog(commands.Cog):
                 sub_islands_found.append(f"<#{channel_id}>")
             else:
                 sub_islands_found.append(f"**{loc}**")
+
+        # If no Sub Islands match, return None to indicate availability failure
+        if not sub_islands_found:
+            return None
 
         island_count = len(sub_islands_found)
         island_term = "island" if island_count == 1 else "islands"
@@ -246,10 +264,9 @@ class DiscordCommandCog(commands.Cog):
         embed.set_image(url=Config.FOOTER_LINE)
         return embed
 
-    @tasks.loop(hours=24)
+    @tasks.loop(hours=1)
     async def auto_refresh_cache(self):
-        """Auto refresh cache and islands"""
-        self.data_manager.update_cache()
+        """Auto refresh island channel links (cache is refreshed by DataManager's own thread)"""
         await self.fetch_islands()
 
     @auto_refresh_cache.before_loop
@@ -281,8 +298,13 @@ class DiscordCommandCog(commands.Cog):
                 display_name = cache.get("_display", {}).get(search_term, search_term_raw)
 
             embed = self.create_found_embed(ctx, display_name, found_locations, is_villager=False)
-            await ctx.send(content=f"Hey <@{ctx.author.id}>, look what I found!", embed=embed)
-            logger.info(f"[DISCORD] Item Hit: {search_term} -> Found")
+
+            if embed:
+                await ctx.send(content=f"Hey <@{ctx.author.id}>, look what I found!", embed=embed)
+                logger.info(f"[DISCORD] Item Hit: {search_term} -> Found")
+            else:
+                await ctx.send(f"**{display_name}** is not currently available on any Sub Island.")
+                logger.info(f"[DISCORD] Item Hit: {search_term} -> Not on Sub Islands")
             return
 
         suggestion_keys = get_best_suggestions(search_term, keys, limit=8)
@@ -309,7 +331,7 @@ class DiscordCommandCog(commands.Cog):
         if self.check_cooldown(str(ctx.author.id)):
             return
 
-        search_term = name.lower().strip()
+        search_term = normalize_text(name)
         villager_map = self.data_manager.get_villagers([
             Config.VILLAGERS_DIR,
             Config.TWITCH_VILLAGERS_DIR
@@ -319,8 +341,13 @@ class DiscordCommandCog(commands.Cog):
 
         if found_locations:
             embed = self.create_found_embed(ctx, search_term, found_locations, is_villager=True)
-            await ctx.send(content=f"Hey <@{ctx.author.id}>, look who I found!", embed=embed)
-            logger.info(f"[DISCORD] Villager Hit: {search_term} -> Found")
+
+            if embed:
+                await ctx.send(content=f"Hey <@{ctx.author.id}>, look who I found!", embed=embed)
+                logger.info(f"[DISCORD] Villager Hit: {search_term} -> Found")
+            else:
+                await ctx.send(f"**{search_term.title()}** is not currently on any Sub Island.")
+                logger.info(f"[DISCORD] Villager Hit: {search_term} -> Not on Sub Islands")
             return
 
         matches = process.extract(search_term, list(villager_map.keys()), limit=3, scorer=fuzz.WRatio)

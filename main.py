@@ -145,8 +145,13 @@ def main():
 
     # Initial cache update
     logger.info("[DATA] Loading initial cache...")
-    data_manager.update_cache()
-    logger.info(f"[DATA] Cache loaded: {len(data_manager.cache)} items ✓")
+    if not data_manager.cache:
+        logger.info("[DATA] No local cache found. Fetching from Google Sheets...")
+        data_manager.update_cache()
+    else:
+        logger.info(f"[DATA] Local cache loaded successfully ({len(data_manager.cache)} items). Skipping initial fetch.")
+
+    logger.info(f"[DATA] Cache status: {len(data_manager.cache)} items ready ✓")
 
     # Handle SIGTERM/SIGINT for graceful shutdown (works on Linux/macOS; Windows SIGTERM is limited)
     def _handle_signal(signum, frame):

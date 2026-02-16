@@ -64,7 +64,7 @@ def format_locations_text(locations_str: str):
 def parse_locations_json(locations_str: str):
     """Parse locations for JSON API response"""
     locs_list = list(set(locations_str.split(", ")))
-    free_islands = [loc for loc in locs_list if loc not in Config.FREE_ISLANDS]
+    free_islands = [loc for loc in locs_list if loc in Config.FREE_ISLANDS]
     sub_islands = [loc for loc in locs_list if loc in Config.SUB_ISLANDS]
     return free_islands, sub_islands
 

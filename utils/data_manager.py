@@ -14,7 +14,7 @@ from datetime import datetime
 import gspread
 
 logger = logging.getLogger("DataManager")
-
+CACHE_FILE = "cache_dump.json"
 
 class DataManager:
     """Centralized data management for items and villagers"""
@@ -29,9 +29,15 @@ class DataManager:
         self.gc = None
         self.lock = threading.Lock()
         self.image_cache = {}
+        self._villager_cache = {}     # {frozenset(dirs): data}
+        self._villager_cache_time = None
+        self._villager_cache_ttl = 300  # 5 minutes
 
         self._connect_sheets()
         self.load_image_catalog()
+
+        # NEW: Try to load local cache immediately
+        self.load_local_cache()
 
         # Start auto-refresh in background thread
         self.refresh_thread = threading.Thread(target=self.auto_refresh_loop, daemon=True)
@@ -76,6 +82,26 @@ class DataManager:
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
+    def load_local_cache(self):
+        """Load cache from local JSON file to avoid API latency"""
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                    self.cache = json.load(f)
+                self.last_update = datetime.now()
+                logger.info(f"[CACHE] Loaded {len(self.cache)} items from disk.")
+            except Exception as e:
+                logger.error(f"[CACHE] Failed to load local dump: {e}")
+
+    def save_local_cache(self):
+        """Save current cache to local JSON file"""
+        try:
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.cache, f, ensure_ascii=False, indent=2)
+            logger.info("[CACHE] Data saved to disk.")
+        except Exception as e:
+            logger.error(f"[CACHE] Failed to save dump: {e}")
+
     def update_cache(self):
         """Fetch items from Google Sheets"""
         logger.info("Updating cache from Google Sheets...")
@@ -89,6 +115,7 @@ class DataManager:
             temp_cache = {}
             display_map = {}
             sheets_scanned = 0
+            sheets_failed = 0
 
             logger.info(f"Found {len(worksheets)} sheets. Scanning...")
 
@@ -120,39 +147,61 @@ class DataManager:
 
                     sheets_scanned += 1
                     logger.info(f"Indexed: {location_name}")
+                    # Small delay to respect rate limits
                     time.sleep(2.0)
 
                 except Exception as e:
+                    sheets_failed += 1
                     logger.error(f"Error reading '{sheet.title}': {e}")
 
             temp_cache["_display"] = display_map
 
-            with self.lock:
-                self.cache = temp_cache
-                self.last_update = datetime.now()
+            # Guard: only replace cache if we actually got meaningful data
+            if sheets_scanned > 0 and len(temp_cache) > 1:
+                with self.lock:
+                    self.cache = temp_cache
+                    self.last_update = datetime.now()
 
-            logger.info(f"Scan complete. {len(temp_cache)} items loaded from {sheets_scanned} sheets.")
+                self.save_local_cache()
+                logger.info(
+                    f"Scan complete. {len(temp_cache)} items loaded from "
+                    f"{sheets_scanned} sheets ({sheets_failed} failed)."
+                )
+            else:
+                logger.warning(
+                    f"Cache refresh produced too few items "
+                    f"({len(temp_cache)} items from {sheets_scanned}/{len(worksheets)} sheets, "
+                    f"{sheets_failed} failed). Keeping existing cache ({len(self.cache)} items)."
+                )
 
         except Exception as e:
             logger.error(f"Workbook fetch failed: {e}")
+            self.gc = None  # Force reconnect on next attempt
 
     def auto_refresh_loop(self):
         """Background thread to auto-refresh cache"""
         while True:
+            # Wait for the interval (hours * 3600 seconds)
             time.sleep(3600 * self.cache_refresh_hours)
             self.update_cache()
 
     def get_villagers(self, villagers_dirs):
-        """Scan villager text files from provided directories
-
-        Args:
-            villagers_dirs: List of directory paths to scan
-        """
-        data = {}
-        paths_to_scan = [p for p in villagers_dirs if p and os.path.exists(p)]
+        """Scan villager text files from provided directories (cached for 5 min)"""
+        paths_to_scan = tuple(sorted(p for p in villagers_dirs if p and os.path.exists(p)))
 
         if not paths_to_scan:
-            return data
+            return {}
+
+        # Return cached data if still fresh
+        now = time.time()
+        if (
+            self._villager_cache
+            and self._villager_cache_time
+            and now - self._villager_cache_time < self._villager_cache_ttl
+        ):
+            return self._villager_cache
+
+        data = {}
 
         try:
             for base_dir in paths_to_scan:
@@ -191,8 +240,10 @@ class DataManager:
                         except Exception as file_err:
                             logger.error(f"Error reading villagers file at {location_name}: {file_err}")
 
+            self._villager_cache = data
+            self._villager_cache_time = now
             return data
 
         except Exception as e:
             logger.error(f"Villager scan failed: {e}")
-            return {}
+            return self._villager_cache or {}
