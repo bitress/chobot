@@ -217,15 +217,29 @@ class PunishmentBuilderView(discord.ui.View):
             color = 0xE67E22
 
         try:
-            # 1. Discord Action
+            # 1. Discord Action (with DM notification first)
+            guild_name = interaction.guild.name
+            
             if self.action_type == "KICK":
+                # Attempt DM before Kick
+                try:
+                    await target.send(f"**Kick Notification**\nYou have been kicked from **{guild_name}**.\nReason: {reason_text}")
+                except discord.HTTPException:
+                    pass # DM Closed
                 await target.kick(reason=f"FlightLog: {reason_text}")
+                
             elif self.action_type == "BAN":
+                # Attempt DM before Ban
+                try:
+                    await target.send(f"**Ban Notification**\nYou have been banned from **{guild_name}**.\nReason: {reason_text}")
+                except discord.HTTPException:
+                    pass # DM Closed
                 await target.ban(reason=f"FlightLog: {reason_text}")
-            else:
+                
+            else: # WARN
                 # Attempt DM
                 try:
-                    await target.send(f"**Warning**\nReason: {reason_text}")
+                    await target.send(f"**Warning Notification**\nYou have been warned in **{guild_name}**.\nReason: {reason_text}")
                 except discord.HTTPException:
                     pass # DM Closed
 
