@@ -12,7 +12,7 @@ load_dotenv()
 class Config:
     """Application configuration"""
 
-    IS_PRODUCTION = os.getenv('IS_PRODUCTION', 'false').lower() == 'true'
+    IS_PRODUCTION = os.getenv('IS_PRODUCTION', 'true').lower() == 'true'
 
     # Twitch
     TWITCH_TOKEN = os.getenv('TWITCH_TOKEN')
