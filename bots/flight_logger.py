@@ -25,16 +25,14 @@ class TravelerActionView(discord.ui.View):
         """
         Updates the embed to a 'Closed Case' style without losing the original info.
         """
-        await interaction.response.send_message(log_msg, ephemeral=False)
+        await interaction.response.send_message(log_msg, ephemeral=True)
 
         if interaction.message.embeds:
             embed = interaction.message.embeds[0]
             
             embed.color = color
             
-            embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
-            
-            embed.description = None
+            embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)            embed.description = None
             
             embed.add_field(
                 name="<:ChoLove:818216528449241128> Action Taken",
@@ -53,17 +51,17 @@ class TravelerActionView(discord.ui.View):
 
     @discord.ui.button(label="Admit", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>")
     async def confirm_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = f"✅ **{self.ign}** is cleared for entry. Welcome aboard!"
+        msg = f"<:Cho_Check:1456715827213504593> **{self.ign}** is cleared for entry. Welcome aboard!"
         await self._resolve_alert(interaction, "AUTHORIZED", 0x2ECC71, msg)
 
     @discord.ui.button(label="Warn", style=discord.ButtonStyle.primary, emoji="<:Cho_Warn:1456712416271405188>")
     async def warn_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = f"⚠️ **{self.ign}** has been warned regarding nickname policy."
+        msg = f"<:Cho_Warn:1456712416271405188> **{self.ign}** has been warned regarding nickname policy."
         await self._resolve_alert(interaction, "WARNED", 0xE67E22, msg)
 
     @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="<:Cho_Kick:1456714701630214349>")
     async def ban_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = f"🚫 **{self.ign}** has been BANNED. (Appeal pending)"
+        msg = f"<:Cho_Kick:1456714701630214349> **{self.ign}** has been BANNED. (Appeal pending)"
         await self._resolve_alert(interaction, "BANNED", 0x992D22, msg)
 
 class FlightLoggerCog(commands.Cog):
