@@ -79,19 +79,20 @@ class TwitchBot(commands.Bot):
         found_locs_raw = cache.get(search_term)
 
         if found_locs_raw:
-            # Filter: only SUB_ISLANDS
+            # Filter: SUB_ISLANDS + FREE_ISLANDS for items
             loc_list = found_locs_raw.split(", ")
-            sub_only = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in Config.SUB_ISLANDS)]
+            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+            all_found = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
             
             display_name = display_map.get(search_term, search_term_raw.title())
             
-            if sub_only:
-                final_msg = format_locations_text(", ".join(sub_only))
+            if all_found:
+                final_msg = format_locations_text(", ".join(all_found))
                 await ctx.send(f"Hey @{ctx.author.name}, I found {display_name} {final_msg}")
                 logger.info(f"[TWITCH] Item Hit: {search_term} -> {final_msg}")
             else:
-                await ctx.send(f"Hey @{ctx.author.name}, {display_name} is not currently available on any Sub Island.")
-                logger.info(f"[TWITCH] Item Hit: {search_term} -> Not on Sub Islands")
+                await ctx.send(f"Hey @{ctx.author.name}, {display_name} is not currently available on any Island.")
+                logger.info(f"[TWITCH] Item Hit: {search_term} -> Not on Islands")
             return
 
         # Fuzzy search using unified helper
