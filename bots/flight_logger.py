@@ -75,15 +75,18 @@ def _build_options_with_default(base_options: list[discord.SelectOption], select
 def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str, case_id: str, warn_count: int, duration: str):
     """Generates the visual embed mimicking Sapphire"""
     now = discord.utils.utcnow()
+    # Sapphire typically expires in 7 days
     expiry = now + datetime.timedelta(days=7)
     expiry_ts = int(expiry.timestamp())
+    
+    mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
 
     desc_lines = [
         f"> **{member.mention} ({member.display_name})** has been warned!",
         f"> **Reason:** {reason}",
         f"> **Duration:** {duration}",
         f"> **Count:** {warn_count}",
-        f"> **Responsible:** {mod.mention} ({mod.top_role.name})",
+        f"> **Responsible:** {mod.mention} ({mod_role_name})",
         f"> Automatically expires <t:{expiry_ts}:R>",
         f"> **Proof:** Verified (Log System)",
         "> ",
@@ -103,138 +106,162 @@ def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str
 
 # --- UI VIEWS ---
 
+# --- REFACTORED UI COMPONENTS ---
+
+class TargetSelect(discord.ui.UserSelect):
+    def __init__(self, parent_view):
+        super().__init__(
+            placeholder="1. Select the Target User...",
+            min_values=1,
+            max_values=1,
+            row=0
+        )
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        # discord.py 2.0+ automatically resolves members in self.values
+        if self.values:
+            # self.values[0] is typically a Member or User object
+            self.parent_view.selected_member = self.values[0]
+        
+        await self.parent_view.refresh_state(interaction)
+
+class DurationSelect(discord.ui.Select):
+    def __init__(self, parent_view, current_duration):
+        options = _build_options_with_default(DURATION_OPTIONS, current_duration)
+        super().__init__(
+            placeholder="2. Select Duration",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1
+        )
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values:
+            self.parent_view.selected_duration = self.values[0]
+        await self.parent_view.refresh_state(interaction)
+
+class ConfirmButton(discord.ui.Button):
+    def __init__(self, parent_view, label, style, disabled):
+        super().__init__(label=label, style=style, disabled=disabled, row=2)
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent_view.execute_punishment(interaction)
+
+# --- REFACTORED BUILDER VIEW ---
+
 class PunishmentBuilderView(discord.ui.View):
-    """
-    Two-step builder: Select User → (Optional Duration) → Confirm.
-    Kick/Ban actions hide the duration selector.
-    """
     def __init__(self, action_type: str, original_view: "TravelerActionView", log_message: discord.Message):
-        super().__init__(timeout=120)
-        self.action_type    = action_type       # "WARN", "KICK", or "BAN"
-        self.original_view  = original_view
-        self.log_message    = log_message
+        super().__init__(timeout=300)
+        self.action_type = action_type
+        self.original_view = original_view
+        self.log_message = log_message
 
-        self.selected_member:   discord.Member | None = None
-        self.selected_duration: str = "1d" # Default for Warns
+        self.selected_member: discord.Member | discord.User | None = None
+        self.selected_duration: str = "1d"
+        
+        # Initial render
+        self._update_components()
 
-        self._rebuild_selects()
-
-    def _rebuild_selects(self):
+    def _update_components(self):
+        """Clear and re-add components based on current state."""
         self.clear_items()
 
-        # --- Row 0: User Select ---
-        user_select = discord.ui.UserSelect(
-            placeholder="1. Select the Target User...",
-            min_values=1, max_values=1, row=0
-        )
-        async def _user_cb(interaction: discord.Interaction):
-            values = interaction.data.get("values", [])
-            if values:
-                self.selected_member = interaction.guild.get_member(int(values[0]))
-            self._rebuild_selects()
-            await interaction.response.edit_message(view=self)
-        
-        user_select.callback = _user_cb
-        self.add_item(user_select)
+        # 1. User Select
+        self.add_item(TargetSelect(self))
 
-        # --- Row 1: Duration Select (WARN ONLY) ---
+        # 2. Duration Select (Warn Only)
         if self.action_type == "WARN":
-            duration_select = discord.ui.Select(
-                placeholder="2. Select Duration (default: 1 day)",
-                min_values=1, max_values=1, row=1,
-                options=_build_options_with_default(DURATION_OPTIONS, self.selected_duration)
-            )
-            async def _duration_cb(interaction: discord.Interaction):
-                values = interaction.data.get("values", [])
-                if values:
-                    self.selected_duration = values[0]
-                self._rebuild_selects()
-                await interaction.response.edit_message(view=self)
-            
-            duration_select.callback = _duration_cb
-            self.add_item(duration_select)
+            self.add_item(DurationSelect(self, self.selected_duration))
 
-        # --- Row 2: Confirm Button ---
+        # 3. Confirm Button
         can_submit = self.selected_member is not None
         
-        # Determine label
         if self.selected_member:
-            label = f"Confirm {self.action_type.title()} on {self.selected_member.display_name}"
+            target_name = getattr(self.selected_member, "display_name", str(self.selected_member))
+            label = f"Confirm {self.action_type.title()} on {target_name}"
         else:
             label = "Confirm Action"
 
-        confirm_btn = discord.ui.Button(
-            label=label, style=discord.ButtonStyle.danger, row=2, disabled=not can_submit
-        )
-        confirm_btn.callback = self.confirm_callback
-        self.add_item(confirm_btn)
+        style = discord.ButtonStyle.danger
+        self.add_item(ConfirmButton(self, label, style, disabled=not can_submit))
 
-    async def confirm_callback(self, interaction: discord.Interaction):
+    async def refresh_state(self, interaction: discord.Interaction):
+        """Called by children to update the view."""
+        self._update_components()
+        await interaction.response.edit_message(view=self)
+
+    async def execute_punishment(self, interaction: discord.Interaction):
+        """Main logic for handling the ban/kick/warn."""
         await interaction.response.defer(ephemeral=True)
 
-        target      = self.selected_member
+        target = self.selected_member
         reason_text = DEFAULT_REASON_TEXT
-        mod         = interaction.user
+        mod = interaction.user
         
-        # Determine final duration string based on action
+        # Determine duration string
         if self.action_type == "BAN":
             final_duration = "Permanent"
+            action_verb = "BANNED"
+            color = 0x992D22
         elif self.action_type == "KICK":
             final_duration = "N/A"
-        else:
+            action_verb = "KICKED"
+            color = 0xF1C40F
+        else: # WARN
             final_duration = self.selected_duration
+            action_verb = "WARNED"
+            color = 0xE67E22
 
         try:
-            # 1. Execute Discord Action
+            # 1. Discord Action
             if self.action_type == "KICK":
                 await target.kick(reason=f"FlightLog: {reason_text}")
-                action_verb = "KICKED"
-                color       = 0xF1C40F
             elif self.action_type == "BAN":
                 await target.ban(reason=f"FlightLog: {reason_text}")
-                action_verb = "BANNED"
-                color       = 0x992D22
-            else:  # WARN
-                # Try to DM the user for warns
+            else:
+                # Attempt DM
                 try:
                     await target.send(f"**Warning**\nReason: {reason_text}")
-                except:
-                    pass 
-                action_verb = "WARNED"
-                color       = 0xE67E22
+                except discord.HTTPException:
+                    pass # DM Closed
 
             # 2. Database Log
             await add_warning(target.id, interaction.guild.id, reason_text, mod.id)
             new_count = await get_warn_count(target.id, interaction.guild.id)
 
-            # 3. Send Log to Sub Mod Channel
+            # 3. Log to Sapphire Channel
             log_embed = create_sapphire_log(target, mod, reason_text, "AUTO", new_count, final_duration)
-
             sub_mod_channel = interaction.guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
+            
             if sub_mod_channel:
                 await sub_mod_channel.send(content=target.mention, embed=log_embed)
-                await interaction.followup.send(
-                    f"✅ Action executed and logged in {sub_mod_channel.mention}", ephemeral=True
-                )
+                await interaction.followup.send(f"✅ Logged in {sub_mod_channel.mention}", ephemeral=True)
             else:
-                await interaction.followup.send("✅ Action executed. (Log channel not found)", ephemeral=True)
+                await interaction.followup.send("✅ Action executed (Log channel missing).", ephemeral=True)
 
-            # 4. Resolve the Flight Logger Alert
+            # 4. Update Original Flight Log
+            # Check if original view still has a handle on the message
             msg_to_mod = f"✅ **{target.display_name}** processed internally ({action_verb})."
-            await self.original_view._resolve_alert(
-                interaction, action_verb, color, msg_to_mod,
-                target_user=target, log_message=self.log_message
-            )
+            
+            if self.original_view:
+                await self.original_view._resolve_alert(
+                    interaction, action_verb, color, msg_to_mod,
+                    target_user=target, log_message=self.log_message
+                )
 
         except discord.Forbidden:
-            await interaction.followup.send("❌ I do not have permission to kick/ban that user. (Check Role Hierarchy)", ephemeral=True)
+            await interaction.followup.send("❌ Permission Denied. Check bot hierarchy.", ephemeral=True)
         except Exception as e:
-            logger.error(f"Action failed: {e}")
-            await interaction.followup.send(f"❌ Error executing action: {e}", ephemeral=True)
-
+            logger.error(f"Punishment Error: {e}")
+            await interaction.followup.send(f"❌ System Error: {e}", ephemeral=True)
+            
         self.stop()
 
-
+        
 class TravelerActionView(discord.ui.View):
     def __init__(self, bot, ign):
         super().__init__(timeout=86400)
@@ -247,26 +274,33 @@ class TravelerActionView(discord.ui.View):
 
         if message_to_edit:
             try:
+                # Refresh message state if possible to avoid 404
                 embed = message_to_edit.embeds[0]
-                # Update color and header — leave description, fields, image, and footer untouched
+                # Update color and header
                 embed.color = color
                 embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
-                # Append the Action Taken field without clearing existing fields
                 embed.add_field(
                     name="<:ChoLove:818216528449241128> Action Taken",
                     value=f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}",
                     inline=False
                 )
-                for child in self.children:
-                    child.disabled = True
+                self.disable_all_items()
                 await message_to_edit.edit(embed=embed, view=self)
             except Exception as e:
                 logger.error(f"Error editing original message: {e}")
 
-        if interaction.response.is_done():
-            await interaction.followup.send(log_msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(log_msg, ephemeral=True)
+        # Send confirmation to the moderator
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(log_msg, ephemeral=True)
+            else:
+                await interaction.followup.send(log_msg, ephemeral=True)
+        except:
+            pass
+
+    def disable_all_items(self):
+        for child in self.children:
+            child.disabled = True
 
     @discord.ui.button(label="Admit", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>")
     async def confirm_action(self, interaction: discord.Interaction, button: discord.ui.Button):
