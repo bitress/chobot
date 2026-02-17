@@ -15,6 +15,57 @@ from utils.config import Config
 logger = logging.getLogger("FlightLogger")
 
 
+class TravelerActionView(discord.ui.View):
+    def __init__(self, bot, ign):
+        super().__init__(timeout=86400)
+        self.bot = bot
+        self.ign = ign
+
+    async def _resolve_alert(self, interaction: discord.Interaction, status_label: str, color: int, log_msg: str):
+        """
+        Updates the embed to a 'Closed Case' style without losing the original info.
+        """
+        await interaction.response.send_message(log_msg, ephemeral=False)
+
+        if interaction.message.embeds:
+            embed = interaction.message.embeds[0]
+            
+            embed.color = color
+            
+            embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
+            
+            embed.description = None
+            
+            embed.add_field(
+                name="<:ChoLove:818216528449241128> Action Taken",
+                value=f"**{status_label}** by {interaction.user.mention}",
+                inline=False
+            )
+            
+            for child in self.children:
+                child.disabled = True
+                
+            await interaction.message.edit(embed=embed, view=self)
+        else:
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+    @discord.ui.button(label="Admit", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>")
+    async def confirm_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        msg = f"✅ **{self.ign}** is cleared for entry. Welcome aboard!"
+        await self._resolve_alert(interaction, "AUTHORIZED", 0x2ECC71, msg)
+
+    @discord.ui.button(label="Warn", style=discord.ButtonStyle.primary, emoji="<:Cho_Warn:1456712416271405188>")
+    async def warn_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        msg = f"⚠️ **{self.ign}** has been warned regarding nickname policy."
+        await self._resolve_alert(interaction, "WARNED", 0xE67E22, msg)
+
+    @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="<:Cho_Kick:1456714701630214349>")
+    async def ban_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        msg = f"🚫 **{self.ign}** has been BANNED. (Appeal pending)"
+        await self._resolve_alert(interaction, "BANNED", 0x992D22, msg)
+
 class FlightLoggerCog(commands.Cog):
     """Cog for tracking island visitors"""
 
@@ -184,8 +235,8 @@ class FlightLoggerCog(commands.Cog):
             embed = discord.Embed(
                 title=f"{Config.EMOJI_FAIL} UNKNOWN TRAVELER in {destination_link}",
                 description=(
-                    f"Traveler **`{ign}`** from **`{island.title()}`** is not linked. "
-                    f"Check if this is a member or they didn't change their nickname. Thank you!"
+                    f"**Identity Unknown:** Traveler `{ign}` is attempting to join but is not linked to a member.\n\n"
+                    f"**Select an action below to resolve this alert.**"
                 ),
                 color=0xFF0000,
                 timestamp=discord.utils.utcnow()
@@ -201,18 +252,15 @@ class FlightLoggerCog(commands.Cog):
                 value=f"```yaml\n{island.title()}```",
                 inline=True
             )
-            embed.add_field(
-                name="📍 Island Destination",
-                value=f"{destination_link}",
-                inline=False
-            )
             embed.set_image(url=Config.FOOTER_LINE)
             guild = self.bot.get_guild(Config.GUILD_ID)
             guild_icon = guild.icon.url if guild and guild.icon else None
-            embed.set_footer(text="Chopaeng Camp™", icon_url=guild_icon)
-
+            embed.set_footer(text="Chopaeng Camp™ • Action Required", icon_url=guild_icon)
 
             logger.warning(
                 f"[FLIGHT] ⚠️ UNKNOWN TRAVELER: {ign} from {island.title()} -> {destination.title()}"
             )
-            await output_channel.send(embed=embed)
+            
+            view = TravelerActionView(self.bot, ign)
+            
+            await output_channel.send(embed=embed, view=view)
