@@ -128,7 +128,7 @@ class DiscordCommandCog(commands.Cog):
 
         temp_lookup = {}
         count = 0
-        all_possible_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+        all_possible_islands = Config.SUB_ISLANDS
 
         for channel in category.channels:
             if channel.id == Config.IGNORE_CHANNEL_ID:
@@ -282,7 +282,7 @@ class DiscordCommandCog(commands.Cog):
         await self.bot.wait_until_ready()
         await self.fetch_islands()
 
-    @commands.command(aliases=['locate', 'where'])
+    @commands.command(aliases=['locate', 'where', 'lookup', 'lp', 'search'])
     async def find(self, ctx, *, item: str = ""):
         """Find an item"""
         if not item:
@@ -388,12 +388,20 @@ class DiscordCommandCog(commands.Cog):
                 await ctx.send("Database loading...")
 
     @commands.command()
+    @commands.has_permissions(administrator=True)
     async def refresh(self, ctx):
-        """Manually refresh cache"""
+        """Manually refresh cache (Mods only)"""
         await ctx.send("Refreshing cache and island links...")
         self.data_manager.update_cache()
         await self.fetch_islands()
-        await ctx.send(f"Done. Linked {len(self.sub_island_lookup)} islands.")
+        count = len(getattr(self, 'island_map', {})) 
+        await ctx.send(f"Done. Linked {count} islands.")
+
+    @refresh.error
+    async def refresh_error(self, ctx, error):
+        """Handle permission errors cleanly"""
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("You do not have permission to use this command.")
 
 
 class DiscordCommandBot(commands.Bot):
@@ -408,11 +416,22 @@ class DiscordCommandBot(commands.Bot):
         self.data_manager = data_manager
 
         self.status_list = cycle([
-            discord.Activity(type=discord.ActivityType.watching, name="over the islands | !find"),
-            discord.Activity(type=discord.ActivityType.watching, name="villagers move out | !villager"),
-            discord.Activity(type=discord.ActivityType.playing, name="with the item database"),
-            discord.Activity(type=discord.ActivityType.competing, name="island traffic"),
-            discord.Activity(type=discord.ActivityType.playing, name="https://www.chopaeng.com"),
+            discord.Activity(type=discord.ActivityType.watching, name="flights arrive ✈️ | !find"),
+            discord.Activity(type=discord.ActivityType.watching, name="villagers pack up 📦 | !villager"),
+            discord.Activity(type=discord.ActivityType.watching, name="shooting stars 🌠"),
+            discord.Activity(type=discord.ActivityType.watching, name="the turnip market 📉"),
+
+            discord.Activity(type=discord.ActivityType.playing, name="with the Item Database 📚"),
+            discord.Activity(type=discord.ActivityType.playing, name="Animal Crossing: New Horizons 🍃"),
+            discord.Activity(type=discord.ActivityType.playing, name="Browsing chopaeng.com 🌐"),
+            discord.Activity(type=discord.ActivityType.playing, name="Hide and Seek with Dodo 🦤"),
+
+            discord.Activity(type=discord.ActivityType.competing, name="the Fishing Tourney 🎣"),
+            discord.Activity(type=discord.ActivityType.competing, name="the Bug-Off 🦋"),
+            discord.Activity(type=discord.ActivityType.competing, name="island traffic 🚦"),
+
+            discord.Activity(type=discord.ActivityType.listening, name="K.K. Slider 🎸"),
+            discord.Activity(type=discord.ActivityType.listening, name="Isabelle's announcements 📢"),
         ])
 
     async def setup_hook(self):
