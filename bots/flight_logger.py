@@ -20,7 +20,9 @@ logger = logging.getLogger("FlightLogger")
 # --- DATABASE SETUP ---
 DB_NAME = "warnings.db"
 
+# --- DATABASE HELPERS ---
 async def init_db():
+    """Initializes the database schema."""
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS warnings (
@@ -32,18 +34,6 @@ async def init_db():
             )
         """)
         await db.commit()
-
-async def add_warning(user_id, guild_id, reason, mod_id):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("INSERT INTO warnings VALUES (?, ?, ?, ?, ?)",
-                         (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp())))
-        await db.commit()
-
-async def get_warn_count(user_id, guild_id):
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-        row = await cursor.fetchone()
-        return row[0] if row else 0
 
 DEFAULT_REASON_TEXT = (
     "Breaking [Sub Rule #2](https://discord.com/channels/729590421478703135/"
@@ -181,6 +171,15 @@ class ConfirmButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         await self.parent_view.execute_punishment(interaction)
 
+class CancelButton(discord.ui.Button):
+    def __init__(self, parent_view):
+        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary, row=3)
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="❌ Action cancelled.", view=None)
+        self.parent_view.stop()
+
 # --- REFACTORED BUILDER VIEW ---
 
 class PunishmentBuilderView(discord.ui.View):
@@ -211,7 +210,7 @@ class PunishmentBuilderView(discord.ui.View):
         # 3. Reason Select
         self.add_item(ReasonSelect(self, self.selected_reason))
 
-        # 4. Confirm Button
+        # 4. Confirm & Cancel Buttons
         can_submit = self.selected_member is not None
         
         if self.selected_member:
@@ -222,6 +221,7 @@ class PunishmentBuilderView(discord.ui.View):
 
         style = discord.ButtonStyle.danger
         self.add_item(ConfirmButton(self, label, style, disabled=not can_submit))
+        self.add_item(CancelButton(self))
 
     async def refresh_state(self, interaction: discord.Interaction):
         """Called by children to update the view."""
@@ -229,84 +229,25 @@ class PunishmentBuilderView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
     async def execute_punishment(self, interaction: discord.Interaction):
-        """Main logic for handling the ban/kick/warn."""
+        """Pass execution to the Cog for cleaner logic."""
+        cog = interaction.client.get_cog("FlightLoggerCog")
+        if not cog:
+            return await interaction.response.send_message("❌ Error: FlightLoggerCog not found.", ephemeral=True)
+
         await interaction.response.defer(ephemeral=True)
 
         target = self.selected_member
         reason_text = REASON_TEMPLATES.get(self.selected_reason, DEFAULT_REASON_TEXT)
-        mod = interaction.user
         
-        # Determine duration string
-        if self.action_type == "BAN":
-            final_duration = "Permanent"
-            action_verb = "BANNED"
-            color = 0x992D22
-        elif self.action_type == "KICK":
-            final_duration = "N/A"
-            action_verb = "KICKED"
-            color = 0xF1C40F
-        else: # WARN
-            final_duration = self.selected_duration
-            action_verb = "WARNED"
-            color = 0xE67E22
-
-        try:
-            # 1. Discord Action (with DM notification first)
-            guild_name = interaction.guild.name
-            
-            if self.action_type == "KICK":
-                # Attempt DM before Kick
-                try:
-                    await target.send(f"**Kick Notification**\nYou have been kicked from **{guild_name}**.\nReason: {reason_text}")
-                except discord.HTTPException:
-                    pass # DM Closed
-                await target.kick(reason=f"FlightLog: {reason_text}")
-                
-            elif self.action_type == "BAN":
-                # Attempt DM before Ban
-                try:
-                    await target.send(f"**Ban Notification**\nYou have been banned from **{guild_name}**.\nReason: {reason_text}")
-                except discord.HTTPException:
-                    pass # DM Closed
-                await target.ban(reason=f"FlightLog: {reason_text}")
-                
-            else: # WARN
-                # Attempt DM
-                try:
-                    await target.send(f"**Warning Notification**\nYou have been warned in **{guild_name}**.\nReason: {reason_text}")
-                except discord.HTTPException:
-                    pass # DM Closed
-
-            # 2. Database Log
-            await add_warning(target.id, interaction.guild.id, reason_text, mod.id)
-            new_count = await get_warn_count(target.id, interaction.guild.id)
-
-            # 3. Log to Sapphire Channel
-            log_embed = create_sapphire_log(target, mod, reason_text, "AUTO", new_count, final_duration)
-            sub_mod_channel = interaction.guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
-            
-            if sub_mod_channel:
-                await sub_mod_channel.send(content=target.mention, embed=log_embed)
-                await interaction.followup.send(f"✅ Logged in {sub_mod_channel.mention}", ephemeral=True)
-            else:
-                await interaction.followup.send("✅ Action executed (Log channel missing).", ephemeral=True)
-
-            # 4. Update Original Flight Log
-            # Check if original view still has a handle on the message
-            msg_to_mod = f"✅ **{target.display_name}** processed internally ({action_verb})."
-            
-            if self.original_view:
-                await self.original_view._resolve_alert(
-                    interaction, action_verb, color, msg_to_mod,
-                    target_user=target, log_message=self.log_message
-                )
-
-        except discord.Forbidden:
-            await interaction.followup.send("❌ Permission Denied. Check bot hierarchy.", ephemeral=True)
-        except Exception as e:
-            logger.error(f"Punishment Error: {e}")
-            await interaction.followup.send(f"❌ System Error: {e}", ephemeral=True)
-            
+        await cog._execute_punishment_internal(
+            interaction,
+            target,
+            self.action_type,
+            reason_text,
+            self.selected_duration,
+            self.original_view,
+            self.log_message
+        )
         self.stop()
 
         
@@ -329,34 +270,28 @@ class TravelerActionView(discord.ui.View):
         return None
 
     async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None):
+        """Internal helper to update the alert embed state. Does NOT send interaction responses."""
         target_str      = f"{target_user.mention}" if target_user else "Visitor (unlinked)"
-        message_to_edit = log_message or (interaction.message if not interaction.response.is_done() else None)
+        message_to_edit = log_message or (interaction.message if interaction.response.is_done() else None)
 
-        if message_to_edit:
-            try:
-                # Refresh message state if possible to avoid 404
-                embed = message_to_edit.embeds[0]
-                # Update color and header
-                embed.color = color
-                embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
-                embed.add_field(
-                    name="<:ChoLove:818216528449241128> Action Taken",
-                    value=f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}",
-                    inline=False
-                )
-                self.disable_all_items()
-                await message_to_edit.edit(embed=embed, view=self)
-            except Exception as e:
-                logger.error(f"Error editing original message: {e}")
+        if not message_to_edit:
+            return
 
-        # Send confirmation to the moderator
         try:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(log_msg, ephemeral=True)
-            else:
-                await interaction.followup.send(log_msg, ephemeral=True)
-        except:
-            pass
+            # Refresh message state if possible to avoid 404
+            embed = message_to_edit.embeds[0]
+            # Update color and header
+            embed.color = color
+            embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
+            embed.add_field(
+                name="<:ChoLove:818216528449241128> Action Taken",
+                value=f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}",
+                inline=False
+            )
+            self.disable_all_items()
+            await message_to_edit.edit(embed=embed, view=self)
+        except Exception as e:
+            logger.error(f"Error editing original message: {e}")
 
     def disable_all_items(self):
         for child in self.children:
@@ -364,9 +299,11 @@ class TravelerActionView(discord.ui.View):
 
     @discord.ui.button(label="Admit", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>", custom_id="fl_admit")
     async def confirm_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
         msg = f"<:Cho_Check:1456715827213504593> **{ign or 'Visitor'}** is cleared for entry."
         await self._resolve_alert(interaction, "AUTHORIZED", 0x2ECC71, msg)
+        await interaction.followup.send(msg, ephemeral=True)
 
     @discord.ui.button(label="Warn", style=discord.ButtonStyle.primary, emoji="<:Cho_Warn:1456712416271405188>", custom_id="fl_warn")
     async def warn_action(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -392,7 +329,89 @@ class FlightLoggerCog(commands.Cog):
             r"\[.*?\]\s*.*?\s+(.*?)\s+from\s+(.*?)\s+is joining\s+(.*?)(?:\.|$)",
             re.IGNORECASE
         )
+        self._db_conn = None
         self.fetch_islands_task.start()
+
+    async def _get_db(self):
+        if self._db_conn is None:
+            self._db_conn = await aiosqlite.connect(DB_NAME)
+        return self._db_conn
+
+    async def add_warning(self, user_id, guild_id, reason, mod_id):
+        db = await self._get_db()
+        await db.execute("INSERT INTO warnings VALUES (?, ?, ?, ?, ?)",
+                         (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp())))
+        await db.commit()
+
+    async def get_warn_count(self, user_id, guild_id):
+        db = await self._get_db()
+        cursor = await db.execute("SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def _execute_punishment_internal(self, interaction, target, action_type, reason_text, duration_str, original_view, log_message):
+        """Unified internal method for handling moderation actions."""
+        mod = interaction.user
+        guild = interaction.guild
+        
+        # 1. Determine action details
+        if action_type == "BAN":
+            final_duration = "Permanent"
+            action_verb = "BANNED"
+            color = 0x992D22
+        elif action_type == "KICK":
+            final_duration = "N/A"
+            action_verb = "KICKED"
+            color = 0xF1C40F
+        else: # WARN
+            final_duration = duration_str
+            action_verb = "WARNED"
+            color = 0xE67E22
+
+        # Generate unique case ID: FL- YYMM-RAND
+        now = discord.utils.utcnow()
+        case_id = f"FL-{now.strftime('%y%m')}-{hex(int(now.timestamp()))[2:][-4:].upper()}"
+
+        try:
+            # 2. DM Notification
+            try:
+                await target.send(f"**{action_verb.title()} Notification**\nYou have been {action_verb.lower()} from **{guild.name}**.\nReason: {reason_text}")
+            except discord.HTTPException:
+                pass # DM Closed
+
+            # 3. Discord Action
+            if action_type == "KICK":
+                await target.kick(reason=f"FlightLog [{case_id}]: {reason_text}")
+            elif action_type == "BAN":
+                await target.ban(reason=f"FlightLog [{case_id}]: {reason_text}")
+
+            # 4. Database Log
+            await self.add_warning(target.id, guild.id, reason_text, mod.id)
+            new_count = await self.get_warn_count(target.id, guild.id)
+
+            # 5. Log to Sapphire Channel
+            log_embed = create_sapphire_log(target, mod, reason_text, case_id, new_count, final_duration)
+            sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
+            
+            if sub_mod_channel:
+                await sub_mod_channel.send(content=target.mention, embed=log_embed)
+                await interaction.followup.send(f"✅ Case `{case_id}` logged in {sub_mod_channel.mention}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"✅ Action executed (Case `{case_id}`), but log channel is missing.", ephemeral=True)
+
+            # 6. Update Original Alert
+            msg_to_mod = f"✅ **{target.display_name}** processed ({action_verb}). Case: `{case_id}`"
+            if original_view:
+                await original_view._resolve_alert(
+                    interaction, action_verb, color, msg_to_mod,
+                    target_user=target, log_message=log_message
+                )
+
+        except discord.Forbidden:
+            await interaction.followup.send("❌ Permission Denied. Check bot role hierarchy.", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Punishment Error: {e}")
+            await interaction.followup.send(f"❌ System Error: {e}", ephemeral=True)
 
     async def cog_load(self):
         await init_db()
@@ -400,6 +419,8 @@ class FlightLoggerCog(commands.Cog):
 
     def cog_unload(self):
         self.fetch_islands_task.cancel()
+        if self._db_conn:
+            asyncio.create_task(self._db_conn.close())
 
     @tasks.loop(hours=1)
     async def fetch_islands_task(self):
