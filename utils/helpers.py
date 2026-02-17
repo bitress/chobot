@@ -4,6 +4,7 @@ Common functions used across bots and APIs
 """
 
 import re
+import unicodedata
 from thefuzz import process, fuzz
 
 from utils import Config
@@ -15,6 +16,15 @@ def normalize_text(s: str) -> str:
     s = re.sub(r"[^\w\s]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
+
+def clean_text(text: str) -> str:
+    """Clean text for island matching: alphanumeric only, no accents, lowercase"""
+    if not text:
+        return ""
+    normalized = unicodedata.normalize('NFKD', text)
+    no_accents = "".join([c for c in normalized if not unicodedata.category(c).startswith('Mn')])
+    return "".join(ch for ch in no_accents if ch.isalnum()).lower()
 
 
 def tokenize(s: str) -> set:

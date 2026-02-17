@@ -14,7 +14,7 @@ from discord.ext import commands, tasks
 from thefuzz import process, fuzz
 
 from utils.config import Config
-from utils.helpers import normalize_text, get_best_suggestions
+from utils.helpers import normalize_text, get_best_suggestions, clean_text
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -115,7 +115,7 @@ class DiscordCommandCog(commands.Cog):
         self.auto_refresh_cache.start()
 
     async def fetch_islands(self):
-        """Fetch island channels from Discord"""
+        """Fetch island channels from Discord using robust matching"""
         guild = self.bot.get_guild(Config.GUILD_ID)
         if not guild:
             logger.error(f"[DISCORD] Guild {Config.GUILD_ID} not found.")
@@ -128,16 +128,21 @@ class DiscordCommandCog(commands.Cog):
 
         temp_lookup = {}
         count = 0
+        all_possible_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
 
         for channel in category.channels:
             if channel.id == Config.IGNORE_CHANNEL_ID:
                 continue
 
-            clean_name = re.sub(r'[^a-zA-Z0-9\s]', '', channel.name).strip()
-            island_name = clean_name.capitalize()
+            chan_clean = clean_text(channel.name)
 
-            temp_lookup[island_name] = channel.id
-            count += 1
+            for island in all_possible_islands:
+                island_clean = clean_text(island)
+                if island_clean in chan_clean:
+                    # Use clean name as key for consistent lookups
+                    temp_lookup[island_clean] = channel.id
+                    count += 1
+                    break
 
         self.sub_island_lookup = temp_lookup
         logger.info(f"[DISCORD] Dynamic Island Fetch Complete. Found {count} islands.")
@@ -168,10 +173,12 @@ class DiscordCommandCog(commands.Cog):
         sub_islands_found = []
 
         for loc in loc_list:
-            loc_key = loc.strip().capitalize()
+            loc_key = clean_text(loc)
 
             # STRICT FILTER: Only allow islands explicitly listed in Config.SUB_ISLANDS
-            if loc_key not in Config.SUB_ISLANDS:
+            # Verify if the cleaned location corresponds to a known sub island
+            is_sub = any(clean_text(si) == loc_key for si in Config.SUB_ISLANDS)
+            if not is_sub:
                 continue
 
             if loc_key in self.sub_island_lookup:

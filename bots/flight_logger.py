@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands, tasks
 from discord.ui import View, UserSelect, Select, button
 from utils.config import Config
+from utils.helpers import clean_text
 
 logger = logging.getLogger("FlightLogger")
 
@@ -329,51 +330,65 @@ class FlightLoggerCog(commands.Cog):
 
         temp_map = {}
         count = 0
-
+        
+        # 1. Map ALL channels in the category by their cleaned name
+        # This ensures 'Bituin' -> '#bituin' works even if it's not in your Config list
         for channel in category.channels:
             if channel.id == Config.FLIGHT_LISTEN_CHANNEL_ID:
                 continue
 
-            clean_name_raw = re.sub(r'[^a-zA-Z0-9\s]', '', channel.name).strip()
-            key = self.clean_text(clean_name_raw)
-
-            temp_map[key] = channel.id
-            count += 1
+            # e.g. "🌴┆bituin" -> "bituin"
+            chan_clean = clean_text(channel.name)
+            if chan_clean:
+                temp_map[chan_clean] = channel.id
+                count += 1
+            
+            # 2. Also map specific aliases from Config if they exist in the name
+            # This helps if channel is "island-a-chat" but Config says "Island A"
+            all_possible_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+            for island in all_possible_islands:
+                island_clean = clean_text(island)
+                if island_clean and island_clean in chan_clean:
+                    temp_map[island_clean] = channel.id
 
         self.island_map = temp_map
-        logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {count} islands.")
-
-    def clean_text(self, text):
-        """Clean text for matching"""
-        if not text:
-            return ""
-        normalized = unicodedata.normalize('NFKD', text)
-        no_accents = "".join([c for c in normalized if not unicodedata.category(c).startswith('Mn')])
-        return "".join(ch for ch in no_accents if ch.isalnum()).lower()
+        logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {len(temp_map)} keys.")
 
     def get_island_channel_link(self, island_name):
-        """Get channel link for island"""
-        island_clean = self.clean_text(island_name)
-
+        """Get channel link with robust fallback search"""
+        island_clean = clean_text(island_name)
         if not island_clean:
             return island_name.title()
 
-        # 1. Direct match
+        # 1. Try the cached map (Fast)
         if island_clean in self.island_map:
-            channel_id = self.island_map[island_clean]
-            return f"<#{channel_id}>"
+            return f"<#{self.island_map[island_clean]}>"
 
-        # 2. Flexible match (e.g. "Hiraya" vs "hiraya 1")
+        # 2. Try partial match in cache keys
         for key, channel_id in self.island_map.items():
-            if island_clean in key or key in island_clean:
+            if island_clean == key: # Exact match
+                return f"<#{channel_id}>"
+            if island_clean in key: # Partial match (log "Bituin" matches channel "sub-bituin")
                 return f"<#{channel_id}>"
 
-        return island_name.title()
+        # 3. FALLBACK: Search ALL text channels in the guild
+        # This catches channels that are outside the Category ID
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if guild:
+            for channel in guild.text_channels:
+                chan_clean = clean_text(channel.name)
+                # Check for exact or close match
+                if island_clean == chan_clean or island_clean in chan_clean:
+                    # Update cache for next time
+                    self.island_map[island_clean] = channel.id
+                    return channel.mention
 
+        # 4. Give up
+        return island_name.title()
     def split_options(self, raw: str):
         if not raw: return []
         parts = [p.strip() for p in raw.split("/") if p.strip()]
-        return [self.clean_text(p) for p in parts if self.clean_text(p)]
+        return [clean_text(p) for p in parts if clean_text(p)]
 
     def parse_member_nick(self, display_name: str):
         if not display_name or "|" not in display_name: return [], []
@@ -385,8 +400,8 @@ class FlightLoggerCog(commands.Cog):
 
     def find_matching_members(self, guild, ign_log, island_log):
         found_members    = []
-        ign_log_clean    = self.clean_text(ign_log)
-        island_log_clean = self.clean_text(island_log)
+        ign_log_clean    = clean_text(ign_log)
+        island_log_clean = clean_text(island_log)
 
         for member in guild.members:
             ign_opts, island_opts = self.parse_member_nick(member.display_name)
