@@ -14,12 +14,9 @@ class Config:
 
     IS_PRODUCTION = os.getenv('IS_PRODUCTION', 'true').lower() == 'true'
 
-    # Twitch
     TWITCH_TOKEN = os.getenv('TWITCH_TOKEN')
     TWITCH_CHANNEL = os.getenv('TWITCH_CHANNEL')
     
-
-    # Discord
     DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
     GUILD_ID = int(os.getenv('GUILD_ID')) if os.getenv('GUILD_ID') else None
     CATEGORY_ID = int(os.getenv('SUB_CATEGORY_ID')) if os.getenv('SUB_CATEGORY_ID') else None
@@ -35,11 +32,6 @@ class Config:
         FLIGHT_LOG_CHANNEL_ID = 1473286727224524915
         IGNORE_CHANNEL_ID = 809295405128089611
         SUB_MOD_CHANNEL_ID = 1473286794995830845
-
-    # FLIGHT_LISTEN_CHANNEL_ID = 1473286697461616732
-    # FLIGHT_LOG_CHANNEL_ID = 1473286727224524915
-    # IGNORE_CHANNEL_ID = 809295405128089611
-    # SUB_MOD_CHANNEL_ID = 1473286794995830845
 
     # Patreon
     PATREON_TOKEN = os.getenv("PATREON_TOKEN")
@@ -63,7 +55,7 @@ class Config:
         "Lakan", "Likha", "Malaya", "Marahuyo", "Pangarap", "Tagumpay"
     ]
 
-    TWITCH_SUB_ISLANDS = SUB_ISLANDS  # Same list — single source of truth
+    TWITCH_SUB_ISLANDS = SUB_ISLANDS  
 
     FREE_ISLANDS = [
         "Kakanggata", "Kalawakan", "Kundiman", "Kilig", "Bathala", "Dalangin",
