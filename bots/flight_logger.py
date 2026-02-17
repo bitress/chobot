@@ -355,9 +355,18 @@ class FlightLoggerCog(commands.Cog):
         """Get channel link for island"""
         island_clean = self.clean_text(island_name)
 
+        if not island_clean:
+            return island_name.title()
+
+        # 1. Direct match
         if island_clean in self.island_map:
             channel_id = self.island_map[island_clean]
             return f"<#{channel_id}>"
+
+        # 2. Flexible match (e.g. "Hiraya" vs "hiraya 1")
+        for key, channel_id in self.island_map.items():
+            if island_clean in key or key in island_clean:
+                return f"<#{channel_id}>"
 
         return island_name.title()
 

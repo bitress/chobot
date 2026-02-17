@@ -26,6 +26,9 @@ logger = logging.getLogger("FlaskAPI")
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
+# Suppress Flask/Werkzeug standard logs
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
+
 
 # Patreon cache
 patreon_cache = {
