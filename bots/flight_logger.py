@@ -109,7 +109,7 @@ class PunishmentBuilderView(discord.ui.View):
     """
     def __init__(self, action_type: str, original_view: "TravelerActionView", log_message: discord.Message):
         super().__init__(timeout=120)
-        self.action_type    = action_type      
+        self.action_type    = action_type       # "WARN", "KICK", or "BAN"
         self.original_view  = original_view
         self.log_message    = log_message
 
@@ -316,30 +316,49 @@ class FlightLoggerCog(commands.Cog):
         await self.fetch_islands()
 
     async def fetch_islands(self):
+        """Fetch island channels from Discord"""
         guild = self.bot.get_guild(Config.GUILD_ID)
-        if not guild: return
+        if not guild:
+            logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} not found.")
+            return
+
         category = discord.utils.get(guild.categories, id=Config.CATEGORY_ID)
-        if not category: return
+        if not category:
+            logger.error(f"[FLIGHT] Category {Config.CATEGORY_ID} not found.")
+            return
 
         temp_map = {}
+        count = 0
+
         for channel in category.channels:
-            if channel.id == Config.FLIGHT_LISTEN_CHANNEL_ID: continue
+            if channel.id == Config.FLIGHT_LISTEN_CHANNEL_ID:
+                continue
+
             clean_name_raw = re.sub(r'[^a-zA-Z0-9\s]', '', channel.name).strip()
             key = self.clean_text(clean_name_raw)
+
             temp_map[key] = channel.id
+            count += 1
+
         self.island_map = temp_map
-        logger.info(f"[FLIGHT] Mapped {len(temp_map)} islands.")
+        logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {count} islands.")
 
     def clean_text(self, text):
-        if not text: return ""
+        """Clean text for matching"""
+        if not text:
+            return ""
         normalized = unicodedata.normalize('NFKD', text)
         no_accents = "".join([c for c in normalized if not unicodedata.category(c).startswith('Mn')])
         return "".join(ch for ch in no_accents if ch.isalnum()).lower()
 
     def get_island_channel_link(self, island_name):
+        """Get channel link for island"""
         island_clean = self.clean_text(island_name)
+
         if island_clean in self.island_map:
-            return f"<#{self.island_map[island_clean]}>"
+            channel_id = self.island_map[island_clean]
+            return f"<#{channel_id}>"
+
         return island_name.title()
 
     def split_options(self, raw: str):
