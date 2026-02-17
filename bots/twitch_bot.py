@@ -9,7 +9,7 @@ from twitchio.ext import commands
 from thefuzz import process, fuzz
 
 from utils.config import Config
-from utils.helpers import format_locations_text, normalize_text
+from utils.helpers import normalize_text, get_best_suggestions, clean_text, format_locations_text
 
 logger = logging.getLogger("TwitchBot")
 
@@ -58,7 +58,7 @@ class TwitchBot(commands.Bot):
 
         return False
 
-    @commands.command(aliases=['locate', 'where'])
+    @commands.command(aliases=['locate', 'where', 'lookup', 'lp', 'search'])
     async def find(self, ctx: commands.Context, *, item: str = ""):
         """Find an item command"""
         if not item:
@@ -68,37 +68,45 @@ class TwitchBot(commands.Bot):
         if self.check_cooldown(str(ctx.author.id)):
             return
 
-        search_term = normalize_text(item)
+        search_term_raw = item.strip()
+        search_term = normalize_text(search_term_raw)
 
         with self.data_manager.lock:
             cache = self.data_manager.cache
+            display_map = cache.get("_display", {})
+            keys = [k for k in cache.keys() if k != "_display"]
 
-        found_locs = cache.get(search_term)
+        found_locs_raw = cache.get(search_term)
 
-        if found_locs:
-            final_msg = format_locations_text(found_locs)
-            await ctx.send(f"Hey @{ctx.author.name}, I found {search_term.upper()} {final_msg}")
-            logger.info(f"[TWITCH] Item Hit: {search_term} -> {final_msg}")
+        if found_locs_raw:
+            # Filter: only SUB_ISLANDS
+            loc_list = found_locs_raw.split(", ")
+            sub_only = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in Config.SUB_ISLANDS)]
+            
+            display_name = display_map.get(search_term, search_term_raw.title())
+            
+            if sub_only:
+                final_msg = format_locations_text(", ".join(sub_only))
+                await ctx.send(f"Hey @{ctx.author.name}, I found {display_name} {final_msg}")
+                logger.info(f"[TWITCH] Item Hit: {search_term} -> {final_msg}")
+            else:
+                await ctx.send(f"Hey @{ctx.author.name}, {display_name} is not currently available on any Sub Island.")
+                logger.info(f"[TWITCH] Item Hit: {search_term} -> Not on Sub Islands")
             return
 
-        # Fuzzy search
-        matches = process.extract(
-            search_term,
-            list(cache.keys()),
-            limit=5,
-            scorer=fuzz.token_set_ratio
-        )
-        valid_suggestions = list(set([m[0] for m in matches if m[1] > 75]))
+        # Fuzzy search using unified helper
+        suggestion_keys = get_best_suggestions(search_term, keys, limit=5)
+        valid_suggestions = [display_map.get(k, k.title()) for k in suggestion_keys]
 
         if valid_suggestions:
             suggestions_str = ", ".join(valid_suggestions)
             await ctx.send(
-                f"Hey @{ctx.author.name}, I couldn't find \"{search_term}\" - "
+                f"Hey @{ctx.author.name}, I couldn't find \"{search_term_raw}\" - "
                 f"Did you mean: {suggestions_str}? If not, try using !orderbot."
             )
         else:
             await ctx.send(
-                f"Hey @{ctx.author.name}, I couldn't find \"{search_term}\" or anything similar. "
+                f"Hey @{ctx.author.name}, I couldn't find \"{search_term_raw}\" or anything similar. "
                 f"Please check spelling. If not, try using !orderbot."
             )
 
@@ -112,16 +120,30 @@ class TwitchBot(commands.Bot):
         if self.check_cooldown(str(ctx.author.id)):
             return
 
-        search_term = normalize_text(name)
+        search_term_raw = name.strip()
+        search_term = normalize_text(search_term_raw)
+        
         villager_map = self.data_manager.get_villagers([
-            Config.VILLAGERS_DIR
+            Config.VILLAGERS_DIR,
+            Config.TWITCH_VILLAGERS_DIR
         ])
-        found_locs = villager_map.get(search_term)
+        
+        found_locs_raw = villager_map.get(search_term)
 
-        if found_locs:
-            final_msg = format_locations_text(found_locs)
-            await ctx.send(f"Hey @{ctx.author.name}, I found villager {search_term.upper()} {final_msg}")
-            logger.info(f"[TWITCH] Villager Hit: {search_term} -> {final_msg}")
+        if found_locs_raw:
+            # Filter: only SUB_ISLANDS
+            loc_list = found_locs_raw.split(", ")
+            sub_only = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in Config.SUB_ISLANDS)]
+            
+            display_name = search_term.title()
+            
+            if sub_only:
+                final_msg = format_locations_text(", ".join(sub_only))
+                await ctx.send(f"Hey @{ctx.author.name}, I found villager {display_name} {final_msg}")
+                logger.info(f"[TWITCH] Villager Hit: {search_term} -> {final_msg}")
+            else:
+                await ctx.send(f"Hey @{ctx.author.name}, {display_name} is not currently on any Sub Island.")
+                logger.info(f"[TWITCH] Villager Hit: {search_term} -> Not on Sub Islands")
             return
 
         # Fuzzy search
@@ -129,19 +151,19 @@ class TwitchBot(commands.Bot):
             search_term,
             list(villager_map.keys()),
             limit=3,
-            scorer=fuzz.token_set_ratio
+            scorer=fuzz.WRatio
         )
-        valid_suggestions = list(set([m[0] for m in matches if m[1] > 75]))
+        valid_suggestions = [m[0].title() for m in matches if m[1] > 75]
 
         if valid_suggestions:
             suggestions_str = ", ".join(valid_suggestions)
             await ctx.send(
-                f"Hey @{ctx.author.name}, I couldn't find villager \"{search_term}\" - "
+                f"Hey @{ctx.author.name}, I couldn't find villager \"{search_term_raw}\" - "
                 f"Did you mean: {suggestions_str}? If not, try using !orderbot."
             )
         else:
             await ctx.send(
-                f"Hey @{ctx.author.name}, I couldn't find a villager named \"{search_term}\". "
+                f"Hey @{ctx.author.name}, I couldn't find a villager named \"{search_term_raw}\". "
                 f"Try using !orderbot."
             )
 
