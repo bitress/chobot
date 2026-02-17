@@ -25,26 +25,35 @@ class TravelerActionView(discord.ui.View):
         """
         Updates the embed to a 'Closed Case' style without losing the original info.
         """
+        # 1. Send the PRIVATE response (Only the clicker sees this)
         await interaction.response.send_message(log_msg, ephemeral=True)
 
+        # 2. Update the PUBLIC embed (Everyone sees the case is closed)
         if interaction.message.embeds:
             embed = interaction.message.embeds[0]
             
             embed.color = color
             
-            embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)            embed.description = None
+            # Update author to show who closed it
+            embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
             
+            # Remove the old prompt description
+            embed.description = None
+            
+            # Add the permanent record field
             embed.add_field(
                 name="<:ChoLove:818216528449241128> Action Taken",
                 value=f"**{status_label}** by {interaction.user.mention}",
                 inline=False
             )
             
+            # Disable buttons
             for child in self.children:
                 child.disabled = True
                 
             await interaction.message.edit(embed=embed, view=self)
         else:
+            # Fallback
             for child in self.children:
                 child.disabled = True
             await interaction.message.edit(view=self)
