@@ -191,7 +191,7 @@ class PunishmentBuilderView(discord.ui.View):
         self.log_message = log_message
 
         self.selected_member: discord.Member | discord.User | None = None
-        self.selected_duration: str = "1d"
+        self.selected_duration: str = "3d"
         self.selected_reason: str = "rule_2"
         
         # Initial render
