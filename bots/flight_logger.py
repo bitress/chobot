@@ -19,6 +19,14 @@ from utils.helpers import clean_text
 
 logger = logging.getLogger("FlightLogger")
 
+# --- CONSTANTS ---
+# Colors
+COLOR_SUCCESS = 0x2ECC71      # Green (for admits, unwarns)
+COLOR_INVESTIGATION = 0xF1C40F  # Amber/Yellow (for investigation)
+COLOR_WARN = 0xE67E22          # Orange (for warnings)
+COLOR_KICK = 0xF1C40F          # Yellow (for kicks)
+COLOR_BAN = 0x992D22           # Red (for bans)
+
 # --- DATABASE SETUP ---
 DB_NAME = "warnings.db"
 
@@ -324,7 +332,7 @@ class AdmitConfirmView(discord.ui.View):
         """Proceed with admission."""
         msg = f"**{self.ign or 'Visitor'}** is cleared for entry."
         await self.parent_view._resolve_alert(
-            interaction, "AUTHORIZED", 0x2ECC71, msg, log_message=self.interaction_message
+            interaction, "AUTHORIZED", COLOR_SUCCESS, msg, log_message=self.interaction_message
         )
         await interaction.response.edit_message(content=msg, view=None)
         self.stop()
@@ -413,7 +421,7 @@ class TravelerActionView(discord.ui.View):
             embed = message_to_edit.embeds[0]
             
             # Update color to amber/yellow
-            embed.color = 0xF1C40F
+            embed.color = COLOR_INVESTIGATION
             
             # Update author to show investigation status
             embed.set_author(name="🔍 UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
@@ -529,15 +537,15 @@ class FlightLoggerCog(commands.Cog):
         if action_type == "BAN":
             final_duration = "Permanent"
             action_verb = "BANNED"
-            color = 0x992D22
+            color = COLOR_BAN
         elif action_type == "KICK":
             final_duration = "N/A"
             action_verb = "KICKED"
-            color = 0xF1C40F
+            color = COLOR_KICK
         else: # WARN
             final_duration = duration_str
             action_verb = "WARNED"
-            color = 0xE67E22
+            color = COLOR_WARN
 
         # Generate unique case ID: FL- YYMM-RAND
         now = discord.utils.utcnow()
@@ -950,7 +958,7 @@ class FlightLoggerCog(commands.Cog):
             dm_embed = discord.Embed(
                 title="<:Cho_Check:1456715827213504593> Chobot Notification",
                 description=f"A warning has been removed from your account in **{guild.name}**.",
-                color=0x2ECC71,
+                color=COLOR_SUCCESS,
                 timestamp=discord.utils.utcnow()
             )
             dm_embed.add_field(name="Reason for Removal", value=reason, inline=False)
@@ -992,7 +1000,7 @@ class FlightLoggerCog(commands.Cog):
         embed = discord.Embed(
             title=f"**Unwarned Case ID: {case_id}**",
             description="\n".join(desc_lines),
-            color=0x2ECC71,  # Green color
+            color=COLOR_SUCCESS,
             timestamp=now
         )
         embed.set_thumbnail(url="https://i.ibb.co/HXyRH3R/2668-Siren.gif")
@@ -1036,7 +1044,7 @@ class FlightLoggerCog(commands.Cog):
         embed = discord.Embed(
             title=f"Warnings for {user.display_name}",
             description=f"Showing warnings from the last {days} days",
-            color=0xE67E22,
+            color=COLOR_WARN,
             timestamp=discord.utils.utcnow()
         )
         embed.set_thumbnail(url=user.display_avatar.url)
