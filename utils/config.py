@@ -21,13 +21,13 @@ class Config:
     GUILD_ID = int(os.getenv('GUILD_ID')) if os.getenv('GUILD_ID') else None
     CATEGORY_ID = int(os.getenv('SUB_CATEGORY_ID')) if os.getenv('SUB_CATEGORY_ID') else None
     LOG_CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
-    ISLAND_ACCESS_ROLE = 1077997850165772398
+    ISLAND_ACCESS_ROLE = int(os.getenv('ISLAND_ACCESS_ROLE')) if os.getenv('ISLAND_ACCESS_ROLE') else None
 
     if IS_PRODUCTION:
-        FLIGHT_LISTEN_CHANNEL_ID = 809295405128089611
-        FLIGHT_LOG_CHANNEL_ID = 1451990354634080446
-        IGNORE_CHANNEL_ID = 809295405128089611
-        SUB_MOD_CHANNEL_ID = 1077960085826961439
+        FLIGHT_LISTEN_CHANNEL_ID = int(os.getenv('FLIGHT_LISTEN_CHANNEL_ID')) if os.getenv('FLIGHT_LISTEN_CHANNEL_ID') else None
+        FLIGHT_LOG_CHANNEL_ID = int(os.getenv('FLIGHT_LOG_CHANNEL_ID')) if os.getenv('FLIGHT_LOG_CHANNEL_ID') else None
+        IGNORE_CHANNEL_ID = int(os.getenv('IGNORE_CHANNEL_ID')) if os.getenv('IGNORE_CHANNEL_ID') else None
+        SUB_MOD_CHANNEL_ID = int(os.getenv('SUB_MOD_CHANNEL_ID')) if os.getenv('SUB_MOD_CHANNEL_ID') else None
     else:
         FLIGHT_LISTEN_CHANNEL_ID = 1473286697461616732
         FLIGHT_LOG_CHANNEL_ID = 1473286727224524915

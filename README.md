@@ -1,59 +1,99 @@
 # Chobot System
 
-Chobot is bot for Animal Crossing. It works for Discord, Twitch, and has API for web.
-No emojis here, just simple English.
+Simple bot for Animal Crossing. It works for Discord, Twitch, and has API for web.
 
-## What it does
+## Description
 
-### Flight Logger (Security)
-Watch people who visit islands and keep everything safe.
-- **Track People**: When someone join island, bot check if it know them.
-- **Alert Staff**: If bot not know person, it send message to staff channel.
-- **Easy Buttons**: Staff click buttons like Admit, Warn, Kick, or Ban directly on alert.
-- **Auto Remove Role**: If staff Warn someone, bot remove their access role (ISLAND_ACCESS_ROLE) automatic so they cannot enter again.
-- **History**: All actions save to database and moderation log.
+Chobot is a unified system to help manage Animal Crossing communities. It watches island visitors to keep them safe, helps users find items and villagers, and connects Twitch chat with discord data. It uses Google Sheets to keep all information up to date.
 
-### Discord Bot (Utility)
-- **!find <item>**: Find any item in sub islands. It look deep in database.
-- **!villager <name>**: Find which island a villager live on.
-- **Smart Search**: If you type name wrong, bot suggest correct names.
-- **Status**: Type !status to see if bot is update and healthy.
+### Features
 
-### Twitch Bot
-Streamer can use bot in Twitch chat. It use same data as Discord.
+* **Flight Logger (Security)**
+    * Watch people who visit islands.
+    * Send alert to staff if person is unknown.
+    * Buttons for Admit, Warn, Kick, Ban.
+    * Remove access role automatically if someone is warned.
+    * Send moderation log to channel.
 
-### API & Data
-- **Flask Server**: Other apps can ask bot for island data.
-- **Google Sheets**: Bot get all island data from Google Sheets workbook.
-- **Local Cache**: Bot save data to file so it is very fast.
+* **Discord & Twitch Utility**
+    * Find items and villagers across sub-islands (!find, !villager).
+    * Smart fuzzy search suggests correct names if you type wrong.
+    * Check bot health with !status command.
 
-## How to use
+* **Island Status (Dodo Codes)**
+    * API reads Dodo.txt and Visitors.txt to show real-time island status.
+    * Show if island is ONLINE, OFFLINE, or FULL.
 
-### Things you need
-- Python 3.9 or newer.
-- Token for Discord bot.
-- Token for Twitch bot.
-- Access to Google Sheets.
+* **Patreon Integration**
+    * API can fetch and cache your Patreon posts for your website.
 
-### Setup .env
-Make file named `.env` and put this:
+* **Data Management**
+    * Auto-sync with Google Sheets every hour.
+    * Fast local cache in cache_dump.json.
+
+## Getting Started
+
+### Dependencies
+
+* Python 3.9 or newer.
+* Discord Bot Token (with intents).
+* Twitch Bot Token.
+* Google Sheets Service Account.
+
+### Installing
+
+1. Download or clone this project.
+2. Put your secrets inside a file named `.env` in the root folder:
+
 ```env
-DISCORD_TOKEN=your_token
-TWITCH_TOKEN=your_token
-GUILD_ID=your_server_id
-SUB_CATEGORY_ID=island_category_id
-WORKBOOK_NAME=spreadsheet_name
-IS_PRODUCTION=true
+# --- BOT TOKENS ---
+DISCORD_TOKEN=your_discord_token
+TWITCH_TOKEN=your_twitch_token
+PATREON_TOKEN=your_patreon_token
+
+# --- DISCORD CONFIG ---
+GUILD_ID=729590421478703135
+SUB_CATEGORY_ID=821474059018829854
+CHANNEL_ID=1450554092626903232
+ISLAND_ACCESS_ROLE=1077997850165772398
+
+# --- FLIGHT LOGGER ---
+FLIGHT_LISTEN_CHANNEL_ID=809295405128089611
+FLIGHT_LOG_CHANNEL_ID=1451990354634080446
+IGNORE_CHANNEL_ID=809295405128089611
+SUB_MOD_CHANNEL_ID=1077960085826961439
+
+# --- OTHER ---
+TWITCH_CHANNEL=chopaeng
+WORKBOOK_NAME=ChoPaeng_Database
+IS_PRODUCTION=false
 ```
 
-### Start it
+### Executing program
+
+* How to run the bot:
+1. Open terminal in project folder.
+2. Type this command:
 ```bash
 python main.py
 ```
 
-## How Warn/Kick/Ban works
-When bot see unknown person:
-1. It post alert in mod channel.
-2. Mod click button.
-3. **Warn**: Bot remove player roles, save warn to db, send DM to player, and send moderation log.
-4. **Kick/Ban**: Bot kick or ban player from server and send them DM.
+## Help
+
+If bot not start, check if you put correct tokens in .env file.
+Make sure your Python is version 3.9 or higher.
+
+## Authors
+
+bitress
+[@bitress](https://github.com/bitress)
+
+## Version History
+
+* 0.1
+    * Initial Release
+    * Add Flight Logger, Discord Bot, Twitch Bot, and Patreon API.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE.md file for details
