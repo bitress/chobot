@@ -448,6 +448,18 @@ class FlightLoggerCog(commands.Cog):
         now = discord.utils.utcnow()
         case_id = f"FL-{now.strftime('%y%m')}-{hex(int(now.timestamp()))[2:][-4:].upper()}"
 
+        # 1.5 Role Removal (Warn Only)
+        if action_type == "WARN":
+            visitor_role = guild.get_role(Config.ISLAND_ACCESS_ROLE)
+            if visitor_role and visitor_role in target.roles:
+                try:
+                    await target.remove_roles(visitor_role, reason=f"FlightLog [{case_id}]: Warned - Role Removed")
+                    logger.info(f"[FLIGHT] Removed role {visitor_role.name} from {target.display_name}")
+                except discord.Forbidden:
+                    logger.error(f"[FLIGHT] Permission Denied: Cannot remove role from {target.display_name}")
+                except Exception as e:
+                    logger.error(f"[FLIGHT] Error removing role: {e}")
+
         try:
             # 2. DM Notification
             try:

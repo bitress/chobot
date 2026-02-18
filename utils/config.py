@@ -21,6 +21,7 @@ class Config:
     GUILD_ID = int(os.getenv('GUILD_ID')) if os.getenv('GUILD_ID') else None
     CATEGORY_ID = int(os.getenv('SUB_CATEGORY_ID')) if os.getenv('SUB_CATEGORY_ID') else None
     LOG_CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
+    ISLAND_ACCESS_ROLE = 1077997850165772398
 
     if IS_PRODUCTION:
         FLIGHT_LISTEN_CHANNEL_ID = 809295405128089611
