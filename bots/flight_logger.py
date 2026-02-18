@@ -375,6 +375,13 @@ class TravelerActionView(discord.ui.View):
         try:
             # Refresh message state if possible to avoid 404
             embed = message_to_edit.embeds[0]
+            
+            # Remove investigation field if it exists (case was under investigation)
+            fields_to_keep = [f for f in embed.fields if "🔍 Investigating" not in f.name]
+            embed.clear_fields()
+            for field in fields_to_keep:
+                embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            
             # Update color and header
             embed.color = color
             embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
