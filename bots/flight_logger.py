@@ -7,6 +7,7 @@ import re
 import logging
 import unicodedata
 import datetime
+import asyncio
 import aiosqlite  # Requires: pip install aiosqlite
 
 import discord
@@ -55,6 +56,7 @@ REASON_OPTIONS = [
     discord.SelectOption(label="Sub Rule #3 / #4", value="rule_3_4", description="Breaking [Sub Rule #3]"),
     discord.SelectOption(label="Sub Rule #6", value="rule_6", description="Breaking [Sub Rule #6]"),
     discord.SelectOption(label="Sub Rule #8", value="rule_8", description="Breaking [Sub Rule #8]"),
+    discord.SelectOption(label="Custom Reason", value="custom", description="Provide a custom reason"),
 ]
 
 DURATION_OPTIONS = [
@@ -66,16 +68,28 @@ DURATION_OPTIONS = [
     discord.SelectOption(label="Permanent", value="perm"),
 ]
 
-def _build_options_with_default(base_options: list[discord.SelectOption], selected_value: str | None):
-    return [
-        discord.SelectOption(
-            label=opt.label, value=opt.value, description=opt.description,
-            default=(opt.value == selected_value)
-        )
-        for opt in base_options
-    ]
+def _build_options_with_default(base_options: list[discord.SelectOption], selected_value: str | None, custom_text: str | None = None):
+    new_options = []
+    for opt in base_options:
+        label = opt.label
+        description = opt.description
+        is_default = (opt.value == selected_value)
 
-def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str, case_id: str, warn_count: int, duration: str):
+        if opt.value == "custom" and custom_text:
+            cleaned_text = custom_text.replace("\n", " ").strip()
+            display_text = (cleaned_text[:50] + "...") if len(cleaned_text) > 50 else cleaned_text
+            label = f"Custom: {display_text}"
+            description = "Click to modify your custom reason"
+
+        new_options.append(
+            discord.SelectOption(
+                label=label, value=opt.value, description=description,
+                default=is_default
+            )
+        )
+    return new_options
+
+def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str, case_id: str, warn_count: int, duration: str, action_verb: str):
     """Generates the visual embed mimicking Sapphire"""
     now = discord.utils.utcnow()
     # Sapphire typically expires in 7 days
@@ -84,21 +98,28 @@ def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str
     
     mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
 
-    desc_lines = [
-        f"> **{member.mention} ({member.display_name})** has been warned!",
-        f"> **Reason:** {reason}",
-        f"> **Duration:** {duration}",
-        f"> **Count:** {warn_count}",
-        f"> **Responsible:** {mod.mention} ({mod_role_name})",
-        f"> Automatically expires <t:{expiry_ts}:R>",
-        f"> **Proof:** Verified (Log System)",
-        "> ",
-        "> **For Sub Members**: Please double check our <#783677194576330792> channel.",
-        "> **For Free Members**: Kindly refer to our <#755522711492493342> channel."
-    ]
+    if action_verb.upper() in ["KICKED", "BANNED"]:
+        desc_lines = [
+            f"> **{member.mention} ({member.display_name})** has been {action_verb.lower()}!",
+            f"> **Reason:** {reason}",
+            f"> **Responsible:** {mod.mention} ({mod_role_name})",
+        ]
+    else:
+        desc_lines = [
+            f"> **{member.mention} ({member.display_name})** has been {action_verb.lower()}!",
+            f"> **Reason:** {reason}",
+            f"> **Duration:** {duration}",
+            f"> **Count:** {warn_count}",
+            f"> **Responsible:** {mod.mention} ({mod_role_name})",
+            f"> Automatically expires <t:{expiry_ts}:R>",
+            f"> **Proof:** Verified (Log System)",
+            "> ",
+            "> **For Sub Members**: Please double check our <#783677194576330792> channel.",
+            "> **For Free Members**: Kindly refer to our <#755522711492493342> channel."
+        ]
 
     embed = discord.Embed(
-        title=f"**Warning Case ID: {case_id}**",
+        title=f"**{action_verb.title()} Case ID: {case_id}**",
         description="\n".join(desc_lines),
         color=0xff0000,
         timestamp=now
@@ -146,9 +167,28 @@ class DurationSelect(discord.ui.Select):
             self.parent_view.selected_duration = self.values[0]
         await self.parent_view.refresh_state(interaction)
 
+class CustomReasonModal(discord.ui.Modal, title="Custom Punishment Reason"):
+    reason_input = discord.ui.TextInput(
+        label="Reason",
+        placeholder="Enter the specific reason for this action...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        min_length=5,
+        max_length=500
+    )
+
+    def __init__(self, parent_view):
+        super().__init__()
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.parent_view.selected_reason = "custom"
+        self.parent_view.custom_reason_text = self.reason_input.value
+        await self.parent_view.refresh_state(interaction)
+
 class ReasonSelect(discord.ui.Select):
-    def __init__(self, parent_view, current_reason):
-        options = _build_options_with_default(REASON_OPTIONS, current_reason)
+    def __init__(self, parent_view, current_reason, custom_text=None):
+        options = _build_options_with_default(REASON_OPTIONS, current_reason, custom_text)
         super().__init__(
             placeholder="3. Select Reason",
             min_values=1,
@@ -160,8 +200,13 @@ class ReasonSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if self.values:
-            self.parent_view.selected_reason = self.values[0]
-        await self.parent_view.refresh_state(interaction)
+            selected = self.values[0]
+            if selected == "custom":
+                await interaction.response.send_modal(CustomReasonModal(self.parent_view))
+            else:
+                self.parent_view.selected_reason = selected
+                self.parent_view.custom_reason_text = None
+                await self.parent_view.refresh_state(interaction)
 
 class ConfirmButton(discord.ui.Button):
     def __init__(self, parent_view, label, style, disabled):
@@ -177,7 +222,7 @@ class CancelButton(discord.ui.Button):
         self.parent_view = parent_view
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(content="❌ Action cancelled.", view=None)
+        await interaction.response.edit_message(content="Action cancelled.", view=None)
         self.parent_view.stop()
 
 # --- REFACTORED BUILDER VIEW ---
@@ -192,6 +237,7 @@ class PunishmentBuilderView(discord.ui.View):
         self.selected_member: discord.Member | discord.User | None = None
         self.selected_duration: str = "3d"
         self.selected_reason: str = "rule_2"
+        self.custom_reason_text: str | None = None
         
         # Initial render
         self._update_components()
@@ -208,7 +254,7 @@ class PunishmentBuilderView(discord.ui.View):
             self.add_item(DurationSelect(self, self.selected_duration))
 
         # 3. Reason Select
-        self.add_item(ReasonSelect(self, self.selected_reason))
+        self.add_item(ReasonSelect(self, self.selected_reason, self.custom_reason_text))
 
         # 4. Confirm & Cancel Buttons
         can_submit = self.selected_member is not None
@@ -224,20 +270,32 @@ class PunishmentBuilderView(discord.ui.View):
         self.add_item(CancelButton(self))
 
     async def refresh_state(self, interaction: discord.Interaction):
-        """Called by children to update the view."""
+        """Called by children to update the view state and message."""
         self._update_components()
-        await interaction.response.edit_message(view=self)
+        
+        # Use edit_original_response if the interaction has already been responded to (e.g. Modal)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=self)
+        else:
+            await interaction.response.edit_message(view=self)
 
     async def execute_punishment(self, interaction: discord.Interaction):
         """Pass execution to the Cog for cleaner logic."""
         cog = interaction.client.get_cog("FlightLoggerCog")
         if not cog:
-            return await interaction.response.send_message("❌ Error: FlightLoggerCog not found.", ephemeral=True)
+            return await interaction.response.send_message("Error: FlightLoggerCog not found.", ephemeral=True)
 
-        await interaction.response.defer(ephemeral=True)
+        # Disable EVERYTHING in the builder view to prevent double-click
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
 
         target = self.selected_member
-        reason_text = REASON_TEMPLATES.get(self.selected_reason, DEFAULT_REASON_TEXT)
+        
+        if self.selected_reason == "custom" and self.custom_reason_text:
+            reason_text = self.custom_reason_text
+        else:
+            reason_text = REASON_TEMPLATES.get(self.selected_reason, DEFAULT_REASON_TEXT)
         
         await cog._execute_punishment_internal(
             interaction,
@@ -297,30 +355,44 @@ class TravelerActionView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
-    @discord.ui.button(label="Admit", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>", custom_id="fl_admit")
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>", custom_id="fl_admit")
     async def confirm_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return  # Stale interaction, silently ignore
         ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
-        msg = f"<:Cho_Check:1456715827213504593> **{ign or 'Visitor'}** is cleared for entry."
+        msg = f"**{ign or 'Visitor'}** is cleared for entry."
         await self._resolve_alert(interaction, "AUTHORIZED", 0x2ECC71, msg)
         await interaction.followup.send(msg, ephemeral=True)
 
     @discord.ui.button(label="Warn", style=discord.ButtonStyle.primary, emoji="<:Cho_Warn:1456712416271405188>", custom_id="fl_warn")
     async def warn_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
         view = PunishmentBuilderView("WARN", self, log_message=interaction.message)
-        await interaction.response.send_message("🔍 **Build Warning:**", view=view, ephemeral=True)
+        await interaction.followup.send("<:Cho_Warn:1456712416271405188> **Build Warning:**", view=view, ephemeral=True)
 
-    @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary, emoji="🦵", custom_id="fl_kick")
+    @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary, emoji="<:Cho_Kick:1456714701630214349>", custom_id="fl_kick")
     async def kick_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
         view = PunishmentBuilderView("KICK", self, log_message=interaction.message)
-        await interaction.response.send_message("🥾 **Build Kick:**", view=view, ephemeral=True)
+        await interaction.followup.send("<:Cho_Kick:1456714701630214349> **Build Kick:**", view=view, ephemeral=True)
 
     @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="<:Cho_Kick:1456714701630214349>", custom_id="fl_ban")
     async def ban_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
         view = PunishmentBuilderView("BAN", self, log_message=interaction.message)
-        await interaction.response.send_message("🔨 **Build Ban:**", view=view, ephemeral=True)
-
-
+        await interaction.followup.send("🔨 **Build Ban:**", view=view, ephemeral=True)
+    
 class FlightLoggerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -343,9 +415,13 @@ class FlightLoggerCog(commands.Cog):
                          (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp())))
         await db.commit()
 
-    async def get_warn_count(self, user_id, guild_id):
+    async def get_warn_count(self, user_id: int, guild_id: int, days: int = 3):
         db = await self._get_db()
-        cursor = await db.execute("SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+        cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ? AND timestamp > ?",
+            (user_id, guild_id, cutoff)
+        )
         row = await cursor.fetchone()
         return row[0] if row else 0
 
@@ -375,7 +451,23 @@ class FlightLoggerCog(commands.Cog):
         try:
             # 2. DM Notification
             try:
-                await target.send(f"**{action_verb.title()} Notification**\nYou have been {action_verb.lower()} from **{guild.name}**.\nReason: {reason_text}")
+                emoji = ""
+                if action_type == "BAN": emoji = "<:Cho_Kick:1456714701630214349> "
+                elif action_type == "KICK": emoji = "🦵 "
+                elif action_type == "WARN": emoji = ""
+
+                dm_embed = discord.Embed(
+                    title=f"{emoji} Chobot Notification",
+                    description=f"You have been **{action_verb.lower()}** from **{guild.name}**.",
+                    color=color,
+                    timestamp=discord.utils.utcnow()
+                )
+                dm_embed.add_field(name="Reason", value=reason_text, inline=False)
+                dm_embed.set_footer(text=f"Case ID: {case_id}")
+                if guild.icon:
+                    dm_embed.set_thumbnail(url=guild.icon.url)
+
+                await target.send(embed=dm_embed)
             except discord.HTTPException:
                 pass # DM Closed
 
@@ -387,10 +479,11 @@ class FlightLoggerCog(commands.Cog):
 
             # 4. Database Log
             await self.add_warning(target.id, guild.id, reason_text, mod.id)
-            new_count = await self.get_warn_count(target.id, guild.id)
+            # Use small delay to ensure DB consistency (though commit is awaited)
+            new_count = await self.get_warn_count(target.id, guild.id, days=3)
 
             # 5. Log to Sapphire Channel
-            log_embed = create_sapphire_log(target, mod, reason_text, case_id, new_count, final_duration)
+            log_embed = create_sapphire_log(target, mod, reason_text, case_id, new_count, final_duration, action_verb)
             sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
             
             if sub_mod_channel:
@@ -408,14 +501,14 @@ class FlightLoggerCog(commands.Cog):
                 )
 
         except discord.Forbidden:
-            await interaction.followup.send("❌ Permission Denied. Check bot role hierarchy.", ephemeral=True)
+            await interaction.followup.send("Permission Denied. Check bot role hierarchy.", ephemeral=True)
         except Exception as e:
             logger.error(f"Punishment Error: {e}")
-            await interaction.followup.send(f"❌ System Error: {e}", ephemeral=True)
+            await interaction.followup.send(f"System Error: {e}", ephemeral=True)
 
     async def cog_load(self):
         await init_db()
-        self.bot.add_view(TravelerActionView())
+        self.bot.add_view(TravelerActionView(bot=self.bot))
 
     def cog_unload(self):
         self.fetch_islands_task.cancel()
@@ -501,15 +594,13 @@ class FlightLoggerCog(commands.Cog):
         island_opts = self.split_options(" | ".join(chunks[1:])) if len(chunks) > 1 else []
         return ign_opts, island_opts
 
-    def find_matching_members(self, guild, ign_log, island_log):
-        found_members    = []
-        ign_log_clean    = clean_text(ign_log)
-        island_log_clean = clean_text(island_log)
-
+    def find_matching_members(self, guild, ign_log_clean, island_log_clean):
+        found_members = []
         for member in guild.members:
             ign_opts, island_opts = self.parse_member_nick(member.display_name)
             if not ign_opts and not island_opts: continue
-            ign_match    = ign_log_clean in ign_opts
+            
+            ign_match = ign_log_clean in ign_opts
             island_match = island_log_clean in island_opts if island_opts else True
             if ign_match and island_match:
                 found_members.append(member)
@@ -524,7 +615,9 @@ class FlightLoggerCog(commands.Cog):
             ign_raw    = match.group(1).strip()
             island_raw = match.group(2).strip()
             dest_raw   = match.group(3).strip()
-            found = self.find_matching_members(message.guild, ign_raw, island_raw)
+            ign_clean = clean_text(ign_raw)
+            isl_clean = clean_text(island_raw)
+            found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_clean, isl_clean)
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
 
     async def log_result(self, found_members, status, ign, island, destination):

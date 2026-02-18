@@ -124,7 +124,7 @@ async def run_discord(data_manager: DataManager):
 # ============================================================================
 def main():
     logger.info("=" * 70)
-    logger.info("UNIFIED BOT APPLICATION STARTING")
+    logger.info("CHOBOT STARTING")
     logger.info("=" * 70)
 
     # Validate configuration
