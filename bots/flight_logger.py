@@ -704,6 +704,7 @@ class FlightLoggerCog(commands.Cog):
 
                         # Trigger the log result
                         await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
+                        logger.info(f"[RECOVER] Processed item #{processed_count} - {ign_raw}")
 
                         processed_count += 1
                         await asyncio.sleep(1.5)
