@@ -403,6 +403,7 @@ class FlightLoggerCog(commands.Cog):
             re.IGNORECASE
         )
         self._db_conn = None
+        self.last_processed = None
         self.fetch_islands_task.start()
 
     async def _get_db(self):
@@ -660,6 +661,140 @@ class FlightLoggerCog(commands.Cog):
 
             view = TravelerActionView(self.bot, ign)
             await output_channel.send(embed=embed, view=view)
+
+    @commands.command(name="recoverflights")
+    @commands.has_permissions(administrator=True)
+    async def recover_flights(self, ctx, hours: int = 48, mode: str = "dry"):
+        """
+        Scrapes past logs chronologically (Oldest -> Newest).
+        Usage: !recoverflights [hours_back] [dry/run]
+        """
+        listen_channel = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
+        if not listen_channel:
+            return await ctx.send(f"[ERR] Listener channel {Config.FLIGHT_LISTEN_CHANNEL_ID} not found.")
+
+        dry_run = mode.lower() != "run"
+        status_header = f"Scanning history for the last **{hours} hours**..."
+        status_mode = "DRY RUN" if dry_run else "LIVE EXECUTION"
+        status_msg = await ctx.send(f"**{status_header}**\nMode: {status_mode}")
+
+        cutoff = discord.utils.utcnow() - datetime.timedelta(hours=hours)
+        found_count = 0
+        processed_count = 0
+
+        # oldest_first=True ensures logs are posted in the order they happened (Past -> Present)
+        async for message in listen_channel.history(after=cutoff, limit=None, oldest_first=True):
+            if message.author == self.bot.user:
+                continue
+
+            match = self.join_pattern.search(message.content)
+            if match:
+                found_count += 1
+
+                if not dry_run:
+                    try:
+                        ign_raw    = match.group(1).strip()
+                        island_raw = match.group(2).strip()
+                        dest_raw   = match.group(3).strip()
+
+                        ign_clean = clean_text(ign_raw)
+                        isl_clean = clean_text(island_raw)
+
+                        found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_clean, isl_clean)
+
+                        # Trigger the log result
+                        await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
+
+                        processed_count += 1
+                        await asyncio.sleep(1.5)
+                    except Exception as e:
+                        logger.error(f"[RECOVER] Failed to process message {message.id}: {e}")
+
+        if dry_run:
+            await status_msg.edit(content=f"**Scan Complete (Dry Run)**\nFound: {found_count} matches.\n\nCommand to execute:\n`!recoverflights {hours} run`")
+        else:
+            await status_msg.edit(content=f"**Recovery Complete**\nProcessed: {processed_count} flights.")
+
+    @commands.command(name="flightstatus", aliases=["fstatus"])
+    @commands.has_permissions(manage_messages=True)
+    async def flight_status(self, ctx):
+        """Diagnose connection, channels, and last activity."""
+
+        listen_chan = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
+        log_chan = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
+
+        lines = []
+
+        # Listener Status
+        if listen_chan:
+            perms = listen_chan.permissions_for(ctx.guild.me)
+            if perms.read_messages:
+                lines.append(f"[OK] Listener Channel: {listen_chan.name}")
+            else:
+                lines.append(f"[WARN] Listener Channel: {listen_chan.name} (No Read Access)")
+        else:
+            lines.append(f"[ERR] Listener Channel: Missing (ID: {Config.FLIGHT_LISTEN_CHANNEL_ID})")
+
+        # Log Output Status
+        if log_chan:
+            perms = log_chan.permissions_for(ctx.guild.me)
+            if perms.send_messages:
+                lines.append(f"[OK] Log Channel: {log_chan.name}")
+            else:
+                lines.append(f"[WARN] Log Channel: {log_chan.name} (No Send Access)")
+        else:
+            lines.append(f"[ERR] Log Channel: Missing (ID: {Config.FLIGHT_LOG_CHANNEL_ID})")
+
+        # Database Status
+        if self._db_conn:
+            lines.append("[OK] Database: Connected")
+        else:
+            lines.append("[WARN] Database: Disconnected (Connects on write)")
+
+        # Last Activity
+        if self.last_processed:
+            ts = int(self.last_processed.timestamp())
+            lines.append(f"[INFO] Last Flight: <t:{ts}:R>")
+        else:
+            lines.append("[INFO] Last Flight: None since restart")
+
+        embed = discord.Embed(
+            title="System Status",
+            description="```ini\n" + "\n".join(lines) + "\n```",
+            color=0x2b2d31  # Dark/Neutral
+        )
+        await ctx.send(embed=embed)
+
+    @commands.command(name="flightdebug", aliases=["fdebug"])
+    @commands.has_permissions(manage_messages=True)
+    async def flight_debug(self, ctx, *, test_string: str = None):
+        """
+        Test the regex against a raw message string.
+        Usage: !fdebug [Dodo Code Message]
+        """
+        if not test_string:
+            return await ctx.send("**Usage:** `!fdebug [Message Content]`")
+
+        match = self.join_pattern.search(test_string)
+
+        if match:
+            ign = match.group(1).strip()
+            island = match.group(2).strip()
+            dest = match.group(3).strip()
+
+            embed = discord.Embed(title="Regex Match Successful", color=0x2b2d31)
+            embed.add_field(name="IGN", value=f"`{ign}`")
+            embed.add_field(name="Island", value=f"`{island}`")
+            embed.add_field(name="Destination", value=f"`{dest}`")
+            await ctx.send(embed=embed)
+        else:
+            embed = discord.Embed(title="Regex Match Failed", color=0xff0000)
+            embed.description = (
+                "Input did not match pattern.\n"
+                "**Check:** Format changes, hidden characters, or case sensitivity."
+            )
+            embed.add_field(name="Current Pattern", value=f"```regex\n{self.join_pattern.pattern}\n```", inline=False)
+            await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(FlightLoggerCog(bot))
