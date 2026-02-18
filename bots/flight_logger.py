@@ -971,7 +971,7 @@ class FlightLoggerCog(commands.Cog):
         try:
             dm_embed = discord.Embed(
                 title="<:Cho_Check:1456715827213504593> Chobot Notification",
-                description=f"All warnings ({removed_count}) have been removed from your account in **{guild.name}**.",
+                description=f"All {removed_count} warning(s) have been removed from your account in **{guild.name}**.",
                 color=COLOR_SUCCESS,
                 timestamp=discord.utils.utcnow()
             )
@@ -985,7 +985,7 @@ class FlightLoggerCog(commands.Cog):
             pass  # DM closed
 
         # Log to sub-mod channel (green embed similar to Sapphire style)
-        log_embed = self._create_unwarn_log(user, mod, reason, case_id, 0, removed_count)
+        log_embed = self._create_unwarn_log(user, mod, reason, case_id, removed_count, 0)
         sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
         
         if sub_mod_channel:
@@ -999,7 +999,7 @@ class FlightLoggerCog(commands.Cog):
         else:
             await ctx_or_interaction.send(msg)
 
-    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, warn_count: int, removed_count: int = 0):
+    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, removed_count: int, warn_count: int = 0):
         """Creates a green log embed for unwarn action."""
         now = discord.utils.utcnow()
         mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
