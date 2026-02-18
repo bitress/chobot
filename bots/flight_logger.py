@@ -235,8 +235,8 @@ class PunishmentBuilderView(discord.ui.View):
         self.log_message = log_message
 
         self.selected_member: discord.Member | discord.User | None = None
-        self.selected_duration: str = "3d"
-        self.selected_reason: str = "rule_2"
+        self.selected_duration: str | None = None
+        self.selected_reason: str | None = None
         self.custom_reason_text: str | None = None
         
         # Initial render
@@ -253,7 +253,12 @@ class PunishmentBuilderView(discord.ui.View):
         self.add_item(ReasonSelect(self, self.selected_reason, self.custom_reason_text))
 
         # 4. Confirm & Cancel Buttons
-        can_submit = self.selected_member is not None
+        # Submission restricted until all required fields are filled
+        has_member = self.selected_member is not None
+        has_reason = self.selected_reason is not None
+        has_duration = self.selected_duration is not None or self.action_type != "WARN"
+
+        can_submit = has_member and has_reason and has_duration
         
         if self.selected_member:
             target_name = getattr(self.selected_member, "display_name", str(self.selected_member))
@@ -380,14 +385,14 @@ class TravelerActionView(discord.ui.View):
         view = PunishmentBuilderView("KICK", self, log_message=interaction.message)
         await interaction.followup.send("<:Cho_Kick:1456714701630214349> **Build Kick:**", view=view, ephemeral=True)
 
-    @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="<:Cho_Kick:1456714701630214349>", custom_id="fl_ban")
+    @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="<:Cho_Ban:1473530840725061793>", custom_id="fl_ban")
     async def ban_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return
         view = PunishmentBuilderView("BAN", self, log_message=interaction.message)
-        await interaction.followup.send("🔨 **Build Ban:**", view=view, ephemeral=True)
+        await interaction.followup.send("<:Cho_Ban:1473530840725061793> **Build Ban:**", view=view, ephemeral=True)
     
 class FlightLoggerCog(commands.Cog):
     def __init__(self, bot):
@@ -460,7 +465,7 @@ class FlightLoggerCog(commands.Cog):
             # 2. DM Notification
             try:
                 emoji = ""
-                if action_type == "BAN": emoji = "<:Cho_Kick:1456714701630214349> "
+                if action_type == "BAN": emoji = "<:Cho_Ban:1473530840725061793> "
                 elif action_type == "KICK": emoji = "<:Cho_Kick:1456714701630214349> "
                 elif action_type == "WARN": emoji = "<:Cho_Warn:1456712416271405188> "
 
