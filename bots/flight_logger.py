@@ -526,6 +526,23 @@ class FlightLoggerCog(commands.Cog):
             return {"reason": reason, "mod_id": mod_id, "timestamp": timestamp}
         return None
 
+    async def remove_all_warnings(self, user_id: int, guild_id: int):
+        """Remove all warnings for a user and return the count removed."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ?",
+            (user_id, guild_id)
+        )
+        row = await cursor.fetchone()
+        count = row[0] if row else 0
+        if count > 0:
+            await db.execute(
+                "DELETE FROM warnings WHERE user_id = ? AND guild_id = ?",
+                (user_id, guild_id)
+            )
+            await db.commit()
+        return count
+
     async def get_warnings(self, user_id: int, guild_id: int, days: int = 30):
         """Get all warnings for a user within the specified number of days."""
         db = await self._get_db()
@@ -909,17 +926,17 @@ class FlightLoggerCog(commands.Cog):
             embed.add_field(name="Current Pattern", value=f"```regex\n{self.join_pattern.pattern}\n```", inline=False)
             await ctx.send(embed=embed)
 
-    @app_commands.command(name="unwarn", description="Remove the most recent warning from a user")
+    @app_commands.command(name="unwarn", description="Remove all warnings from a user")
     @app_commands.describe(user="The user to unwarn", reason="Reason for removing the warning (optional)")
     @app_commands.checks.has_permissions(manage_messages=True)
     async def unwarn_slash(self, interaction: discord.Interaction, user: discord.Member, reason: str = None):
-        """Remove the most recent warning from a user (slash command)."""
+        """Remove all warnings from a user (slash command)."""
         await self._unwarn_internal(interaction, user, reason, is_slash=True)
 
     @commands.command(name="unwarn", aliases=["removewarn"])
     @commands.has_permissions(manage_messages=True)
     async def unwarn_prefix(self, ctx, member: discord.Member, *, reason: str = None):
-        """Remove the most recent warning from a user (prefix command)."""
+        """Remove all warnings from a user (prefix command)."""
         await self._unwarn_internal(ctx, member, reason, is_slash=False)
 
     async def _unwarn_internal(self, ctx_or_interaction, user: discord.Member, reason: str = None, is_slash: bool = True):
@@ -935,19 +952,16 @@ class FlightLoggerCog(commands.Cog):
 
         reason = reason or "No reason provided"
 
-        # Remove the latest warning
-        removed_warning = await self.remove_latest_warning(user.id, guild.id)
+        # Remove all warnings
+        removed_count = await self.remove_all_warnings(user.id, guild.id)
         
-        if not removed_warning:
+        if removed_count == 0:
             msg = f"⚠️ **{user.display_name}** has no warnings to remove."
             if is_slash:
                 await ctx_or_interaction.followup.send(msg, ephemeral=True)
             else:
                 await ctx_or_interaction.send(msg)
             return
-
-        # Get new warning count
-        new_count = await self.get_warn_count(user.id, guild.id, days=3)
 
         # Generate case ID
         now = discord.utils.utcnow()
@@ -957,7 +971,7 @@ class FlightLoggerCog(commands.Cog):
         try:
             dm_embed = discord.Embed(
                 title="<:Cho_Check:1456715827213504593> Chobot Notification",
-                description=f"A warning has been removed from your account in **{guild.name}**.",
+                description=f"All warnings ({removed_count}) have been removed from your account in **{guild.name}**.",
                 color=COLOR_SUCCESS,
                 timestamp=discord.utils.utcnow()
             )
@@ -971,21 +985,21 @@ class FlightLoggerCog(commands.Cog):
             pass  # DM closed
 
         # Log to sub-mod channel (green embed similar to Sapphire style)
-        log_embed = self._create_unwarn_log(user, mod, reason, case_id, new_count)
+        log_embed = self._create_unwarn_log(user, mod, reason, case_id, 0, removed_count)
         sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
         
         if sub_mod_channel:
             await sub_mod_channel.send(content=user.mention, embed=log_embed)
-            msg = f"✅ Case `{case_id}` logged in {sub_mod_channel.mention}"
+            msg = f"✅ Case `{case_id}`: Removed {removed_count} warning(s), logged in {sub_mod_channel.mention}"
         else:
-            msg = f"✅ Warning removed (Case `{case_id}`), but log channel is missing."
+            msg = f"✅ Removed {removed_count} warning(s) (Case `{case_id}`), but log channel is missing."
 
         if is_slash:
             await ctx_or_interaction.followup.send(msg, ephemeral=True)
         else:
             await ctx_or_interaction.send(msg)
 
-    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, warn_count: int):
+    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, warn_count: int, removed_count: int = 0):
         """Creates a green log embed for unwarn action."""
         now = discord.utils.utcnow()
         mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
@@ -993,7 +1007,8 @@ class FlightLoggerCog(commands.Cog):
         desc_lines = [
             f"> **{member.mention} ({member.display_name})** has been unwarned!",
             f"> **Reason:** {reason}",
-            f"> **New Count:** {warn_count}",
+            f"> **Warnings Removed:** {removed_count}",
+            f"> **Remaining Count:** {warn_count}",
             f"> **Responsible:** {mod.mention} ({mod_role_name})",
         ]
         
