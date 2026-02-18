@@ -6,7 +6,6 @@
   <component name="ChangeListManager">
     <list default="true" id="be65bb5b-cc74-461e-8936-5f0bb88df9aa" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/bots/flight_logger.py" beforeDir="false" afterPath="$PROJECT_DIR$/bots/flight_logger.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -63,7 +62,7 @@
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "master",
+    "git-widget-placeholder": "copilot/add-remove-all-warnings-method",
     "last_opened_file_path": "C:/Users/bitress/PycharmProjects/chobot",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
