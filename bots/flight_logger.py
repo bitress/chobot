@@ -11,6 +11,7 @@ import asyncio
 import aiosqlite  # Requires: pip install aiosqlite
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, UserSelect, Select, button
 from utils.config import Config
@@ -309,6 +310,31 @@ class PunishmentBuilderView(discord.ui.View):
         )
         self.stop()
 
+
+class AdmitConfirmView(discord.ui.View):
+    """Confirmation dialog for admitting a traveler."""
+    def __init__(self, parent_view: "TravelerActionView", ign: str, interaction_message: discord.Message):
+        super().__init__(timeout=300)
+        self.parent_view = parent_view
+        self.ign = ign
+        self.interaction_message = interaction_message
+
+    @discord.ui.button(label="Yes, Admit", style=discord.ButtonStyle.success)
+    async def confirm_admit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Proceed with admission."""
+        msg = f"**{self.ign or 'Visitor'}** is cleared for entry."
+        await self.parent_view._resolve_alert(
+            interaction, "AUTHORIZED", 0x2ECC71, msg, log_message=self.interaction_message
+        )
+        await interaction.response.edit_message(content=msg, view=None)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_admit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Cancel admission."""
+        await interaction.response.edit_message(content="Admission cancelled.", view=None)
+        self.stop()
+
         
 class TravelerActionView(discord.ui.View):
     def __init__(self, bot=None, ign=None):
@@ -356,18 +382,59 @@ class TravelerActionView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>", custom_id="fl_admit")
+    @discord.ui.button(label="Admit", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>", custom_id="fl_admit", row=0)
     async def confirm_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return  # Stale interaction, silently ignore
         ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
-        msg = f"**{ign or 'Visitor'}** is cleared for entry."
-        await self._resolve_alert(interaction, "AUTHORIZED", 0x2ECC71, msg)
-        await interaction.followup.send(msg, ephemeral=True)
+        # Show confirmation dialog
+        confirm_view = AdmitConfirmView(self, ign, interaction.message)
+        await interaction.followup.send(
+            f"Are you sure you want to admit **{ign or 'Visitor'}**?",
+            view=confirm_view,
+            ephemeral=True
+        )
 
-    @discord.ui.button(label="Warn", style=discord.ButtonStyle.primary, emoji="<:Cho_Warn:1456712416271405188>", custom_id="fl_warn")
+    @discord.ui.button(label="Investigate", style=discord.ButtonStyle.secondary, emoji="<:AmongUs_Investigate:784046584299257857>", custom_id="fl_investigate", row=0)
+    async def investigate_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return  # Stale interaction, silently ignore
+        
+        ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
+        mod = interaction.user
+        timestamp = int(discord.utils.utcnow().timestamp())
+        
+        try:
+            message_to_edit = interaction.message
+            embed = message_to_edit.embeds[0]
+            
+            # Update color to amber/yellow
+            embed.color = 0xF1C40F
+            
+            # Update author to show investigation status
+            embed.set_author(name="🔍 UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
+            
+            # Add investigation field
+            embed.add_field(
+                name="🔍 Investigating",
+                value=f"**{mod.mention}** is looking into this. Started <t:{timestamp}:R>",
+                inline=False
+            )
+            
+            # Disable only the Investigate button
+            button.disabled = True
+            
+            await message_to_edit.edit(embed=embed, view=self)
+            await interaction.followup.send("🔍 Marked as under investigation.", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error marking as under investigation: {e}")
+            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
+    @discord.ui.button(label="Warn", style=discord.ButtonStyle.primary, emoji="<:Cho_Warn:1456712416271405188>", custom_id="fl_warn", row=1)
     async def warn_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
@@ -376,7 +443,7 @@ class TravelerActionView(discord.ui.View):
         view = PunishmentBuilderView("WARN", self, log_message=interaction.message)
         await interaction.followup.send("<:Cho_Warn:1456712416271405188> **Build Warning:**", view=view, ephemeral=True)
 
-    @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary, emoji="<:Cho_Kick:1456714701630214349>", custom_id="fl_kick")
+    @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary, emoji="<:Cho_Kick:1456714701630214349>", custom_id="fl_kick", row=1)
     async def kick_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
@@ -385,7 +452,7 @@ class TravelerActionView(discord.ui.View):
         view = PunishmentBuilderView("KICK", self, log_message=interaction.message)
         await interaction.followup.send("<:Cho_Kick:1456714701630214349> **Build Kick:**", view=view, ephemeral=True)
 
-    @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="<:Cho_Ban:1473530840725061793>", custom_id="fl_ban")
+    @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="<:Cho_Ban:1473530840725061793>", custom_id="fl_ban", row=1)
     async def ban_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
@@ -426,6 +493,32 @@ class FlightLoggerCog(commands.Cog):
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
+
+    async def remove_latest_warning(self, user_id: int, guild_id: int):
+        """Remove the most recent warning for a user and return its details."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT rowid, reason, mod_id, timestamp FROM warnings WHERE user_id = ? AND guild_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (user_id, guild_id)
+        )
+        row = await cursor.fetchone()
+        if row:
+            rowid, reason, mod_id, timestamp = row
+            await db.execute("DELETE FROM warnings WHERE rowid = ?", (rowid,))
+            await db.commit()
+            return {"reason": reason, "mod_id": mod_id, "timestamp": timestamp}
+        return None
+
+    async def get_warnings(self, user_id: int, guild_id: int, days: int = 30):
+        """Get all warnings for a user within the specified number of days."""
+        db = await self._get_db()
+        cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
+        cursor = await db.execute(
+            "SELECT reason, mod_id, timestamp FROM warnings WHERE user_id = ? AND guild_id = ? AND timestamp > ? ORDER BY timestamp DESC",
+            (user_id, guild_id, cutoff)
+        )
+        rows = await cursor.fetchall()
+        return [{"reason": r[0], "mod_id": r[1], "timestamp": r[2]} for r in rows]
 
     async def _execute_punishment_internal(self, interaction, target, action_type, reason_text, duration_str, original_view, log_message):
         """Unified internal method for handling moderation actions."""
@@ -796,6 +889,176 @@ class FlightLoggerCog(commands.Cog):
             )
             embed.add_field(name="Current Pattern", value=f"```regex\n{self.join_pattern.pattern}\n```", inline=False)
             await ctx.send(embed=embed)
+
+    @app_commands.command(name="unwarn", description="Remove the most recent warning from a user")
+    @app_commands.describe(user="The user to unwarn", reason="Reason for removing the warning (optional)")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def unwarn_slash(self, interaction: discord.Interaction, user: discord.Member, reason: str = None):
+        """Remove the most recent warning from a user (slash command)."""
+        await self._unwarn_internal(interaction, user, reason, is_slash=True)
+
+    @commands.command(name="unwarn", aliases=["removewarn"])
+    @commands.has_permissions(manage_messages=True)
+    async def unwarn_prefix(self, ctx, member: discord.Member, *, reason: str = None):
+        """Remove the most recent warning from a user (prefix command)."""
+        await self._unwarn_internal(ctx, member, reason, is_slash=False)
+
+    async def _unwarn_internal(self, ctx_or_interaction, user: discord.Member, reason: str = None, is_slash: bool = True):
+        """Internal method for unwarn logic."""
+        # Handle both slash and prefix commands
+        if is_slash:
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            guild = ctx_or_interaction.guild
+            mod = ctx_or_interaction.user
+        else:
+            guild = ctx_or_interaction.guild
+            mod = ctx_or_interaction.author
+
+        reason = reason or "No reason provided"
+
+        # Remove the latest warning
+        removed_warning = await self.remove_latest_warning(user.id, guild.id)
+        
+        if not removed_warning:
+            msg = f"⚠️ **{user.display_name}** has no warnings to remove."
+            if is_slash:
+                await ctx_or_interaction.followup.send(msg, ephemeral=True)
+            else:
+                await ctx_or_interaction.send(msg)
+            return
+
+        # Get new warning count
+        new_count = await self.get_warn_count(user.id, guild.id, days=3)
+
+        # Restore island access role if user doesn't have it
+        visitor_role = guild.get_role(Config.ISLAND_ACCESS_ROLE)
+        if visitor_role and visitor_role not in user.roles:
+            try:
+                await user.add_roles(visitor_role, reason=f"Unwarn: {reason}")
+                logger.info(f"[FLIGHT] Restored role {visitor_role.name} to {user.display_name}")
+            except discord.Forbidden:
+                logger.error(f"[FLIGHT] Permission Denied: Cannot add role to {user.display_name}")
+            except Exception as e:
+                logger.error(f"[FLIGHT] Error adding role: {e}")
+
+        # Generate case ID
+        now = discord.utils.utcnow()
+        case_id = f"FL-{now.strftime('%y%m')}-{hex(int(now.timestamp()))[2:][-4:].upper()}"
+
+        # DM the user
+        try:
+            dm_embed = discord.Embed(
+                title="<:Cho_Check:1456715827213504593> Chobot Notification",
+                description=f"A warning has been removed from your account in **{guild.name}**.",
+                color=0x2ECC71,
+                timestamp=discord.utils.utcnow()
+            )
+            dm_embed.add_field(name="Reason for Removal", value=reason, inline=False)
+            dm_embed.set_footer(text=f"Case ID: {case_id}")
+            if guild.icon:
+                dm_embed.set_thumbnail(url=guild.icon.url)
+            
+            await user.send(embed=dm_embed)
+        except discord.HTTPException:
+            pass  # DM closed
+
+        # Log to sub-mod channel (green embed similar to Sapphire style)
+        log_embed = self._create_unwarn_log(user, mod, reason, case_id, new_count)
+        sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
+        
+        if sub_mod_channel:
+            await sub_mod_channel.send(content=user.mention, embed=log_embed)
+            msg = f"✅ Case `{case_id}` logged in {sub_mod_channel.mention}"
+        else:
+            msg = f"✅ Warning removed (Case `{case_id}`), but log channel is missing."
+
+        if is_slash:
+            await ctx_or_interaction.followup.send(msg, ephemeral=True)
+        else:
+            await ctx_or_interaction.send(msg)
+
+    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, warn_count: int):
+        """Creates a green log embed for unwarn action."""
+        now = discord.utils.utcnow()
+        mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
+        
+        desc_lines = [
+            f"> **{member.mention} ({member.display_name})** has been unwarned!",
+            f"> **Reason:** {reason}",
+            f"> **New Count:** {warn_count}",
+            f"> **Responsible:** {mod.mention} ({mod_role_name})",
+        ]
+        
+        embed = discord.Embed(
+            title=f"**Unwarned Case ID: {case_id}**",
+            description="\n".join(desc_lines),
+            color=0x2ECC71,  # Green color
+            timestamp=now
+        )
+        embed.set_thumbnail(url="https://i.ibb.co/HXyRH3R/2668-Siren.gif")
+        embed.set_footer(text=f"Mod: {mod.display_name}", icon_url=mod.display_avatar.url)
+        return embed
+
+    @app_commands.command(name="warnings", description="List recent warnings for a user")
+    @app_commands.describe(user="The user to check", days="Number of days to look back (default: 30)")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def warnings_slash(self, interaction: discord.Interaction, user: discord.Member, days: int = 30):
+        """List warnings for a user (slash command)."""
+        await self._warnings_internal(interaction, user, days, is_slash=True)
+
+    @commands.command(name="warnings", aliases=["warnlist"])
+    @commands.has_permissions(manage_messages=True)
+    async def warnings_prefix(self, ctx, member: discord.Member, days: int = 30):
+        """List warnings for a user (prefix command)."""
+        await self._warnings_internal(ctx, member, days, is_slash=False)
+
+    async def _warnings_internal(self, ctx_or_interaction, user: discord.Member, days: int = 30, is_slash: bool = True):
+        """Internal method for listing warnings."""
+        # Handle both slash and prefix commands
+        if is_slash:
+            await ctx_or_interaction.response.defer(ephemeral=True)
+            guild = ctx_or_interaction.guild
+        else:
+            guild = ctx_or_interaction.guild
+
+        # Get warnings
+        warnings = await self.get_warnings(user.id, guild.id, days)
+        
+        if not warnings:
+            msg = f"✅ **{user.display_name}** has no warnings in the last {days} days."
+            if is_slash:
+                await ctx_or_interaction.followup.send(msg, ephemeral=True)
+            else:
+                await ctx_or_interaction.send(msg)
+            return
+
+        # Build embed
+        embed = discord.Embed(
+            title=f"Warnings for {user.display_name}",
+            description=f"Showing warnings from the last {days} days",
+            color=0xE67E22,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_thumbnail(url=user.display_avatar.url)
+
+        for i, warn in enumerate(warnings, 1):
+            mod_id = warn['mod_id']
+            mod = guild.get_member(mod_id)
+            mod_text = mod.mention if mod else f"ID: {mod_id}"
+            
+            timestamp = warn['timestamp']
+            reason = warn['reason']
+            
+            embed.add_field(
+                name=f"#{i} - <t:{timestamp}:R>",
+                value=f"**Moderator:** {mod_text}\n**Reason:** {reason}",
+                inline=False
+            )
+
+        if is_slash:
+            await ctx_or_interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await ctx_or_interaction.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(FlightLoggerCog(bot))
