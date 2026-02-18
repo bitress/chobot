@@ -205,7 +205,7 @@ Check API health status.
 
 - **Type:** SQLite
 - **File:** `admin/islands.db` (auto-created)
-- **Seeding:** Automatically seeds with 40+ islands on first run
+- **Seeding:** Automatically seeds with 45 islands on first run
 - **Backup:** The database file can be backed up by copying `islands.db`
 
 ## File Structure
