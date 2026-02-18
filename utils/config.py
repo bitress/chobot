@@ -4,31 +4,52 @@ Loads and validates all environment variables
 """
 
 import os
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
 
+if not os.getenv('TWITCH_TOKEN') and os.getenv('\ufeffTWITCH_TOKEN'):
+    for key in list(os.environ.keys()):
+        if key.startswith('\ufeff'):
+            clean_key = key.lstrip('\ufeff')
+            os.environ[clean_key] = os.environ.pop(key)
 
 class Config:
     """Application configuration"""
 
+    @staticmethod
+    def _get_int(key, default=None):
+        """Helper to safely fetch and convert env vars to int"""
+        val = os.getenv(key)
+        if val and val.strip().isdigit():
+            return int(val)
+        return default
+
+    # General Config
     IS_PRODUCTION = os.getenv('IS_PRODUCTION', 'true').lower() == 'true'
 
+    # Auth Tokens
     TWITCH_TOKEN = os.getenv('TWITCH_TOKEN')
     TWITCH_CHANNEL = os.getenv('TWITCH_CHANNEL')
-    
     DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-    GUILD_ID = int(os.getenv('GUILD_ID')) if os.getenv('GUILD_ID') else None
-    CATEGORY_ID = int(os.getenv('SUB_CATEGORY_ID')) if os.getenv('SUB_CATEGORY_ID') else None
-    LOG_CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
-    ISLAND_ACCESS_ROLE = int(os.getenv('ISLAND_ACCESS_ROLE')) if os.getenv('ISLAND_ACCESS_ROLE') else None
 
+    # Discord IDs (Safe Integer Casting)
+    GUILD_ID = _get_int('GUILD_ID')
+    # Note: Using SUB_CATEGORY_ID env var for CATEGORY_ID per your snippet
+    CATEGORY_ID = _get_int('SUB_CATEGORY_ID')
+    # Note: Using CHANNEL_ID env var for LOG_CHANNEL_ID per your snippet
+    LOG_CHANNEL_ID = _get_int('CHANNEL_ID') 
+    ISLAND_ACCESS_ROLE = _get_int('ISLAND_ACCESS_ROLE')
+
+    # Environment Specific Channels
     if IS_PRODUCTION:
-        FLIGHT_LISTEN_CHANNEL_ID = int(os.getenv('FLIGHT_LISTEN_CHANNEL_ID')) if os.getenv('FLIGHT_LISTEN_CHANNEL_ID') else None
-        FLIGHT_LOG_CHANNEL_ID = int(os.getenv('FLIGHT_LOG_CHANNEL_ID')) if os.getenv('FLIGHT_LOG_CHANNEL_ID') else None
-        IGNORE_CHANNEL_ID = int(os.getenv('IGNORE_CHANNEL_ID')) if os.getenv('IGNORE_CHANNEL_ID') else None
-        SUB_MOD_CHANNEL_ID = int(os.getenv('SUB_MOD_CHANNEL_ID')) if os.getenv('SUB_MOD_CHANNEL_ID') else None
+        FLIGHT_LISTEN_CHANNEL_ID = _get_int('FLIGHT_LISTEN_CHANNEL_ID')
+        FLIGHT_LOG_CHANNEL_ID = _get_int('FLIGHT_LOG_CHANNEL_ID')
+        IGNORE_CHANNEL_ID = _get_int('IGNORE_CHANNEL_ID')
+        SUB_MOD_CHANNEL_ID = _get_int('SUB_MOD_CHANNEL_ID')
     else:
+        # Development / Fallback IDs
         FLIGHT_LISTEN_CHANNEL_ID = 1473286697461616732
         FLIGHT_LOG_CHANNEL_ID = 1473286727224524915
         IGNORE_CHANNEL_ID = 809295405128089611
@@ -46,11 +67,13 @@ class Config:
     JSON_KEYFILE = 'service_account.json'
     CACHE_REFRESH_HOURS = 1
 
-    # Villagers & Dodo
+    # Villagers & Dodo Directories
     VILLAGERS_DIR = os.getenv('VILLAGERS_DIR')
     TWITCH_VILLAGERS_DIR = os.getenv('TWITCH_VILLAGERS_DIR')
-    DIR_FREE = os.getenv('TWITCH_VILLAGERS_DIR')
-    DIR_VIP = os.getenv('VILLAGERS_DIR')
+    
+    # Logic: Free users access Twitch dir, VIPs access standard dir
+    DIR_FREE = TWITCH_VILLAGERS_DIR
+    DIR_VIP = VILLAGERS_DIR
 
     # Island Lists
     SUB_ISLANDS = [
@@ -80,7 +103,7 @@ class Config:
 
     @classmethod
     def validate(cls):
-        """Validate required environment variables"""
+        """Validate required environment variables exist and are not empty"""
         required_vars = [
             'TWITCH_TOKEN', 'TWITCH_CHANNEL', 'DISCORD_TOKEN',
             'WORKBOOK_NAME', 'GUILD_ID', 'CATEGORY_ID',
@@ -89,10 +112,13 @@ class Config:
 
         missing = []
         for var in required_vars:
-            if var in ['GUILD_ID', 'CATEGORY_ID']:
-                if getattr(cls, var) is None:
-                    missing.append(var)
-            elif not os.getenv(var):
+            val = getattr(cls, var, None)
+            
+            # Check for None (Missing)
+            if val is None:
+                missing.append(var)
+            # Check for Empty Strings (if it's a string)
+            elif isinstance(val, str) and not val.strip():
                 missing.append(var)
 
         if missing:

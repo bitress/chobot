@@ -10,6 +10,7 @@ from datetime import datetime
 from itertools import cycle
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from thefuzz import process, fuzz
 
@@ -118,6 +119,29 @@ class DiscordCommandCog(commands.Cog):
         self.sub_island_lookup = {}
 
         self.auto_refresh_cache.start()
+
+    async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        """Filter items from cache for autocomplete"""
+        if not current:
+            # Maybe show some defaults or empty?
+            return []
+        
+        with self.data_manager.lock:
+            # Filter out internal keys like _display and _index
+            all_keys = [k for k in self.data_manager.cache.keys() if not k.startswith("_")]
+            display_map = self.data_manager.cache.get("_display", {})
+
+        # Use fuzzy matching to find top matches
+        matches = process.extract(current, all_keys, limit=25, scorer=fuzz.partial_ratio)
+        
+        choices = []
+        for match_key, score in matches:
+            if score > 50:
+                display_name = display_map.get(match_key, match_key.title())
+                # Truncate if too long (Discord limit is 100)
+                choices.append(app_commands.Choice(name=display_name[:100], value=match_key))
+        
+        return choices
 
     async def fetch_islands(self):
         """Fetch island channels from Discord using robust matching"""
@@ -309,7 +333,9 @@ class DiscordCommandCog(commands.Cog):
         await self.bot.wait_until_ready()
         await self.fetch_islands()
 
-    @commands.command(aliases=['locate', 'where', 'lookup', 'lp', 'search'])
+    @commands.hybrid_command(name="find", aliases=['locate', 'where', 'lookup', 'lp', 'search'])
+    @app_commands.describe(item="The name of the item or recipe to find")
+    @app_commands.autocomplete(item=item_autocomplete)
     async def find(self, ctx, *, item: str = ""):
         """Find an item"""
         if not item:
@@ -355,7 +381,8 @@ class DiscordCommandCog(commands.Cog):
         else:
             await ctx.send(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail)
 
-    @commands.command()
+    @commands.hybrid_command(name="villager")
+    @app_commands.describe(name="The name of the villager")
     async def villager(self, ctx, *, name: str = ""):
         """Find a villager"""
         if not name:
@@ -389,7 +416,7 @@ class DiscordCommandCog(commands.Cog):
         suggestions = [(m[0], m[0].title()) for m in matches if m[1] > 75]
         suggestion_display_names = [s[1] for s in suggestions]
 
-        embed_fail = self.create_fail_embed(ctx, search_term, suggestion_display_names)
+        embed_fail = self.create_fail_embed(ctx, search_term, suggestion_display_names, is_villager=True)
 
         if suggestions:
             view = SuggestionView(self, suggestions, "villager", ctx.author.id)
@@ -399,7 +426,7 @@ class DiscordCommandCog(commands.Cog):
 
         logger.info(f"[DISCORD] Villager Miss: {search_term}")
 
-    @commands.command()
+    @commands.hybrid_command(name="status")
     async def status(self, ctx):
         """Show bot status"""
         with self.data_manager.lock:
@@ -415,7 +442,7 @@ class DiscordCommandCog(commands.Cog):
             else:
                 await ctx.send("Database loading...")
 
-    @commands.command()
+    @commands.hybrid_command(name="refresh")
     @commands.has_permissions(administrator=True)
     async def refresh(self, ctx):
         """Manually refresh cache (Mods only)"""
@@ -463,8 +490,18 @@ class DiscordCommandBot(commands.Bot):
         ])
 
     async def setup_hook(self):
-        """Setup bot cogs"""
+        """Setup bot cogs and sync commands"""
         await self.add_cog(DiscordCommandCog(self, self.data_manager))
+
+        if Config.GUILD_ID:
+            guild_obj = discord.Object(id=Config.GUILD_ID)
+            self.tree.copy_global_to(guild=guild_obj)
+            await self.tree.sync(guild=guild_obj)
+            logger.info(f"[DISCORD] Slash commands synced to Guild ID: {Config.GUILD_ID}")
+        else:
+            await self.tree.sync()
+            logger.info("[DISCORD] Slash commands synced globally")
+
         self.change_status_loop.start()
 
     async def on_ready(self):
