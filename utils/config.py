@@ -38,6 +38,9 @@ class Config:
     PATREON_TOKEN = os.getenv("PATREON_TOKEN")
     PATREON_CAMPAIGN_ID = os.getenv("PATREON_CAMPAIGN_ID")
 
+    # Nookipedia
+    NOOKIPEDIA_KEY = os.getenv("NOOKIPEDIA_KEY")
+
     # Google Sheets
     WORKBOOK_NAME = os.getenv('WORKBOOK_NAME')
     JSON_KEYFILE = 'service_account.json'

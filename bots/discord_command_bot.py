@@ -15,6 +15,7 @@ from thefuzz import process, fuzz
 
 from utils.config import Config
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
+from utils.nookipedia import NookipediaClient
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -63,7 +64,11 @@ class SuggestionSelect(discord.ui.Select):
             is_villager = True
 
         if found_locations:
-            embed = self.cog.create_found_embed(interaction, display_name, found_locations, is_villager)
+            nooki_data = None
+            if is_villager:
+                nooki_data = await NookipediaClient.get_villager_info(display_name)
+
+            embed = self.cog.create_found_embed(interaction, display_name, found_locations, is_villager, nooki_data)
 
             if embed:
                 await interaction.response.edit_message(
@@ -165,7 +170,7 @@ class DiscordCommandCog(commands.Cog):
 
         return False
 
-    def create_found_embed(self, ctx_or_interaction, search_term, location_string, is_villager=False):
+    def create_found_embed(self, ctx_or_interaction, search_term, location_string, is_villager=False, nooki_data=None):
 
         user = getattr(ctx_or_interaction, "author", getattr(ctx_or_interaction, "user", None))
         clean_name = search_term.title()
@@ -212,7 +217,29 @@ class DiscordCommandCog(commands.Cog):
 
         search_key = normalize_text(search_term)
 
-        if search_key in self.data_manager.image_cache:
+        # Apply Nookipedia Data if available
+        if is_villager and nooki_data:
+            personality = nooki_data.get("personality", "Unknown")
+            species = nooki_data.get("species", "Unknown")
+            phrase = nooki_data.get("phrase", "None")
+            
+            # NH Details
+            nh = nooki_data.get("nh_details", {}) or {}
+            hobby = nh.get("hobby", "Unknown")
+            colors = ", ".join(nh.get("fav_colors", [])) or "Unknown"
+            
+            embed.set_thumbnail(url=nooki_data.get("image_url", ""))
+            if nh.get("house_img"):
+                embed.set_image(url=nh.get("house_img"))
+            
+            embed.add_field(name=f"{Config.STAR_PINK} Details", 
+                            value=f"**Species:** {species}\n**Personality:** {personality}\n**Catchphrase:** \"{phrase}\"", 
+                            inline=True)
+            embed.add_field(name=f"{Config.STAR_PINK} Faves", 
+                            value=f"**Hobby:** {hobby}\n**Colors:** {colors}", 
+                            inline=True)
+
+        elif search_key in self.data_manager.image_cache:
             embed.set_thumbnail(url=self.data_manager.image_cache[search_key])
 
         full_text = "\n".join(sub_islands_found)
@@ -347,7 +374,8 @@ class DiscordCommandCog(commands.Cog):
         found_locations = villager_map.get(search_term)
 
         if found_locations:
-            embed = self.create_found_embed(ctx, search_term, found_locations, is_villager=True)
+            nooki_data = await NookipediaClient.get_villager_info(search_term)
+            embed = self.create_found_embed(ctx, search_term, found_locations, is_villager=True, nooki_data=nooki_data)
 
             if embed:
                 await ctx.send(content=f"Hey <@{ctx.author.id}>, look who I found!", embed=embed)
