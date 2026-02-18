@@ -969,9 +969,10 @@ class FlightLoggerCog(commands.Cog):
 
         # DM the user
         try:
+            warning_text = "warning has" if removed_count == 1 else "warnings have"
             dm_embed = discord.Embed(
                 title="<:Cho_Check:1456715827213504593> Chobot Notification",
-                description=f"All {removed_count} warning(s) have been removed from your account in **{guild.name}**.",
+                description=f"{removed_count} {warning_text} been removed from your account in **{guild.name}**.",
                 color=COLOR_SUCCESS,
                 timestamp=discord.utils.utcnow()
             )
