@@ -980,7 +980,7 @@ class FlightLoggerCog(commands.Cog):
             pass  # DM closed
 
         # Log to sub-mod channel (green embed similar to Sapphire style)
-        log_embed = self._create_unwarn_log(user, mod, reason, case_id, removed_count, 0)
+        log_embed = self._create_unwarn_log(user, mod, reason, case_id, removed_count)
         sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
         
         if sub_mod_channel:
@@ -994,7 +994,7 @@ class FlightLoggerCog(commands.Cog):
         else:
             await ctx_or_interaction.send(msg)
 
-    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, removed_count: int, warn_count: int = 0):
+    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, removed_count: int):
         """Creates a green log embed for unwarn action.
         
         Args:
@@ -1003,7 +1003,6 @@ class FlightLoggerCog(commands.Cog):
             reason: Reason for the unwarn
             case_id: The case ID for this action
             removed_count: Number of warnings removed
-            warn_count: Remaining warning count (defaults to 0; kept for potential future use if unwarn behavior changes)
         """
         now = discord.utils.utcnow()
         mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
@@ -1012,7 +1011,7 @@ class FlightLoggerCog(commands.Cog):
             f"> **{member.mention} ({member.display_name})** has been unwarned!",
             f"> **Reason:** {reason}",
             f"> **Warnings Removed:** {removed_count}",
-            f"> **Remaining Count:** {warn_count}",
+            f"> **Remaining Count:** 0",
             f"> **Responsible:** {mod.mention} ({mod_role_name})",
         ]
         
