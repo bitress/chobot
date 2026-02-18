@@ -5,3 +5,5 @@ bot.log
 __pycache__/
 *.pyc
 warnings.db
+admin/.env
+admin/islands.db

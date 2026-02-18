@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Island Admin - <span id="pageTitle">Island Form</span></title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-primary">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1">🏝️ Island Admin</span>
+            <button class="btn btn-outline-light" onclick="logout()">Logout</button>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2 id="formTitle">Island Form</h2>
+            <a href="/admin/islands" class="btn btn-secondary">← Back to Islands</a>
+        </div>
+
+        <div id="errorMessage" class="alert alert-danger d-none"></div>
+
+        <div class="card">
+            <div class="card-body">
+                <form id="islandForm">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="id" class="form-label">ID (slug) *</label>
+                            <input type="text" class="form-control" id="id" required 
+                                   pattern="[a-z0-9_-]+" 
+                                   placeholder="e.g., alapaap">
+                            <small class="form-text text-muted">Lowercase letters, numbers, hyphens, underscores only</small>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="name" class="form-label">Name *</label>
+                            <input type="text" class="form-control" id="name" required 
+                                   placeholder="e.g., ALAPAAP">
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="type" class="form-label">Type *</label>
+                            <input type="text" class="form-control" id="type" required 
+                                   placeholder="e.g., Treasure Island">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="seasonal" class="form-label">Seasonal *</label>
+                            <input type="text" class="form-control" id="seasonal" required 
+                                   placeholder="e.g., Year-Round, Summer">
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="theme" class="form-label">Theme *</label>
+                            <select class="form-select" id="theme" required>
+                                <option value="">Select theme...</option>
+                                <option value="pink">Pink</option>
+                                <option value="teal">Teal</option>
+                                <option value="purple">Purple</option>
+                                <option value="gold">Gold</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="cat" class="form-label">Category *</label>
+                            <select class="form-select" id="cat" required>
+                                <option value="">Select category...</option>
+                                <option value="public">Public</option>
+                                <option value="member">Member</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="description" class="form-label">Description *</label>
+                        <textarea class="form-control" id="description" rows="3" required 
+                                  placeholder="Short description of the island"></textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="items" class="form-label">Items *</label>
+                        <textarea class="form-control" id="items" rows="5" required 
+                                  placeholder="Enter one item per line, e.g.:&#10;2.0 items&#10;seasonal items&#10;rare furniture&#10;gold tools"></textarea>
+                        <small class="form-text text-muted">One item per line. Will be saved as JSON array.</small>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="map_url" class="form-label">Map URL (optional)</label>
+                        <input type="url" class="form-control" id="map_url" 
+                               placeholder="https://example.com/island-map.png">
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
+                            Create Island
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Check if logged in
+        const token = localStorage.getItem('token');
+        if (!token) {
+            window.location.href = '/admin/login';
+        }
+
+        // Get URL parameters to determine mode
+        const urlPath = window.location.pathname;
+        const isEditMode = urlPath.includes('/edit');
+        const islandId = isEditMode ? urlPath.split('/')[3] : null;
+
+        // Update page title and form
+        if (isEditMode) {
+            document.getElementById('pageTitle').textContent = 'Edit Island';
+            document.getElementById('formTitle').textContent = 'Edit Island';
+            document.getElementById('submitBtn').textContent = 'Update Island';
+            document.getElementById('id').readOnly = true;
+            document.getElementById('id').classList.add('bg-light');
+            
+            // Load island data
+            loadIsland(islandId);
+        } else {
+            document.getElementById('pageTitle').textContent = 'Create Island';
+            document.getElementById('formTitle').textContent = 'Create New Island';
+        }
+
+        async function loadIsland(id) {
+            try {
+                const response = await fetch(`/admin/api/islands/${id}`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to load island');
+                }
+                
+                const island = await response.json();
+                
+                // Populate form
+                document.getElementById('id').value = island.id;
+                document.getElementById('name').value = island.name;
+                document.getElementById('type').value = island.type;
+                document.getElementById('theme').value = island.theme;
+                document.getElementById('cat').value = island.cat;
+                document.getElementById('description').value = island.description;
+                document.getElementById('seasonal').value = island.seasonal;
+                document.getElementById('items').value = island.items.join('\n');
+                document.getElementById('map_url').value = island.map_url || '';
+                
+            } catch (error) {
+                const errorDiv = document.getElementById('errorMessage');
+                errorDiv.textContent = error.message;
+                errorDiv.classList.remove('d-none');
+            }
+        }
+
+        document.getElementById('islandForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.classList.add('d-none');
+            
+            // Collect form data
+            const formData = {
+                name: document.getElementById('name').value,
+                type: document.getElementById('type').value,
+                theme: document.getElementById('theme').value,
+                cat: document.getElementById('cat').value,
+                description: document.getElementById('description').value,
+                seasonal: document.getElementById('seasonal').value,
+                items: document.getElementById('items').value.split('\n').filter(item => item.trim()),
+                map_url: document.getElementById('map_url').value || null
+            };
+            
+            // Add ID for create mode
+            if (!isEditMode) {
+                formData.id = document.getElementById('id').value;
+            }
+            
+            try {
+                const url = isEditMode 
+                    ? `/admin/api/islands/${islandId}`
+                    : '/admin/api/islands';
+                
+                const method = isEditMode ? 'PUT' : 'POST';
+                
+                const response = await fetch(url, {
+                    method: method,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(formData)
+                });
+                
+                if (response.ok) {
+                    window.location.href = '/admin/islands';
+                } else {
+                    const error = await response.json();
+                    errorDiv.textContent = error.detail || 'Failed to save island';
+                    errorDiv.classList.remove('d-none');
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Network error. Please try again.';
+                errorDiv.classList.remove('d-none');
+            }
+        });
+
+        function logout() {
+            localStorage.removeItem('token');
+            window.location.href = '/admin/login';
+        }
+    </script>
+</body>
+</html>
