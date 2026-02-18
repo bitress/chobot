@@ -246,14 +246,10 @@ class PunishmentBuilderView(discord.ui.View):
         """Clear and re-add components based on current state."""
         self.clear_items()
 
-        # 1. User Select
         self.add_item(TargetSelect(self))
 
-        # 2. Duration Select (Warn Only)
         if self.action_type == "WARN":
             self.add_item(DurationSelect(self, self.selected_duration))
-
-        # 3. Reason Select
         self.add_item(ReasonSelect(self, self.selected_reason, self.custom_reason_text))
 
         # 4. Confirm & Cancel Buttons
@@ -465,8 +461,8 @@ class FlightLoggerCog(commands.Cog):
             try:
                 emoji = ""
                 if action_type == "BAN": emoji = "<:Cho_Kick:1456714701630214349> "
-                elif action_type == "KICK": emoji = "🦵 "
-                elif action_type == "WARN": emoji = ""
+                elif action_type == "KICK": emoji = "<:Cho_Kick:1456714701630214349> "
+                elif action_type == "WARN": emoji = "<:Cho_Warn:1456712416271405188> "
 
                 dm_embed = discord.Embed(
                     title=f"{emoji} Chobot Notification",
