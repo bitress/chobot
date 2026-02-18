@@ -744,9 +744,11 @@ class FlightLoggerCog(commands.Cog):
             found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_clean, isl_clean)
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
 
-    async def log_result(self, found_members, status, ign, island, destination):
+    async def log_result(self, found_members, status, ign, island, destination, timestamp=None):
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
         if not output_channel: return
+
+        embed_timestamp = timestamp or discord.utils.utcnow()
 
         if found_members:
             mentions = " ".join([m.mention for m in found_members])
@@ -760,7 +762,7 @@ class FlightLoggerCog(commands.Cog):
                     "**Select an action below to resolve.**"
                 ),
                 color=0xFF0000,
-                timestamp=discord.utils.utcnow()
+                timestamp=embed_timestamp
             )
             embed.add_field(name="👤 Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
             embed.add_field(name="🏝️ Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
@@ -813,7 +815,7 @@ class FlightLoggerCog(commands.Cog):
                         found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_clean, isl_clean)
 
                         # Trigger the log result
-                        await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
+                        await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, timestamp=message.created_at)
                         logger.info(f"[RECOVER] Processed item #{processed_count} - {ign_raw}")
 
                         processed_count += 1
