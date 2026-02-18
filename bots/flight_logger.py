@@ -321,19 +321,21 @@ class PunishmentBuilderView(discord.ui.View):
 
 class AdmitConfirmView(discord.ui.View):
     """Confirmation dialog for admitting a traveler."""
-    def __init__(self, parent_view: "TravelerActionView", ign: str, interaction_message: discord.Message):
+    def __init__(self, parent_view: "TravelerActionView", ign: str, original_alert_message: discord.Message):
         super().__init__(timeout=300)
         self.parent_view = parent_view
         self.ign = ign
-        self.interaction_message = interaction_message
+        self.original_alert_message = original_alert_message
 
     @discord.ui.button(label="Yes, Admit", style=discord.ButtonStyle.success)
     async def confirm_admit(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Proceed with admission."""
         msg = f"**{self.ign or 'Visitor'}** is cleared for entry."
+        # Update the original alert message (the flight log alert)
         await self.parent_view._resolve_alert(
-            interaction, "AUTHORIZED", COLOR_SUCCESS, msg, log_message=self.interaction_message
+            interaction, "AUTHORIZED", COLOR_SUCCESS, msg, log_message=self.original_alert_message
         )
+        # Update the confirmation message to show success
         await interaction.response.edit_message(content=msg, view=None)
         self.stop()
 
