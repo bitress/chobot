@@ -399,6 +399,43 @@ class TravelerActionView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
+    @discord.ui.button(label="Investigate", style=discord.ButtonStyle.secondary, emoji="<:AmongUs_Investigate:784046584299257857>", custom_id="fl_investigate", row=0)
+    async def investigate_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return  # Stale interaction, silently ignore
+
+        ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
+        mod = interaction.user
+        timestamp = int(discord.utils.utcnow().timestamp())
+
+        try:
+            message_to_edit = interaction.message
+            embed = message_to_edit.embeds[0]
+
+            # Update color to amber/yellow
+            embed.color = COLOR_INVESTIGATION
+
+            # Update author to show investigation status
+            embed.set_author(name="🔍 UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
+
+            # Add investigation field
+            embed.add_field(
+                name="🔍 Investigating",
+                value=f"**{mod.mention}** is looking into this. Started <t:{timestamp}:R>",
+                inline=False
+            )
+
+            # Disable only the Investigate button
+            button.disabled = True
+
+            await message_to_edit.edit(embed=embed, view=self)
+            await interaction.followup.send("🔍 Marked as under investigation.", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error marking as under investigation: {e}")
+            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
     @discord.ui.button(label="Admit", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>", custom_id="fl_admit", row=0)
     async def confirm_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
@@ -413,43 +450,6 @@ class TravelerActionView(discord.ui.View):
             view=confirm_view,
             ephemeral=True
         )
-
-    @discord.ui.button(label="Investigate", style=discord.ButtonStyle.secondary, emoji="<:AmongUs_Investigate:784046584299257857>", custom_id="fl_investigate", row=0)
-    async def investigate_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return  # Stale interaction, silently ignore
-        
-        ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
-        mod = interaction.user
-        timestamp = int(discord.utils.utcnow().timestamp())
-        
-        try:
-            message_to_edit = interaction.message
-            embed = message_to_edit.embeds[0]
-            
-            # Update color to amber/yellow
-            embed.color = COLOR_INVESTIGATION
-            
-            # Update author to show investigation status
-            embed.set_author(name="🔍 UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
-            
-            # Add investigation field
-            embed.add_field(
-                name="🔍 Investigating",
-                value=f"**{mod.mention}** is looking into this. Started <t:{timestamp}:R>",
-                inline=False
-            )
-            
-            # Disable only the Investigate button
-            button.disabled = True
-            
-            await message_to_edit.edit(embed=embed, view=self)
-            await interaction.followup.send("🔍 Marked as under investigation.", ephemeral=True)
-        except Exception as e:
-            logger.error(f"Error marking as under investigation: {e}")
-            await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
     @discord.ui.button(label="Warn", style=discord.ButtonStyle.primary, emoji="<:Cho_Warn:1456712416271405188>", custom_id="fl_warn", row=1)
     async def warn_action(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -946,17 +946,6 @@ class FlightLoggerCog(commands.Cog):
 
         # Get new warning count
         new_count = await self.get_warn_count(user.id, guild.id, days=3)
-
-        # Restore island access role if user doesn't have it
-        visitor_role = guild.get_role(Config.ISLAND_ACCESS_ROLE)
-        if visitor_role and visitor_role not in user.roles:
-            try:
-                await user.add_roles(visitor_role, reason=f"Unwarn: {reason}")
-                logger.info(f"[FLIGHT] Restored role {visitor_role.name} to {user.display_name}")
-            except discord.Forbidden:
-                logger.error(f"[FLIGHT] Permission Denied: Cannot add role to {user.display_name}")
-            except Exception as e:
-                logger.error(f"[FLIGHT] Error adding role: {e}")
 
         # Generate case ID
         now = discord.utils.utcnow()

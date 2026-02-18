@@ -7,6 +7,7 @@
     <list default="true" id="be65bb5b-cc74-461e-8936-5f0bb88df9aa" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/bots/flight_logger.py" beforeDir="false" afterPath="$PROJECT_DIR$/bots/flight_logger.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -63,7 +64,7 @@
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "master",
+    "git-widget-placeholder": "copilot/rename-confirm-to-admit",
     "last_opened_file_path": "C:/Users/bitress/PycharmProjects/chobot",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
@@ -180,7 +181,8 @@
       <workItem from="1770861592841" duration="9000" />
       <workItem from="1771252635840" duration="1248000" />
       <workItem from="1771404752306" duration="2075000" />
-      <workItem from="1771443034335" duration="2201000" />
+      <workItem from="1771443034335" duration="2890000" />
+      <workItem from="1771451667206" duration="1398000" />
     </task>
     <servers />
   </component>
