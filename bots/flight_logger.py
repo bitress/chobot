@@ -530,17 +530,11 @@ class FlightLoggerCog(commands.Cog):
         """Remove all warnings for a user and return the count removed."""
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ?",
+            "DELETE FROM warnings WHERE user_id = ? AND guild_id = ?",
             (user_id, guild_id)
         )
-        row = await cursor.fetchone()
-        count = row[0] if row else 0
-        if count > 0:
-            await db.execute(
-                "DELETE FROM warnings WHERE user_id = ? AND guild_id = ?",
-                (user_id, guild_id)
-            )
-            await db.commit()
+        count = cursor.rowcount
+        await db.commit()
         return count
 
     async def get_warnings(self, user_id: int, guild_id: int, days: int = 30):
@@ -986,7 +980,7 @@ class FlightLoggerCog(commands.Cog):
             pass  # DM closed
 
         # Log to sub-mod channel (green embed similar to Sapphire style)
-        log_embed = self._create_unwarn_log(user, mod, reason, case_id, removed_count, 0)
+        log_embed = self._create_unwarn_log(user, mod, reason, case_id, removed_count)
         sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
         
         if sub_mod_channel:
@@ -1000,8 +994,16 @@ class FlightLoggerCog(commands.Cog):
         else:
             await ctx_or_interaction.send(msg)
 
-    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, removed_count: int, warn_count: int = 0):
-        """Creates a green log embed for unwarn action."""
+    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, removed_count: int):
+        """Creates a green log embed for unwarn action.
+        
+        Args:
+            member: The member who was unwarned
+            mod: The moderator who performed the unwarn
+            reason: Reason for the unwarn
+            case_id: The case ID for this action
+            removed_count: Number of warnings removed
+        """
         now = discord.utils.utcnow()
         mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
         
@@ -1009,7 +1011,7 @@ class FlightLoggerCog(commands.Cog):
             f"> **{member.mention} ({member.display_name})** has been unwarned!",
             f"> **Reason:** {reason}",
             f"> **Warnings Removed:** {removed_count}",
-            f"> **Remaining Count:** {warn_count}",
+            f"> **Remaining Count:** 0",
             f"> **Responsible:** {mod.mention} ({mod_role_name})",
         ]
         
