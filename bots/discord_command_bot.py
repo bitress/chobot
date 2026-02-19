@@ -565,7 +565,8 @@ class DiscordCommandBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix='!', intents=intents)
+        # Disable default help command to use our custom one
+        super().__init__(command_prefix='!', intents=intents, help_command=None)
 
         self.data_manager = data_manager
         self.start_time = datetime.now()  # Track bot start time for uptime
