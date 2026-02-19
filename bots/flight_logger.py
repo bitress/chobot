@@ -930,6 +930,7 @@ class FlightLoggerCog(commands.Cog):
         Sends a fake flight message, processes it through the full pipeline, then cleans up.
         Usage: !flighttest
         """
+        await ctx.defer()
         logger.info(f"[FLIGHT-TEST] Debug flight test triggered by {ctx.author}")
         
         # Build the test message with current timestamp (local time for display consistency)
