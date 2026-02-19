@@ -5,6 +5,7 @@ Handles Discord commands for item and villager search with rich embeds
 
 import time
 import re
+import random
 import logging
 from datetime import datetime
 from itertools import cycle
@@ -451,6 +452,7 @@ class DiscordCommandCog(commands.Cog):
             value=(
                 "`!status` - Show bot status and cache info\n"
                 "`!ping` - Check bot response time\n"
+                "`!random` - Get a random item suggestion\n"
                 "`!help` - Show this help message"
             ),
             inline=False
@@ -483,6 +485,37 @@ class DiscordCommandCog(commands.Cog):
         
         await ctx.send(embed=embed)
         logger.info(f"[DISCORD] Ping: {latency_ms}ms")
+
+    @commands.hybrid_command(name="random")
+    async def random_item(self, ctx):
+        """Get a random item suggestion"""
+        with self.data_manager.lock:
+            cache = self.data_manager.cache
+            # Filter out internal keys
+            all_items = [k for k in cache.keys() if not k.startswith("_")]
+            display_map = cache.get("_display", {})
+        
+        if not all_items:
+            await ctx.send("No items in cache yet. Try again later!")
+            return
+        
+        # Pick a random item
+        random_key = random.choice(all_items)
+        display_name = display_map.get(random_key, random_key.title())
+        found_locations = cache.get(random_key)
+        
+        if found_locations:
+            embed = self.create_found_embed(ctx, display_name, found_locations, is_villager=False)
+            
+            if embed:
+                embed.title = f"🎲 Random Item: {display_name}"
+                await ctx.send(content=f"Hey <@{ctx.author.id}>, here's a random item for you!", embed=embed)
+                logger.info(f"[DISCORD] Random item: {random_key}")
+            else:
+                # Try another random item if this one isn't on sub islands
+                await ctx.send(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to see where it's available!")
+        else:
+            await ctx.send(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to check availability!")
 
     @commands.hybrid_command(name="status")
     async def status(self, ctx):

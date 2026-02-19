@@ -18,7 +18,10 @@ Chobot is a unified system to help manage Animal Crossing communities. It watche
 * **Discord & Twitch Utility**
     * Find items and villagers across sub-islands (!find, !villager).
     * Smart fuzzy search suggests correct names if you type wrong.
-    * Check bot health with !status command.
+    * Check bot health with !status command (includes uptime tracking).
+    * Check bot response time with !ping command (Discord only).
+    * Get random item suggestions with !random command.
+    * Comprehensive help system with !help command.
 
 * **Island Status (Dodo Codes)**
     * API reads Dodo.txt and Visitors.txt to show real-time island status.
@@ -30,6 +33,11 @@ Chobot is a unified system to help manage Animal Crossing communities. It watche
 * **Data Management**
     * Auto-sync with Google Sheets every hour.
     * Fast local cache in cache_dump.json.
+
+* **API Features**
+    * RESTful API endpoints for items, villagers, islands, and Patreon.
+    * Health check endpoint (/health) for monitoring and uptime checks.
+
 
 ## Getting Started
 

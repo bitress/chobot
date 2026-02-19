@@ -4,6 +4,7 @@ Handles Twitch chat commands for item and villager search
 """
 
 import time
+import random
 import logging
 from twitchio.ext import commands
 from thefuzz import process, fuzz
@@ -172,7 +173,40 @@ class TwitchBot(commands.Bot):
     @commands.command()
     async def help(self, ctx: commands.Context):
         """Show help message"""
-        await ctx.send("Commands: !find <item> | !villager <name> | !status")
+        await ctx.send("Commands: !find <item> | !villager <name> | !random | !status")
+
+    @commands.command()
+    async def random(self, ctx: commands.Context):
+        """Get a random item suggestion"""
+        with self.data_manager.lock:
+            cache = self.data_manager.cache
+            # Filter out internal keys
+            all_items = [k for k in cache.keys() if not k.startswith("_")]
+            display_map = cache.get("_display", {})
+        
+        if not all_items:
+            await ctx.send(f"@{ctx.author.name} No items in cache yet. Try again later!")
+            return
+        
+        # Pick a random item
+        random_key = random.choice(all_items)
+        display_name = display_map.get(random_key, random_key.title())
+        found_locs_raw = cache.get(random_key)
+        
+        if found_locs_raw:
+            # Filter: SUB_ISLANDS + FREE_ISLANDS
+            loc_list = found_locs_raw.split(", ")
+            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+            all_found = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
+            
+            if all_found:
+                final_msg = format_locations_text(", ".join(all_found))
+                await ctx.send(f"🎲 Random item for @{ctx.author.name}: {display_name} {final_msg}")
+                logger.info(f"[TWITCH] Random item: {random_key}")
+            else:
+                await ctx.send(f"🎲 Random suggestion for @{ctx.author.name}: {display_name}")
+        else:
+            await ctx.send(f"🎲 Random suggestion for @{ctx.author.name}: {display_name}")
 
     @commands.command()
     async def status(self, ctx: commands.Context):
