@@ -426,6 +426,64 @@ class DiscordCommandCog(commands.Cog):
 
         logger.info(f"[DISCORD] Villager Miss: {search_term}")
 
+    @commands.hybrid_command(name="help")
+    async def help_command(self, ctx):
+        """Show all available commands"""
+        embed = discord.Embed(
+            title=f"{Config.EMOJI_SEARCH} Chobot Commands",
+            description="Here are all the commands you can use:",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        embed.add_field(
+            name=f"{Config.STAR_PINK} Search Commands",
+            value=(
+                "`!find <item>` - Find an item across islands\n"
+                "`!villager <name>` - Find a villager\n"
+                "*Aliases: !locate, !where, !lookup, !lp, !search*"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name=f"{Config.STAR_PINK} Utility Commands",
+            value=(
+                "`!status` - Show bot status and cache info\n"
+                "`!ping` - Check bot response time\n"
+                "`!help` - Show this help message"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name=f"{Config.STAR_PINK} Admin Commands",
+            value="`!refresh` - Manually refresh cache (Admin only)",
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", 
+                        icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP)
+        embed.set_image(url=Config.FOOTER_LINE)
+        
+        await ctx.send(embed=embed)
+        logger.info(f"[DISCORD] Help command used by {ctx.author.name}")
+
+    @commands.hybrid_command(name="ping")
+    async def ping(self, ctx):
+        """Check bot latency"""
+        latency_ms = round(self.bot.latency * 1000, 2)
+        
+        embed = discord.Embed(
+            title="🏓 Pong!",
+            description=f"Bot latency: **{latency_ms}ms**",
+            color=discord.Color.green() if latency_ms < 200 else discord.Color.orange(),
+            timestamp=datetime.now()
+        )
+        
+        await ctx.send(embed=embed)
+        logger.info(f"[DISCORD] Ping: {latency_ms}ms")
+
     @commands.hybrid_command(name="status")
     async def status(self, ctx):
         """Show bot status"""
@@ -433,11 +491,19 @@ class DiscordCommandCog(commands.Cog):
             if self.data_manager.last_update:
                 t_str = self.data_manager.last_update.strftime("%H:%M:%S")
                 island_count = len(self.sub_island_lookup)
+                
+                # Calculate uptime
+                uptime_seconds = (datetime.now() - self.bot.start_time).total_seconds()
+                hours = int(uptime_seconds // 3600)
+                minutes = int((uptime_seconds % 3600) // 60)
+                uptime_str = f"{hours}h {minutes}m"
+                
                 await ctx.send(
                     f"**System Status**\n"
                     f"Items Cached: `{len(self.data_manager.cache)}`\n"
                     f"Islands Linked: `{island_count}`\n"
-                    f"Last Update: `{t_str}`"
+                    f"Last Update: `{t_str}`\n"
+                    f"Uptime: `{uptime_str}`"
                 )
             else:
                 await ctx.send("Database loading...")
@@ -469,6 +535,7 @@ class DiscordCommandBot(commands.Bot):
         super().__init__(command_prefix='!', intents=intents)
 
         self.data_manager = data_manager
+        self.start_time = datetime.now()  # Track bot start time for uptime
 
         self.status_list = cycle([
             discord.Activity(type=discord.ActivityType.watching, name="flights arrive ✈️ | !find"),

@@ -166,9 +166,32 @@ def home():
             "villagers": "/villager, /api/villager, /api/villagers/list",
             "islands": "/api/islands",
             "patreon": "/api/patreon/posts, /api/patreon/posts/<id>",
-            "status": "/status"
+            "status": "/status",
+            "health": "/health"
         }
     })
+
+@app.route('/health')
+@app.route('/api/health')
+def health():
+    """Health check endpoint for monitoring"""
+    with data_manager.lock:
+        cache_count = len(data_manager.cache)
+        last_update = data_manager.last_update
+    
+    is_healthy = cache_count > 0 and last_update is not None
+    
+    response = {
+        "status": "healthy" if is_healthy else "degraded",
+        "timestamp": datetime.now().isoformat(),
+        "cache": {
+            "items": cache_count,
+            "last_update": last_update.isoformat() if last_update else None
+        }
+    }
+    
+    status_code = 200 if is_healthy else 503
+    return jsonify(response), status_code
 
 # --- ITEM SEARCH ROUTES ---
 

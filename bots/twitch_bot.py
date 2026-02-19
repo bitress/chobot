@@ -25,6 +25,7 @@ class TwitchBot(commands.Bot):
         )
         self.data_manager = data_manager
         self.cooldowns = {}
+        self.start_time = time.time()  # Track bot start time for uptime
 
     async def event_ready(self):
         """Called when bot is connected"""
@@ -179,6 +180,13 @@ class TwitchBot(commands.Bot):
         with self.data_manager.lock:
             if self.data_manager.last_update:
                 time_str = self.data_manager.last_update.strftime("%H:%M:%S")
-                await ctx.send(f"Items: {len(self.data_manager.cache)} | Last Update: {time_str}")
+                
+                # Calculate uptime
+                uptime_seconds = int(time.time() - self.start_time)
+                hours = uptime_seconds // 3600
+                minutes = (uptime_seconds % 3600) // 60
+                uptime_str = f"{hours}h {minutes}m"
+                
+                await ctx.send(f"Items: {len(self.data_manager.cache)} | Last Update: {time_str} | Uptime: {uptime_str}")
             else:
                 await ctx.send("Database loading...")
