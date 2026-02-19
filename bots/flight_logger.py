@@ -920,6 +920,114 @@ class FlightLoggerCog(commands.Cog):
             embed.add_field(name="Current Pattern", value=f"```regex\n{self.join_pattern.pattern}\n```", inline=False)
             await ctx.send(embed=embed)
 
+    @commands.command(name="flighttest", aliases=["ftest"])
+    @commands.has_permissions(manage_messages=True)
+    async def flight_test(self, ctx):
+        """
+        End-to-end test of the flight logger pipeline.
+        Sends a fake flight message, processes it through the full pipeline, then cleans up.
+        Usage: !flighttest
+        """
+        logger.info(f"[FLIGHT-TEST] Debug flight test triggered by {ctx.author}")
+        
+        # Build the test message with current timestamp
+        now = datetime.datetime.now()
+        timestamp = now.strftime("%Y-%m-%d %I:%M:%S %p").lower()
+        test_message_content = f"[{timestamp}] 🛬 DebugUser from DebugIsland is joining DebugIsland."
+        
+        # Get channels
+        listen_channel = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
+        log_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
+        
+        if not listen_channel:
+            embed = discord.Embed(
+                title="❌ Flight Test Failed",
+                description="Could not find the flight listen channel.",
+                color=0xFF0000
+            )
+            return await ctx.send(embed=embed)
+        
+        test_msg = None
+        success = True
+        error_details = None
+        
+        try:
+            # Step 1: Send the test message to the listen channel
+            test_msg = await listen_channel.send(test_message_content)
+            
+            # Step 2: Parse the message and call log_result directly
+            # (since the bot ignores its own messages in on_message)
+            match = self.join_pattern.search(test_message_content)
+            if match:
+                ign_raw = match.group(1).strip()
+                island_raw = match.group(2).strip()
+                dest_raw = match.group(3).strip()
+                
+                # Clean and find matching members
+                ign_clean = clean_text(ign_raw)
+                isl_clean = clean_text(island_raw)
+                found = await asyncio.to_thread(
+                    self.find_matching_members, 
+                    ctx.guild, 
+                    ign_clean, 
+                    isl_clean
+                )
+                
+                # Log the result (this simulates what on_message would do)
+                await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
+                
+            # Step 3: Wait 3 seconds
+            await asyncio.sleep(3)
+            
+            # Step 4: Delete the test message
+            if test_msg:
+                await test_msg.delete()
+                
+        except discord.Forbidden:
+            success = False
+            error_details = "Permission denied. Bot may lack permissions to send/delete messages in the listen channel."
+        except Exception as e:
+            success = False
+            error_details = f"Unexpected error: {str(e)}"
+            logger.error(f"[FLIGHT-TEST] Error during flight test: {e}")
+        
+        # Step 5: Send summary embed to the invoker
+        if success:
+            embed = discord.Embed(
+                title="✅ Flight Test Complete",
+                description="The test flight message was sent, processed, and cleaned up successfully.",
+                color=0x2ECC71  # Green
+            )
+        else:
+            embed = discord.Embed(
+                title="❌ Flight Test Failed",
+                description=error_details or "An error occurred during the test.",
+                color=0xFF0000  # Red
+            )
+        
+        embed.add_field(
+            name="📝 Test Message",
+            value=f"```{test_message_content}```",
+            inline=False
+        )
+        embed.add_field(
+            name="👂 Listen Channel",
+            value=listen_channel.mention if listen_channel else "Not found",
+            inline=True
+        )
+        embed.add_field(
+            name="📋 Log Channel",
+            value=log_channel.mention if log_channel else "Not found",
+            inline=True
+        )
+        embed.add_field(
+            name="ℹ️ Note",
+            value=f"Check {log_channel.mention if log_channel else 'the log channel'} to verify the bot logged the test flight (should show 'UNKNOWN TRAVELER' alert for DebugUser).",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+
     @app_commands.command(name="unwarn", description="Remove all warnings from a user")
     @app_commands.describe(user="The user to unwarn", reason="Reason for removing the warning (optional)")
     @app_commands.checks.has_permissions(manage_messages=True)
