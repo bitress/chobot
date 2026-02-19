@@ -192,11 +192,11 @@ class DataManager:
         if not paths_to_scan:
             return {}
 
-        # Return cached data if still fresh
+        # Return cached data if still fresh.
+        # Use _villager_cache_time as sentinel so an empty-result scan is also cached.
         now = time.time()
         if (
-            self._villager_cache
-            and self._villager_cache_time
+            self._villager_cache_time is not None
             and now - self._villager_cache_time < self._villager_cache_ttl
         ):
             return self._villager_cache
@@ -210,35 +210,47 @@ class DataManager:
                         location_name = os.path.basename(root)
                         file_path = os.path.join(root, "Villagers.txt")
 
-                        try:
-                            with open(file_path, 'rb') as file:
-                                raw_content = file.read().decode('utf-8', errors='ignore')
+                        raw_content = None
+                        for attempt in range(3):
+                            try:
+                                with open(file_path, 'rb') as f:
+                                    raw_content = f.read().decode('utf-8', errors='ignore')
+                                break
+                            except OSError as os_err:
+                                if attempt < 2:
+                                    time.sleep(0.05)
+                                else:
+                                    logger.error(f"Error reading villagers file at {location_name}: {os_err}")
+                            except Exception as file_err:
+                                logger.error(f"Error reading villagers file at {location_name}: {file_err}")
+                                break
 
-                                # Clean content
-                                raw_content = re.sub(r'Villagers\s+on\s+[^:]+:', '', raw_content, flags=re.IGNORECASE)
-                                names_list = re.split(r'[,\n\r]+', raw_content)
+                        if raw_content is None:
+                            logger.warning(f"Could not read Villagers.txt at {location_name}; skipping.")
+                            continue
 
-                                for name in names_list:
-                                    clean_name = name.strip()
+                        # Clean content
+                        raw_content = re.sub(r'Villagers\s+on\s+[^:]+:', '', raw_content, flags=re.IGNORECASE)
+                        names_list = re.split(r'[,\n\r]+', raw_content)
 
-                                    if not clean_name or len(clean_name) > 30:
-                                        continue
+                        for name in names_list:
+                            clean_name = name.strip()
 
-                                    # Handle special cases
-                                    if clean_name in ["Ren?E", "Ren?e"]:
-                                        clean_name = "Renée"
+                            if not clean_name or len(clean_name) > 30:
+                                continue
 
-                                    key = clean_name.lower()
+                            # Handle special cases
+                            if clean_name in ["Ren?E", "Ren?e"]:
+                                clean_name = "Renée"
 
-                                    if key in data:
-                                        current_locs = data[key].split(", ")
-                                        if location_name not in current_locs:
-                                            data[key] += f", {location_name}"
-                                    else:
-                                        data[key] = location_name
+                            key = clean_name.lower()
 
-                        except Exception as file_err:
-                            logger.error(f"Error reading villagers file at {location_name}: {file_err}")
+                            if key in data:
+                                current_locs = data[key].split(", ")
+                                if location_name not in current_locs:
+                                    data[key] += f", {location_name}"
+                            else:
+                                data[key] = location_name
 
             self._villager_cache = data
             self._villager_cache_time = now
