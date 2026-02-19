@@ -8,7 +8,9 @@ Combines all API endpoints:
 
 import os
 import re
+import time
 import logging
+import threading
 from datetime import datetime, timedelta
 
 import requests
@@ -87,16 +89,50 @@ def process_post_attributes(post_id, attrs):
     }
 
 
+_file_cache: dict = {}
+_file_cache_lock = threading.Lock()
+_FILE_CACHE_TTL = 3  # seconds
+
+
 def get_file_content(folder_path, filename):
-    """Read file content safely"""
+    """Read file content safely with caching and retry to reduce file-lock contention.
+
+    The C# SysBot writes to these files with exclusive access (FileShare.None).
+    Caching minimises how often the file is opened, and the retry handles the
+    brief window where C# holds an exclusive write lock.
+    """
     path = os.path.join(folder_path, filename)
+
+    now = time.monotonic()
+    with _file_cache_lock:
+        cached = _file_cache.get(path)
+        if cached is not None:
+            content, ts = cached
+            if now - ts < _FILE_CACHE_TTL:
+                return content
+
     if not os.path.exists(path):
         return None
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return f.read().strip()
-    except Exception:
-        return None
+
+    for attempt in range(3):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            with _file_cache_lock:
+                _file_cache[path] = (content, time.monotonic())
+            return content
+        except OSError:
+            if attempt < 2:
+                time.sleep(0.05)
+        except Exception:
+            break
+
+    # Return stale cache rather than None if the file is still locked
+    with _file_cache_lock:
+        cached = _file_cache.get(path)
+    if cached is not None:
+        return cached[0]
+    return None
 
 
 def process_island(entry, island_type):
