@@ -172,9 +172,27 @@ class TwitchBot(commands.Bot):
             )
 
     @commands.command()
+    async def count(self, ctx: commands.Context):
+        """Show total number of tracked items and villagers"""
+        with self.data_manager.lock:
+            cache = self.data_manager.cache
+            item_count = len([k for k in cache.keys() if not k.startswith("_")])
+
+        villager_map = self.data_manager.get_villagers([
+            Config.VILLAGERS_DIR,
+            Config.TWITCH_VILLAGERS_DIR
+        ])
+        villager_count = len(villager_map)
+
+        await ctx.send(
+            f"@{ctx.author.name} Database: {item_count} items | {villager_count} villagers tracked"
+        )
+        logger.info(f"[TWITCH] Count: {item_count} items, {villager_count} villagers")
+
+    @commands.command()
     async def help(self, ctx: commands.Context):
         """Show help message"""
-        await ctx.send("Commands: !find <item> | !villager <name> | !random | !status")
+        await ctx.send("Commands: !find <item> | !villager <name> | !random | !count | !status")
 
     @commands.command()
     async def random(self, ctx: commands.Context):

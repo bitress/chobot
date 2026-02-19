@@ -427,6 +427,34 @@ class DiscordCommandCog(commands.Cog):
 
         logger.info(f"[DISCORD] Villager Miss: {search_term}")
 
+    @commands.hybrid_command(name="count")
+    async def count(self, ctx):
+        """Show total number of tracked items and villagers"""
+        with self.data_manager.lock:
+            cache = self.data_manager.cache
+            item_count = len([k for k in cache.keys() if not k.startswith("_")])
+
+        villager_map = self.data_manager.get_villagers([
+            Config.VILLAGERS_DIR,
+            Config.TWITCH_VILLAGERS_DIR
+        ])
+        villager_count = len(villager_map)
+
+        embed = discord.Embed(
+            title=f"{Config.STAR_PINK} Chobot Database Count",
+            color=discord.Color.teal(),
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="🗂️ Items Tracked", value=f"`{item_count}`", inline=True)
+        embed.add_field(name="🏡 Villagers Tracked", value=f"`{villager_count}`", inline=True)
+        embed.set_footer(
+            text=f"Requested by {ctx.author.display_name}",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        )
+        embed.set_image(url=Config.FOOTER_LINE)
+        await ctx.send(embed=embed)
+        logger.info(f"[DISCORD] Count: {item_count} items, {villager_count} villagers")
+
     @commands.hybrid_command(name="help")
     async def help_command(self, ctx):
         """Show all available commands"""
@@ -453,6 +481,7 @@ class DiscordCommandCog(commands.Cog):
                 "`!status` - Show bot status and cache info\n"
                 "`!ping` - Check bot response time\n"
                 "`!random` - Get a random item suggestion\n"
+                "`!count` - Show total tracked items and villagers\n"
                 "`!help` - Show this help message"
             ),
             inline=False

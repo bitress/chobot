@@ -198,7 +198,7 @@ def home():
         "status": "online",
         "message": "ChoBot API - All systems operational",
         "endpoints": {
-            "items": "/find, /api/find",
+            "items": "/find, /api/find, /api/items/list",
             "villagers": "/villager, /api/villager, /api/villagers/list",
             "islands": "/api/islands",
             "patreon": "/api/patreon/posts, /api/patreon/posts/<id>",
@@ -391,6 +391,35 @@ def api_list_villagers_by_island():
 
     return jsonify({
         "timestamp": datetime.now().isoformat(),
+        "total_islands": len(island_manifest),
+        "islands": island_manifest
+    })
+
+
+@app.route('/api/items/list')
+def api_list_items_by_island():
+    """List all items grouped by island"""
+    with data_manager.lock:
+        cache = data_manager.cache
+        display_map = cache.get("_display", {}).copy()
+        items_snapshot = {k: v for k, v in cache.items() if not k.startswith("_")}
+
+    island_manifest = {}
+
+    for key, locations in items_snapshot.items():
+        display_name = display_map.get(key, key.title())
+        loc_list = [loc.strip() for loc in locations.split(", ") if loc.strip()]
+        for loc in loc_list:
+            if loc not in island_manifest:
+                island_manifest[loc] = []
+            island_manifest[loc].append(display_name)
+
+    for loc in island_manifest:
+        island_manifest[loc].sort()
+
+    return jsonify({
+        "timestamp": datetime.now().isoformat(),
+        "total_items": len(items_snapshot),
         "total_islands": len(island_manifest),
         "islands": island_manifest
     })
