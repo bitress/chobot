@@ -512,7 +512,7 @@ class DiscordCommandCog(commands.Cog):
                 await ctx.send(content=f"Hey <@{ctx.author.id}>, here's a random item for you!", embed=embed)
                 logger.info(f"[DISCORD] Random item: {random_key}")
             else:
-                # Try another random item if this one isn't on sub islands
+                # Item exists but not on sub islands
                 await ctx.send(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to see where it's available!")
         else:
             await ctx.send(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to check availability!")
