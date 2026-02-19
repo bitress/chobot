@@ -137,12 +137,12 @@ class TwitchBot(commands.Bot):
             # Filter: only SUB_ISLANDS
             loc_list = found_locs_raw.split(", ")
             allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
-            all_islands = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
+            sub_only = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
             
             display_name = search_term.title()
             
-            if all_islands:
-                final_msg = format_locations_text(", ".join(all_islands))
+            if sub_only:
+                final_msg = format_locations_text(", ".join(sub_only))
                 await ctx.send(f"Hey @{ctx.author.name}, I found villager {display_name} {final_msg}")
                 logger.info(f"[TWITCH] Villager Hit: {search_term} -> {final_msg}")
             else:
