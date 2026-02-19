@@ -548,7 +548,7 @@ class DiscordCommandCog(commands.Cog):
         await ctx.send("Refreshing cache and island links...")
         self.data_manager.update_cache()
         await self.fetch_islands()
-        count = len(getattr(self, 'island_map', {})) 
+        count = len(self.sub_island_lookup)
         await ctx.send(f"Done. Linked {count} islands.")
 
     @refresh.error

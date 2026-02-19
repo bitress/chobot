@@ -172,9 +172,24 @@ class TwitchBot(commands.Bot):
             )
 
     @commands.command()
+    async def refresh(self, ctx: commands.Context):
+        """Manually refresh cache (Mods only)"""
+        if not (ctx.author.is_mod or ctx.author.name.lower() == ctx.channel.name.lower()):
+            await ctx.send(f"@{ctx.author.name} You do not have permission to use this command.")
+            return
+        await ctx.send("Refreshing cache...")
+        try:
+            self.data_manager.update_cache()
+            await ctx.send(f"Done. Cache updated with {len(self.data_manager.cache)} items.")
+            logger.info(f"[TWITCH] Cache refreshed by {ctx.author.name}")
+        except Exception as e:
+            await ctx.send(f"Failed to refresh cache: {e}")
+            logger.error(f"[TWITCH] Cache refresh failed: {e}")
+
+    @commands.command()
     async def help(self, ctx: commands.Context):
         """Show help message"""
-        await ctx.send("Commands: !find <item> | !villager <name> | !random | !status")
+        await ctx.send("Commands: !find <item> | !villager <name> | !random | !status | !refresh (mods)")
 
     @commands.command()
     async def random(self, ctx: commands.Context):
