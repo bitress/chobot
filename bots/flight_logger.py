@@ -930,7 +930,7 @@ class FlightLoggerCog(commands.Cog):
         """
         logger.info(f"[FLIGHT-TEST] Debug flight test triggered by {ctx.author}")
         
-        # Build the test message with current timestamp
+        # Build the test message with current timestamp (local time for display consistency)
         now = datetime.datetime.now()
         timestamp = now.strftime("%Y-%m-%d %I:%M:%S %p").lower()
         test_message_content = f"[{timestamp}] 🛬 DebugUser from DebugIsland is joining DebugIsland."
@@ -976,12 +976,9 @@ class FlightLoggerCog(commands.Cog):
                 # Log the result (this simulates what on_message would do)
                 await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
                 
-            # Step 3: Wait 3 seconds
+            # Step 3: Wait 3 seconds to allow moderators to see the test message
+            # and verify the alert appears in the log channel
             await asyncio.sleep(3)
-            
-            # Step 4: Delete the test message
-            if test_msg:
-                await test_msg.delete()
                 
         except discord.Forbidden:
             success = False
@@ -990,6 +987,17 @@ class FlightLoggerCog(commands.Cog):
             success = False
             error_details = f"Unexpected error: {str(e)}"
             logger.error(f"[FLIGHT-TEST] Error during flight test: {e}")
+        finally:
+            # Step 4: Clean up the test message from the listen channel
+            if test_msg:
+                try:
+                    await test_msg.delete()
+                except discord.NotFound:
+                    pass  # Message already deleted
+                except discord.Forbidden:
+                    logger.warning(f"[FLIGHT-TEST] Could not delete test message - permission denied")
+                except Exception as e:
+                    logger.warning(f"[FLIGHT-TEST] Could not delete test message: {e}")
         
         # Step 5: Send summary embed to the invoker
         if success:
