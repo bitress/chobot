@@ -785,7 +785,8 @@ class FlightLoggerCog(commands.Cog):
             view = TravelerActionView(self.bot, ign)
             await output_channel.send(embed=embed, view=view)
 
-    @commands.command(name="recoverflights")
+    @commands.hybrid_command(name="recoverflights")
+    @app_commands.describe(hours="How many hours to scan back (default: 48)", mode="Execution mode: 'dry' or 'run'")
     @commands.has_permissions(administrator=True)
     async def recover_flights(self, ctx, hours: int = 48, mode: str = "dry"):
         """
@@ -839,7 +840,7 @@ class FlightLoggerCog(commands.Cog):
         else:
             await status_msg.edit(content=f"**Recovery Complete**\nProcessed: {processed_count} flights.")
 
-    @commands.command(name="flightstatus", aliases=["fstatus"])
+    @commands.hybrid_command(name="flightstatus", aliases=["fstatus"])
     @commands.has_permissions(manage_messages=True)
     async def flight_status(self, ctx):
         """Diagnose connection, channels, and last activity."""
@@ -889,7 +890,8 @@ class FlightLoggerCog(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @commands.command(name="flightdebug", aliases=["fdebug"])
+    @commands.hybrid_command(name="flightdebug", aliases=["fdebug"])
+    @app_commands.describe(test_string="The message string to test against the regex")
     @commands.has_permissions(manage_messages=True)
     async def flight_debug(self, ctx, *, test_string: str = None):
         """
@@ -920,7 +922,7 @@ class FlightLoggerCog(commands.Cog):
             embed.add_field(name="Current Pattern", value=f"```regex\n{self.join_pattern.pattern}\n```", inline=False)
             await ctx.send(embed=embed)
 
-    @commands.command(name="flighttest", aliases=["ftest"])
+    @commands.hybrid_command(name="flighttest", aliases=["ftest"])
     @commands.has_permissions(manage_messages=True)
     async def flight_test(self, ctx):
         """
@@ -1036,18 +1038,13 @@ class FlightLoggerCog(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @app_commands.command(name="unwarn", description="Remove all warnings from a user")
+    @commands.hybrid_command(name="unwarn", aliases=["removewarn"])
     @app_commands.describe(user="The user to unwarn", reason="Reason for removing the warning (optional)")
-    @app_commands.checks.has_permissions(manage_messages=True)
-    async def unwarn_slash(self, interaction: discord.Interaction, user: discord.Member, reason: str = None):
-        """Remove all warnings from a user (slash command)."""
-        await self._unwarn_internal(interaction, user, reason, is_slash=True)
-
-    @commands.command(name="unwarn", aliases=["removewarn"])
     @commands.has_permissions(manage_messages=True)
-    async def unwarn_prefix(self, ctx, member: discord.Member, *, reason: str = None):
-        """Remove all warnings from a user (prefix command)."""
-        await self._unwarn_internal(ctx, member, reason, is_slash=False)
+    async def unwarn(self, ctx, user: discord.Member, *, reason: str = None):
+        """Remove all warnings from a user."""
+        is_slash = ctx.interaction is not None
+        await self._unwarn_internal(ctx.interaction if is_slash else ctx, user, reason, is_slash=is_slash)
 
     async def _unwarn_internal(self, ctx_or_interaction, user: discord.Member, reason: str = None, is_slash: bool = True):
         """Internal method for unwarn logic."""
@@ -1141,18 +1138,13 @@ class FlightLoggerCog(commands.Cog):
         embed.set_footer(text=f"Mod: {mod.display_name}", icon_url=mod.display_avatar.url)
         return embed
 
-    @app_commands.command(name="warnings", description="List recent warnings for a user")
+    @commands.hybrid_command(name="warnings", aliases=["warnlist"])
     @app_commands.describe(user="The user to check", days="Number of days to look back (default: 30)")
-    @app_commands.checks.has_permissions(manage_messages=True)
-    async def warnings_slash(self, interaction: discord.Interaction, user: discord.Member, days: int = 30):
-        """List warnings for a user (slash command)."""
-        await self._warnings_internal(interaction, user, days, is_slash=True)
-
-    @commands.command(name="warnings", aliases=["warnlist"])
     @commands.has_permissions(manage_messages=True)
-    async def warnings_prefix(self, ctx, member: discord.Member, days: int = 30):
-        """List warnings for a user (prefix command)."""
-        await self._warnings_internal(ctx, member, days, is_slash=False)
+    async def warnings(self, ctx, user: discord.Member, days: int = 30):
+        """List recent warnings for a user."""
+        is_slash = ctx.interaction is not None
+        await self._warnings_internal(ctx.interaction if is_slash else ctx, user, days, is_slash=is_slash)
 
     async def _warnings_internal(self, ctx_or_interaction, user: discord.Member, days: int = 30, is_slash: bool = True):
         """Internal method for listing warnings."""
