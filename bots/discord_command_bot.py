@@ -600,12 +600,12 @@ class DiscordCommandCog(commands.Cog):
                         break
 
             if not channel_id:
-                results.append((island, "❓", "Channel not found"))
+                results.append((island, "❓", "Channel not found", None))
                 continue
 
             channel = guild.get_channel(channel_id)
             if not channel:
-                results.append((island, "❓", "Channel not found"))
+                results.append((island, "❓", "Channel not found", None))
                 continue
 
             # Find the bot for this island by name: "Chobot <island name>"
@@ -621,7 +621,7 @@ class DiscordCommandCog(commands.Cog):
 
             # Check 1: If the island's bot is found and online or idle, it's working
             if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
-                results.append((island, "✅", "Bot online"))
+                results.append((island, "✅", "Bot online", channel_id))
                 online_count += 1
                 continue
 
@@ -629,7 +629,7 @@ class DiscordCommandCog(commands.Cog):
             try:
                 messages = [msg async for msg in channel.history(limit=25)]
             except discord.Forbidden:
-                results.append((island, "❓", "No channel access"))
+                results.append((island, "❓", "No channel access", channel_id))
                 continue
 
             island_up = False
@@ -657,32 +657,33 @@ class DiscordCommandCog(commands.Cog):
                     break
 
             if island_up:
-                results.append((island, "✅", status_reason))
+                results.append((island, "✅", status_reason, channel_id))
                 online_count += 1
             else:
-                results.append((island, "❌", "No recent activity"))
+                results.append((island, "❌", "No recent activity", channel_id))
 
         # Build embed
         total = len(Config.SUB_ISLANDS)
+        active_label = "🟢 All active" if online_count == total else f"🟡 {online_count} active, {total - online_count} inactive" if online_count > 0 else "🔴 None active"
         embed = discord.Embed(
-            title=f"🏝️ Sub Island Status",
-            description=f"**{online_count}/{total}** islands appear to be active.",
+            title="🏝️ Sub Island Status",
+            description=f"{active_label} — {total} islands checked",
             color=discord.Color.green() if online_count == total else (
                 discord.Color.orange() if online_count > 0 else discord.Color.red()
             ),
             timestamp=discord.utils.utcnow()
         )
 
-        up_lines = [f"✅ {name}" for name, status, _ in results if status == "✅"]
-        down_lines = [f"❌ {name}" for name, status, _ in results if status == "❌"]
-        unknown_lines = [f"❓ {name}" for name, status, _ in results if status == "❓"]
+        # Single ordered list: one line per island with channel link and reason
+        lines = []
+        for name, status, reason, ch_id in results:
+            channel_ref = f"<#{ch_id}>" if ch_id else f"**{name}**"
+            lines.append(f"{status} {channel_ref} — {reason}")
 
-        if up_lines:
-            embed.add_field(name="🟢 Online", value="\n".join(up_lines), inline=True)
-        if down_lines:
-            embed.add_field(name="🔴 Offline / No Activity", value="\n".join(down_lines), inline=True)
-        if unknown_lines:
-            embed.add_field(name="⚪ Unknown", value="\n".join(unknown_lines), inline=True)
+        # Split into two inline fields (9 islands each) for a cleaner two-column layout
+        mid = (len(lines) + 1) // 2
+        embed.add_field(name="\u200b", value="\n".join(lines[:mid]), inline=True)
+        embed.add_field(name="\u200b", value="\n".join(lines[mid:]), inline=True)
 
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
