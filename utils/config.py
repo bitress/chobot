@@ -36,11 +36,9 @@ class Config:
 
     # Discord IDs (Safe Integer Casting)
     GUILD_ID = _get_int('GUILD_ID')
-    # Note: Using SUB_CATEGORY_ID env var for CATEGORY_ID per your snippet
     CATEGORY_ID = _get_int('SUB_CATEGORY_ID')
-    # Note: Using CHANNEL_ID env var for LOG_CHANNEL_ID per your snippet
-    LOG_CHANNEL_ID = _get_int('CHANNEL_ID') 
-    ISLAND_ACCESS_ROLE = _get_int('ISLAND_ACCESS_ROLE')
+    LOG_CHANNEL_ID = _get_int('CHANNEL_ID')
+    ISLAND_ACCESS_ROLE = _get_int('ISLAND_ACCESS_ROLE', 788749941949464577)
 
     # Environment Specific Channels
     if IS_PRODUCTION:
@@ -92,9 +90,6 @@ class Config:
         "Sinag", "Giting", "Marilag"
     ]
 
-    # Island bot role — all 18 island SysBots share this role.
-    # Each bot is named "Chobot <island name>" (e.g. "Chobot Alapaap").
-    # !islandstatus uses this role to locate each island's bot by name.
     ISLAND_BOT_ROLE_ID = _get_int('ISLAND_BOT_ROLE_ID')
 
     # Discord Embed Assets
