@@ -710,12 +710,11 @@ class DiscordCommandBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        intents.presences = True  # Required to read member online/idle status
-        # Disable default help command to use our custom one
+        intents.presences = True
         super().__init__(command_prefix='!', intents=intents, help_command=None)
 
         self.data_manager = data_manager
-        self.start_time = datetime.now()  # Track bot start time for uptime
+        self.start_time = datetime.now()
 
         self.status_list = cycle([
             discord.Activity(type=discord.ActivityType.watching, name="flights arrive ✈️ | !find"),
@@ -734,6 +733,34 @@ class DiscordCommandBot(commands.Bot):
 
             discord.Activity(type=discord.ActivityType.listening, name="K.K. Slider 🎸"),
             discord.Activity(type=discord.ActivityType.listening, name="Isabelle's announcements 📢"),
+
+            discord.Activity(type=discord.ActivityType.watching, name="twitch.tv/chopaeng 📺"),
+            discord.Activity(type=discord.ActivityType.watching, name="46x Treasure Islands 🏝️"),
+            discord.Activity(type=discord.ActivityType.watching, name="chat spam !order 🤖"),
+            discord.Activity(type=discord.ActivityType.watching, name="someone break the max bells glitch 💰 | !maxbells"),
+            discord.Activity(type=discord.ActivityType.watching, name="endless dodocode interference ✈️"),
+
+            discord.Activity(type=discord.ActivityType.playing, name="traffic controller for Sub Islands 💎"),
+            discord.Activity(type=discord.ActivityType.playing, name="DropBot delivery simulator 📦"),
+            discord.Activity(type=discord.ActivityType.playing, name="spamming 'A' at the airport 🛫"),
+
+            discord.Activity(type=discord.ActivityType.competing, name="who can join Marahuyo fastest 🏃"),
+
+            discord.Activity(type=discord.ActivityType.listening, name="Kuya Cho sipping coffee ☕"),
+            discord.Activity(type=discord.ActivityType.listening, name="Discord ping spam 🔔 | !discord"),
+            discord.Activity(type=discord.ActivityType.listening, name="someone leaving quietly... 😡"),
+
+            discord.Activity(type=discord.ActivityType.watching, name="interference with total indifference 🧘"),
+            discord.Activity(type=discord.ActivityType.watching, name="turnips rot; such is life 🥀"),
+            discord.Activity(type=discord.ActivityType.watching, name="the void of a lost connection 🔌"),
+            discord.Activity(type=discord.ActivityType.watching, name="Amor Fati: loving the Sea Bass 🐟"),
+
+            discord.Activity(type=discord.ActivityType.playing, name="Memento Mori: the island wipes ⏳"),
+            discord.Activity(type=discord.ActivityType.playing, name="controlling only what I can: the 'A' button 🔘"),
+
+            discord.Activity(type=discord.ActivityType.listening, name="Meditations by Marcus Aurelius (K.K. Version) 📖"),
+            discord.Activity(type=discord.ActivityType.listening, name="the silence of an empty queue 🤫"),
+            discord.Activity(type=discord.ActivityType.listening, name="complaints, unbothered 🗿"),
         ])
 
     async def setup_hook(self):
@@ -755,7 +782,7 @@ class DiscordCommandBot(commands.Bot):
         """Called when bot is ready"""
         logger.info(f"[DISCORD] Logged in as: {self.user} (ID: {self.user.id})")
 
-    @tasks.loop(minutes=3)
+    @tasks.loop(minutes=1)
     async def change_status_loop(self):
         """Cycle through status messages"""
         new_activity = next(self.status_list)
