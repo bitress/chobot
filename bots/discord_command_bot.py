@@ -579,6 +579,7 @@ class DiscordCommandCog(commands.Cog):
 
         results = []
         online_count = 0
+        island_bot_ids = Config.get_island_bot_ids()
 
         for island in Config.SUB_ISLANDS:
             island_clean = clean_text(island)
@@ -593,7 +594,17 @@ class DiscordCommandCog(commands.Cog):
                 results.append((island, "❓", "Channel not found"))
                 continue
 
-            # Scan recent channel messages (filter to orderbot if ORDERBOT_ID is configured)
+            bot_id = island_bot_ids.get(island)
+
+            # Check 1: If this island's bot ID is known, check its online presence first
+            if bot_id:
+                member = guild.get_member(bot_id)
+                if member and member.status != discord.Status.offline:
+                    results.append((island, "✅", "Bot online"))
+                    online_count += 1
+                    continue
+
+            # Check 2: Scan recent channel messages for dodo codes or Chopaeng visitor
             try:
                 messages = [msg async for msg in channel.history(limit=25)]
             except discord.Forbidden:
@@ -604,9 +615,9 @@ class DiscordCommandCog(commands.Cog):
             status_reason = ""
 
             for msg in messages:
-                # If orderbot ID is known, only examine that bot's messages
-                if Config.ORDERBOT_ID:
-                    if msg.author.id != Config.ORDERBOT_ID:
+                # If this island's bot ID is known, only examine that bot's messages
+                if bot_id:
+                    if msg.author.id != bot_id:
                         continue
                 elif not msg.author.bot:
                     continue
@@ -622,13 +633,6 @@ class DiscordCommandCog(commands.Cog):
                     island_up = True
                     status_reason = "Chopaeng is visiting"
                     break
-
-            # Fallback: if no message evidence, check whether the orderbot is online
-            if not island_up and Config.ORDERBOT_ID:
-                member = guild.get_member(Config.ORDERBOT_ID)
-                if member and member.status != discord.Status.offline:
-                    island_up = True
-                    status_reason = "Bot online"
 
             if island_up:
                 results.append((island, "✅", status_reason))

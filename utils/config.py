@@ -71,9 +71,6 @@ class Config:
     VILLAGERS_DIR = os.getenv('VILLAGERS_DIR')
     TWITCH_VILLAGERS_DIR = os.getenv('TWITCH_VILLAGERS_DIR')
 
-    # Order Bot (SysBot) - optional; used for island status checks
-    ORDERBOT_ID = _get_int('ORDERBOT_ID')
-    
     # Logic: Free users access Twitch dir, VIPs access standard dir
     DIR_FREE = TWITCH_VILLAGERS_DIR
     DIR_VIP = VILLAGERS_DIR
@@ -128,3 +125,22 @@ class Config:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
         return True
+
+    @classmethod
+    def get_island_bot_ids(cls) -> dict:
+        """Return a dict mapping each sub island name to its bot user ID (int), if configured.
+
+        Per-island bot user IDs are optional. Set one env var per sub island:
+            ISLAND_BOT_<UPPERCASED_ISLAND_NAME>=<discord_user_id>
+        Example:
+            ISLAND_BOT_ALAPAAP=123456789012345678
+            ISLAND_BOT_ARUGA=234567890123456789
+        Islands with no env var will fall back to scanning any bot message in the channel.
+        """
+        result = {}
+        for island in cls.SUB_ISLANDS:
+            env_key = f"ISLAND_BOT_{island.upper()}"
+            val = os.getenv(env_key)
+            if val and val.strip().isdigit():
+                result[island] = int(val)
+        return result
