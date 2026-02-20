@@ -19,12 +19,30 @@ def normalize_text(s: str) -> str:
 
 
 def clean_text(text: str) -> str:
-    """Clean text for island matching: alphanumeric only, no accents, lowercase"""
+    """Clean text for island matching: alphanumeric only, no accents, lowercase.
+
+    Handles fancy Unicode bot names, including:
+    - Mathematical styled letters (𝕙, 𝔹, ℂ…) — resolved by NFKD compatibility decomposition
+    - Small capital letters (ᴀ, ʟ, ᴘ…) — resolved via Unicode character name lookup
+    """
     if not text:
         return ""
+    # NFKD resolves compatibility characters: mathematical bold/italic/double-struck → ASCII
     normalized = unicodedata.normalize('NFKD', text)
-    no_accents = "".join([c for c in normalized if not unicodedata.category(c).startswith('Mn')])
-    return "".join(ch for ch in no_accents if ch.isalnum()).lower()
+    # Strip combining marks (diacritics/accents)
+    no_marks = "".join(c for c in normalized if not unicodedata.category(c).startswith('Mn'))
+    # Map remaining non-ASCII letters (e.g. small capitals) via their Unicode name
+    # e.g. ᴀ → "LATIN LETTER SMALL CAPITAL A" → A
+    result = []
+    for c in no_marks:
+        if c.isascii():
+            result.append(c)
+        elif unicodedata.category(c).startswith('L'):
+            name = unicodedata.name(c, '')
+            letter = next((p for p in reversed(name.split()) if len(p) == 1 and p.isalpha()), None)
+            if letter:
+                result.append(letter)
+    return "".join(ch for ch in result if ch.isalnum()).lower()
 
 
 def tokenize(s: str) -> set:

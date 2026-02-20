@@ -609,12 +609,13 @@ class DiscordCommandCog(commands.Cog):
                 continue
 
             # Find the bot for this island by name: "Chobot <island name>"
-            # Bots share ISLAND_BOT_ROLE_ID and are named e.g. "Chobot Alapaap"
+            # Bots share ISLAND_BOT_ROLE_ID and may use fancy Unicode in their display name
+            # (e.g. "ℂ𝕙𝕠𝔹𝕠𝕥 (ᴀʟᴀᴘᴀᴀᴘ)") — clean_text normalises both sides for matching
             island_bot = None
             if island_bot_role:
-                island_lower = island.lower()
+                island_clean_target = clean_text(f"chobot {island}")
                 for member in island_bot_role.members:
-                    if member.bot and member.display_name.lower() == f"chobot {island_lower}":
+                    if member.bot and clean_text(member.display_name) == island_clean_target:
                         island_bot = member
                         break
 
