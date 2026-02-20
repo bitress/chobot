@@ -6,7 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="be65bb5b-cc74-461e-8936-5f0bb88df9aa" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/bots/twitch_bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/bots/twitch_bot.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/bots/flight_logger.py" beforeDir="false" afterPath="$PROJECT_DIR$/bots/flight_logger.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -78,8 +78,8 @@
       <recent name="C:\Users\bitress\PycharmProjects\chobot" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.main (1)">
-    <configuration name="main (1)" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+  <component name="RunManager" selected="Python.main">
+    <configuration name="main" type="PythonConfigurationType" factoryName="Python" temporary="true">
       <module name="chobot" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -125,9 +125,13 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
+    <list>
+      <item itemvalue="Python.main" />
+      <item itemvalue="Python.python -m uvicorn admin.main:app --host 0.0.0.0 --port 8200" />
+    </list>
     <recent_temporary>
       <list>
-        <item itemvalue="Python.main (1)" />
+        <item itemvalue="Python.main" />
         <item itemvalue="Python.python -m uvicorn admin.main:app --host 0.0.0.0 --port 8200" />
       </list>
     </recent_temporary>
@@ -159,7 +163,8 @@
       <workItem from="1771443034335" duration="2890000" />
       <workItem from="1771451667206" duration="1398000" />
       <workItem from="1771467678646" duration="4000" />
-      <workItem from="1771497574573" duration="2082000" />
+      <workItem from="1771497574573" duration="9580000" />
+      <workItem from="1771571262891" duration="2224000" />
     </task>
     <servers />
   </component>
@@ -171,7 +176,19 @@
       <map>
         <entry key="MAIN">
           <value>
-            <State />
+            <State>
+              <option name="FILTERS">
+                <map>
+                  <entry key="branch">
+                    <value>
+                      <list>
+                        <option value="origin/copilot/fix-visitor-file-access-error" />
+                      </list>
+                    </value>
+                  </entry>
+                </map>
+              </option>
+            </State>
           </value>
         </entry>
       </map>
@@ -179,7 +196,7 @@
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/chobot$python__m_uvicorn_admin_main_app___host_0_0_0_0___port_8200.coverage" NAME="python -m uvicorn admin.main:app --host 0.0.0.0 --port 8200 Coverage Results" MODIFIED="1771406162800" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/admin" />
-    <SUITE FILE_PATH="coverage/chobot$main__1_.coverage" NAME="main (1) Coverage Results" MODIFIED="1771502887030" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/chobot$main__1_.coverage" NAME="main (1) Coverage Results" MODIFIED="1771544319156" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/chobot$main.coverage" NAME="main Coverage Results" MODIFIED="1771443104838" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/admin" />
   </component>
 </project>

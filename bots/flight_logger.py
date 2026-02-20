@@ -368,12 +368,12 @@ class NoteModal(discord.ui.Modal, title="Add Note"):
             embed = message_to_edit.embeds[0]
             timestamp = int(discord.utils.utcnow().timestamp())
             embed.add_field(
-                name=f"📝 Note by {interaction.user.display_name}",
+                name=f"<:Cho_Notes:1474311464688029817> Note by {interaction.user.display_name}",
                 value=f"{self.note_input.value}\n-# Added <t:{timestamp}:R>",
                 inline=False
             )
             await message_to_edit.edit(embed=embed)
-            await interaction.response.send_message("📝 Note added to the alert.", ephemeral=True)
+            await interaction.response.send_message("<:Cho_Notes:1474311464688029817> Note added to the alert.", ephemeral=True)
         except Exception as e:
             logger.error(f"Error adding note: {e}")
             await interaction.response.send_message(f"Error: {e}", ephemeral=True)
@@ -442,7 +442,7 @@ class TravelerActionView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
-    @discord.ui.button(label="Investigate", style=discord.ButtonStyle.secondary, emoji="<:AmongUs_Investigate:784046584299257857>", custom_id="fl_investigate", row=0)
+    @discord.ui.button(label="Investigate", style=discord.ButtonStyle.secondary, emoji="<:Cho_Investigate:1474310726381338666>", custom_id="fl_investigate", row=0)
     async def investigate_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
@@ -461,13 +461,13 @@ class TravelerActionView(discord.ui.View):
             embed.color = COLOR_INVESTIGATION
 
             # Update author to show investigation status
-            embed.set_author(name="🔍 UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
+            embed.set_author(name="<:Cho_Investigate:1474310726381338666> UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
 
             # Update Status field if it exists
             updated_fields = []
             for f in embed.fields:
                 if f.name == "📌 Status":
-                    updated_fields.append((f.name, "🟡 **INVESTIGATING**", f.inline))
+                    updated_fields.append((f.name, "<:Cho_Investigate:1474310726381338666> **INVESTIGATING**", f.inline))
                 else:
                     updated_fields.append((f.name, f.value, f.inline))
             embed.clear_fields()
@@ -476,7 +476,7 @@ class TravelerActionView(discord.ui.View):
 
             # Add investigation field
             embed.add_field(
-                name="🔍 Investigating",
+                name="<:Cho_Investigate:1474310726381338666> Investigating",
                 value=f"**{mod.mention}** is looking into this. Started <t:{timestamp}:R>",
                 inline=False
             )
@@ -485,7 +485,7 @@ class TravelerActionView(discord.ui.View):
             button.disabled = True
 
             await message_to_edit.edit(embed=embed, view=self)
-            await interaction.followup.send("🔍 Marked as under investigation.", ephemeral=True)
+            await interaction.followup.send("<:Cho_Investigate:1474310726381338666> Marked as under investigation.", ephemeral=True)
         except Exception as e:
             logger.error(f"Error marking as under investigation: {e}")
             await interaction.followup.send(f"Error: {e}", ephemeral=True)
@@ -532,7 +532,7 @@ class TravelerActionView(discord.ui.View):
         view = PunishmentBuilderView("BAN", self, log_message=interaction.message)
         await interaction.followup.send("<:Cho_Ban:1473530840725061793> **Build Ban:**", view=view, ephemeral=True)
 
-    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="🗑️", custom_id="fl_dismiss", row=2)
+    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="<:PePeHands:784495079703969802>", custom_id="fl_dismiss", row=2)
     async def dismiss_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Dismiss the alert as a false positive or non-threat."""
         try:
@@ -544,9 +544,9 @@ class TravelerActionView(discord.ui.View):
         await self._resolve_alert(
             interaction, "DISMISSED", COLOR_DISMISS, msg, log_message=interaction.message
         )
-        await interaction.followup.send(f"🗑️ Alert for **{ign or 'Visitor'}** has been dismissed.", ephemeral=True)
+        await interaction.followup.send(f"**{ign or 'Visitor'}** case has been dismissed.", ephemeral=True)
 
-    @discord.ui.button(label="Note", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="fl_note", row=2)
+    @discord.ui.button(label="Note", style=discord.ButtonStyle.secondary, emoji="<:Cho_Notes:1474311464688029817>", custom_id="fl_note", row=2)
     async def note_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Add a note to the alert without taking action."""
         await interaction.response.send_modal(NoteModal(self))
@@ -1095,7 +1095,7 @@ class FlightLoggerCog(commands.Cog):
             )
         
         embed.add_field(
-            name="📝 Test Message",
+            name="<:Cho_Notes:1474311464688029817> Test Message",
             value=f"```{test_message_content}```",
             inline=False
         )
