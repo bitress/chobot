@@ -618,8 +618,8 @@ class DiscordCommandCog(commands.Cog):
                         island_bot = member
                         break
 
-            # Check 1: If the island's bot is found and online, it's working
-            if island_bot and island_bot.status != discord.Status.offline:
+            # Check 1: If the island's bot is found and online or idle, it's working
+            if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
                 results.append((island, "✅", "Bot online"))
                 online_count += 1
                 continue
@@ -714,6 +714,7 @@ class DiscordCommandBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
+        intents.presences = True  # Required to read member online/idle status
         # Disable default help command to use our custom one
         super().__init__(command_prefix='!', intents=intents, help_command=None)
 
