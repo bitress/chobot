@@ -577,6 +577,9 @@ class DiscordCommandCog(commands.Cog):
             await ctx.send("Guild not found.")
             return
 
+        # Ensure the channel lookup is fresh before checking
+        await self.fetch_islands()
+
         results = []
         online_count = 0
 
@@ -589,8 +592,15 @@ class DiscordCommandCog(commands.Cog):
             island_clean = clean_text(island)
             channel_id = self.sub_island_lookup.get(island_clean)
 
+            # Fallback: scan all guild text channels if not found via category lookup
             if not channel_id:
-                results.append((island, "❓", "Channel not linked"))
+                for ch in guild.channels:
+                    if isinstance(ch, discord.TextChannel) and island_clean in clean_text(ch.name):
+                        channel_id = ch.id
+                        break
+
+            if not channel_id:
+                results.append((island, "❓", "Channel not found"))
                 continue
 
             channel = guild.get_channel(channel_id)
