@@ -101,12 +101,20 @@ def _build_options_with_default(base_options: list[discord.SelectOption], select
         )
     return new_options
 
+def _parse_duration(duration: str) -> datetime.timedelta | None:
+    """Parse a duration string into a timedelta. Returns None for permanent."""
+    mapping = {
+        "1h": datetime.timedelta(hours=1),
+        "1d": datetime.timedelta(days=1),
+        "2d": datetime.timedelta(days=2),
+        "3d": datetime.timedelta(days=3),
+        "1w": datetime.timedelta(weeks=1),
+    }
+    return mapping.get(duration)
+
 def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str, case_id: str, warn_count: int, duration: str, action_verb: str):
     """Generates the visual embed mimicking Sapphire"""
     now = discord.utils.utcnow()
-    # Sapphire typically expires in 7 days
-    expiry = now + datetime.timedelta(days=7)
-    expiry_ts = int(expiry.timestamp())
     
     mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
 
@@ -117,18 +125,23 @@ def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str
             f"> **Responsible:** {mod.mention} ({mod_role_name})",
         ]
     else:
+        delta = _parse_duration(duration)
         desc_lines = [
             f"> **{member.mention} ({member.display_name})** has been {action_verb.lower()}!",
             f"> **Reason:** {reason}",
             f"> **Duration:** {duration}",
             f"> **Count:** {warn_count}",
             f"> **Responsible:** {mod.mention} ({mod_role_name})",
-            f"> Automatically expires <t:{expiry_ts}:R>",
+        ]
+        if delta is not None:
+            expiry_ts = int((now + delta).timestamp())
+            desc_lines.append(f"> Automatically expires <t:{expiry_ts}:R>")
+        desc_lines.extend([
             f"> **Proof:** Verified (Log System)",
             "> ",
             "> **For Sub Members**: Please double check our <#783677194576330792> channel.",
             "> **For Free Members**: Kindly refer to our <#755522711492493342> channel."
-        ]
+        ])
 
     embed = discord.Embed(
         title=f"**{action_verb.title()} Case ID: {case_id}**",
