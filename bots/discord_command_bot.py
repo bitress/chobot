@@ -21,6 +21,10 @@ from utils.nookipedia import NookipediaClient
 
 logger = logging.getLogger("DiscordCommandBot")
 
+# Island status check constants
+DODO_CODE_PATTERN = re.compile(r'\b[A-HJ-NP-Z0-9]{5}\b')
+ISLAND_HOST_NAME = "chopaeng"
+
 
 class SuggestionSelect(discord.ui.Select):
     """Dropdown select for choosing from suggestions"""
@@ -450,6 +454,7 @@ class DiscordCommandCog(commands.Cog):
         embed.add_field(
             name=f"{Config.STAR_PINK} Utility Commands",
             value=(
+                "`!islandstatus` - Check if all 18 sub island bots are active\n"
                 "`!status` - Show bot status and cache info\n"
                 "`!ping` - Check bot response time\n"
                 "`!random` - Get a random item suggestion\n"
@@ -561,6 +566,104 @@ class DiscordCommandCog(commands.Cog):
                 )
             else:
                 await ctx.send("Database loading...")
+
+    @commands.hybrid_command(name="islandstatus", aliases=["islands", "checkislands"])
+    async def island_status(self, ctx):
+        """Check the status of all 18 sub islands"""
+        await ctx.defer()
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if not guild:
+            await ctx.send("Guild not found.")
+            return
+
+        results = []
+        online_count = 0
+
+        for island in Config.SUB_ISLANDS:
+            island_clean = clean_text(island)
+            channel_id = self.sub_island_lookup.get(island_clean)
+
+            if not channel_id:
+                results.append((island, "❓", "Channel not linked"))
+                continue
+
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                results.append((island, "❓", "Channel not found"))
+                continue
+
+            # Scan recent channel messages (filter to orderbot if ORDERBOT_ID is configured)
+            try:
+                messages = [msg async for msg in channel.history(limit=25)]
+            except discord.Forbidden:
+                results.append((island, "❓", "No channel access"))
+                continue
+
+            island_up = False
+            status_reason = ""
+
+            for msg in messages:
+                # If orderbot ID is known, only examine that bot's messages
+                if Config.ORDERBOT_ID:
+                    if msg.author.id != Config.ORDERBOT_ID:
+                        continue
+                elif not msg.author.bot:
+                    continue
+
+                # Dodo code: 5 uppercase alphanumeric chars (ACNH format excludes I and O)
+                if DODO_CODE_PATTERN.search(msg.content):
+                    island_up = True
+                    status_reason = "Dodo code active"
+                    break
+
+                # Chopaeng present in visitors response
+                if ISLAND_HOST_NAME in msg.content.lower():
+                    island_up = True
+                    status_reason = "Chopaeng is visiting"
+                    break
+
+            # Fallback: if no message evidence, check whether the orderbot is online
+            if not island_up and Config.ORDERBOT_ID:
+                member = guild.get_member(Config.ORDERBOT_ID)
+                if member and member.status != discord.Status.offline:
+                    island_up = True
+                    status_reason = "Bot online"
+
+            if island_up:
+                results.append((island, "✅", status_reason))
+                online_count += 1
+            else:
+                results.append((island, "❌", "No recent activity"))
+
+        # Build embed
+        total = len(Config.SUB_ISLANDS)
+        embed = discord.Embed(
+            title=f"🏝️ Sub Island Status",
+            description=f"**{online_count}/{total}** islands appear to be active.",
+            color=discord.Color.green() if online_count == total else (
+                discord.Color.orange() if online_count > 0 else discord.Color.red()
+            ),
+            timestamp=discord.utils.utcnow()
+        )
+
+        up_lines = [f"✅ {name}" for name, status, _ in results if status == "✅"]
+        down_lines = [f"❌ {name}" for name, status, _ in results if status == "❌"]
+        unknown_lines = [f"❓ {name}" for name, status, _ in results if status == "❓"]
+
+        if up_lines:
+            embed.add_field(name="🟢 Online", value="\n".join(up_lines), inline=True)
+        if down_lines:
+            embed.add_field(name="🔴 Offline / No Activity", value="\n".join(down_lines), inline=True)
+        if unknown_lines:
+            embed.add_field(name="⚪ Unknown", value="\n".join(unknown_lines), inline=True)
+
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+
+        await ctx.send(embed=embed)
+        logger.info(f"[DISCORD] Island status check: {online_count}/{total} online")
 
     @commands.hybrid_command(name="refresh")
     @commands.has_permissions(administrator=True)
