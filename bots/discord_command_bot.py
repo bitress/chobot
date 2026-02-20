@@ -579,7 +579,11 @@ class DiscordCommandCog(commands.Cog):
 
         results = []
         online_count = 0
-        island_bot_ids = Config.get_island_bot_ids()
+
+        # Resolve the shared island-bot role once
+        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
+        if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
+            logger.warning(f"[DISCORD] ISLAND_BOT_ROLE_ID {Config.ISLAND_BOT_ROLE_ID} not found in guild; bot name matching disabled")
 
         for island in Config.SUB_ISLANDS:
             island_clean = clean_text(island)
@@ -594,15 +598,21 @@ class DiscordCommandCog(commands.Cog):
                 results.append((island, "❓", "Channel not found"))
                 continue
 
-            bot_id = island_bot_ids.get(island)
+            # Find the bot for this island by name: "Chobot <island name>"
+            # Bots share ISLAND_BOT_ROLE_ID and are named e.g. "Chobot Alapaap"
+            island_bot = None
+            if island_bot_role:
+                island_lower = island.lower()
+                for member in island_bot_role.members:
+                    if member.bot and member.display_name.lower() == f"chobot {island_lower}":
+                        island_bot = member
+                        break
 
-            # Check 1: If this island's bot ID is known, check its online presence first
-            if bot_id:
-                member = guild.get_member(bot_id)
-                if member and member.status != discord.Status.offline:
-                    results.append((island, "✅", "Bot online"))
-                    online_count += 1
-                    continue
+            # Check 1: If the island's bot is found and online, it's working
+            if island_bot and island_bot.status != discord.Status.offline:
+                results.append((island, "✅", "Bot online"))
+                online_count += 1
+                continue
 
             # Check 2: Scan recent channel messages for dodo codes or Chopaeng visitor
             try:
@@ -615,9 +625,10 @@ class DiscordCommandCog(commands.Cog):
             status_reason = ""
 
             for msg in messages:
-                # If this island's bot ID is known, only examine that bot's messages
-                if bot_id:
-                    if msg.author.id != bot_id:
+                # Only examine messages from this island's bot (if known),
+                # otherwise fall back to any bot in the channel
+                if island_bot:
+                    if msg.author.id != island_bot.id:
                         continue
                 elif not msg.author.bot:
                     continue
