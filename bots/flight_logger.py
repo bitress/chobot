@@ -409,7 +409,7 @@ class TravelerActionView(discord.ui.View):
             # Refresh message state if possible to avoid 404
             embed = message_to_edit.embeds[0]
             
-            # Remove investigation fields and note fields, update Status field
+            # Remove investigation fields and update Status field
             fields_to_keep = []
             for f in embed.fields:
                 if "🔍 Investigating" in f.name:
