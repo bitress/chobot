@@ -26,6 +26,8 @@ COLOR_INVESTIGATION = 0xF1C40F  # Amber/Yellow (for investigation)
 COLOR_WARN = 0xE67E22          # Orange (for warnings)
 COLOR_KICK = 0xF1C40F          # Yellow (for kicks)
 COLOR_BAN = 0x992D22           # Red (for bans)
+COLOR_DISMISS = 0x95A5A6       # Grey (for dismissed/false positives)
+COLOR_ALERT = 0xED4245         # Discord red (for unknown traveler alerts)
 
 # --- DATABASE SETUP ---
 DB_NAME = "warnings.db"
@@ -345,6 +347,37 @@ class AdmitConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="Admission cancelled.", view=None)
         self.stop()
 
+
+class NoteModal(discord.ui.Modal, title="Add Note"):
+    """Modal for adding a note to a flight alert."""
+    note_input = discord.ui.TextInput(
+        label="Note",
+        style=discord.TextStyle.paragraph,
+        placeholder="Enter your note about this traveler...",
+        required=True,
+        max_length=500
+    )
+
+    def __init__(self, parent_view: "TravelerActionView"):
+        super().__init__()
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            message_to_edit = interaction.message
+            embed = message_to_edit.embeds[0]
+            timestamp = int(discord.utils.utcnow().timestamp())
+            embed.add_field(
+                name=f"📝 Note by {interaction.user.display_name}",
+                value=f"{self.note_input.value}\n-# Added <t:{timestamp}:R>",
+                inline=False
+            )
+            await message_to_edit.edit(embed=embed)
+            await interaction.response.send_message("📝 Note added to the alert.", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error adding note: {e}")
+            await interaction.response.send_message(f"Error: {e}", ephemeral=True)
+
         
 class TravelerActionView(discord.ui.View):
     def __init__(self, bot=None, ign=None):
@@ -376,21 +409,31 @@ class TravelerActionView(discord.ui.View):
             # Refresh message state if possible to avoid 404
             embed = message_to_edit.embeds[0]
             
-            # Remove investigation field if it exists (case was under investigation)
-            fields_to_keep = [f for f in embed.fields if "🔍 Investigating" not in f.name]
+            # Remove investigation fields and note fields, update Status field
+            fields_to_keep = []
+            for f in embed.fields:
+                if "🔍 Investigating" in f.name:
+                    continue
+                if f.name == "📌 Status":
+                    # Replace Status field with resolved status
+                    fields_to_keep.append(("📌 Status", f"```diff\n+ {status_label}\n```", True))
+                else:
+                    fields_to_keep.append((f.name, f.value, f.inline))
+
             embed.clear_fields()
-            for field in fields_to_keep:
-                embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            for name, value, inline in fields_to_keep:
+                embed.add_field(name=name, value=value, inline=inline)
             
             # Update color and header
             embed.color = color
             embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
+            resolved_ts = int(discord.utils.utcnow().timestamp())
             embed.add_field(
                 name="<:ChoLove:818216528449241128> Action Taken",
-                value=f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}",
+                value=f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>",
                 inline=False
             )
-            self.disable_all_items()
+            self.clear_items()
             await message_to_edit.edit(embed=embed, view=self)
         except Exception as e:
             logger.error(f"Error editing original message: {e}")
@@ -419,6 +462,17 @@ class TravelerActionView(discord.ui.View):
 
             # Update author to show investigation status
             embed.set_author(name="🔍 UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
+
+            # Update Status field if it exists
+            updated_fields = []
+            for f in embed.fields:
+                if f.name == "📌 Status":
+                    updated_fields.append((f.name, "```fix\nINVESTIGATING\n```", f.inline))
+                else:
+                    updated_fields.append((f.name, f.value, f.inline))
+            embed.clear_fields()
+            for name, value, inline in updated_fields:
+                embed.add_field(name=name, value=value, inline=inline)
 
             # Add investigation field
             embed.add_field(
@@ -477,6 +531,25 @@ class TravelerActionView(discord.ui.View):
             return
         view = PunishmentBuilderView("BAN", self, log_message=interaction.message)
         await interaction.followup.send("<:Cho_Ban:1473530840725061793> **Build Ban:**", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="🗑️", custom_id="fl_dismiss", row=2)
+    async def dismiss_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Dismiss the alert as a false positive or non-threat."""
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+        ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
+        msg = f"**{ign or 'Visitor'}** dismissed as non-threat."
+        await self._resolve_alert(
+            interaction, "DISMISSED", COLOR_DISMISS, msg, log_message=interaction.message
+        )
+        await interaction.followup.send(f"🗑️ Alert for **{ign or 'Visitor'}** has been dismissed.", ephemeral=True)
+
+    @discord.ui.button(label="Note", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="fl_note", row=2)
+    async def note_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Add a note to the alert without taking action."""
+        await interaction.response.send_modal(NoteModal(self))
     
 class FlightLoggerCog(commands.Cog):
     def __init__(self, bot):
@@ -766,21 +839,26 @@ class FlightLoggerCog(commands.Cog):
             logger.info(f"[FLIGHT] Match: {ign} | {mentions}")
         else:
             destination_link = self.get_island_channel_link(destination)
+            alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
+
             embed = discord.Embed(
-                title=f"{Config.EMOJI_FAIL} UNKNOWN TRAVELER in {destination_link}",
                 description=(
-                    "**Identity Unknown:** Traveler is attempting to join but is not linked to a member.\n\n"
-                    "**Select an action below to resolve.**"
+                    f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
+                    f"An unregistered visitor is attempting to join **{destination_link}**.\n"
+                    f"Use the buttons below to take action."
                 ),
-                color=0xFF0000,
+                color=COLOR_ALERT,
                 timestamp=embed_timestamp
             )
             embed.add_field(name="👤 Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
             embed.add_field(name="🏝️ Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+            embed.add_field(name="✈️ Destination", value=f"```yaml\n{destination.title()}```", inline=True)
+            embed.add_field(name="🕐 Detected", value=f"<t:{alert_ts}:R>", inline=True)
+            embed.add_field(name="📌 Status", value="```diff\n- PENDING REVIEW\n```", inline=True)
             embed.set_image(url=Config.FOOTER_LINE)
             guild      = self.bot.get_guild(Config.GUILD_ID)
             guild_icon = guild.icon.url if guild and guild.icon else None
-            embed.set_footer(text="Chopaeng Camp™", icon_url=guild_icon)
+            embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
 
             view = TravelerActionView(self.bot, ign)
             await output_channel.send(embed=embed, view=view)
