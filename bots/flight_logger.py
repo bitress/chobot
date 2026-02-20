@@ -416,7 +416,7 @@ class TravelerActionView(discord.ui.View):
                     continue
                 if f.name == "📌 Status":
                     # Replace Status field with resolved status
-                    fields_to_keep.append(("📌 Status", f"```diff\n+ {status_label}\n```", True))
+                    fields_to_keep.append(("📌 Status", f"🟢 **{status_label}**", True))
                 else:
                     fields_to_keep.append((f.name, f.value, f.inline))
 
@@ -467,7 +467,7 @@ class TravelerActionView(discord.ui.View):
             updated_fields = []
             for f in embed.fields:
                 if f.name == "📌 Status":
-                    updated_fields.append((f.name, "```fix\nINVESTIGATING\n```", f.inline))
+                    updated_fields.append((f.name, "🟡 **INVESTIGATING**", f.inline))
                 else:
                     updated_fields.append((f.name, f.value, f.inline))
             embed.clear_fields()
@@ -854,7 +854,7 @@ class FlightLoggerCog(commands.Cog):
             embed.add_field(name="🏝️ Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
             embed.add_field(name="✈️ Destination", value=f"```yaml\n{destination.title()}```", inline=True)
             embed.add_field(name="🕐 Detected", value=f"<t:{alert_ts}:R>", inline=True)
-            embed.add_field(name="📌 Status", value="```diff\n- PENDING REVIEW\n```", inline=True)
+            embed.add_field(name="📌 Status", value="🔴 **PENDING REVIEW**", inline=True)
             embed.set_image(url=Config.FOOTER_LINE)
             guild      = self.bot.get_guild(Config.GUILD_ID)
             guild_icon = guild.icon.url if guild and guild.icon else None
