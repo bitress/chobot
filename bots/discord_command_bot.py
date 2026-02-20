@@ -459,11 +459,32 @@ class DiscordCommandCog(commands.Cog):
         )
         
         embed.add_field(
+            name=f"{Config.STAR_PINK} Flight Logger (Automatic)",
+            value=(
+                "🛫 Monitors island visitor arrivals in real time\n"
+                "🔍 Alerts staff when unknown travelers are detected\n"
+                "🛡️ Staff can Admit, Warn, Kick, or Ban via buttons\n"
+                "📋 Tracks warnings and moderation history per user"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
             name=f"{Config.STAR_PINK} Admin Commands",
             value="`!refresh` - Manually refresh cache (Admin only)",
             inline=False
         )
-        
+
+        embed.add_field(
+            name="💡 Tips",
+            value=(
+                "• Use `/find` or `/villager` for slash command support\n"
+                "• Try `!random` to discover items you might have missed\n"
+                "• All search commands support fuzzy matching"
+            ),
+            inline=False
+        )
+
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", 
                         icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP)
         embed.set_image(url=Config.FOOTER_LINE)
