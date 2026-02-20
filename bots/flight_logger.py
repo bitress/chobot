@@ -31,6 +31,7 @@ COLOR_ALERT = 0xED4245         # Discord red (for unknown traveler alerts)
 
 # --- DATABASE SETUP ---
 DB_NAME = "warnings.db"
+WARN_EXPIRY_DAYS = 7
 
 # --- DATABASE HELPERS ---
 async def init_db():
@@ -562,6 +563,7 @@ class FlightLoggerCog(commands.Cog):
         self._db_conn = None
         self.last_processed = None
         self.fetch_islands_task.start()
+        self.cleanup_warnings_task.start()
 
     async def _get_db(self):
         if self._db_conn is None:
@@ -574,7 +576,7 @@ class FlightLoggerCog(commands.Cog):
                          (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp())))
         await db.commit()
 
-    async def get_warn_count(self, user_id: int, guild_id: int, days: int = 3):
+    async def get_warn_count(self, user_id: int, guild_id: int, days: int = WARN_EXPIRY_DAYS):
         db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
         cursor = await db.execute(
@@ -620,6 +622,19 @@ class FlightLoggerCog(commands.Cog):
         )
         rows = await cursor.fetchall()
         return [{"reason": r[0], "mod_id": r[1], "timestamp": r[2]} for r in rows]
+
+    async def cleanup_expired_warnings(self):
+        """Delete warnings older than WARN_EXPIRY_DAYS from the database."""
+        db = await self._get_db()
+        cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=WARN_EXPIRY_DAYS)).timestamp())
+        cursor = await db.execute(
+            "DELETE FROM warnings WHERE timestamp < ?", (cutoff,)
+        )
+        count = cursor.rowcount
+        await db.commit()
+        if count > 0:
+            logger.info(f"[FLIGHT] Expired {count} warning(s) older than {WARN_EXPIRY_DAYS} days.")
+        return count
 
     async def _execute_punishment_internal(self, interaction, target, action_type, reason_text, duration_str, original_view, log_message):
         """Unified internal method for handling moderation actions."""
@@ -688,7 +703,7 @@ class FlightLoggerCog(commands.Cog):
             # 4. Database Log
             await self.add_warning(target.id, guild.id, reason_text, mod.id)
             # Use small delay to ensure DB consistency (though commit is awaited)
-            new_count = await self.get_warn_count(target.id, guild.id, days=3)
+            new_count = await self.get_warn_count(target.id, guild.id, days=WARN_EXPIRY_DAYS)
 
             # 5. Log to Sapphire Channel
             log_embed = create_sapphire_log(target, mod, reason_text, case_id, new_count, final_duration, action_verb)
@@ -720,6 +735,7 @@ class FlightLoggerCog(commands.Cog):
 
     def cog_unload(self):
         self.fetch_islands_task.cancel()
+        self.cleanup_warnings_task.cancel()
         if self._db_conn:
             asyncio.create_task(self._db_conn.close())
 
@@ -731,6 +747,15 @@ class FlightLoggerCog(commands.Cog):
     async def before_fetch(self):
         await self.bot.wait_until_ready()
         await self.fetch_islands()
+
+    @tasks.loop(hours=6)
+    async def cleanup_warnings_task(self):
+        """Periodically remove warnings older than WARN_EXPIRY_DAYS."""
+        await self.cleanup_expired_warnings()
+
+    @cleanup_warnings_task.before_loop
+    async def before_cleanup(self):
+        await self.bot.wait_until_ready()
 
     async def fetch_islands(self):
         """Fetch island channels from Discord"""
