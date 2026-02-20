@@ -664,26 +664,20 @@ class DiscordCommandCog(commands.Cog):
 
         # Build embed
         total = len(Config.SUB_ISLANDS)
-        active_label = "🟢 All active" if online_count == total else f"🟡 {online_count} active, {total - online_count} inactive" if online_count > 0 else "🔴 None active"
         embed = discord.Embed(
             title="🏝️ Sub Island Status",
-            description=f"{active_label} — {total} islands checked",
+            description=f"**{online_count}/{total}** islands active",
             color=discord.Color.green() if online_count == total else (
                 discord.Color.orange() if online_count > 0 else discord.Color.red()
             ),
             timestamp=discord.utils.utcnow()
         )
 
-        # Single ordered list: one line per island with channel link and reason
-        lines = []
-        for name, status, reason, ch_id in results:
-            channel_ref = f"<#{ch_id}>" if ch_id else f"**{name}**"
-            lines.append(f"{status} {channel_ref} — {reason}")
+        online_lines = [f"<#{ch_id}>" if ch_id else f"**{name}**" for name, status, _, ch_id in results if status == "✅"]
+        offline_lines = [f"<#{ch_id}>" if ch_id else f"**{name}**" for name, status, _, ch_id in results if status != "✅"]
 
-        # Split into two inline fields (9 islands each) for a cleaner two-column layout
-        mid = (len(lines) + 1) // 2
-        embed.add_field(name="\u200b", value="\n".join(lines[:mid]), inline=True)
-        embed.add_field(name="\u200b", value="\n".join(lines[mid:]), inline=True)
+        embed.add_field(name="🟢 ONLINE", value="\n".join(online_lines) or "*none*", inline=True)
+        embed.add_field(name="🔴 OFFLINE", value="\n".join(offline_lines) or "*none*", inline=True)
 
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
