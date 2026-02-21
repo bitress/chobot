@@ -156,22 +156,37 @@ class DataManager:
 
             temp_cache["_display"] = display_map
 
-            # Guard: only replace cache if we actually got meaningful data
-            if sheets_scanned > 0 and len(temp_cache) > 1:
+            new_item_count = sum(1 for k in temp_cache if k != "_display")
+            with self.lock:
+                old_item_count = sum(1 for k in self.cache if k != "_display")
+
+            # Replace cache only when the scan was sufficiently complete:
+            # - all sheets were read successfully, OR
+            # - there was no existing data (first run), OR
+            # - new data has at least as many items as the old cache
+            #   (guards against a partial refresh silently wiping valid data)
+            sufficient = (
+                sheets_failed == 0
+                or old_item_count == 0
+                or new_item_count >= old_item_count
+            )
+
+            if sheets_scanned > 0 and new_item_count > 0 and sufficient:
                 with self.lock:
                     self.cache = temp_cache
                     self.last_update = datetime.now()
 
                 self.save_local_cache()
                 logger.info(
-                    f"Scan complete. {len(temp_cache)} items loaded from "
+                    f"Scan complete. {new_item_count} items loaded from "
                     f"{sheets_scanned} sheets ({sheets_failed} failed)."
                 )
             else:
                 logger.warning(
-                    f"Cache refresh produced too few items "
-                    f"({len(temp_cache)} items from {sheets_scanned}/{len(worksheets)} sheets, "
-                    f"{sheets_failed} failed). Keeping existing cache ({len(self.cache)} items)."
+                    f"Cache refresh produced insufficient data "
+                    f"({new_item_count} new vs {old_item_count} existing items, "
+                    f"{sheets_scanned}/{len(worksheets)} sheets scanned, "
+                    f"{sheets_failed} failed). Keeping existing cache."
                 )
 
         except Exception as e:

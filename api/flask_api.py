@@ -41,12 +41,14 @@ patreon_cache = {
 # Data manager will be set from main.py
 data_manager = None
 
+# Guard: prevents multiple concurrent cache-refresh operations
+_refresh_lock = threading.Lock()
+
 
 def set_data_manager(dm):
     """Set the data manager instance"""
     global data_manager
     data_manager = dm
-
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -203,6 +205,7 @@ def home():
             "islands": "/api/islands",
             "patreon": "/api/patreon/posts, /api/patreon/posts/<id>",
             "status": "/status",
+            "refresh": "/api/refresh (POST)",
             "health": "/health"
         }
     })
@@ -491,6 +494,23 @@ def status():
         count = len(data_manager.cache)
         last_up = data_manager.last_update.strftime("%H:%M:%S") if data_manager.last_update else "Loading..."
     return f"Items: {count} | Last Update: {last_up}"
+
+
+@app.route('/api/refresh', methods=['POST'])
+def api_refresh():
+    """Manually trigger a cache refresh from Google Sheets"""
+    if not _refresh_lock.acquire(blocking=False):
+        return jsonify({"status": "refresh already in progress"}), 429
+
+    def _run():
+        try:
+            data_manager.update_cache()
+        finally:
+            _refresh_lock.release()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"status": "refresh started"}), 202
 
 
 def run_flask_app(host='0.0.0.0', port=8100):

@@ -3,6 +3,7 @@ Discord Command Bot Module
 Handles Discord commands for item and villager search with rich embeds
 """
 
+import asyncio
 import time
 import re
 import random
@@ -691,7 +692,8 @@ class DiscordCommandCog(commands.Cog):
     async def refresh(self, ctx):
         """Manually refresh cache (Mods only)"""
         await ctx.send("Refreshing cache and island links...")
-        self.data_manager.update_cache()
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.data_manager.update_cache)
         await self.fetch_islands()
         count = len(getattr(self, 'island_map', {})) 
         await ctx.send(f"Done. Linked {count} islands.")
