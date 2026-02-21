@@ -4,11 +4,58 @@ Common functions used across bots and APIs
 """
 
 import re
+import time
 import unicodedata
-from typing import List, Set, Optional
+from typing import List, Set, Optional, Dict
 from thefuzz import process, fuzz
 
 from utils import Config
+
+
+# ============================================================================
+# COOLDOWN MANAGEMENT
+# ============================================================================
+
+class CooldownManager:
+    """Manage user cooldowns with automatic cleanup"""
+    
+    def __init__(self, cleanup_threshold: int = 100, cleanup_age: int = 60):
+        """Initialize cooldown manager
+        
+        Args:
+            cleanup_threshold: Number of entries before cleanup triggers
+            cleanup_age: Age in seconds to keep entries during cleanup
+        """
+        self.cooldowns: Dict[str, float] = {}
+        self.cleanup_threshold = cleanup_threshold
+        self.cleanup_age = cleanup_age
+    
+    def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
+        """Check if user is on cooldown
+        
+        Args:
+            user_id: User identifier
+            cooldown_sec: Cooldown period in seconds
+            
+        Returns:
+            True if user is on cooldown, False otherwise
+        """
+        now = time.time()
+        if user_id in self.cooldowns:
+            if now - self.cooldowns[user_id] < cooldown_sec:
+                return True
+        self.cooldowns[user_id] = now
+
+        # Periodic cleanup: prune entries older than cleanup_age
+        if len(self.cooldowns) > self.cleanup_threshold:
+            self.cooldowns = {k: v for k, v in self.cooldowns.items() if now - v < self.cleanup_age}
+
+        return False
+
+
+# ============================================================================
+# TEXT NORMALIZATION
+# ============================================================================
 
 
 def normalize_text(s: str) -> str:

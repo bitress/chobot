@@ -10,7 +10,7 @@ from twitchio.ext import commands
 from thefuzz import process, fuzz
 
 from utils.config import Config
-from utils.helpers import normalize_text, get_best_suggestions, clean_text, format_locations_text
+from utils.helpers import normalize_text, get_best_suggestions, clean_text, format_locations_text, CooldownManager
 
 logger = logging.getLogger("TwitchBot")
 
@@ -25,7 +25,7 @@ class TwitchBot(commands.Bot):
             initial_channels=[Config.TWITCH_CHANNEL]
         )
         self.data_manager = data_manager
-        self.cooldowns = {}
+        self.cooldown_manager = CooldownManager()
         self.start_time = time.time()  # Track bot start time for uptime
 
     async def event_ready(self):
@@ -46,20 +46,6 @@ class TwitchBot(commands.Bot):
 
         await self.handle_commands(message)
 
-    def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
-        """Check if user is on cooldown"""
-        now = time.time()
-        if user_id in self.cooldowns:
-            if now - self.cooldowns[user_id] < cooldown_sec:
-                return True
-        self.cooldowns[user_id] = now
-
-        # Periodic cleanup: prune entries older than 60s every 100 entries
-        if len(self.cooldowns) > 100:
-            self.cooldowns = {k: v for k, v in self.cooldowns.items() if now - v < 60}
-
-        return False
-
     @commands.command(aliases=['locate', 'where', 'lookup', 'lp', 'search'])
     async def find(self, ctx: commands.Context, *, item: str = ""):
         """Find an item command"""
@@ -67,7 +53,7 @@ class TwitchBot(commands.Bot):
             await ctx.send(f"Usage: !find <item name>")
             return
 
-        if self.check_cooldown(str(ctx.author.id)):
+        if self.cooldown_manager.check_cooldown(str(ctx.author.id)):
             return
 
         search_term_raw = item.strip()
@@ -120,7 +106,7 @@ class TwitchBot(commands.Bot):
             await ctx.send(f"Usage: !villager <name>")
             return
 
-        if self.check_cooldown(str(ctx.author.id)):
+        if self.cooldown_manager.check_cooldown(str(ctx.author.id)):
             return
 
         search_term_raw = name.strip()
