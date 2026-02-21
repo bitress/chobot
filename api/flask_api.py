@@ -11,6 +11,7 @@ import re
 import time
 import logging
 import threading
+from typing import Optional, Dict, Tuple, Any
 from datetime import datetime, timedelta
 
 import requests
@@ -52,7 +53,7 @@ def set_data_manager(dm):
 # HELPER FUNCTIONS
 # ============================================================================
 
-def extract_image_from_html(html_content):
+def extract_image_from_html(html_content: str) -> Optional[str]:
     """Extract image URL from HTML content"""
     if not html_content:
         return None
@@ -60,7 +61,7 @@ def extract_image_from_html(html_content):
     return match.group(1) if match else None
 
 
-def process_post_attributes(post_id, attrs):
+def process_post_attributes(post_id: str, attrs: Dict[str, Any]) -> Dict[str, Any]:
     """Process Patreon post attributes"""
     image_url = None
 
@@ -89,12 +90,12 @@ def process_post_attributes(post_id, attrs):
     }
 
 
-_file_cache: dict = {}
+_file_cache: Dict[str, Tuple[str, float]] = {}
 _file_cache_lock = threading.Lock()
 _FILE_CACHE_TTL = 3  # seconds
 
 
-def get_file_content(folder_path, filename):
+def get_file_content(folder_path: str, filename: str) -> Optional[str]:
     """Read file content safely with caching and retry to reduce file-lock contention.
 
     The C# SysBot writes to these files with exclusive access (FileShare.None).
@@ -121,10 +122,12 @@ def get_file_content(folder_path, filename):
             with _file_cache_lock:
                 _file_cache[path] = (content, time.monotonic())
             return content
-        except OSError:
+        except OSError as e:
             if attempt < 2:
+                logger.debug(f"File read attempt {attempt + 1} failed for {path}: {e}")
                 time.sleep(0.05)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Unexpected error reading file {path}: {e}")
             break
 
     # Return stale cache rather than None if the file is still locked
@@ -135,7 +138,7 @@ def get_file_content(folder_path, filename):
     return None
 
 
-def process_island(entry, island_type):
+def process_island(entry: os.DirEntry, island_type: str) -> Dict[str, str]:
     """Process island data for Dodo API"""
     name = entry.name.upper()
 
@@ -493,7 +496,7 @@ def status():
     return f"Items: {count} | Last Update: {last_up}"
 
 
-def run_flask_app(host='0.0.0.0', port=8100):
+def run_flask_app(host: str = '0.0.0.0', port: int = 8100) -> None:
     """Run Flask app"""
     logger.info(f"[FLASK] Starting API server on {host}:{port}...")
     app.run(host=host, port=port, debug=False, use_reloader=False)

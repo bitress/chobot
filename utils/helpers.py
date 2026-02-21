@@ -5,6 +5,7 @@ Common functions used across bots and APIs
 
 import re
 import unicodedata
+from typing import List, Set, Optional
 from thefuzz import process, fuzz
 
 from utils import Config
@@ -45,7 +46,7 @@ def clean_text(text: str) -> str:
     return "".join(ch for ch in result if ch.isalnum()).lower()
 
 
-def tokenize(s: str) -> set:
+def tokenize(s: str) -> Set[str]:
     """Tokenize text for searching"""
     s = normalize_text(s)
     return set(t for t in s.split(" ") if t)
@@ -63,7 +64,7 @@ def smart_threshold(query: str) -> int:
     return 80
 
 
-def format_locations_text(locations_str: str):
+def format_locations_text(locations_str: str) -> str:
     """Format locations for text output (Twitch)"""
     locs_list = list(set(locations_str.split(", ")))
     free_islands = []
@@ -89,7 +90,7 @@ def format_locations_text(locations_str: str):
     return " and ".join(parts)
 
 
-def parse_locations_json(locations_str: str):
+def parse_locations_json(locations_str: str) -> tuple[List[str], List[str]]:
     """Parse locations for JSON API response"""
     locs_list = list(set(locations_str.split(", ")))
     free_islands = [loc for loc in locs_list if loc in Config.FREE_ISLANDS]
@@ -97,7 +98,7 @@ def parse_locations_json(locations_str: str):
     return free_islands, sub_islands
 
 
-def get_best_suggestions(query: str, keys: list, limit: int = 8) -> list:
+def get_best_suggestions(query: str, keys: List[str], limit: int = 8) -> List[str]:
     """Get best fuzzy match suggestions for a query"""
     qn = normalize_text(query)
     if not qn:
