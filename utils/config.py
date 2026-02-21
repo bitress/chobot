@@ -103,11 +103,11 @@ class Config:
         required_vars = [
             'TWITCH_TOKEN', 'TWITCH_CHANNEL', 'DISCORD_TOKEN',
             'WORKBOOK_NAME', 'GUILD_ID', 'CATEGORY_ID',
-            'PATREON_TOKEN', 'PATREON_CAMPAIGN_ID'
+            'PATREON_TOKEN', 'PATREON_CAMPAIGN_ID',
+            'FLIGHT_LISTEN_CHANNEL_ID', 'FLIGHT_LOG_CHANNEL_ID'
         ]
 
         missing = []
-        invalid = []
         
         for var in required_vars:
             val = getattr(cls, var, None)
@@ -118,24 +118,9 @@ class Config:
             # Check for Empty Strings (if it's a string)
             elif isinstance(val, str) and not val.strip():
                 missing.append(var)
-            # Validate integer IDs are actually integers
-            elif var.endswith('_ID') and isinstance(val, str):
-                invalid.append(f"{var} (expected integer, got string)")
-        
-        # Validate channel IDs for flight logger
-        if cls.FLIGHT_LISTEN_CHANNEL_ID is None:
-            missing.append('FLIGHT_LISTEN_CHANNEL_ID')
-        if cls.FLIGHT_LOG_CHANNEL_ID is None:
-            missing.append('FLIGHT_LOG_CHANNEL_ID')
 
-        errors = []
         if missing:
-            errors.append(f"Missing required environment variables: {', '.join(missing)}")
-        if invalid:
-            errors.append(f"Invalid configuration values: {', '.join(invalid)}")
-            
-        if errors:
-            raise ValueError('\n'.join(errors))
+            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
         return True
 

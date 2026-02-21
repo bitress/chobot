@@ -68,12 +68,7 @@ def validate_search_query(query: str, max_length: int = 100) -> Optional[str]:
     
     # Trim and check length
     query = query.strip()
-    if len(query) > max_length:
-        return None
-    
-    # Remove potentially dangerous characters but keep alphanumeric and common punctuation
-    # This prevents injection while allowing normal item names
-    if not query:
+    if len(query) > max_length or len(query) == 0:
         return None
         
     return query
