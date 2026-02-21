@@ -157,9 +157,9 @@ def expand_services(requested: Set[str]) -> dict:
 def run_flask(data_manager: DataManager):
     """Run Flask API server in a thread."""
     try:
-        logger.info("[FLASK] Starting Flask API...")
+        logger.info(f"[FLASK] Starting Flask API on {Config.FLASK_HOST}:{Config.FLASK_PORT}...")
         set_data_manager(data_manager)
-        run_flask_app(host="0.0.0.0", port=8100)
+        run_flask_app(host=Config.FLASK_HOST, port=Config.FLASK_PORT)
     except Exception as e:
         logger.error(f"[FLASK] Critical error: {e}")
         logger.error(traceback.format_exc())
@@ -184,12 +184,12 @@ def run_twitch(data_manager: DataManager, find_only: bool = False):
         logger.error(traceback.format_exc())
         STOP_EVENT.set()
     finally:
-        try:
-            if loop and not loop.is_closed():
+        if loop and not loop.is_closed():
+            try:
                 loop.stop()
                 loop.close()
-        except Exception:
-            pass
+            except Exception as cleanup_err:
+                logger.warning(f"[TWITCH] Error during loop cleanup: {cleanup_err}")
 
 
 # ============================================================================
@@ -298,11 +298,8 @@ def main():
         logger.warning(f"[MAIN] Signal {signum} received. Shutting down...")
         STOP_EVENT.set()
 
-    try:
-        signal.signal(signal.SIGINT, _handle_signal)
-        signal.signal(signal.SIGTERM, _handle_signal)
-    except Exception:
-        pass
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
 
     # ---- Start requested services ------------------------------------------
     threads: list[threading.Thread] = []
@@ -358,10 +355,9 @@ def main():
     STOP_EVENT.set()
 
     for t in threads:
-        try:
-            t.join(timeout=5)
-        except Exception:
-            pass
+        t.join(timeout=5)
+        if t.is_alive():
+            logger.warning(f"[MAIN] Thread {t.name} did not terminate within timeout")
 
     logger.info("=" * 70)
     logger.info("APPLICATION SHUTDOWN COMPLETE")

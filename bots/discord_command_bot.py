@@ -16,7 +16,7 @@ from discord.ext import commands, tasks
 from thefuzz import process, fuzz
 
 from utils.config import Config
-from utils.helpers import normalize_text, get_best_suggestions, clean_text
+from utils.helpers import normalize_text, get_best_suggestions, clean_text, CooldownManager
 from utils.nookipedia import NookipediaClient
 
 logger = logging.getLogger("DiscordCommandBot")
@@ -120,7 +120,7 @@ class DiscordCommandCog(commands.Cog):
     def __init__(self, bot, data_manager):
         self.bot = bot
         self.data_manager = data_manager
-        self.cooldowns = {}
+        self.cooldown_manager = CooldownManager()
         self.sub_island_lookup = {}
 
         self.auto_refresh_cache.start()
@@ -184,20 +184,6 @@ class DiscordCommandCog(commands.Cog):
     def cog_unload(self):
         """Cleanup on unload"""
         self.auto_refresh_cache.cancel()
-
-    def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
-        """Check if user is on cooldown"""
-        now = time.time()
-        if user_id in self.cooldowns:
-            if now - self.cooldowns[user_id] < cooldown_sec:
-                return True
-        self.cooldowns[user_id] = now
-
-        # Periodic cleanup: prune entries older than 60s every 100 entries
-        if len(self.cooldowns) > 100:
-            self.cooldowns = {k: v for k, v in self.cooldowns.items() if now - v < 60}
-
-        return False
 
     def create_found_embed(self, ctx_or_interaction, search_term, location_string, is_villager=False, nooki_data=None):
 
@@ -347,7 +333,7 @@ class DiscordCommandCog(commands.Cog):
             await ctx.send("Usage: `!find <item name>`")
             return
 
-        if self.check_cooldown(str(ctx.author.id)):
+        if self.cooldown_manager.check_cooldown(str(ctx.author.id)):
             return
 
         search_term_raw = item.strip()
@@ -394,7 +380,7 @@ class DiscordCommandCog(commands.Cog):
             await ctx.send("Usage: `!villager <n>`")
             return
 
-        if self.check_cooldown(str(ctx.author.id)):
+        if self.cooldown_manager.check_cooldown(str(ctx.author.id)):
             return
 
         search_term = normalize_text(name)

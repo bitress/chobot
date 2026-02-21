@@ -4,10 +4,58 @@ Common functions used across bots and APIs
 """
 
 import re
+import time
 import unicodedata
+from typing import List, Set, Optional, Dict
 from thefuzz import process, fuzz
 
 from utils import Config
+
+
+# ============================================================================
+# COOLDOWN MANAGEMENT
+# ============================================================================
+
+class CooldownManager:
+    """Manage user cooldowns with automatic cleanup"""
+    
+    def __init__(self, cleanup_threshold: int = 100, cleanup_age: int = 60):
+        """Initialize cooldown manager
+        
+        Args:
+            cleanup_threshold: Number of entries before cleanup triggers
+            cleanup_age: Age in seconds to keep entries during cleanup
+        """
+        self.cooldowns: Dict[str, float] = {}
+        self.cleanup_threshold = cleanup_threshold
+        self.cleanup_age = cleanup_age
+    
+    def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
+        """Check if user is on cooldown
+        
+        Args:
+            user_id: User identifier
+            cooldown_sec: Cooldown period in seconds
+            
+        Returns:
+            True if user is on cooldown, False otherwise
+        """
+        now = time.time()
+        if user_id in self.cooldowns:
+            if now - self.cooldowns[user_id] < cooldown_sec:
+                return True
+        self.cooldowns[user_id] = now
+
+        # Periodic cleanup: prune entries older than cleanup_age
+        if len(self.cooldowns) > self.cleanup_threshold:
+            self.cooldowns = {k: v for k, v in self.cooldowns.items() if now - v < self.cleanup_age}
+
+        return False
+
+
+# ============================================================================
+# TEXT NORMALIZATION
+# ============================================================================
 
 
 def normalize_text(s: str) -> str:
@@ -45,7 +93,7 @@ def clean_text(text: str) -> str:
     return "".join(ch for ch in result if ch.isalnum()).lower()
 
 
-def tokenize(s: str) -> set:
+def tokenize(s: str) -> Set[str]:
     """Tokenize text for searching"""
     s = normalize_text(s)
     return set(t for t in s.split(" ") if t)
@@ -63,7 +111,7 @@ def smart_threshold(query: str) -> int:
     return 80
 
 
-def format_locations_text(locations_str: str):
+def format_locations_text(locations_str: str) -> str:
     """Format locations for text output (Twitch)"""
     locs_list = list(set(locations_str.split(", ")))
     free_islands = []
@@ -89,7 +137,7 @@ def format_locations_text(locations_str: str):
     return " and ".join(parts)
 
 
-def parse_locations_json(locations_str: str):
+def parse_locations_json(locations_str: str) -> tuple[List[str], List[str]]:
     """Parse locations for JSON API response"""
     locs_list = list(set(locations_str.split(", ")))
     free_islands = [loc for loc in locs_list if loc in Config.FREE_ISLANDS]
@@ -97,7 +145,7 @@ def parse_locations_json(locations_str: str):
     return free_islands, sub_islands
 
 
-def get_best_suggestions(query: str, keys: list, limit: int = 8) -> list:
+def get_best_suggestions(query: str, keys: List[str], limit: int = 8) -> List[str]:
     """Get best fuzzy match suggestions for a query"""
     qn = normalize_text(query)
     if not qn:
