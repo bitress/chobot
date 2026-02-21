@@ -13,6 +13,8 @@ import json
 from datetime import datetime
 import gspread
 
+from utils.helpers import normalize_text
+
 logger = logging.getLogger("DataManager")
 CACHE_FILE = "cache_dump.json"
 
@@ -64,7 +66,7 @@ class DataManager:
                     url = item.get("url")
 
                     if name and url:
-                        key = self.normalize_text(name)
+                        key = normalize_text(name)
                         if key not in self.image_cache:
                             self.image_cache[key] = url
                             count += 1
@@ -74,13 +76,6 @@ class DataManager:
             logger.warning("acnh.json not found! Images will not display.")
         except Exception as e:
             logger.error(f"Failed to load image catalog: {e}")
-
-    def normalize_text(self, s: str) -> str:
-        """Normalize text for searching"""
-        s = s.lower().strip()
-        s = re.sub(r"[^\w\s]", " ", s)
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
 
     def load_local_cache(self):
         """Load cache from local JSON file to avoid API latency"""
@@ -131,7 +126,7 @@ class DataManager:
                         for cell in row:
                             item_name = cell.strip()
                             if item_name:
-                                key = self.normalize_text(item_name)
+                                key = normalize_text(item_name)
 
                                 # Store display name
                                 if key not in display_map:

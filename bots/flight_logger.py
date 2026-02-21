@@ -30,8 +30,8 @@ COLOR_DISMISS = 0x95A5A6       # Grey (for dismissed/false positives)
 COLOR_ALERT = 0xED4245         # Discord red (for unknown traveler alerts)
 
 # --- DATABASE SETUP ---
-DB_NAME = "warnings.db"
-WARN_EXPIRY_DAYS = 7
+DB_NAME = Config.WARNINGS_DB_NAME
+WARN_EXPIRY_DAYS = Config.WARN_EXPIRY_DAYS
 
 # --- DATABASE HELPERS ---
 async def init_db():

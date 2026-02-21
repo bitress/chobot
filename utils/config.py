@@ -19,7 +19,7 @@ class Config:
     """Application configuration"""
 
     @staticmethod
-    def _get_int(key, default=None):
+    def _get_int(key: str, default: int = None) -> int:
         """Helper to safely fetch and convert env vars to int"""
         val = os.getenv(key)
         if val and val.strip().isdigit():
@@ -40,18 +40,11 @@ class Config:
     LOG_CHANNEL_ID = _get_int('CHANNEL_ID')
     ISLAND_ACCESS_ROLE = _get_int('ISLAND_ACCESS_ROLE', 788749941949464577)
 
-    # Environment Specific Channels
-    if IS_PRODUCTION:
-        FLIGHT_LISTEN_CHANNEL_ID = _get_int('FLIGHT_LISTEN_CHANNEL_ID')
-        FLIGHT_LOG_CHANNEL_ID = _get_int('FLIGHT_LOG_CHANNEL_ID')
-        IGNORE_CHANNEL_ID = _get_int('IGNORE_CHANNEL_ID')
-        SUB_MOD_CHANNEL_ID = _get_int('SUB_MOD_CHANNEL_ID')
-    else:
-        # Development / Fallback IDs
-        FLIGHT_LISTEN_CHANNEL_ID = 1473286697461616732
-        FLIGHT_LOG_CHANNEL_ID = 1473286727224524915
-        IGNORE_CHANNEL_ID = 809295405128089611
-        SUB_MOD_CHANNEL_ID = 1473286794995830845
+    # Flight Logger Channel IDs (Required for all environments)
+    FLIGHT_LISTEN_CHANNEL_ID = _get_int('FLIGHT_LISTEN_CHANNEL_ID')
+    FLIGHT_LOG_CHANNEL_ID = _get_int('FLIGHT_LOG_CHANNEL_ID')
+    IGNORE_CHANNEL_ID = _get_int('IGNORE_CHANNEL_ID')
+    SUB_MOD_CHANNEL_ID = _get_int('SUB_MOD_CHANNEL_ID')
 
     # Patreon
     PATREON_TOKEN = os.getenv("PATREON_TOKEN")
@@ -60,10 +53,9 @@ class Config:
     # Nookipedia
     NOOKIPEDIA_KEY = os.getenv("NOOKIPEDIA_KEY")
 
-    # Google Sheets
-    WORKBOOK_NAME = os.getenv('WORKBOOK_NAME')
-    JSON_KEYFILE = 'service_account.json'
-    CACHE_REFRESH_HOURS = 1
+    # API Configuration
+    FLASK_HOST = os.getenv('FLASK_HOST', '0.0.0.0')
+    FLASK_PORT = _get_int('FLASK_PORT', 8100)
 
     # Villagers & Dodo Directories
     VILLAGERS_DIR = os.getenv('VILLAGERS_DIR')
@@ -72,6 +64,10 @@ class Config:
     # Logic: Free users access Twitch dir, VIPs access standard dir
     DIR_FREE = TWITCH_VILLAGERS_DIR
     DIR_VIP = VILLAGERS_DIR
+
+    # Warning System Configuration
+    WARN_EXPIRY_DAYS = _get_int('WARN_EXPIRY_DAYS', 7)
+    WARNINGS_DB_NAME = os.getenv('WARNINGS_DB_NAME', 'warnings.db')
 
     # Island Lists
     SUB_ISLANDS = [
