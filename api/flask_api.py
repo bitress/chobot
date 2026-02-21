@@ -50,6 +50,36 @@ def set_data_manager(dm):
 
 
 # ============================================================================
+# INPUT VALIDATION
+# ============================================================================
+
+def validate_search_query(query: str, max_length: int = 100) -> Optional[str]:
+    """Validate and sanitize search query
+    
+    Args:
+        query: Search query to validate
+        max_length: Maximum allowed length
+        
+    Returns:
+        Sanitized query or None if invalid
+    """
+    if not query or not isinstance(query, str):
+        return None
+    
+    # Trim and check length
+    query = query.strip()
+    if len(query) > max_length:
+        return None
+    
+    # Remove potentially dangerous characters but keep alphanumeric and common punctuation
+    # This prevents injection while allowing normal item names
+    if not query:
+        return None
+        
+    return query
+
+
+# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
@@ -238,8 +268,14 @@ def health():
 def find_item():
     """Text response for item search"""
     user = request.args.get('user', 'User')
-    query = normalize_text(request.args.get('q', ''))
-
+    raw_query = request.args.get('q', '')
+    
+    # Validate input
+    validated_query = validate_search_query(raw_query)
+    if not validated_query:
+        return f"Hey {user}, type !find <item name> to search."
+    
+    query = normalize_text(validated_query)
     if not query:
         return f"Hey {user}, type !find <item name> to search."
 
@@ -266,8 +302,14 @@ def find_item():
 def api_find_item():
     """JSON response for item search"""
     user = request.args.get('user', 'User')
-    query = normalize_text(request.args.get('q', ''))
-
+    raw_query = request.args.get('q', '')
+    
+    # Validate input
+    validated_query = validate_search_query(raw_query)
+    if not validated_query:
+        return jsonify({"found": False, "message": f"Hey {user}, type !find <item name> to search."})
+    
+    query = normalize_text(validated_query)
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !find <item name> to search."})
 
@@ -312,8 +354,14 @@ def api_find_item():
 def find_villager():
     """Text response for villager search"""
     user = request.args.get('user', 'User')
-    query = normalize_text(request.args.get('q', ''))
-
+    raw_query = request.args.get('q', '')
+    
+    # Validate input
+    validated_query = validate_search_query(raw_query)
+    if not validated_query:
+        return f"Hey {user}, type !villager <n> to search."
+    
+    query = normalize_text(validated_query)
     if not query:
         return f"Hey {user}, type !villager <n> to search."
 
@@ -338,8 +386,14 @@ def find_villager():
 def api_find_villager():
     """JSON response for villager search"""
     user = request.args.get('user', 'User')
-    query = normalize_text(request.args.get('q', ''))
-
+    raw_query = request.args.get('q', '')
+    
+    # Validate input
+    validated_query = validate_search_query(raw_query)
+    if not validated_query:
+        return jsonify({"found": False, "message": f"Hey {user}, type !villager <n> to search."})
+    
+    query = normalize_text(validated_query)
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !villager <n> to search."})
 
