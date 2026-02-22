@@ -45,6 +45,9 @@ data_manager = None
 # Guard: prevents multiple concurrent cache-refresh operations
 _refresh_lock = threading.Lock()
 
+# Pre-computed case-insensitive SUB_ISLANDS lookup for performance
+_sub_islands_upper = {island.upper(): island for island in Config.SUB_ISLANDS}
+
 
 def set_data_manager(dm):
     """Set the data manager instance"""
@@ -166,13 +169,13 @@ def process_island(entry, island_type):
     is_bot_offline = False
     
     # Check if this island is tracked by Discord (VIP/SUB islands)
-    # Match island name case-insensitively
-    island_name_for_lookup = entry.name  # e.g., "Alapaap", "Aruga"
+    # Use pre-computed case-insensitive lookup for performance
+    island_name_upper = entry.name.upper()
     discord_status = None
-    for sub_island in Config.SUB_ISLANDS:
-        if sub_island.upper() == island_name_for_lookup.upper():
-            discord_status = island_status_tracker.get_status(sub_island)
-            break
+    if island_name_upper in _sub_islands_upper:
+        # Get the correctly-cased island name and check its status
+        correct_case_name = _sub_islands_upper[island_name_upper]
+        discord_status = island_status_tracker.get_status(correct_case_name)
     
     if discord_status is not None:
         # Use Discord bot status (True = online, False = offline)

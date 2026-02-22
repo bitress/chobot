@@ -67,7 +67,8 @@ class IslandStatusTracker:
             island_name: Name of the island
         
         Returns:
-            True if the island has a known status (even if None), False otherwise
+            True if the island has been registered in the tracker (regardless of status),
+            False if the island has never been added to the tracker
         """
         with self._lock:
             return island_name in self._status

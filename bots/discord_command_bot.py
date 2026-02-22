@@ -126,6 +126,7 @@ class DiscordCommandCog(commands.Cog):
         self.sub_island_lookup = {}
         self._island_online_status: dict = {}  # island name -> True/False/None
         self.island_status_tracker = get_island_status_tracker()  # Shared tracker
+        self._role_warning_logged = False  # Track if we've logged missing role warning
 
         self.auto_refresh_cache.start()
         self.island_monitor.start()
@@ -270,8 +271,9 @@ class DiscordCommandCog(commands.Cog):
             return
 
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
-        if not island_bot_role:
-            logger.warning(f"[DISCORD] island_monitor: Island bot role {Config.ISLAND_BOT_ROLE_ID} not found")
+        if not island_bot_role and not self._role_warning_logged:
+            logger.warning(f"[DISCORD] island_monitor: Island bot role {Config.ISLAND_BOT_ROLE_ID} not found (optional, will check messages instead)")
+            self._role_warning_logged = True
 
         checked_count = 0
         for island in Config.SUB_ISLANDS:
