@@ -852,11 +852,17 @@ class DiscordCommandBot(commands.Bot):
                     try:
                         # Delete the command message
                         await message.delete()
-                        # Send ephemeral-style message (auto-delete after 5 seconds)
-                        await message.channel.send(
-                            f"{message.author.mention} ❌ You can only use `!find` (and its aliases), `!villager`, or `!refresh` commands in this channel.",
-                            delete_after=5
-                        )
+                        # Send DM to user (hidden from channel)
+                        try:
+                            await message.author.send(
+                                f"❌ You can only use `!find` (and its aliases), `!villager`, or `!refresh` commands in <#{Config.FIND_BOT_CHANNEL_ID}>."
+                            )
+                        except discord.Forbidden:
+                            # If DM fails, send a temporary message in channel
+                            await message.channel.send(
+                                f"{message.author.mention} ❌ You can only use `!find` (and its aliases), `!villager`, or `!refresh` commands in this channel. *(Enable DMs to receive this privately)*",
+                                delete_after=5
+                            )
                         logger.info(f"[DISCORD] Blocked command '{command_text}' in FIND_BOT_CHANNEL from {message.author}")
                     except discord.Forbidden:
                         logger.warning(f"[DISCORD] Missing permissions to delete message in FIND_BOT_CHANNEL")
