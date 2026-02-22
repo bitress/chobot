@@ -211,7 +211,7 @@ async def run_discord(
             mode = "full"
         logger.info(f"[DISCORD] Starting Discord bot ({mode} mode)...")
 
-        discord_bot = DiscordCommandBot(data_manager)
+        discord_bot = DiscordCommandBot(data_manager, load_command_cog=not flight_logger_only)
 
         if flight_logger_only:
             await discord_bot.add_cog(FlightLoggerCog(discord_bot))

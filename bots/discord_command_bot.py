@@ -743,7 +743,7 @@ class DiscordCommandCog(commands.Cog):
 class DiscordCommandBot(commands.Bot):
     """Main Discord bot with command functionality"""
 
-    def __init__(self, data_manager):
+    def __init__(self, data_manager, load_command_cog: bool = True):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
@@ -751,6 +751,7 @@ class DiscordCommandBot(commands.Bot):
         super().__init__(command_prefix='!', intents=intents, help_command=None)
 
         self.data_manager = data_manager
+        self._load_command_cog = load_command_cog
         self.start_time = datetime.now()
 
         self.status_list = cycle([
@@ -802,7 +803,8 @@ class DiscordCommandBot(commands.Bot):
 
     async def setup_hook(self):
         """Setup bot cogs and sync commands"""
-        await self.add_cog(DiscordCommandCog(self, self.data_manager))
+        if self._load_command_cog:
+            await self.add_cog(DiscordCommandCog(self, self.data_manager))
 
         # Add global interaction check for slash commands in FIND_BOT_CHANNEL
         async def check_find_channel_restriction(interaction: discord.Interaction) -> bool:
