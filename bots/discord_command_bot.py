@@ -200,6 +200,33 @@ class DiscordCommandCog(commands.Cog):
 
         return False
 
+    def get_island_channel_link(self, island_name):
+        """Get channel link for an island with robust fallback search"""
+        island_clean = clean_text(island_name)
+        if not island_clean:
+            return f"**{island_name.title()}**"
+        
+        # First check our cached lookup
+        if island_clean in self.sub_island_lookup:
+            return f"<#{self.sub_island_lookup[island_clean]}>"
+        
+        # Fallback: search through guild channels
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if guild:
+            category = discord.utils.get(guild.categories, id=Config.CATEGORY_ID)
+            if category:
+                for channel in category.channels:
+                    if channel.id == Config.IGNORE_CHANNEL_ID:
+                        continue
+                    chan_clean = clean_text(channel.name)
+                    if island_clean in chan_clean or chan_clean in island_clean:
+                        # Cache it for next time
+                        self.sub_island_lookup[island_clean] = channel.id
+                        return f"<#{channel.id}>"
+        
+        # If no channel found, return bold text
+        return f"**{island_name.title()}**"
+
     def create_found_embed(self, ctx_or_interaction, search_term, location_string, is_villager=False, nooki_data=None):
 
         user = getattr(ctx_or_interaction, "author", getattr(ctx_or_interaction, "user", None))
@@ -216,11 +243,9 @@ class DiscordCommandCog(commands.Cog):
             if not is_sub:
                 continue
 
-            if loc_key in self.sub_island_lookup:
-                channel_id = self.sub_island_lookup[loc_key]
-                sub_islands_found.append(f"<#{channel_id}>")
-            else:
-                sub_islands_found.append(f"**{loc}**")
+            # Use get_island_channel_link for robust linking with fallback
+            island_link = self.get_island_channel_link(loc)
+            sub_islands_found.append(island_link)
 
         # If no Sub Islands match, return None to indicate availability failure
         if not sub_islands_found:
