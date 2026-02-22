@@ -481,7 +481,7 @@ class TravelerActionView(discord.ui.View):
             embed.color = COLOR_INVESTIGATION
 
             # Update author to show investigation status
-            embed.set_author(name="<:Cho_Investigate:1474310726381338666> UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
+            embed.set_author(name="UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
 
             # Update Status field if it exists
             updated_fields = []

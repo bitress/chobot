@@ -6,7 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="be65bb5b-cc74-461e-8936-5f0bb88df9aa" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/bots/discord_command_bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/bots/discord_command_bot.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/bots/flight_logger.py" beforeDir="false" afterPath="$PROJECT_DIR$/bots/flight_logger.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -63,7 +63,7 @@
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "master",
+    "git-widget-placeholder": "copilot/improve-xlog-duplicate-flags",
     "last_opened_file_path": "C:/Users/bitress/PycharmProjects/chobot",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
@@ -167,6 +167,7 @@
       <workItem from="1771571262891" duration="3366000" />
       <workItem from="1771597026008" duration="1216000" />
       <workItem from="1771627271186" duration="2183000" />
+      <workItem from="1771726279748" duration="210000" />
     </task>
     <servers />
   </component>
@@ -184,7 +185,7 @@
                   <entry key="branch">
                     <value>
                       <list>
-                        <option value="origin/copilot/fix-visitor-file-access-error" />
+                        <option value="origin/copilot/improve-user-interface" />
                       </list>
                     </value>
                   </entry>
