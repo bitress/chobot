@@ -406,11 +406,28 @@ def get_islands():
     """Get all island statuses and Dodo codes"""
     results = []
 
-    if os.path.exists(Config.DIR_FREE):
+    # Build a map of directory entries from the free-islands folder (keyed by uppercased name)
+    free_dir_entries = {}
+    if Config.DIR_FREE and os.path.exists(Config.DIR_FREE):
         with os.scandir(Config.DIR_FREE) as entries:
             for entry in entries:
                 if entry.is_dir():
-                    results.append(process_island(entry, "Free"))
+                    free_dir_entries[entry.name.upper()] = entry
+
+    # Use Config.FREE_ISLANDS as the authoritative list so every free island
+    # is always present in the response, even when its directory is missing.
+    for island_name in Config.FREE_ISLANDS:
+        entry = free_dir_entries.get(island_name.upper())
+        if entry:
+            results.append(process_island(entry, "Free"))
+        else:
+            results.append({
+                "name": island_name.upper(),
+                "dodo": ".....",
+                "status": "OFFLINE",
+                "type": "Free",
+                "visitors": "0/7"
+            })
 
     if os.path.exists(Config.DIR_VIP):
         with os.scandir(Config.DIR_VIP) as entries:
