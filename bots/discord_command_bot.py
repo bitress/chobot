@@ -19,6 +19,7 @@ from thefuzz import process, fuzz
 from utils.config import Config
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
+from utils.island_status import get_island_status_tracker
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -124,6 +125,7 @@ class DiscordCommandCog(commands.Cog):
         self.cooldowns = {}
         self.sub_island_lookup = {}
         self._island_online_status: dict = {}  # island name -> True/False/None
+        self.island_status_tracker = get_island_status_tracker()  # Shared tracker
 
         self.auto_refresh_cache.start()
         self.island_monitor.start()
@@ -281,6 +283,9 @@ class DiscordCommandCog(commands.Cog):
             # Skip this island if status cannot be determined (channel unreadable, etc.)
             if is_online is None:
                 continue
+
+            # Update the shared tracker with the current status
+            self.island_status_tracker.set_status(island, is_online)
 
             if island not in self._island_online_status:
                 # First successful check after startup — record state silently (no alert on boot)

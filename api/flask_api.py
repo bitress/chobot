@@ -20,6 +20,7 @@ from thefuzz import process, fuzz
 
 from utils.config import Config
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text
+from utils.island_status import get_island_status_tracker
 
 
 logger = logging.getLogger("FlaskAPI")
@@ -145,10 +146,11 @@ def get_file_content(folder_path, filename):
 def process_island(entry, island_type):
     """Process island data for Dodo API
     
-    For Free islands: Check if bot is online by verifying Dodo.txt was recently updated.
-    For VIP islands: Similar check but always hide actual dodo codes.
+    For VIP islands (SUB_ISLANDS): Use Discord bot online status from island_monitor.
+    For Free islands: Fallback to checking if Dodo.txt was recently updated (file staleness).
     """
     name = entry.name.upper()
+    island_status_tracker = get_island_status_tracker()
 
     raw_dodo = get_file_content(entry.path, "Dodo.txt")
     raw_visitors = get_file_content(entry.path, "Visitors.txt")
@@ -158,20 +160,35 @@ def process_island(entry, island_type):
     display_visitors = "0/7"
     message = ""
 
-    # Check if Dodo.txt file is stale to determine if bot is online
-    # Free islands: Use strict 3-minute threshold
-    # VIP islands: Use 10-minute threshold (more lenient)
-    dodo_file_path = os.path.join(entry.path, "Dodo.txt")
+    # Determine if bot is offline
+    # VIP/SUB islands: Use Discord bot status if available
+    # Free islands: Use file staleness as fallback
     is_bot_offline = False
-    if os.path.exists(dodo_file_path):
-        file_mtime = os.path.getmtime(dodo_file_path)
-        age_seconds = time.time() - file_mtime
-        staleness_threshold = FREE_ISLAND_STALENESS_THRESHOLD if island_type == "Free" else VIP_ISLAND_STALENESS_THRESHOLD
-        if age_seconds > staleness_threshold:
-            is_bot_offline = True
+    
+    # Check if this island is tracked by Discord (VIP/SUB islands)
+    # Match island name case-insensitively
+    island_name_for_lookup = entry.name  # e.g., "Alapaap", "Aruga"
+    discord_status = None
+    for sub_island in Config.SUB_ISLANDS:
+        if sub_island.upper() == island_name_for_lookup.upper():
+            discord_status = island_status_tracker.get_status(sub_island)
+            break
+    
+    if discord_status is not None:
+        # Use Discord bot status (True = online, False = offline)
+        is_bot_offline = not discord_status
     else:
-        # File doesn't exist = bot is offline
-        is_bot_offline = True
+        # Fallback to file staleness check for free islands or untracked islands
+        dodo_file_path = os.path.join(entry.path, "Dodo.txt")
+        if os.path.exists(dodo_file_path):
+            file_mtime = os.path.getmtime(dodo_file_path)
+            age_seconds = time.time() - file_mtime
+            staleness_threshold = FREE_ISLAND_STALENESS_THRESHOLD if island_type == "Free" else VIP_ISLAND_STALENESS_THRESHOLD
+            if age_seconds > staleness_threshold:
+                is_bot_offline = True
+        else:
+            # File doesn't exist = bot is offline
+            is_bot_offline = True
 
     # Visitor Logic
     if raw_visitors:
