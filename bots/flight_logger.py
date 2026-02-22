@@ -847,7 +847,8 @@ class FlightLoggerCog(commands.Cog):
         for field in embed.fields:
             if "Traveler (IGN)" in field.name:
                 # Value is usually "```yaml\nIGN```"
-                match = re.search(r"```(?:yaml)?\n(.*?)\n?```", field.value)
+                # Use [^\n]* to match single-line IGN values only
+                match = re.search(r"```(?:yaml)?\n([^\n]*?)\n?```", field.value)
                 if match:
                     return match.group(1).strip()
         return None
@@ -866,7 +867,8 @@ class FlightLoggerCog(commands.Cog):
             embed = message.embeds[0]
             ign_from_embed = self._get_ign_from_embed(embed)
             
-            if ign_from_embed != ign:
+            # Case-insensitive comparison for IGN matching
+            if not ign_from_embed or ign_from_embed.lower() != ign.lower():
                 continue
             
             # Check if case is still open (not closed)
@@ -875,7 +877,7 @@ class FlightLoggerCog(commands.Cog):
                 continue
             
             # Check status field - open cases have PENDING REVIEW or INVESTIGATING
-            status_field = next((f.value for f in embed.fields if f.name == "📌 Status"), None)
+            status_field = next((f.value for f in embed.fields if "Status" in f.name), None)
             if status_field and ("PENDING REVIEW" in status_field or "INVESTIGATING" in status_field):
                 return message
         
@@ -888,30 +890,45 @@ class FlightLoggerCog(commands.Cog):
         
         embed = message.embeds[0]
         
-        # Find existing rejoin attempts field
+        # Find existing rejoin attempts field and track status field position
         rejoin_count = 1
         fields_to_keep = []
+        status_field_index = -1
         
-        for field in embed.fields:
+        for i, field in enumerate(embed.fields):
             if "Re-join Attempts" in field.name:
-                # Extract current count and increment
-                count_match = re.search(r'`(\d+)`', field.value)
+                # Extract current count and increment - match only at start of value
+                count_match = re.search(r'^`(\d+)` attempt', field.value)
                 if count_match:
                     rejoin_count = int(count_match.group(1)) + 1
             else:
                 fields_to_keep.append((field.name, field.value, field.inline))
+                # Track the position of the Status field
+                if "Status" in field.name:
+                    status_field_index = len(fields_to_keep) - 1
         
         # Rebuild fields without the old rejoin field
         embed.clear_fields()
         for name, value, inline in fields_to_keep:
             embed.add_field(name=name, value=value, inline=inline)
         
-        # Add updated rejoin attempts field (after Status field)
-        embed.add_field(
-            name="🔄 Re-join Attempts",
-            value=f"`{rejoin_count}` attempt(s) detected",
-            inline=True
+        # Insert rejoin attempts field after Status field, or at the end if Status not found
+        rejoin_field = (
+            "🔄 Re-join Attempts",
+            f"`{rejoin_count}` attempt(s) detected",
+            True
         )
+        
+        if status_field_index >= 0 and status_field_index < len(embed.fields):
+            # Insert after status field by rebuilding the entire field list
+            all_fields = [(f.name, f.value, f.inline) for f in embed.fields]
+            all_fields.insert(status_field_index + 1, rejoin_field)
+            embed.clear_fields()
+            for name, value, inline in all_fields:
+                embed.add_field(name=name, value=value, inline=inline)
+        else:
+            # Just append if status field not found
+            embed.add_field(name=rejoin_field[0], value=rejoin_field[1], inline=rejoin_field[2])
         
         await message.edit(embed=embed)
         logger.info(f"[FLIGHT] Updated rejoin attempts to {rejoin_count} for existing case")
