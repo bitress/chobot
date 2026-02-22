@@ -769,6 +769,36 @@ class DiscordCommandBot(commands.Bot):
         """Setup bot cogs and sync commands"""
         await self.add_cog(DiscordCommandCog(self, self.data_manager))
 
+        # Add global interaction check for slash commands in FIND_BOT_CHANNEL
+        async def check_find_channel_restriction(interaction: discord.Interaction) -> bool:
+            """Restrict slash commands in FIND_BOT_CHANNEL to only allowed commands"""
+            if not Config.FIND_BOT_CHANNEL_ID:
+                return True  # No restriction if channel ID not set
+            
+            if interaction.channel_id == Config.FIND_BOT_CHANNEL_ID:
+                # Allowed commands in FIND_BOT_CHANNEL
+                allowed_commands = {
+                    'find', 'locate', 'where', 'lookup', 'lp', 'search',  # find and aliases
+                    'villager',
+                    'refresh'
+                }
+                
+                # Get the command name
+                command_name = interaction.command.name if interaction.command else None
+                
+                # If it's a command and not allowed, block it
+                if command_name and command_name not in allowed_commands:
+                    await interaction.response.send_message(
+                        "❌ You can only use `/find`, `/villager`, or `/refresh` commands in this channel.",
+                        ephemeral=True
+                    )
+                    logger.info(f"[DISCORD] Blocked slash command '/{command_name}' in FIND_BOT_CHANNEL from {interaction.user}")
+                    return False
+            
+            return True
+        
+        self.tree.interaction_check = check_find_channel_restriction
+
         if Config.GUILD_ID:
             guild_obj = discord.Object(id=Config.GUILD_ID)
             self.tree.copy_global_to(guild=guild_obj)
@@ -803,4 +833,33 @@ class DiscordCommandBot(commands.Bot):
             guild = message.guild.name if message.guild else "DM"
             channel = message.channel.name if hasattr(message.channel, 'name') else "DM"
             logger.info(f"[DISCORD {guild} #{channel}] {message.author}: {message.content}")
+        
+        # Check if message is in FIND_BOT_CHANNEL_ID and starts with command prefix
+        if Config.FIND_BOT_CHANNEL_ID and message.channel.id == Config.FIND_BOT_CHANNEL_ID:
+            if message.content.startswith(self.command_prefix):
+                # Extract command name (first word after prefix)
+                command_text = message.content[len(self.command_prefix):].split()[0].lower() if message.content[len(self.command_prefix):].strip() else ""
+                
+                # Allowed commands in FIND_BOT_CHANNEL
+                allowed_commands = {
+                    'find', 'locate', 'where', 'lookup', 'lp', 'search',  # find and aliases
+                    'villager',
+                    'refresh'
+                }
+                
+                # If command is not allowed, send ephemeral message and delete
+                if command_text and command_text not in allowed_commands:
+                    try:
+                        # Delete the command message
+                        await message.delete()
+                        # Send ephemeral-style message (auto-delete after 5 seconds)
+                        await message.channel.send(
+                            f"{message.author.mention} ❌ You can only use `/find`, `!villager`, or `!refresh` commands in this channel.",
+                            delete_after=5
+                        )
+                        logger.info(f"[DISCORD] Blocked command '{command_text}' in FIND_BOT_CHANNEL from {message.author}")
+                    except discord.Forbidden:
+                        logger.warning(f"[DISCORD] Missing permissions to delete message in FIND_BOT_CHANNEL")
+                    return  # Don't process the command
+        
         await self.process_commands(message)
