@@ -449,6 +449,12 @@ class TravelerActionView(discord.ui.View):
             )
             self.clear_items()
             await message_to_edit.edit(embed=embed, view=self)
+
+            # Remove from pending alerts so future joins create a fresh alert
+            cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
+            if cog and self.ign:
+                ign_clean = clean_text(self.ign)
+                cog._pending_alerts.pop(ign_clean, None)
         except Exception as e:
             logger.error(f"Error editing original message: {e}")
 
@@ -575,6 +581,7 @@ class FlightLoggerCog(commands.Cog):
         )
         self._db_conn = None
         self.last_processed = None
+        self._pending_alerts: dict[str, int] = {}  # ign_clean -> message_id for active (unresolved) alerts
         self.fetch_islands_task.start()
         self.cleanup_warnings_task.start()
 
@@ -879,27 +886,77 @@ class FlightLoggerCog(commands.Cog):
             destination_link = self.get_island_channel_link(destination)
             alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
 
-            embed = discord.Embed(
-                description=(
-                    f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
-                    f"An unregistered visitor is attempting to join **{destination_link}**.\n"
-                    f"Use the buttons below to take action."
-                ),
-                color=COLOR_ALERT,
-                timestamp=embed_timestamp
-            )
-            embed.add_field(name="👤 Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
-            embed.add_field(name="🏝️ Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
-            embed.add_field(name="✈️ Destination", value=f"```yaml\n{destination.title()}```", inline=True)
-            embed.add_field(name="🕐 Detected", value=f"<t:{alert_ts}:R>", inline=True)
-            embed.add_field(name="📌 Status", value="🔴 **PENDING REVIEW**", inline=True)
-            embed.set_image(url=Config.FOOTER_LINE)
-            guild      = self.bot.get_guild(Config.GUILD_ID)
-            guild_icon = guild.icon.url if guild and guild.icon else None
-            embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
+            # Check if there is already a pending alert for this IGN to avoid flooding the channel
+            ign_clean = clean_text(ign)
+            existing_msg = None
+            existing_msg_id = self._pending_alerts.get(ign_clean)
+            if existing_msg_id:
+                try:
+                    existing_msg = await output_channel.fetch_message(existing_msg_id)
+                    # Only reuse the message if the alert is still pending (not yet resolved)
+                    if existing_msg.embeds:
+                        status_field = next(
+                            (f for f in existing_msg.embeds[0].fields if f.name == "📌 Status"),
+                            None
+                        )
+                        if status_field is None or "PENDING REVIEW" not in status_field.value:
+                            existing_msg = None
+                except discord.NotFound:
+                    existing_msg = None
 
-            view = TravelerActionView(self.bot, ign)
-            await output_channel.send(embed=embed, view=view)
+            if existing_msg:
+                # Update the existing alert with a re-join counter instead of spamming a new message
+                embed = existing_msg.embeds[0]
+                rejoin_count = 1
+                updated_fields = []
+                has_rejoin_field = False
+                for f in embed.fields:
+                    if f.name == "🔁 Re-join Attempts":
+                        has_rejoin_field = True
+                        m = re.search(r"\*\*(\d+)\*\*", f.value)
+                        if m:
+                            rejoin_count = int(m.group(1)) + 1
+                    else:
+                        updated_fields.append((f.name, f.value, f.inline))
+                rejoin_field = ("🔁 Re-join Attempts", f"**{rejoin_count}** attempt(s)\nLast seen <t:{alert_ts}:R>", True)
+                if has_rejoin_field:
+                    updated_fields.append(rejoin_field)
+                else:
+                    # Insert the re-join field after "🕐 Detected"
+                    new_fields = []
+                    for name, value, inline in updated_fields:
+                        new_fields.append((name, value, inline))
+                        if name == "🕐 Detected":
+                            new_fields.append(rejoin_field)
+                    updated_fields = new_fields
+                embed.clear_fields()
+                for name, value, inline in updated_fields:
+                    embed.add_field(name=name, value=value, inline=inline)
+                await existing_msg.edit(embed=embed)
+                logger.info(f"[FLIGHT] Updated existing alert for {ign} (re-join attempt #{rejoin_count})")
+            else:
+                embed = discord.Embed(
+                    description=(
+                        f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
+                        f"An unregistered visitor is attempting to join **{destination_link}**.\n"
+                        f"Use the buttons below to take action."
+                    ),
+                    color=COLOR_ALERT,
+                    timestamp=embed_timestamp
+                )
+                embed.add_field(name="👤 Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
+                embed.add_field(name="🏝️ Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+                embed.add_field(name="✈️ Destination", value=f"```yaml\n{destination.title()}```", inline=True)
+                embed.add_field(name="🕐 Detected", value=f"<t:{alert_ts}:R>", inline=True)
+                embed.add_field(name="📌 Status", value="🔴 **PENDING REVIEW**", inline=True)
+                embed.set_image(url=Config.FOOTER_LINE)
+                guild      = self.bot.get_guild(Config.GUILD_ID)
+                guild_icon = guild.icon.url if guild and guild.icon else None
+                embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
+
+                view = TravelerActionView(self.bot, ign)
+                sent_msg = await output_channel.send(embed=embed, view=view)
+                self._pending_alerts[ign_clean] = sent_msg.id
 
     @commands.hybrid_command(name="recoverflights")
     @app_commands.describe(hours="How many hours to scan back (default: 48)", mode="Execution mode: 'dry' or 'run'")
