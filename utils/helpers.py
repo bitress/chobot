@@ -24,6 +24,7 @@ def clean_text(text: str) -> str:
     Handles fancy Unicode bot names, including:
     - Mathematical styled letters (𝕙, 𝔹, ℂ…) — resolved by NFKD compatibility decomposition
     - Small capital letters (ᴀ, ʟ, ᴘ…) — resolved via Unicode character name lookup
+    - CJK characters (Chinese, Japanese, Korean) — preserved as-is for player IGNs
     """
     if not text:
         return ""
@@ -33,16 +34,34 @@ def clean_text(text: str) -> str:
     no_marks = "".join(c for c in normalized if not unicodedata.category(c).startswith('Mn'))
     # Map remaining non-ASCII letters (e.g. small capitals) via their Unicode name
     # e.g. ᴀ → "LATIN LETTER SMALL CAPITAL A" → A
+    # Preserve CJK characters for player IGNs
     result = []
     for c in no_marks:
         if c.isascii():
             result.append(c)
         elif unicodedata.category(c).startswith('L'):
-            name = unicodedata.name(c, '')
-            letter = next((p for p in reversed(name.split()) if len(p) == 1 and p.isalpha()), None)
-            if letter:
-                result.append(letter)
-    return "".join(ch for ch in result if ch.isalnum()).lower()
+            # Check if it's a CJK character (U+4E00-U+9FFF, U+3040-U+30FF, U+AC00-U+D7AF)
+            code_point = ord(c)
+            is_cjk = (0x4E00 <= code_point <= 0x9FFF or    # CJK Unified Ideographs
+                      0x3040 <= code_point <= 0x30FF or    # Hiragana & Katakana
+                      0xAC00 <= code_point <= 0xD7AF or    # Hangul Syllables
+                      0x3400 <= code_point <= 0x4DBF or    # CJK Extension A
+                      0x20000 <= code_point <= 0x2A6DF or  # CJK Extension B
+                      0x2A700 <= code_point <= 0x2B73F or  # CJK Extension C
+                      0x2B740 <= code_point <= 0x2B81F or  # CJK Extension D
+                      0x2B820 <= code_point <= 0x2CEAF or  # CJK Extension E
+                      0x2CEB0 <= code_point <= 0x2EBEF or  # CJK Extension F
+                      0x1100 <= code_point <= 0x11FF)      # Hangul Jamo
+            
+            if is_cjk:
+                result.append(c)
+            else:
+                # Try to extract ASCII letter from Unicode name for fancy letters
+                name = unicodedata.name(c, '')
+                letter = next((p for p in reversed(name.split()) if len(p) == 1 and p.isalpha()), None)
+                if letter:
+                    result.append(letter)
+    return "".join(ch for ch in result if ch.isalnum() or (unicodedata.category(ch).startswith('L'))).lower()
 
 
 def tokenize(s: str) -> set:
