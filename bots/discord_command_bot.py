@@ -210,7 +210,7 @@ class DiscordCommandCog(commands.Cog):
         if island_clean in self.sub_island_lookup:
             return f"<#{self.sub_island_lookup[island_clean]}>"
         
-        # Fallback: search through guild channels
+        # Fallback: search through guild channels matching island name
         guild = self.bot.get_guild(Config.GUILD_ID)
         if guild:
             category = discord.utils.get(guild.categories, id=Config.CATEGORY_ID)
@@ -219,7 +219,8 @@ class DiscordCommandCog(commands.Cog):
                     if channel.id == Config.IGNORE_CHANNEL_ID:
                         continue
                     chan_clean = clean_text(channel.name)
-                    if island_clean in chan_clean or chan_clean in island_clean:
+                    # Match if island name is in channel name (e.g., "alapaap" in "01-alapaap")
+                    if island_clean in chan_clean:
                         # Cache it for next time
                         self.sub_island_lookup[island_clean] = channel.id
                         return f"<#{channel.id}>"
