@@ -28,40 +28,46 @@ def clean_text(text: str) -> str:
     """
     if not text:
         return ""
-    # NFKD resolves compatibility characters: mathematical bold/italic/double-struck → ASCII
-    normalized = unicodedata.normalize('NFKD', text)
-    # Strip combining marks (diacritics/accents)
-    no_marks = "".join(c for c in normalized if not unicodedata.category(c).startswith('Mn'))
-    # Map remaining non-ASCII letters (e.g. small capitals) via their Unicode name
-    # e.g. ᴀ → "LATIN LETTER SMALL CAPITAL A" → A
-    # Preserve CJK characters for player IGNs
+    
+    # First pass: identify and preserve CJK characters before normalization
     result = []
-    for c in no_marks:
-        if c.isascii():
+    for c in text:
+        code_point = ord(c)
+        is_cjk = (0x4E00 <= code_point <= 0x9FFF or    # CJK Unified Ideographs
+                  0x3040 <= code_point <= 0x30FF or    # Hiragana & Katakana
+                  0xAC00 <= code_point <= 0xD7AF or    # Hangul Syllables
+                  0x3400 <= code_point <= 0x4DBF or    # CJK Extension A
+                  0x20000 <= code_point <= 0x2A6DF or  # CJK Extension B
+                  0x2A700 <= code_point <= 0x2B73F or  # CJK Extension C
+                  0x2B740 <= code_point <= 0x2B81F or  # CJK Extension D
+                  0x2B820 <= code_point <= 0x2CEAF or  # CJK Extension E
+                  0x2CEB0 <= code_point <= 0x2EBEF or  # CJK Extension F
+                  0x1100 <= code_point <= 0x11FF)      # Hangul Jamo
+        
+        if is_cjk:
+            # Preserve CJK characters as-is
             result.append(c)
-        elif unicodedata.category(c).startswith('L'):
-            # Check if it's a CJK character (U+4E00-U+9FFF, U+3040-U+30FF, U+AC00-U+D7AF)
-            code_point = ord(c)
-            is_cjk = (0x4E00 <= code_point <= 0x9FFF or    # CJK Unified Ideographs
-                      0x3040 <= code_point <= 0x30FF or    # Hiragana & Katakana
-                      0xAC00 <= code_point <= 0xD7AF or    # Hangul Syllables
-                      0x3400 <= code_point <= 0x4DBF or    # CJK Extension A
-                      0x20000 <= code_point <= 0x2A6DF or  # CJK Extension B
-                      0x2A700 <= code_point <= 0x2B73F or  # CJK Extension C
-                      0x2B740 <= code_point <= 0x2B81F or  # CJK Extension D
-                      0x2B820 <= code_point <= 0x2CEAF or  # CJK Extension E
-                      0x2CEB0 <= code_point <= 0x2EBEF or  # CJK Extension F
-                      0x1100 <= code_point <= 0x11FF)      # Hangul Jamo
+        elif c.isascii():
+            # Keep ASCII characters
+            if c.isalnum():
+                result.append(c.lower())
+        else:
+            # Try NFKD normalization for fancy Unicode letters
+            normalized = unicodedata.normalize('NFKD', c)
+            # Strip combining marks
+            no_marks = "".join(ch for ch in normalized if not unicodedata.category(ch).startswith('Mn'))
             
-            if is_cjk:
-                result.append(c)
-            else:
-                # Try to extract ASCII letter from Unicode name for fancy letters
+            # If it becomes ASCII after normalization, use it
+            if no_marks and no_marks.isascii() and no_marks.isalnum():
+                result.append(no_marks.lower())
+            elif unicodedata.category(c).startswith('L'):
+                # Try to extract ASCII letter from Unicode name for small capitals
                 name = unicodedata.name(c, '')
                 letter = next((p for p in reversed(name.split()) if len(p) == 1 and p.isalpha()), None)
                 if letter:
-                    result.append(letter)
-    return "".join(ch for ch in result if ch.isalnum() or (unicodedata.category(ch).startswith('L'))).lower()
+                    result.append(letter.lower())
+    
+    return "".join(result)
 
 
 def tokenize(s: str) -> set:

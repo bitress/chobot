@@ -789,7 +789,7 @@ class DiscordCommandBot(commands.Bot):
                 # If it's a command and not allowed, block it
                 if command_name and command_name not in allowed_commands:
                     await interaction.response.send_message(
-                        "❌ You can only use `/find`, `/villager`, or `/refresh` commands in this channel.",
+                        "❌ You can only use `/find` (and its aliases), `/villager`, or `/refresh` commands in this channel.",
                         ephemeral=True
                     )
                     logger.info(f"[DISCORD] Blocked slash command '/{command_name}' in FIND_BOT_CHANNEL from {interaction.user}")
@@ -854,7 +854,7 @@ class DiscordCommandBot(commands.Bot):
                         await message.delete()
                         # Send ephemeral-style message (auto-delete after 5 seconds)
                         await message.channel.send(
-                            f"{message.author.mention} ❌ You can only use `/find`, `!villager`, or `!refresh` commands in this channel.",
+                            f"{message.author.mention} ❌ You can only use `!find` (and its aliases), `!villager`, or `!refresh` commands in this channel.",
                             delete_after=5
                         )
                         logger.info(f"[DISCORD] Blocked command '{command_text}' in FIND_BOT_CHANNEL from {message.author}")
