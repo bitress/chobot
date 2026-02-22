@@ -128,26 +128,35 @@ class DiscordCommandCog(commands.Cog):
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Filter items from cache for autocomplete"""
-        if not current:
-            # Maybe show some defaults or empty?
+        try:
+            if not current:
+                # Return empty list for no input
+                return []
+            
+            with self.data_manager.lock:
+                # Filter out internal keys like _display and _index
+                all_keys = [k for k in self.data_manager.cache.keys() if not k.startswith("_")]
+                display_map = self.data_manager.cache.get("_display", {})
+            
+            # Limit the number of keys to search for performance
+            # Discord autocomplete timeout is 3 seconds
+            search_keys = all_keys[:5000] if len(all_keys) > 5000 else all_keys
+            
+            # Use fuzzy matching to find top matches
+            matches = process.extract(current, search_keys, limit=25, scorer=fuzz.partial_ratio)
+            
+            choices = []
+            for match_key, score in matches:
+                if score > 50:
+                    display_name = display_map.get(match_key, match_key.title())
+                    # Truncate if too long (Discord limit is 100)
+                    choices.append(app_commands.Choice(name=display_name[:100], value=match_key))
+            
+            return choices
+        except Exception as e:
+            logger.error(f"[DISCORD] Error in item_autocomplete: {e}")
+            # Return empty list on error to prevent crashes
             return []
-        
-        with self.data_manager.lock:
-            # Filter out internal keys like _display and _index
-            all_keys = [k for k in self.data_manager.cache.keys() if not k.startswith("_")]
-            display_map = self.data_manager.cache.get("_display", {})
-
-        # Use fuzzy matching to find top matches
-        matches = process.extract(current, all_keys, limit=25, scorer=fuzz.partial_ratio)
-        
-        choices = []
-        for match_key, score in matches:
-            if score > 50:
-                display_name = display_map.get(match_key, match_key.title())
-                # Truncate if too long (Discord limit is 100)
-                choices.append(app_commands.Choice(name=display_name[:100], value=match_key))
-        
-        return choices
 
     async def fetch_islands(self):
         """Fetch island channels from Discord using robust matching"""
