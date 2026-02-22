@@ -147,6 +147,7 @@ def process_island(entry, island_type):
     status = "ONLINE"
     display_dodo = raw_dodo
     display_visitors = "0/7"
+    message = ""
 
     # Visitor Logic
     if raw_visitors:
@@ -166,10 +167,12 @@ def process_island(entry, island_type):
             status = "OFFLINE"
             display_dodo = "....."
             display_visitors = "0/7"
+            message = "This island is currently down."
         elif raw_dodo in ["00000", "-----", ""]:
             status = "REFRESHING"
             display_dodo = "WAIT..."
             display_visitors = "0/7"
+            message = "This island is currently refreshing."
         else:
             display_dodo = raw_dodo
 
@@ -178,7 +181,8 @@ def process_island(entry, island_type):
         "dodo": display_dodo,
         "status": status,
         "type": island_type,
-        "visitors": display_visitors
+        "visitors": display_visitors,
+        "message": message
     }
 
 # ============================================================================
@@ -426,7 +430,8 @@ def get_islands():
                 "dodo": ".....",
                 "status": "OFFLINE",
                 "type": "Free",
-                "visitors": "0/7"
+                "visitors": "0/7",
+                "message": "This island is currently down."
             })
 
     if os.path.exists(Config.DIR_VIP):
