@@ -263,15 +263,21 @@ class DiscordCommandCog(commands.Cog):
     @tasks.loop(minutes=5)
     async def island_monitor(self):
         """Automatically notify each island's own channel when it goes offline or recovers"""
+        logger.info("[DISCORD] island_monitor: Starting check cycle...")
         guild = self.bot.get_guild(Config.GUILD_ID)
         if not guild:
+            logger.warning(f"[DISCORD] island_monitor: Guild {Config.GUILD_ID} not found")
             return
 
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
+        if not island_bot_role:
+            logger.warning(f"[DISCORD] island_monitor: Island bot role {Config.ISLAND_BOT_ROLE_ID} not found")
 
+        checked_count = 0
         for island in Config.SUB_ISLANDS:
             island_channel = await self._get_island_channel(guild, island)
             if not island_channel:
+                logger.warning(f"[DISCORD] island_monitor: Channel not found for {island}")
                 continue
 
             try:
@@ -282,7 +288,10 @@ class DiscordCommandCog(commands.Cog):
 
             # Skip this island if status cannot be determined (channel unreadable, etc.)
             if is_online is None:
+                logger.debug(f"[DISCORD] island_monitor: Status undetermined for {island}")
                 continue
+
+            checked_count += 1
 
             # Update the shared tracker with the current status
             self.island_status_tracker.set_status(island, is_online)
@@ -290,6 +299,7 @@ class DiscordCommandCog(commands.Cog):
             if island not in self._island_online_status:
                 # First successful check after startup — record state silently (no alert on boot)
                 self._island_online_status[island] = is_online
+                logger.info(f"[DISCORD] island_monitor: Initial status for {island}: {'ONLINE' if is_online else 'OFFLINE'}")
                 continue
 
             prev = self._island_online_status[island]
@@ -314,12 +324,17 @@ class DiscordCommandCog(commands.Cog):
                 except discord.HTTPException:
                     logger.exception(f"[DISCORD] island_monitor: failed to send online alert for {island}")
                     self._island_online_status[island] = prev  # revert so next tick retries
+        
+        logger.info(f"[DISCORD] island_monitor: Completed check cycle. Checked {checked_count}/{len(Config.SUB_ISLANDS)} islands")
 
     @island_monitor.before_loop
     async def before_island_monitor(self):
         """Wait until the bot is ready and island channels are fetched"""
+        logger.info("[DISCORD] island_monitor: Waiting for bot to be ready...")
         await self.bot.wait_until_ready()
+        logger.info("[DISCORD] island_monitor: Bot ready, fetching island channels...")
         await self.fetch_islands()
+        logger.info("[DISCORD] island_monitor: Initialization complete, monitor will start")
 
     def cog_unload(self):
         """Cleanup on unload"""
