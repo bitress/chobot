@@ -84,10 +84,20 @@ class IslandStatusTracker:
             return self._status.copy()
 
 
-# Global singleton instance
+# Global singleton instance - initialized once and shared across all modules
+# This instance is never replaced after creation, making it safe to store references
 _island_status_tracker = IslandStatusTracker()
 
 
 def get_island_status_tracker() -> IslandStatusTracker:
-    """Get the global island status tracker instance"""
+    """
+    Get the global island status tracker instance.
+    
+    This function always returns the same singleton instance, which is initialized
+    once at module import time and never replaced. It's safe to store the returned
+    reference during initialization.
+    
+    Returns:
+        The global IslandStatusTracker instance
+    """
     return _island_status_tracker

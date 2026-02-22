@@ -170,11 +170,10 @@ def process_island(entry, island_type):
     
     # Check if this island is tracked by Discord (VIP/SUB islands)
     # Use pre-computed case-insensitive lookup for performance
-    island_name_upper = entry.name.upper()
     discord_status = None
-    if island_name_upper in _sub_islands_upper:
+    if name in _sub_islands_upper:
         # Get the correctly-cased island name and check its status
-        correct_case_name = _sub_islands_upper[island_name_upper]
+        correct_case_name = _sub_islands_upper[name]
         discord_status = island_status_tracker.get_status(correct_case_name)
     
     if discord_status is not None:

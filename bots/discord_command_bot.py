@@ -125,7 +125,8 @@ class DiscordCommandCog(commands.Cog):
         self.cooldowns = {}
         self.sub_island_lookup = {}
         self._island_online_status: dict = {}  # island name -> True/False/None
-        self.island_status_tracker = get_island_status_tracker()  # Shared tracker
+        # Shared tracker is a singleton, safe to store reference during init
+        self.island_status_tracker = get_island_status_tracker()
         self._role_warning_logged = False  # Track if we've logged missing role warning
 
         self.auto_refresh_cache.start()
