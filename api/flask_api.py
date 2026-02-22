@@ -160,8 +160,16 @@ def process_island(entry, island_type):
 
     # Dodo/Status Logic
     if island_type == "VIP":
-        status = "SUB ONLY"
-        display_dodo = "SUB ONLY"
+        display_dodo = "SUB ONLY"  # Always hide the actual dodo code for VIP islands
+        if raw_dodo is None:
+            status = "OFFLINE"
+            display_visitors = "0/7"
+            message = "This island is currently down."
+        elif raw_dodo in ["00000", "-----", ""]:
+            status = "REFRESHING"
+            display_visitors = "0/7"
+            message = "This island is currently refreshing."
+        # else: status stays "ONLINE", visitors already resolved above
     else:
         if raw_dodo is None:
             status = "OFFLINE"
@@ -452,10 +460,10 @@ def get_islands():
             results.append({
                 "name": island_name.upper(),
                 "dodo": "SUB ONLY",
-                "status": "SUB ONLY",
+                "status": "OFFLINE",
                 "type": "VIP",
                 "visitors": "0/7",
-                "message": ""
+                "message": "This island is currently down."
             })
 
     results.sort(key=lambda x: x['name'])
