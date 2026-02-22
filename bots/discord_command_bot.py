@@ -278,21 +278,37 @@ class DiscordCommandCog(commands.Cog):
                 logger.exception(f"[DISCORD] island_monitor error checking {island}")
                 continue
 
+            # Skip this island if status cannot be determined (channel unreadable, etc.)
+            if is_online is None:
+                continue
+
             if island not in self._island_online_status:
-                # First check after startup — record state silently (no alert on boot)
+                # First successful check after startup — record state silently (no alert on boot)
                 self._island_online_status[island] = is_online
                 continue
 
             prev = self._island_online_status[island]
             self._island_online_status[island] = is_online
 
-            # Only notify on clear transitions; None (undetermined) does not trigger alerts
+            # Only notify on clear transitions; None (undetermined) never reaches here
             if prev is True and is_online is False:
-                await island_channel.send(f"🔴 **{island}** island is currently down.")
-                logger.info(f"[DISCORD] island_monitor: {island} went OFFLINE")
+                try:
+                    await island_channel.send(f"🔴 **{island}** island is currently down.")
+                    logger.info(f"[DISCORD] island_monitor: {island} went OFFLINE")
+                except discord.Forbidden:
+                    logger.warning(f"[DISCORD] island_monitor: no permission to send in {island} channel")
+                except discord.HTTPException:
+                    logger.exception(f"[DISCORD] island_monitor: failed to send offline alert for {island}")
+                    self._island_online_status[island] = prev  # revert so next tick retries
             elif prev is False and is_online is True:
-                await island_channel.send(f"🟢 **{island}** island is back online!")
-                logger.info(f"[DISCORD] island_monitor: {island} came back ONLINE")
+                try:
+                    await island_channel.send(f"🟢 **{island}** island is back online!")
+                    logger.info(f"[DISCORD] island_monitor: {island} came back ONLINE")
+                except discord.Forbidden:
+                    logger.warning(f"[DISCORD] island_monitor: no permission to send in {island} channel")
+                except discord.HTTPException:
+                    logger.exception(f"[DISCORD] island_monitor: failed to send online alert for {island}")
+                    self._island_online_status[island] = prev  # revert so next tick retries
 
     @island_monitor.before_loop
     async def before_island_monitor(self):

@@ -434,11 +434,29 @@ def get_islands():
                 "message": "This island is currently down."
             })
 
-    if os.path.exists(Config.DIR_VIP):
+    # Build a map of directory entries from the VIP/sub-islands folder (keyed by uppercased name)
+    vip_dir_entries = {}
+    if Config.DIR_VIP and os.path.exists(Config.DIR_VIP):
         with os.scandir(Config.DIR_VIP) as entries:
             for entry in entries:
                 if entry.is_dir():
-                    results.append(process_island(entry, "VIP"))
+                    vip_dir_entries[entry.name.upper()] = entry
+
+    # Use Config.SUB_ISLANDS as the authoritative list so every sub island
+    # is always present in the response, even when its directory is missing.
+    for island_name in Config.SUB_ISLANDS:
+        entry = vip_dir_entries.get(island_name.upper())
+        if entry:
+            results.append(process_island(entry, "VIP"))
+        else:
+            results.append({
+                "name": island_name.upper(),
+                "dodo": "SUB ONLY",
+                "status": "SUB ONLY",
+                "type": "VIP",
+                "visitors": "0/7",
+                "message": ""
+            })
 
     results.sort(key=lambda x: x['name'])
     return jsonify(results)
