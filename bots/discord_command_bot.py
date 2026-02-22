@@ -838,7 +838,8 @@ class DiscordCommandBot(commands.Bot):
         if Config.FIND_BOT_CHANNEL_ID and message.channel.id == Config.FIND_BOT_CHANNEL_ID:
             if message.content.startswith(self.command_prefix):
                 # Extract command name (first word after prefix)
-                command_text = message.content[len(self.command_prefix):].split()[0].lower() if message.content[len(self.command_prefix):].strip() else ""
+                command_content = message.content[len(self.command_prefix):].strip()
+                command_text = command_content.split()[0].lower() if command_content else ""
                 
                 # Allowed commands in FIND_BOT_CHANNEL
                 allowed_commands = {

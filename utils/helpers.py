@@ -35,14 +35,13 @@ def clean_text(text: str) -> str:
         code_point = ord(c)
         is_cjk = (0x4E00 <= code_point <= 0x9FFF or    # CJK Unified Ideographs
                   0x3040 <= code_point <= 0x30FF or    # Hiragana & Katakana
-                  0xAC00 <= code_point <= 0xD7AF or    # Hangul Syllables
+                  0xAC00 <= code_point <= 0xD7AF or    # Hangul Syllables (complete characters)
                   0x3400 <= code_point <= 0x4DBF or    # CJK Extension A
                   0x20000 <= code_point <= 0x2A6DF or  # CJK Extension B
                   0x2A700 <= code_point <= 0x2B73F or  # CJK Extension C
                   0x2B740 <= code_point <= 0x2B81F or  # CJK Extension D
                   0x2B820 <= code_point <= 0x2CEAF or  # CJK Extension E
-                  0x2CEB0 <= code_point <= 0x2EBEF or  # CJK Extension F
-                  0x1100 <= code_point <= 0x11FF)      # Hangul Jamo
+                  0x2CEB0 <= code_point <= 0x2EBEF)    # CJK Extension F
         
         if is_cjk:
             # Preserve CJK characters as-is
