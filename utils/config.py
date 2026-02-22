@@ -18,6 +18,8 @@ if not os.getenv('TWITCH_TOKEN') and os.getenv('\ufeffTWITCH_TOKEN'):
 class Config:
     """Application configuration"""
 
+
+
     @staticmethod
     def _get_int(key: str, default: int = None) -> int:
         """Helper to safely fetch and convert env vars to int"""
@@ -28,6 +30,10 @@ class Config:
 
     # General Config
     IS_PRODUCTION = os.getenv('IS_PRODUCTION', 'true').lower() == 'true'
+
+    WORKBOOK_NAME = os.getenv('WORKBOOK_NAME')
+    JSON_KEYFILE = 'service_account.json'
+    CACHE_REFRESH_HOURS = 1
 
     # Auth Tokens
     TWITCH_TOKEN = os.getenv('TWITCH_TOKEN')
