@@ -63,7 +63,7 @@
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "copilot/improve-xlog-duplicate-flags",
+    "git-widget-placeholder": "master",
     "last_opened_file_path": "C:/Users/bitress/PycharmProjects/chobot",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
@@ -71,6 +71,11 @@
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
     "vue.rearranger.settings.migration": "true"
+  },
+  "keyToStringList": {
+    "DatabaseDriversLRU": [
+      "sqlite"
+    ]
   }
 }]]></component>
   <component name="RecentsManager">

@@ -5,3 +5,4 @@ bot.log
 __pycache__/
 *.pyc
 warnings.db
+.idea

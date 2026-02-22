@@ -8,7 +8,7 @@ import logging
 import unicodedata
 import datetime
 import asyncio
-import aiosqlite  # Requires: pip install aiosqlite
+import aiosqlite
 
 import discord
 from discord import app_commands
@@ -31,7 +31,7 @@ COLOR_ALERT = 0xED4245         # Discord red (for unknown traveler alerts)
 
 # --- DATABASE SETUP ---
 DB_NAME = "warnings.db"
-WARN_EXPIRY_DAYS = 7
+WARN_EXPIRY_DAYS = 3
 
 # --- DATABASE HELPERS ---
 async def init_db():
@@ -260,7 +260,7 @@ class PunishmentBuilderView(discord.ui.View):
         self.log_message = log_message
 
         self.selected_member: discord.Member | discord.User | None = None
-        self.selected_duration: str | None = None
+        self.selected_duration: str | None = "3d"
         self.selected_reason: str | None = None
         self.custom_reason_text: str | None = None
         
@@ -552,7 +552,7 @@ class TravelerActionView(discord.ui.View):
         view = PunishmentBuilderView("BAN", self, log_message=interaction.message)
         await interaction.followup.send("<:Cho_Ban:1473530840725061793> **Build Ban:**", view=view, ephemeral=True)
 
-    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="<:PePeHands:784495079703969802>", custom_id="fl_dismiss", row=2)
+    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="<:Cho_Dismiss:1474955282026332180>", custom_id="fl_dismiss", row=2)
     async def dismiss_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Dismiss the alert as a false positive or non-threat."""
         try:
@@ -560,7 +560,7 @@ class TravelerActionView(discord.ui.View):
         except discord.NotFound:
             return
         ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
-        msg = f"**{ign or 'Visitor'}** dismissed as non-threat."
+        msg = f"**{ign or 'Visitor'}** dismissed."
         await self._resolve_alert(
             interaction, "DISMISSED", COLOR_DISMISS, msg, log_message=interaction.message
         )
@@ -581,7 +581,7 @@ class FlightLoggerCog(commands.Cog):
         )
         self._db_conn = None
         self.last_processed = None
-        self._pending_alerts: dict[str, int] = {}  # ign_clean -> message_id for active (unresolved) alerts
+        self._pending_alerts: dict[str, int] = {}
         self.fetch_islands_task.start()
         self.cleanup_warnings_task.start()
 
@@ -1106,10 +1106,9 @@ class FlightLoggerCog(commands.Cog):
         await ctx.defer()
         logger.info(f"[FLIGHT-TEST] Debug flight test triggered by {ctx.author}")
         
-        # Build the test message with current timestamp (local time for display consistency)
         now = datetime.datetime.now()
         timestamp = now.strftime("%Y-%m-%d %I:%M:%S %p").lower()
-        test_message_content = f"[{timestamp}] 🛬 DebugUser from DebugIsland is joining DebugIsland."
+        test_message_content = f"[{timestamp}] 🛬 ChoBot from Debug Island is joining Aruga."
         
         # Get channels
         listen_channel = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
@@ -1117,7 +1116,7 @@ class FlightLoggerCog(commands.Cog):
         
         if not listen_channel:
             embed = discord.Embed(
-                title="❌ Flight Test Failed",
+                title="Flight Test Failed",
                 description="Could not find the flight listen channel.",
                 color=0xFF0000
             )
@@ -1178,13 +1177,13 @@ class FlightLoggerCog(commands.Cog):
         # Step 5: Send summary embed to the invoker
         if success:
             embed = discord.Embed(
-                title="✅ Flight Test Complete",
+                title="Flight Test Complete",
                 description="The test flight message was sent, processed, and cleaned up successfully.",
                 color=0x2ECC71  # Green
             )
         else:
             embed = discord.Embed(
-                title="❌ Flight Test Failed",
+                title="Flight Test Failed",
                 description=error_details or "An error occurred during the test.",
                 color=0xFF0000  # Red
             )
@@ -1195,12 +1194,12 @@ class FlightLoggerCog(commands.Cog):
             inline=False
         )
         embed.add_field(
-            name="👂 Listen Channel",
+            name="Listen Channel",
             value=listen_channel.mention if listen_channel else "Not found",
             inline=True
         )
         embed.add_field(
-            name="📋 Log Channel",
+            name="Log Channel",
             value=log_channel.mention if log_channel else "Not found",
             inline=True
         )
@@ -1237,7 +1236,7 @@ class FlightLoggerCog(commands.Cog):
         removed_count = await self.remove_all_warnings(user.id, guild.id)
         
         if removed_count == 0:
-            msg = f"⚠️ **{user.display_name}** has no warnings to remove."
+            msg = f"**{user.display_name}** has no warnings to remove."
             if is_slash:
                 await ctx_or_interaction.followup.send(msg, ephemeral=True)
             else:
@@ -1272,9 +1271,9 @@ class FlightLoggerCog(commands.Cog):
         
         if sub_mod_channel:
             await sub_mod_channel.send(content=user.mention, embed=log_embed)
-            msg = f"✅ Case `{case_id}`: Removed {removed_count} warning(s), logged in {sub_mod_channel.mention}"
+            msg = f"Case `{case_id}`: Removed {removed_count} warning(s), logged in {sub_mod_channel.mention}"
         else:
-            msg = f"✅ Removed {removed_count} warning(s) (Case `{case_id}`), but log channel is missing."
+            msg = f"Removed {removed_count} warning(s) (Case `{case_id}`), but log channel is missing."
 
         if is_slash:
             await ctx_or_interaction.followup.send(msg, ephemeral=True)
@@ -1333,7 +1332,7 @@ class FlightLoggerCog(commands.Cog):
         warnings = await self.get_warnings(user.id, guild.id, days)
         
         if not warnings:
-            msg = f"✅ **{user.display_name}** has no warnings in the last {days} days."
+            msg = f"**{user.display_name}** has no warnings in the last {days} days."
             if is_slash:
                 await ctx_or_interaction.followup.send(msg, ephemeral=True)
             else:
