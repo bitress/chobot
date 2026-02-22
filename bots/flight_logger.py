@@ -840,6 +840,82 @@ class FlightLoggerCog(commands.Cog):
         island_opts = self.split_options(" | ".join(chunks[1:])) if len(chunks) > 1 else []
         return ign_opts, island_opts
 
+    def _get_ign_from_embed(self, embed: discord.Embed):
+        """Extracts IGN from the '👤 Traveler (IGN)' field in the alert embed."""
+        if not embed or not embed.fields:
+            return None
+        for field in embed.fields:
+            if "Traveler (IGN)" in field.name:
+                # Value is usually "```yaml\nIGN```"
+                match = re.search(r"```(?:yaml)?\n(.*?)\n?```", field.value)
+                if match:
+                    return match.group(1).strip()
+        return None
+
+    async def _find_open_case_for_ign(self, ign: str):
+        """Search flight log channel for open cases matching this IGN."""
+        output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
+        if not output_channel:
+            return None
+        
+        # Search the last 100 messages for an open case with matching IGN
+        async for message in output_channel.history(limit=100):
+            if not message.embeds:
+                continue
+            
+            embed = message.embeds[0]
+            ign_from_embed = self._get_ign_from_embed(embed)
+            
+            if ign_from_embed != ign:
+                continue
+            
+            # Check if case is still open (not closed)
+            # A closed case has "CASE CLOSED" in the author field
+            if embed.author and "CASE CLOSED" in embed.author.name:
+                continue
+            
+            # Check status field - open cases have PENDING REVIEW or INVESTIGATING
+            status_field = next((f.value for f in embed.fields if f.name == "📌 Status"), None)
+            if status_field and ("PENDING REVIEW" in status_field or "INVESTIGATING" in status_field):
+                return message
+        
+        return None
+
+    async def _update_rejoin_attempts(self, message: discord.Message):
+        """Add or increment the Re-join Attempts field in an alert embed."""
+        if not message.embeds:
+            return
+        
+        embed = message.embeds[0]
+        
+        # Find existing rejoin attempts field
+        rejoin_count = 1
+        fields_to_keep = []
+        
+        for field in embed.fields:
+            if "Re-join Attempts" in field.name:
+                # Extract current count and increment
+                count_match = re.search(r'`(\d+)`', field.value)
+                if count_match:
+                    rejoin_count = int(count_match.group(1)) + 1
+            else:
+                fields_to_keep.append((field.name, field.value, field.inline))
+        
+        # Rebuild fields without the old rejoin field
+        embed.clear_fields()
+        for name, value, inline in fields_to_keep:
+            embed.add_field(name=name, value=value, inline=inline)
+        
+        # Add updated rejoin attempts field (after Status field)
+        embed.add_field(
+            name="🔄 Re-join Attempts",
+            value=f"`{rejoin_count}` attempt(s) detected",
+            inline=True
+        )
+        
+        await message.edit(embed=embed)
+        logger.info(f"[FLIGHT] Updated rejoin attempts to {rejoin_count} for existing case")
+
     def find_matching_members(self, guild, ign_log_clean, island_log_clean):
         found_members = []
         for member in guild.members:
@@ -876,30 +952,39 @@ class FlightLoggerCog(commands.Cog):
             mentions = " ".join([m.mention for m in found_members])
             logger.info(f"[FLIGHT] Match: {ign} | {mentions}")
         else:
-            destination_link = self.get_island_channel_link(destination)
-            alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
+            # Check for existing open case with same IGN
+            existing_case = await self._find_open_case_for_ign(ign)
+            
+            if existing_case:
+                # Update existing case with rejoin attempt counter
+                await self._update_rejoin_attempts(existing_case)
+                logger.info(f"[FLIGHT] Rejoin detected for {ign}, updated existing case")
+            else:
+                # Create new alert
+                destination_link = self.get_island_channel_link(destination)
+                alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
 
-            embed = discord.Embed(
-                description=(
-                    f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
-                    f"An unregistered visitor is attempting to join **{destination_link}**.\n"
-                    f"Use the buttons below to take action."
-                ),
-                color=COLOR_ALERT,
-                timestamp=embed_timestamp
-            )
-            embed.add_field(name="👤 Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
-            embed.add_field(name="🏝️ Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
-            embed.add_field(name="✈️ Destination", value=f"```yaml\n{destination.title()}```", inline=True)
-            embed.add_field(name="🕐 Detected", value=f"<t:{alert_ts}:R>", inline=True)
-            embed.add_field(name="📌 Status", value="🔴 **PENDING REVIEW**", inline=True)
-            embed.set_image(url=Config.FOOTER_LINE)
-            guild      = self.bot.get_guild(Config.GUILD_ID)
-            guild_icon = guild.icon.url if guild and guild.icon else None
-            embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
+                embed = discord.Embed(
+                    description=(
+                        f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
+                        f"An unregistered visitor is attempting to join **{destination_link}**.\n"
+                        f"Use the buttons below to take action."
+                    ),
+                    color=COLOR_ALERT,
+                    timestamp=embed_timestamp
+                )
+                embed.add_field(name="👤 Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
+                embed.add_field(name="🏝️ Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+                embed.add_field(name="✈️ Destination", value=f"```yaml\n{destination.title()}```", inline=True)
+                embed.add_field(name="🕐 Detected", value=f"<t:{alert_ts}:R>", inline=True)
+                embed.add_field(name="📌 Status", value="🔴 **PENDING REVIEW**", inline=True)
+                embed.set_image(url=Config.FOOTER_LINE)
+                guild      = self.bot.get_guild(Config.GUILD_ID)
+                guild_icon = guild.icon.url if guild and guild.icon else None
+                embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
 
-            view = TravelerActionView(self.bot, ign)
-            await output_channel.send(embed=embed, view=view)
+                view = TravelerActionView(self.bot, ign)
+                await output_channel.send(embed=embed, view=view)
 
     @commands.hybrid_command(name="recoverflights")
     @app_commands.describe(hours="How many hours to scan back (default: 48)", mode="Execution mode: 'dry' or 'run'")
