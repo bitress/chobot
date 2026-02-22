@@ -123,8 +123,10 @@ class DiscordCommandCog(commands.Cog):
         self.data_manager = data_manager
         self.cooldowns = {}
         self.sub_island_lookup = {}
+        self._island_online_status: dict = {}  # island name -> True/False/None
 
         self.auto_refresh_cache.start()
+        self.island_monitor.start()
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Filter items from cache for autocomplete"""
@@ -191,9 +193,117 @@ class DiscordCommandCog(commands.Cog):
         self.sub_island_lookup = temp_lookup
         logger.info(f"[DISCORD] Dynamic Island Fetch Complete. Found {count} islands.")
 
+    async def _get_island_channel(self, guild: discord.Guild, island: str):
+        """Resolve the Discord channel for a sub island.
+
+        Args:
+            guild: The Discord guild to search in.
+            island: The island name (e.g. "Alapaap").
+
+        Returns the matching TextChannel, or None if not found.
+        """
+        island_clean = clean_text(island)
+        channel_id = self.sub_island_lookup.get(island_clean)
+        if not channel_id:
+            for ch in guild.channels:
+                if isinstance(ch, discord.TextChannel) and island_clean in clean_text(ch.name):
+                    channel_id = ch.id
+                    break
+        if not channel_id:
+            return None
+        return guild.get_channel(channel_id)
+
+    async def _check_island_online(self, guild: discord.Guild, island: str, island_bot_role):
+        """Check whether a single sub island is online.
+
+        Args:
+            guild: The Discord guild.
+            island: The island name (e.g. "Alapaap").
+            island_bot_role: The shared island-bot Role, or None if unavailable.
+
+        Returns True (online), False (offline), or None (could not determine).
+        Uses the same logic as the !islandstatus command.
+        """
+        channel = await self._get_island_channel(guild, island)
+        if not channel:
+            return None
+
+        island_bot = None
+        if island_bot_role:
+            island_clean_target = clean_text(f"chobot {island}")
+            for member in island_bot_role.members:
+                if member.bot and clean_text(member.display_name) == island_clean_target:
+                    island_bot = member
+                    break
+
+        if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+            return True
+
+        try:
+            messages = [msg async for msg in channel.history(limit=25)]
+        except discord.Forbidden:
+            return None
+
+        for msg in messages:
+            if island_bot:
+                if msg.author.id != island_bot.id:
+                    continue
+            elif not msg.author.bot:
+                continue
+
+            if DODO_CODE_PATTERN.search(msg.content):
+                return True
+            if ISLAND_HOST_NAME in msg.content.lower():
+                return True
+
+        return False
+
+    @tasks.loop(minutes=5)
+    async def island_monitor(self):
+        """Automatically notify each island's own channel when it goes offline or recovers"""
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if not guild:
+            return
+
+        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
+
+        for island in Config.SUB_ISLANDS:
+            island_channel = await self._get_island_channel(guild, island)
+            if not island_channel:
+                continue
+
+            try:
+                is_online = await self._check_island_online(guild, island, island_bot_role)
+            except discord.DiscordException:
+                logger.exception(f"[DISCORD] island_monitor error checking {island}")
+                continue
+
+            if island not in self._island_online_status:
+                # First check after startup — record state silently (no alert on boot)
+                self._island_online_status[island] = is_online
+                continue
+
+            prev = self._island_online_status[island]
+            self._island_online_status[island] = is_online
+
+            # Only notify on clear transitions; None (undetermined) does not trigger alerts
+            if prev is True and is_online is False:
+                await island_channel.send(f"🔴 **{island}** island is currently down.")
+                logger.info(f"[DISCORD] island_monitor: {island} went OFFLINE")
+            elif prev is False and is_online is True:
+                await island_channel.send(f"🟢 **{island}** island is back online!")
+                logger.info(f"[DISCORD] island_monitor: {island} came back ONLINE")
+
+    @island_monitor.before_loop
+    async def before_island_monitor(self):
+        """Wait until the bot is ready and island channels are fetched"""
+        await self.bot.wait_until_ready()
+        await self.fetch_islands()
+
     def cog_unload(self):
         """Cleanup on unload"""
         self.auto_refresh_cache.cancel()
+        self.island_monitor.cancel()
 
     def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
         """Check if user is on cooldown"""
