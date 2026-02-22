@@ -95,6 +95,11 @@ _file_cache: dict = {}
 _file_cache_lock = threading.Lock()
 _FILE_CACHE_TTL = 3  # seconds
 
+# Island bot staleness thresholds (in seconds)
+# If Dodo.txt hasn't been modified within this time, bot is considered offline
+FREE_ISLAND_STALENESS_THRESHOLD = 180  # 3 minutes - strict check for free islands
+VIP_ISLAND_STALENESS_THRESHOLD = 600   # 10 minutes - more lenient for VIP islands
+
 
 def get_file_content(folder_path, filename):
     """Read file content safely with caching and retry to reduce file-lock contention.
@@ -149,21 +154,19 @@ def process_island(entry, island_type):
     raw_visitors = get_file_content(entry.path, "Visitors.txt")
 
     status = "ONLINE"
-    display_dodo = raw_dodo
+    display_dodo = None
     display_visitors = "0/7"
     message = ""
 
     # Check if Dodo.txt file is stale to determine if bot is online
-    # Free islands: Use 3-minute threshold (strict check for bot being online)
+    # Free islands: Use strict 3-minute threshold
     # VIP islands: Use 10-minute threshold (more lenient)
     dodo_file_path = os.path.join(entry.path, "Dodo.txt")
     is_bot_offline = False
     if os.path.exists(dodo_file_path):
         file_mtime = os.path.getmtime(dodo_file_path)
         age_seconds = time.time() - file_mtime
-        # Free islands need strict freshness check (3 min = 180 sec)
-        # VIP islands use 10 min = 600 sec
-        staleness_threshold = 180 if island_type == "Free" else 600
+        staleness_threshold = FREE_ISLAND_STALENESS_THRESHOLD if island_type == "Free" else VIP_ISLAND_STALENESS_THRESHOLD
         if age_seconds > staleness_threshold:
             is_bot_offline = True
     else:
