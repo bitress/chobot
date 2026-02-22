@@ -138,7 +138,11 @@ def get_file_content(folder_path, filename):
 
 
 def process_island(entry, island_type):
-    """Process island data for Dodo API"""
+    """Process island data for Dodo API
+    
+    For Free islands: Check if bot is online by verifying Dodo.txt was recently updated.
+    For VIP islands: Similar check but always hide actual dodo codes.
+    """
     name = entry.name.upper()
 
     raw_dodo = get_file_content(entry.path, "Dodo.txt")
@@ -149,16 +153,22 @@ def process_island(entry, island_type):
     display_visitors = "0/7"
     message = ""
 
-    # Check if Dodo.txt file is stale (not modified in the last 10 minutes)
-    # If the file is stale, the island bot is likely offline
+    # Check if Dodo.txt file is stale to determine if bot is online
+    # Free islands: Use 3-minute threshold (strict check for bot being online)
+    # VIP islands: Use 10-minute threshold (more lenient)
     dodo_file_path = os.path.join(entry.path, "Dodo.txt")
-    is_stale = False
+    is_bot_offline = False
     if os.path.exists(dodo_file_path):
         file_mtime = os.path.getmtime(dodo_file_path)
         age_seconds = time.time() - file_mtime
-        # 10 minutes = 600 seconds (Discord bot checks every 5 minutes, so 10 min is a safe threshold)
-        if age_seconds > 600:
-            is_stale = True
+        # Free islands need strict freshness check (3 min = 180 sec)
+        # VIP islands use 10 min = 600 sec
+        staleness_threshold = 180 if island_type == "Free" else 600
+        if age_seconds > staleness_threshold:
+            is_bot_offline = True
+    else:
+        # File doesn't exist = bot is offline
+        is_bot_offline = True
 
     # Visitor Logic
     if raw_visitors:
@@ -169,10 +179,10 @@ def process_island(entry, island_type):
         else:
             display_visitors = raw_visitors
 
-    # Dodo/Status Logic
+    # Dodo/Status Logic for VIP islands
     if island_type == "VIP":
         display_dodo = "SUB ONLY"  # Always hide the actual dodo code for VIP islands
-        if raw_dodo is None or is_stale:
+        if raw_dodo is None or is_bot_offline:
             status = "OFFLINE"
             display_visitors = "0/7"
             message = "This island is currently down."
@@ -181,8 +191,11 @@ def process_island(entry, island_type):
             display_visitors = "0/7"
             message = "This island is currently refreshing."
         # else: status stays "ONLINE", visitors already resolved above
+    
+    # Dodo/Status Logic for Free islands - check if bot is online/offline
     else:
-        if raw_dodo is None or is_stale:
+        # For free islands, bot online/offline status is primary check
+        if is_bot_offline:
             status = "OFFLINE"
             display_dodo = "....."
             display_visitors = "0/7"
@@ -192,8 +205,16 @@ def process_island(entry, island_type):
             display_dodo = "WAIT..."
             display_visitors = "0/7"
             message = "This island is currently refreshing."
-        else:
+        elif raw_dodo:
+            # Bot is online and has a valid dodo code
+            status = "ONLINE"
             display_dodo = raw_dodo
+        else:
+            # Bot is online but no dodo code (shouldn't happen, but handle it)
+            status = "OFFLINE"
+            display_dodo = "....."
+            display_visitors = "0/7"
+            message = "This island is currently down."
 
     return {
         "name": name,
