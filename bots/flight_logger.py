@@ -125,17 +125,16 @@ def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str
             f"> **Responsible:** {mod.mention} ({mod_role_name})",
         ]
     else:
-        delta = _parse_duration(duration)
+        # Use the database cleanup schedule so the embed matches when the record is actually removed
+        expiry_ts = int((now + datetime.timedelta(days=WARN_EXPIRY_DAYS)).timestamp())
         desc_lines = [
             f"> **{member.mention} ({member.display_name})** has been {action_verb.lower()}!",
             f"> **Reason:** {reason}",
             f"> **Duration:** {duration}",
             f"> **Count:** {warn_count}",
             f"> **Responsible:** {mod.mention} ({mod_role_name})",
+            f"> Automatically expires <t:{expiry_ts}:R>",
         ]
-        if delta is not None:
-            expiry_ts = int((now + delta).timestamp())
-            desc_lines.append(f"> Automatically expires <t:{expiry_ts}:R>")
         desc_lines.extend([
             f"> **Proof:** Verified (Log System)",
             "> ",
