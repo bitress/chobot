@@ -380,7 +380,7 @@ class DiscordCommandCog(commands.Cog):
     async def find(self, ctx, *, item: str = ""):
         """Find an item"""
         if not item:
-            await ctx.send("Usage: `!find <item name>`")
+            await ctx.reply("Usage: `!find <item name>`")
             return
 
         if self.check_cooldown(str(ctx.author.id)):
@@ -401,10 +401,10 @@ class DiscordCommandCog(commands.Cog):
             embed = self.create_found_embed(ctx, display_name, found_locations, is_villager=False)
 
             if embed:
-                await ctx.send(content=f"Hey <@{ctx.author.id}>, look what I found!", embed=embed)
+                await ctx.reply(content=f"Hey <@{ctx.author.id}>, look what I found!", embed=embed)
                 logger.info(f"[DISCORD] Item Hit: {search_term} -> Found")
             else:
-                await ctx.send(f"**{display_name}** is not currently available on any Sub Island.")
+                await ctx.reply(f"**{display_name}** is not currently available on any Sub Island.")
                 logger.info(f"[DISCORD] Item Hit: {search_term} -> Not on Sub Islands")
             return
 
@@ -418,9 +418,9 @@ class DiscordCommandCog(commands.Cog):
 
         if suggestions:
             view = SuggestionView(self, suggestions, "item", ctx.author.id)
-            await ctx.send(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail, view=view)
+            await ctx.reply(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail, view=view)
         else:
-            await ctx.send(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail)
+            await ctx.reply(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail)
 
     @commands.hybrid_command(name="villager")
     @app_commands.describe(name="The name of the villager")
