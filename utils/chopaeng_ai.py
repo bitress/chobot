@@ -186,6 +186,11 @@ Q: What commands are available?
 A: Core commands are !find (search items), !villager (search villagers), !senddodo
    or !sd (get a Dodo code), !ask (ask the AI), !random, !status, !ping, and !help.
    Admin-only: !refresh.
+
+Q: What is Chobot? Who are you? Tell me about you or yourself.
+A: I'm Chobot, a custom Discord and Twitch bot for the Chopaeng Animal Crossing
+   community, built by bitress. I help members find items and villagers across 45
+   islands, get Dodo codes, and answer questions. Type !help to see all commands!
 """
 
 # ---------------------------------------------------------------------------
