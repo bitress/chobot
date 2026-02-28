@@ -400,6 +400,10 @@ class DiscordCommandCog(commands.Cog):
     @app_commands.autocomplete(item=item_autocomplete)
     async def find(self, ctx, *, item: str = ""):
         """Find an item"""
+
+        if not await self._enforce_find_channel(ctx):
+            return
+
         if not item:
             await ctx.reply("Usage: `!find <item name>`")
             return
@@ -447,6 +451,10 @@ class DiscordCommandCog(commands.Cog):
     @app_commands.describe(name="The name of the villager")
     async def villager(self, ctx, *, name: str = ""):
         """Find a villager"""
+
+        if not await self._enforce_find_channel(ctx):
+            return
+
         if not name:
             await ctx.reply("Usage: `!villager <n>`")
             return
@@ -564,6 +572,33 @@ class DiscordCommandCog(commands.Cog):
         
         await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] Help command used by {ctx.author.name}")
+
+    async def _enforce_find_channel(self, ctx) -> bool:
+        """
+        Returns True if in the correct channel.
+        Otherwise, deletes the message and returns False.
+        """
+        if not Config.FIND_BOT_CHANNEL_ID or ctx.channel.id == Config.FIND_BOT_CHANNEL_ID:
+            return True
+
+        # Nuke the unauthorized text command
+        if ctx.message:
+            try:
+                await ctx.message.delete()
+            except discord.HTTPException:
+                pass
+
+        # Scold them ephemerally if they used a slash command
+        if ctx.interaction and not ctx.interaction.response.is_done():
+            try:
+                await ctx.interaction.response.send_message(
+                    f"Keep it clean. Use this command in <#{Config.FIND_BOT_CHANNEL_ID}>.",
+                    ephemeral=True
+                )
+            except discord.HTTPException:
+                pass
+
+        return False
 
     @commands.hybrid_command(name="ping")
     async def ping(self, ctx):
