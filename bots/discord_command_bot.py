@@ -25,6 +25,7 @@ logger = logging.getLogger("DiscordCommandBot")
 
 # Island status check constants
 DODO_CODE_PATTERN = re.compile(r'\b[A-HJ-NP-Z0-9]{5}\b')
+MENTION_PATTERN = re.compile(r'<@!?\d+>')
 ISLAND_HOST_NAME = "chopaeng"
 MESSAGE_HISTORY_LIMIT = 30
 ISLAND_DOWN_IMAGE_URL = "https://cdn.chopaeng.com/misc/Bot-is-Down.jpg"
@@ -1253,5 +1254,16 @@ class DiscordCommandBot(commands.Bot):
                     except discord.Forbidden:
                         logger.warning(f"[DISCORD] Missing permissions to delete message in FIND_BOT_CHANNEL")
                     return  # Don't process the command
+
+        # Handle bot mention as an implicit !ask
+        if self.user in message.mentions:
+            # Strip all @mentions to extract the bare question
+            question = MENTION_PATTERN.sub('', message.content).strip()
+            if question:
+                async with message.channel.typing():
+                    answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY)
+                await message.reply(f"🤖 **Chopaeng AI:** {answer}")
+                logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
+                return
         
         await self.process_commands(message)
