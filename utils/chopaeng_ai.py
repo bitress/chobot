@@ -21,7 +21,7 @@ Chopaeng (also written choPaeng or ChoPaeng) is a Filipino Animal Crossing:
 New Horizons (ACNH) content creator, Twitch streamer, and community host based
 in the Philippines. He is known for his warm, inclusive, and fun streams where
 chat members visit his islands to collect rare items and meet cute villagers.
-Her streams are family-friendly and welcoming to both veterans and newcomers
+His streams are family-friendly and welcoming to both veterans and newcomers
 to Animal Crossing. The Chopaeng community is sometimes called the "choPaeng
 family" — a tight-knit group of Filipino and international ACNH fans.
 
@@ -171,40 +171,112 @@ A: Chobot was built by bitress, a developer in the Chopaeng community. It is
 Q: What does "Hiraya Manawari" mean?
 A: It is a Filipino phrase meaning "may the wishes of your heart be granted" or
    "dreams come true." Hiraya is also the name of one of the sub islands.
+
+Q: What is the Flight Logger?
+A: The Flight Logger is an automatic safety feature. When someone visits a sub
+   island, the bot logs their arrival. If the visitor is unrecognised, staff get
+   an alert with buttons to Admit, Warn, Kick, or Ban the visitor.
+
+Q: What are the visitor rules or etiquette?
+A: Only pick up items assigned to you. Do not run over flowers or dig up trees.
+   Do not talk to residents to lure them away. Leave as soon as you are done.
+   Be friendly and thankful in chat. Breaking rules may result in a ban.
 """
 
 # ---------------------------------------------------------------------------
 # Keyword-based fallback (no API key needed)
 # ---------------------------------------------------------------------------
-_KB_CHUNKS = [line.strip() for line in CHOPAENG_KNOWLEDGE.splitlines() if line.strip()]
+
+# Common question/filler words excluded from scoring so topic keywords drive matching.
+_STOPWORDS = {
+    'who', 'what', 'how', 'why', 'when', 'where', 'which', 'does',
+    'did', 'are', 'the', 'can', 'could', 'would', 'should', 'its',
+    'this', 'that', 'these', 'those', 'and', 'but', 'for', 'with',
+    'have', 'has', 'was', 'were', 'been', 'get', 'got', 'use',
+}
+
+
+def _parse_kb() -> tuple[list[tuple[str, str]], list[str]]:
+    """Parse the knowledge base into Q&A pairs and prose paragraphs."""
+    # Extract Q&A pairs: Q: … \n A: … (possibly multi-line until next Q:, section, or end)
+    qa_pattern = re.compile(
+        r'Q:\s*(.+?)\nA:\s*(.+?)(?=\nQ:|\n##|\n#|\Z)',
+        re.DOTALL,
+    )
+    qa_pairs = []
+    for m in qa_pattern.finditer(CHOPAENG_KNOWLEDGE):
+        q = ' '.join(m.group(1).split())
+        a = ' '.join(m.group(2).split())
+        qa_pairs.append((q, a))
+
+    # Extract prose paragraphs (blank-line separated), skipping headers and Q&A lines
+    prose_paragraphs = []
+    for para in re.split(r'\n\s*\n', CHOPAENG_KNOWLEDGE):
+        lines = [
+            ln.strip() for ln in para.strip().splitlines()
+            if ln.strip()
+            and not ln.strip().startswith('#')
+            and not ln.strip().startswith('Q:')
+            and not ln.strip().startswith('A:')
+        ]
+        if lines:
+            prose_paragraphs.append(' '.join(lines))
+
+    return qa_pairs, prose_paragraphs
+
+
+_KB_QA_PAIRS, _KB_PROSE = _parse_kb()
+
+
+def _wb_match(keyword: str, text: str) -> bool:
+    """Return True if *keyword* appears as a whole word in *text*."""
+    return bool(re.search(rf'\b{re.escape(keyword)}\b', text))
 
 
 def _keyword_answer(question: str) -> str:
-    """Return a best-effort answer by searching the knowledge base for relevant lines."""
+    """Return a clean answer by matching Q&A pairs first, then prose paragraphs."""
     q_lower = question.lower()
-    keywords = re.findall(r'\b\w{3,}\b', q_lower)
+    all_words = re.findall(r'\b\w{3,}\b', q_lower)
+    keywords = [w for w in all_words if w not in _STOPWORDS] or all_words
 
-    scored: list[tuple[int, str]] = []
-    for chunk in _KB_CHUNKS:
-        chunk_lower = chunk.lower()
-        score = sum(1 for kw in keywords if kw in chunk_lower)
-        if score > 0:
-            scored.append((score, chunk))
-
-    if not scored:
+    if not keywords:
         return (
             "I'm not sure about that. Try asking about islands, items, "
             "commands, or how the Chopaeng community works!"
         )
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top_lines = [line for _, line in scored[:5]]
-    answer = " ".join(top_lines)
+    # 1. Score Q&A pairs against the question text; return the best answer text.
+    best_qa_score = 0
+    best_qa_answer = ''
+    for q_text, a_text in _KB_QA_PAIRS:
+        q_kb_lower = q_text.lower()
+        score = sum(1 for kw in keywords if _wb_match(kw, q_kb_lower))
+        if score > best_qa_score:
+            best_qa_score = score
+            best_qa_answer = a_text
 
-    # Trim to a reasonable length
-    if len(answer) > 400:
-        answer = answer[:397] + "..."
-    return answer
+    if best_qa_score > 0:
+        answer = best_qa_answer
+        return answer[:397] + '...' if len(answer) > 400 else answer
+
+    # 2. Fall back to the best matching prose paragraph.
+    best_prose_score = 0
+    best_prose = ''
+    for para in _KB_PROSE:
+        para_lower = para.lower()
+        score = sum(1 for kw in keywords if _wb_match(kw, para_lower))
+        if score > best_prose_score:
+            best_prose_score = score
+            best_prose = para
+
+    if best_prose_score > 0:
+        answer = best_prose
+        return answer[:397] + '...' if len(answer) > 400 else answer
+
+    return (
+        "I'm not sure about that. Try asking about islands, items, "
+        "commands, or how the Chopaeng community works!"
+    )
 
 
 # ---------------------------------------------------------------------------
