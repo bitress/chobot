@@ -7,13 +7,65 @@ falls back to keyword-based matching when no key is present.
 
 import logging
 import re
+import time
 from typing import Optional
 
 logger = logging.getLogger("ChopaengAI")
 
 # ---------------------------------------------------------------------------
-# Knowledge base about Chopaeng
+# Conversation history store
 # ---------------------------------------------------------------------------
+_MAX_HISTORY_TURNS = 5   # keep last 5 exchanges (10 messages) per conversation
+_HISTORY_TTL       = 600  # seconds — reset after 10 minutes of inactivity
+
+
+class ConversationStore:
+    """
+    In-memory per-user conversation history with TTL expiry.
+
+    Keys are arbitrary strings (e.g. ``"guild:channel:user"``).
+    Each value is a list of ``{"role": "user"|"assistant", "content": str}``
+    dicts stored in chronological order, capped at *_MAX_HISTORY_TURNS*
+    exchanges (2 × _MAX_HISTORY_TURNS messages).
+    """
+
+    def __init__(self):
+        self._store: dict[str, dict] = {}
+
+    def _is_expired(self, key: str) -> bool:
+        entry = self._store.get(key)
+        return entry is not None and time.time() - entry["last_active"] > _HISTORY_TTL
+
+    def get(self, key: str) -> list[dict]:
+        """Return conversation history for *key* (empty list if none / expired)."""
+        if self._is_expired(key):
+            del self._store[key]
+        entry = self._store.get(key)
+        return list(entry["turns"]) if entry else []
+
+    def add(self, key: str, user_msg: str, bot_reply: str) -> None:
+        """Append a user/assistant exchange and trim to *_MAX_HISTORY_TURNS*."""
+        if self._is_expired(key):
+            del self._store[key]
+        if key not in self._store:
+            self._store[key] = {"turns": [], "last_active": time.time()}
+        turns = self._store[key]["turns"]
+        turns.append({"role": "user",      "content": user_msg})
+        turns.append({"role": "assistant", "content": bot_reply})
+        max_msgs = _MAX_HISTORY_TURNS * 2
+        if len(turns) > max_msgs:
+            self._store[key]["turns"] = turns[-max_msgs:]
+        self._store[key]["last_active"] = time.time()
+
+    def clear(self, key: str) -> None:
+        """Discard all history for *key*."""
+        self._store.pop(key, None)
+
+
+# Module-level singleton used by get_ai_answer and the bot modules.
+conversation_store = ConversationStore()
+
+
 CHOPAENG_KNOWLEDGE = """
 # About Chopaeng
 
@@ -614,9 +666,23 @@ def _trim_to_sentences(text: str, n: int = 3) -> str:
     return trimmed
 
 
-def _keyword_answer(question: str) -> str:
-    """Return a clean answer by matching Q&A pairs first, then prose paragraphs."""
-    q_lower = question.lower()
+def _keyword_answer(question: str, history: Optional[list[dict]] = None) -> str:
+    """Return a clean answer by matching Q&A pairs first, then prose paragraphs.
+
+    When *history* is provided and the question is short / vague (≤ 5 words),
+    the last user message is prepended so the keyword scorer has more context.
+    """
+    # Augment a short follow-up with the most recent user turn for better matching.
+    effective_question = question
+    if history and len(question.split()) <= 5:
+        last_user = next(
+            (t["content"] for t in reversed(history) if t["role"] == "user"),
+            None,
+        )
+        if last_user:
+            effective_question = f"{last_user} {question}"
+
+    q_lower = effective_question.lower()
     all_words = re.findall(r'\b\w{3,}\b', q_lower)
     keywords = [w for w in all_words if w not in _STOPWORDS] or all_words
 
@@ -661,9 +727,17 @@ def _keyword_answer(question: str) -> str:
 # ---------------------------------------------------------------------------
 # Gemini-powered answer (optional – requires GEMINI_API_KEY)
 # ---------------------------------------------------------------------------
-async def get_ai_answer(question: str, gemini_api_key: Optional[str] = None) -> str:
+async def get_ai_answer(
+    question: str,
+    gemini_api_key: Optional[str] = None,
+    conversation_key: Optional[str] = None,
+) -> str:
     """
     Answer a question about Chopaeng.
+
+    If *conversation_key* is provided, past exchanges for that key are retrieved
+    from the module-level ``conversation_store`` and passed as context, and the
+    new exchange is stored back so future calls continue the conversation.
 
     If *gemini_api_key* is provided, uses Google Gemini (free tier).
     Otherwise falls back to the built-in keyword search.
@@ -671,21 +745,47 @@ async def get_ai_answer(question: str, gemini_api_key: Optional[str] = None) -> 
     if not question or not question.strip():
         return "Please ask me something! e.g. `!ask how do I get items?`"
 
+    q = question.strip()
+    history = conversation_store.get(conversation_key) if conversation_key else []
+
     if gemini_api_key:
         try:
-            return await _gemini_answer(question.strip(), gemini_api_key)
+            answer = await _gemini_answer(q, gemini_api_key, history=history)
+            if conversation_key:
+                conversation_store.add(conversation_key, q, answer)
+            return answer
         except Exception as e:
             logger.warning(f"[ChopaengAI] Gemini failed ({e}), using keyword fallback.")
 
-    return _keyword_answer(question.strip())
+    answer = _keyword_answer(q, history=history)
+    if conversation_key:
+        conversation_store.add(conversation_key, q, answer)
+    return answer
 
 
-async def _gemini_answer(question: str, api_key: str) -> str:
+async def _gemini_answer(
+    question: str,
+    api_key: str,
+    history: Optional[list[dict]] = None,
+) -> str:
     """Call the Gemini API asynchronously and return the answer."""
     import google.generativeai as genai  # lazy import
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
+
+    # Build an optional conversation context block from history.
+    conversation_context = ""
+    if history:
+        lines = []
+        for turn in history:
+            role = "User" if turn["role"] == "user" else "Assistant"
+            lines.append(f"{role}: {turn['content']}")
+        conversation_context = (
+            "\n### Previous Conversation ###\n"
+            + "\n".join(lines)
+            + "\n"
+        )
 
     prompt = (
         "You are a helpful assistant for the Chopaeng Animal Crossing community. "
@@ -693,8 +793,9 @@ async def _gemini_answer(question: str, api_key: str) -> str:
         "Reply in plain text (no markdown, no embeds). "
         "Keep your answer to 2–3 sentences maximum. "
         "If the answer is not in the knowledge base, say you don't know.\n\n"
-        f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n\n"
-        f"### User Question ###\n{question}"
+        f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"
+        f"{conversation_context}"
+        f"\n### Current Question ###\n{question}"
     )
 
     # Gemini's generate_content is synchronous; run it in a thread to avoid blocking.

@@ -19,7 +19,7 @@ from thefuzz import process, fuzz
 from utils.config import Config
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
-from utils.chopaeng_ai import get_ai_answer
+from utils.chopaeng_ai import get_ai_answer, conversation_store
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -36,6 +36,12 @@ ISLAND_DODO_SENT_PATTERN = re.compile(r".+?:\s*Sent you the dodo code via DM", r
 VISITOR_LINE_PATTERN = re.compile(r'#\d+:\s*(.+)')
 AVAILABLE_SLOT_TEXT = "available slot"
 ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
+
+
+def _discord_conv_key(message: discord.Message) -> str:
+    """Return a stable per-user-per-channel key for conversation history."""
+    guild_id = message.guild.id if message.guild else "dm"
+    return f"discord:{guild_id}:{message.channel.id}:{message.author.id}"
 
 
 class SuggestionSelect(discord.ui.Select):
@@ -638,7 +644,8 @@ class DiscordCommandCog(commands.Cog):
             return
 
         await ctx.defer()
-        answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY)
+        conv_key = _discord_conv_key(ctx.message)
+        answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY, conversation_key=conv_key)
 
         await ctx.reply(f"🤖 **Chopaeng AI:** {answer}")
         logger.info(f"[DISCORD] Ask command by {ctx.author.name}: {question[:80]}")
@@ -1260,10 +1267,37 @@ class DiscordCommandBot(commands.Bot):
             # Strip all @mentions to extract the bare question
             question = MENTION_PATTERN.sub('', message.content).strip()
             if question:
+                conv_key = _discord_conv_key(message)
                 async with message.channel.typing():
-                    answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY)
+                    answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY, conversation_key=conv_key)
                 await message.reply(f"🤖 **Chopaeng AI:** {answer}")
                 logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
                 return
-        
+
+        # Handle a plain reply to one of the bot's AI responses (no prefix/mention needed).
+        # This lets users continue the conversation naturally by just replying.
+        if (
+            message.reference is not None
+            and not message.content.startswith(self.command_prefix)
+        ):
+            ref = message.reference.resolved
+            if ref is None:
+                try:
+                    ref = await message.channel.fetch_message(message.reference.message_id)
+                except Exception:
+                    ref = None
+            if (
+                ref is not None
+                and ref.author == self.user
+                and ref.content.startswith("🤖")
+            ):
+                question = message.content.strip()
+                if question:
+                    conv_key = _discord_conv_key(message)
+                    async with message.channel.typing():
+                        answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY, conversation_key=conv_key)
+                    await message.reply(f"🤖 **Chopaeng AI:** {answer}")
+                    logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
+                    return
+
         await self.process_commands(message)
