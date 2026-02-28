@@ -25,8 +25,23 @@ His streams are family-friendly and welcoming to both veterans and newcomers
 to Animal Crossing. The Chopaeng community is sometimes called the "choPaeng
 family" — a tight-knit group of Filipino and international ACNH fans.
 
+## Official Website
+The official website for the Chopaeng community is chopaeng.com. It serves as
+the main hub for everything related to ChoPaeng (also known as Kuya Cho), and
+includes:
+- Treasure Island access points and rules.
+- Subscriber perks and benefits.
+- Island directory with island-specific information.
+- Community links to all social media and platforms.
+- Support portals and giveaway information.
+
 ## Chopaeng's Twitch & Socials
+- Official website: chopaeng.com
 - Twitch channel: twitch.tv/chopaeng
+- YouTube: youtube.com/@chopaeng (stream VODs, highlights, and ACNH content)
+- Facebook: facebook.com/chopaenglive
+- TikTok: tiktok.com/@chopaeng
+- Discord: discord.gg/chopaeng (main community hub)
 - The Twitch community can use `!find`, `!villager`, `!ask`, and other bot
   commands directly in Twitch chat.
 
@@ -59,7 +74,69 @@ Amihan (north wind/cool breeze), Silakbo (outburst of emotion), Dangal (honor/di
 Kariktan (beauty/charm), Tinig (voice/sound), Banaag (glimmer of light),
 Sinag (ray of light/moonbeam), Giting (bravery/valor), Marilag (magnificent/radiant).
 
-## How to Get Items
+## Island Directory
+Each island has a specific theme or specialty. Knowing which island has what
+helps you visit the right one for what you need:
+
+### Clothing Islands (Free Islands)
+- MATAHOM — clothing items (tops, bottoms, accessories, shoes, hats).
+- PARALUMAN — clothing items; often stocked with seasonal or themed outfits.
+Visit these islands if you are looking for wearable fashion items.
+
+### Critter Islands (Free Islands)
+- HARANA — bugs, fish, sea creatures, and critter-related items.
+- PAGSUYO — bugs, fish, and nature-themed items.
+Visit these islands if you are looking for creatures or nature items.
+
+### Other Notable Free Islands
+- KALAWAKAN — space/galaxy themed items; rare furniture and DIY recipes.
+- KUNDIMAN — music-themed and romantic-style furniture.
+- BATHALA — deity/mythical themed rare items.
+- SINAG / BANAAG / TALA / SINAGTALA — light and star themed furniture.
+- All 27 free islands rotate stock regularly. Use `!find <item>` to check which
+  island currently has the item you need.
+
+## Subscriber / VIP Perks
+Chopaeng Twitch subscribers and members with the VIP role on Discord enjoy
+extra benefits:
+
+1. **Unlimited Access** — Subscribers can visit sub islands (the 18 premium
+   islands) as many times as they want, any time they are open.
+2. **Priority Access** — Subscribers get priority queue when sub islands are
+   busy or limited.
+3. **Item Requests** — Subscribers can request specific in-game items or
+   villagers to be stocked on a sub island just for them. Use the ordering
+   system in the Discord server.
+4. **Exclusive Stock** — Sub islands often carry rarer items, full DIY sets,
+   and curated villager selections not available on free islands.
+5. **Priority Dodo Codes** — Subscribers receive Dodo codes faster when
+   multiple users are waiting.
+
+To become a subscriber, subscribe to Chopaeng on Twitch at twitch.tv/chopaeng.
+Your Twitch sub role is linked to your Discord account in the server.
+
+## Support & Donations
+The Chopaeng community runs on the support of its members. Donations help fund:
+- Server hosting and upkeep for the 45 islands and Chobot infrastructure.
+- Stream upgrades (better equipment, overlays, and island stocking).
+- Giveaways and community events.
+
+Ways to support Chopaeng:
+- Subscribe on Twitch at twitch.tv/chopaeng.
+- Donate directly through the support portal on chopaeng.com.
+- Cheer with Twitch Bits in his Twitch chat.
+
+## Giveaways
+Chopaeng regularly runs community giveaways for his followers and subscribers.
+Giveaways can include:
+- Rare in-game ACNH items (furniture, DIY recipes, clothing, seasonal items).
+- Real-life prizes (Nintendo Switch games, merchandise, etc.).
+- Exclusive island visits with special item hauls.
+
+Giveaway announcements are posted in the Discord server and on Twitch during
+live streams. Follow chopaeng.com and the Discord for the latest giveaway info.
+
+
 1. Use `!find <item>` in Discord or Twitch chat to search for an item.
 2. The bot shows which islands currently have the item.
 3. Go to that island's channel in Discord and use `!senddodo` or `!sd` to get
@@ -191,6 +268,45 @@ Q: What is Chobot? Who are you? Tell me about you or yourself.
 A: I'm Chobot, a custom Discord and Twitch bot for the Chopaeng Animal Crossing
    community, built by bitress. I help members find items and villagers across 45
    islands, get Dodo codes, and answer questions. Type !help to see all commands!
+
+Q: What is chopaeng.com?
+A: chopaeng.com is the official website and hub for the Chopaeng community.
+   It has treasure island access points and rules, subscriber perks, island
+   directory info, community links, and support/giveaway portals.
+
+Q: What are the social media links or how do I find Chopaeng online?
+A: Chopaeng is on Twitch (twitch.tv/chopaeng), YouTube (youtube.com/@chopaeng),
+   Facebook (facebook.com/chopaenglive), TikTok (tiktok.com/@chopaeng), and
+   Discord (discord.gg/chopaeng). The official website is chopaeng.com.
+
+Q: Where can I get clothing items or fashion items?
+A: Visit MATAHOM or PARALUMAN — these free islands are stocked with clothing
+   items like tops, bottoms, accessories, shoes, and hats. Use !find <item> to
+   confirm current stock.
+
+Q: Where can I get bugs fish sea creatures or critter items?
+A: Visit HARANA or PAGSUYO — these free islands specialize in bugs, fish, sea
+   creatures, and critter-related items. Use !find <item> to check live stock.
+
+Q: What are subscriber perks or VIP benefits?
+A: Subscribers get unlimited priority access to the 18 sub islands, can request
+   specific items or villagers to be stocked, and receive Dodo codes faster.
+   Subscribe on Twitch at twitch.tv/chopaeng to get the sub role in Discord.
+
+Q: How do I become a subscriber or get the sub role?
+A: Subscribe to Chopaeng on Twitch at twitch.tv/chopaeng. Once you subscribe,
+   link your Twitch account to Discord in the server to receive the sub role and
+   unlock access to the 18 sub islands.
+
+Q: How do I support Chopaeng or donate?
+A: You can support Chopaeng by subscribing on Twitch, donating through the
+   support portal on chopaeng.com, or cheering with Twitch Bits in his chat.
+   Donations help fund server costs, stream upgrades, and community giveaways.
+
+Q: What giveaways does Chopaeng do?
+A: Chopaeng runs regular community giveaways including rare ACNH items, DIY
+   recipes, clothing, and sometimes real-life prizes. Announcements are in the
+   Discord server and on Twitch during live streams. Check chopaeng.com for info.
 """
 
 # ---------------------------------------------------------------------------
