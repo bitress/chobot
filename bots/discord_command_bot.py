@@ -760,21 +760,34 @@ class DiscordCommandCog(commands.Cog):
             return False
         return getattr(channel, "category_id", None) == Config.CATEGORY_ID
 
-    def _create_island_down_embed(self, ctx) -> discord.Embed:
-        """Build the standard 'island is down' embed."""
+    def _build_status_embed(self, ctx, title: str, description: str, color: discord.Color) -> discord.Embed:
+        """Build a status embed with the given title, description and color."""
         embed = discord.Embed(
-            title="🏝️ Island is Down",
-            description=(
-                "This island is currently **offline** or no information is available.\n\n"
-                "Please use another island in the meantime or wait for this island to come back up."
-            ),
-            color=discord.Color.red(),
+            title=title,
+            description=description,
+            color=color,
             timestamp=discord.utils.utcnow()
         )
         embed.set_image(url=Config.FOOTER_LINE)
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
         return embed
+
+    def _create_island_down_embed(self, ctx) -> discord.Embed:
+        """Build the standard 'island is down' embed."""
+        return self._build_status_embed(
+            ctx,
+            title="🏝️ Island is Down",
+            description=(
+                "This island is currently **offline** or no information is available.\n\n"
+                "Please use another island in the meantime or wait for this island to come back up."
+            ),
+            color=discord.Color.red(),
+        )
+
+    def _create_no_info_embed(self, ctx, title: str, description: str) -> discord.Embed:
+        """Build an embed for when the island is online but no info is found in recent messages."""
+        return self._build_status_embed(ctx, title=title, description=description, color=discord.Color.orange())
 
     async def _check_island_online(self, guild: discord.Guild, island: str) -> bool:
         """Return True if the island appears to be online, False otherwise."""
@@ -942,6 +955,15 @@ class DiscordCommandCog(commands.Cog):
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
             await ctx.reply(embed=embed)
             logger.info(f"[DISCORD] Dodo code retrieved for {ctx.channel.name}: {dodo_code}")
+        elif island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_no_info_embed(
+                ctx,
+                "✈️ No Dodo Code Found",
+                "The island bot is **online** but no dodo code was found in recent messages.\n\n"
+                "The dodo code may have been sent via DM or the island session hasn't started yet. "
+                "Please wait a moment and try again."
+            ))
+            logger.info(f"[DISCORD] Dodo code not found for {ctx.channel.name} (island bot online)")
         else:
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             logger.info(f"[DISCORD] Dodo code not found for {ctx.channel.name}")
@@ -994,6 +1016,14 @@ class DiscordCommandCog(commands.Cog):
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
             await ctx.reply(embed=embed)
             logger.info(f"[DISCORD] Visitor info retrieved for {ctx.channel.name}")
+        elif island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_no_info_embed(
+                ctx,
+                "👥 No Visitor Info Found",
+                "The island bot is **online** but no visitor information was found in recent messages.\n\n"
+                "There may be no active visitors right now. Please try again later."
+            ))
+            logger.info(f"[DISCORD] Visitor info not found for {ctx.channel.name} (island bot online)")
         else:
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             logger.info(f"[DISCORD] Visitor info not found for {ctx.channel.name}")
