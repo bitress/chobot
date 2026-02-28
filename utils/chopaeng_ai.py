@@ -51,6 +51,30 @@ The official Discord server is the main hub for the community. It contains:
 - An ordering system for requesting specific items or villagers.
 - Staff channels for moderation and flight logging.
 - Announcements for when islands are open or new items arrive.
+- Check the #chopaeng channel for the latest updates.
+- Check the #get-roles channel to assign yourself community roles.
+
+## Discord Server Rules
+The ChoPaeng Discord is a positive, family-friendly community. All members must
+follow these rules:
+
+1. **Be kind and respect everyone.** We are building a community free of toxicity
+   and hatred — we create bonds, not enemies.
+2. **Spread love and positivity.** Everyone is here to meet new friends and enjoy
+   the game together.
+3. **Keep 1-on-1 conversations in DMs** to avoid cluttering public channels.
+4. **No offensive content.** Your nickname, username, posts, messages, or bio
+   must not contain offensive, aggressive, profane, hateful, racist, violent, or
+   otherwise inappropriate content.
+5. **No NSFW content.** Do not post anything that is not safe for work, school,
+   or family.
+6. **No spam** in any channel.
+7. **No swearing** in chat.
+8. **No links or self-promotion.** Do not post external links or advertise
+   yourself or other servers.
+
+If you have questions, concerns, or need clarification, DM Chopaeng or any
+available Administrator or Moderator on the server.
 
 ## Islands
 There are two types of islands in the Chopaeng community:
@@ -97,9 +121,11 @@ Visit these islands if you are looking for creatures or nature items.
   island currently has the item you need.
 
 ## Subscriber / VIP Perks
-Chopaeng Twitch subscribers and members with the VIP role on Discord enjoy
-extra benefits:
+Chopaeng community members can subscribe via Patreon to unlock exclusive access
+to the 18 sub islands and other perks:
+- Subscribe here: https://www.patreon.com/cw/chopaeng/membership
 
+Benefits include:
 1. **Unlimited Access** — Subscribers can visit sub islands (the 18 premium
    islands) as many times as they want, any time they are open.
 2. **Priority Access** — Subscribers get priority queue when sub islands are
@@ -112,8 +138,30 @@ extra benefits:
 5. **Priority Dodo Codes** — Subscribers receive Dodo codes faster when
    multiple users are waiting.
 
-To become a subscriber, subscribe to Chopaeng on Twitch at twitch.tv/chopaeng.
-Your Twitch sub role is linked to your Discord account in the server.
+## Subscriber Rules (Sub Island Rules)
+These rules apply to all subscribers using any of the treasure islands, in
+addition to the general server rules:
+
+1. **Do not share the Dodo Code with anyone.** The Dodo Code is strictly
+   confidential. Do not share it with your other accounts, friends, family, or
+   online acquaintances. You are only allowed 1 character/island per membership.
+2. **Change your server nickname** to match the format:
+   `ACNH Character Name | Your ACNH Island Name`
+   (e.g. `Kuya | Hiraya`). Do this in the #set-nick channel.
+3. **Always leave via the airport. No AFK.** Do not use the "-" button to close
+   the game while on the island. Leaving via the airport ensures your progress
+   is saved; using "-" may cause you to lose items or progress.
+4. **Check your internet connection before flying in.** NAT Type A or B is
+   required for smooth online play. NAT Type C or D will cause connection
+   problems — do not join if you have these.
+5. **Read the pinned section of each island channel before asking questions.**
+   Most answers (rules, tutorials, announcements) are already there.
+6. **Do not litter on the islands.** Trash bins are placed all over each island.
+   If you don't want an item, dispose of it in a trash bin. Litter can affect
+   the island's item refresh.
+7. **ChoBot tutorials** can be found in the #chobot-how channel in Discord.
+8. **Do not request any item using ChoBot unless you are already on the island.**
+   Make sure you can pick up the item before requesting it.
 
 ## Support & Donations
 The Chopaeng community runs on the support of its members. Donations help fund:
@@ -136,7 +184,7 @@ Giveaways can include:
 Giveaway announcements are posted in the Discord server and on Twitch during
 live streams. Follow chopaeng.com and the Discord for the latest giveaway info.
 
-
+## How to Get Items
 1. Use `!find <item>` in Discord or Twitch chat to search for an item.
 2. The bot shows which islands currently have the item.
 3. Go to that island's channel in Discord and use `!senddodo` or `!sd` to get
@@ -145,7 +193,126 @@ live streams. Follow chopaeng.com and the Discord for the latest giveaway info.
 5. Collect your items and return home politely — do NOT take items you did not
    request, and avoid shaking trees or picking flowers without permission.
 
-## Visitor Etiquette / Rules
+## Island Rules & Important Notes
+- **Enter the island before doing the steps below.** You must land on the island
+  first before typing any item-drop or customization commands.
+- **Do not enter any command on island channels when somebody is flying in.**
+  The bot will not work while a visitor is in transit (the loading screen).
+- There is a **Garbage Bin** on every island. If you accidentally requested an
+  item you don't want, you can drop it in the Garbage Bin.
+- You can now request Bugs, Fish, Weeds, Flowers, Sea Creatures, Trees, and
+  Wrapping Paper using ChoBot in addition to regular furniture and DIY items.
+- Anyone can type `!senddodo` in island channels and the bot will DM you the
+  Dodo Code.
+
+## Dropping Items with !drop
+Use the `!drop` command (while on the island) to have the island character drop
+items for you.
+
+### Method 1 — Drop by HEX ID
+1. Find the item you want on the item list (link shared in the Discord server).
+   You can also look up the HEX ID in the island channel by typing
+   `!lookup <item name>` (e.g. `!lookup lucky gold cat`).
+2. Copy the HEX ID of the item (e.g. `2656` for Lucky Gold Cat).
+3. Type `!drop <HEX ID>` — e.g. `!drop 2656`.
+4. For multiple items (up to 9 in one line):
+   `!drop [HEX ID] [HEX ID] ...` — e.g. `!drop 2656 0EE8 074E`.
+
+### Method 2 — Drop by Item Name
+You can also type `!drop <item name>` directly:
+- Example: `!drop Pagoda` or `!drop Pagoda, Golden Axe, Harp`
+- You can still do up to 9 items in one line this way.
+
+### Stacks of Items
+To drop a stack of items, add a stack prefix code before the HEX ID:
+- Stack of 10: prefix `090000` → e.g. `!drop 0900002656`
+- Stack of 30: prefix `1D0000` → e.g. `!drop 1D000009C6` (30 stones)
+- Stack of 50: prefix `310000` → e.g. `!drop 3100002656`
+
+## Getting DIY Recipes with !recipe
+1. Type `!recipe <item name>` to get the recipe order code.
+   Example: `!recipe Golden Axe`
+   The bot replies with something like: `2591 golden axe: Recipe order code: 297000016A2`
+2. Use `!drop` with the recipe order code:
+   `!drop 297000016A2`
+3. For multiple DIYs (up to 9 in one line):
+   `!drop 297000016A2 297000016A2 297000016A2`
+   The island character will drop the DIY cards unwrapped.
+
+## Customizing Items with !item and !customize
+1. Look up the item's HEX ID using `!lookup <item name>` in an island channel,
+   or find it on the item list link.
+2. Type `!item <HEX ID>` to see available color options.
+   Example: `!item 0EE8` returns:
+   `streetlamp: 0=Green, 1=Brown, 2=White, 3=Black`
+3. Type `!customize <HEX ID> <color code>` to generate the customized item code.
+   Example: `!customize 0EE8 2` → bot replies: `streetlamp: 0000000200000EE8`
+4. Drop the customized item: `!drop 0000000200000EE8`
+
+### Items with Both Color AND Design Options
+Some items (like the mug) have a color code and a separate design code.
+All color and design codes are **decimal** numbers. To get a specific
+combination, **add** both decimal code numbers together.
+Example — mug with Pink (code 5) + Square Logo (code 32):
+- 5 + 32 = 37 (decimal)
+- `!customize 074E 37`
+- `!drop 000000250000074E`
+
+## Injecting Villagers with !injectvillager
+Use this when you want a specific villager on an island and they are not
+currently present.
+
+**Important: Make sure you are NOT on the island yet before injecting.**
+
+1. Type `!injectvillager <house number> <villager name>` in the island's channel.
+   Example: `!injectvillager 3 Bianca`
+   House numbers: 0 = 1st house, 1 = 2nd house, 2 = 3rd house ... 9 = 10th house.
+2. The bot responds: "Villager inject request has been added to the queue."
+3. Wait for the bot to say: "Villager has been injected at Index 3. Please go
+   talk to them!"
+4. After confirmation, fly in to the island to visit the injected villager.
+
+For multiple villagers at once, use `!mvi`:
+- Example: `!mvi Judy Marshal Raymond`
+
+## Getting a Sanrio / In-Boxes Villager
+1. Make sure you are already on the island.
+2. Check the first house — if the villager is "in boxes" (moving out), proceed.
+3. Leave the house, then inject a Sanrio villager in place of the in-boxes villager:
+   `!injectvillager Marty`
+4. Enter the home and invite the Sanrio villager. (The previous villager may
+   still appear on the island — this is normal.)
+5. The Sanrio villager should agree to move out with you. Leave the island.
+6. You will have an empty plot with the Sanrio villager's name on your island.
+7. Time travel one day forward to ensure the villager fully moves in.
+
+## Getting Max Bells (Bell Glitch)
+1. Obtain 1 stack of turnips on one of the Chopaeng islands.
+2. Sell the stack at Nook's Cranny on the same island.
+3. The sell price will show as -64,000,000 bells — proceed with the sale.
+4. Check your ABD (Automatic Bell Dispenser / ATM) on your own island afterward
+   — your bells will be updated there.
+
+Note: Nook's Cranny is open daily from 8 AM to 10 PM island time. Use the
+`!gt` command in an island channel to check the current in-game time on that
+island. If Nook's Cranny should be open but is closed, contact a moderator.
+
+## Villager Wake Schedules by Personality
+To ensure a villager is awake when you arrive, use `!gt` to check the island's
+current in-game time, then refer to these schedules:
+- Snooty villagers: 8:30 AM – 2:30 AM
+- Smug villagers: 7:00 AM – 2:00 AM
+- Sisterly villagers: 9:30 AM – 3:00 AM
+- Normal villagers: 6:00 AM – 12:00 AM (midnight)
+- Peppy villagers: 7:00 AM – 1:20 AM
+- Cranky villagers: 9:00 AM – 3:30 AM
+- Lazy villagers: 8:00 AM – 11:00 PM
+- Jock villagers: 6:30 AM – 12:30 AM
+
+To check a villager's personality, go to the #villager-check channel in Discord
+and type `ac!lookup villager <name>` (e.g. `ac!lookup villager bianca`).
+
+
 - Only pick up items assigned to you or items that are clearly free to take.
 - Do not run over flowers or dig up trees.
 - Do not talk to residents to lure them away.
@@ -168,6 +335,25 @@ live streams. Follow chopaeng.com and the Discord for the latest giveaway info.
 - Check the #ordering channel in the Discord for ordering instructions.
 - VIP / subscriber members get priority access to sub island stocks.
 
+## Order Bot Rules (Chorder Bot)
+These rules apply when using the orderbot (Chorder Bot):
+
+1. **Change your server nickname** to `ACNH Character Name | Your ACNH Island Name`
+   before using the orderbot. Set this in the #set-nick channel.
+2. **Do not share the Dodo code** with anyone else. Sharing may result in a
+   permanent ban from the bot. Only the person who placed the order may visit.
+3. **Do not litter on the island.** Only pick up what you ordered.
+4. **Order only what you need.**
+5. **Good internet required** — at least 15–25 Mbps.
+6. **Read the #chorder-bot-how channel** in Discord before placing orders to
+   avoid mistakes and unnecessary questions.
+7. **The #chorder-bot channel is for orders only.** Do not chat or look up items
+   there. Use the #chorder-bot-help channel for questions.
+8. **The #chorder-item-lookup channel is for item/DIY code lookups only.** Do
+   not place orders or chat there.
+
+Breaking these rules may result in a mute, kick, or ban from the orderbot.
+
 ## Villagers
 Villagers are the animal residents that live on ACNH islands. You can search for
 a specific villager using `!villager <name>`. Sub islands host curated villager
@@ -184,9 +370,18 @@ animal residents.
 - `!ping` — Check the bot's response time.
 - `!ask <question>` — Ask the Chopaeng AI anything about the community.
 - `!help` — Show the full command list with descriptions.
-- `!senddodo` or `!sd` — Get the Dodo code for a sub island (use in island channel).
+- `!senddodo` or `!sd` — Get the Dodo code for an island (use in island channel).
 - `!visitors` — Check current visitors on a sub island (use in island channel).
+- `!villagers` — Check the list of villagers currently on the island.
 - `!refresh` — Manually refresh the item cache (Admin only).
+- `!lookup <item>` or `!li <item>` — Look up the HEX ID of a specific item or DIY (use in island channel).
+- `!drop <HEX ID or item name>` — Drop any item or DIY on the island using its HEX ID or name (up to 9 per line; use stack prefix for stacks).
+- `!recipe <item name>` — Get the recipe order code for a DIY item to use with !drop.
+- `!item <HEX ID>` — See the available color/variant options for a specific item.
+- `!customize <HEX ID> <color code>` — Generate a customized item code for !drop.
+- `!injectvillager <house#> <villager name>` — Inject a specific villager into a numbered house on the island (do this before flying in).
+- `!mvi <villager1> <villager2> ...` — Request multiple villager injections at once.
+- `!gt` — Check the current in-game time on the island (useful for Nook's Cranny hours and villager schedules).
 
 ## Bot (Chobot)
 Chobot is the custom bot built specifically for the Chopaeng community by bitress.
@@ -294,8 +489,9 @@ A: Subscribers get unlimited priority access to the 18 sub islands, can request
    Subscribe on Twitch at twitch.tv/chopaeng to get the sub role in Discord.
 
 Q: How do I become a subscriber or get the sub role?
-A: Subscribe to Chopaeng on Twitch at twitch.tv/chopaeng. Once you subscribe,
-   link your Twitch account to Discord in the server to receive the sub role and
+A: Subscribe to Chopaeng via Patreon at patreon.com/cw/chopaeng/membership. Once
+   subscribed, link or verify your membership in the Discord server (check the
+   #set-nick or #get-roles channel for instructions) to receive the sub role and
    unlock access to the 18 sub islands.
 
 Q: How do I support Chopaeng or donate?
@@ -307,6 +503,57 @@ Q: What giveaways does Chopaeng do?
 A: Chopaeng runs regular community giveaways including rare ACNH items, DIY
    recipes, clothing, and sometimes real-life prizes. Announcements are in the
    Discord server and on Twitch during live streams. Check chopaeng.com for info.
+
+Q: What are the Discord server rules?
+A: Be kind and respectful, spread positivity, keep 1-on-1 chats in DMs, no
+   offensive or NSFW content, no spam, no swearing, and no links or self-promotion.
+   For questions, DM Chopaeng or any Admin/Moderator.
+
+Q: What are the sub island rules or subscriber island rules?
+A: Do not share the Dodo Code; keep it confidential. Set your server nickname
+   to "ACNH Character Name | Island Name". Always leave via the airport (no AFK,
+   no "-" button). Require NAT Type A or B. No littering — use trash bins.
+   Do not request items via ChoBot unless you are already on the island.
+
+Q: Can I share the Dodo Code with others?
+A: No. The Dodo Code is strictly confidential. Do not share it with anyone —
+   not your other accounts, friends, family, or online acquaintances. You are
+   only allowed 1 character/island per membership.
+
+Q: What NAT type do I need or what internet is required for islands?
+A: You need NAT Type A or B for smooth online play on the islands. NAT Type C
+   or D will cause connection problems — do not join if you have these types.
+   For the orderbot, a minimum of 15–25 Mbps is recommended.
+
+Q: What are the order bot rules or chorder bot rules?
+A: Change your nickname to "ACNH Character Name | Island Name" first. Do not
+   share the Dodo code. Only order what you need. No littering. Read the
+   #chorder-bot-how channel. Use #chorder-bot-help for questions — the
+   #chorder-bot channel is for orders only. Breaking rules may cause a ban.
+
+Q: Who is Chopaeng or who is Kuya Cho?
+A: Chopaeng (also known as Kuya Cho) is a Filipino Animal Crossing: New Horizons
+   content creator and Twitch streamer based in the Philippines. He runs 24/7
+   treasure islands where fans can collect rare items and meet cute villagers.
+   His official site is chopaeng.com and his Twitch is twitch.tv/chopaeng.
+
+Q: How do I drop items or use the drop command?
+A: While on the island, type !drop <HEX ID> or !drop <item name>. You can drop
+   up to 9 items in one line. Use !lookup <item> to find the HEX ID. For stacks,
+   add a prefix: 090000 (x10), 1D0000 (x30), or 310000 (x50) before the HEX ID.
+
+Q: Is swearing or NSFW content allowed?
+A: No. The ChoPaeng Discord is a family-friendly community. Swearing, NSFW
+   content, and offensive or hateful language are not allowed and may result in
+   removal from the server.
+
+Q: Can I post links or promote myself in the server?
+A: No. Posting external links and self-promotion are not allowed in the
+   ChoPaeng Discord server.
+
+Q: How do I contact a moderator or get help on the server?
+A: DM Chopaeng or any available Administrator or Moderator on the Discord server.
+   You can also check the pinned messages in each channel for common answers.
 """
 
 # ---------------------------------------------------------------------------
