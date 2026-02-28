@@ -380,7 +380,7 @@ class DiscordCommandCog(commands.Cog):
     async def find(self, ctx, *, item: str = ""):
         """Find an item"""
         if not item:
-            await ctx.send("Usage: `!find <item name>`")
+            await ctx.reply("Usage: `!find <item name>`")
             return
 
         if self.check_cooldown(str(ctx.author.id)):
@@ -401,10 +401,10 @@ class DiscordCommandCog(commands.Cog):
             embed = self.create_found_embed(ctx, display_name, found_locations, is_villager=False)
 
             if embed:
-                await ctx.send(content=f"Hey <@{ctx.author.id}>, look what I found!", embed=embed)
+                await ctx.reply(content=f"Hey <@{ctx.author.id}>, look what I found!", embed=embed)
                 logger.info(f"[DISCORD] Item Hit: {search_term} -> Found")
             else:
-                await ctx.send(f"**{display_name}** is not currently available on any Sub Island.")
+                await ctx.reply(f"**{display_name}** is not currently available on any Sub Island.")
                 logger.info(f"[DISCORD] Item Hit: {search_term} -> Not on Sub Islands")
             return
 
@@ -418,16 +418,16 @@ class DiscordCommandCog(commands.Cog):
 
         if suggestions:
             view = SuggestionView(self, suggestions, "item", ctx.author.id)
-            await ctx.send(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail, view=view)
+            await ctx.reply(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail, view=view)
         else:
-            await ctx.send(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail)
+            await ctx.reply(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail)
 
     @commands.hybrid_command(name="villager")
     @app_commands.describe(name="The name of the villager")
     async def villager(self, ctx, *, name: str = ""):
         """Find a villager"""
         if not name:
-            await ctx.send("Usage: `!villager <n>`")
+            await ctx.reply("Usage: `!villager <n>`")
             return
 
         if self.check_cooldown(str(ctx.author.id)):
@@ -446,10 +446,10 @@ class DiscordCommandCog(commands.Cog):
             embed = self.create_found_embed(ctx, search_term, found_locations, is_villager=True, nooki_data=nooki_data)
 
             if embed:
-                await ctx.send(content=f"Hey <@{ctx.author.id}>, look who I found!", embed=embed)
+                await ctx.reply(content=f"Hey <@{ctx.author.id}>, look who I found!", embed=embed)
                 logger.info(f"[DISCORD] Villager Hit: {search_term} -> Found")
             else:
-                await ctx.send(f"**{search_term.title()}** is not currently on any Sub Island.")
+                await ctx.reply(f"**{search_term.title()}** is not currently on any Sub Island.")
                 logger.info(f"[DISCORD] Villager Hit: {search_term} -> Not on Sub Islands")
             return
 
@@ -461,9 +461,9 @@ class DiscordCommandCog(commands.Cog):
 
         if suggestions:
             view = SuggestionView(self, suggestions, "villager", ctx.author.id)
-            await ctx.send(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail, view=view)
+            await ctx.reply(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail, view=view)
         else:
-            await ctx.send(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail)
+            await ctx.reply(content=f"Hey <@{ctx.author.id}>...", embed=embed_fail)
 
         logger.info(f"[DISCORD] Villager Miss: {search_term}")
 
@@ -530,7 +530,7 @@ class DiscordCommandCog(commands.Cog):
                         icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP)
         embed.set_image(url=Config.FOOTER_LINE)
         
-        await ctx.send(embed=embed)
+        await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] Help command used by {ctx.author.name}")
 
     @commands.hybrid_command(name="ping")
@@ -545,7 +545,7 @@ class DiscordCommandCog(commands.Cog):
             timestamp=datetime.now()
         )
         
-        await ctx.send(embed=embed)
+        await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] Ping: {latency_ms}ms")
 
     @commands.hybrid_command(name="random")
@@ -558,7 +558,7 @@ class DiscordCommandCog(commands.Cog):
             display_map = cache.get("_display", {})
         
         if not all_items:
-            await ctx.send("No items in cache yet. Try again later!")
+            await ctx.reply("No items in cache yet. Try again later!")
             return
         
         # Pick a random item
@@ -571,13 +571,13 @@ class DiscordCommandCog(commands.Cog):
             
             if embed:
                 embed.title = f"🎲 Random Item: {display_name}"
-                await ctx.send(content=f"Hey <@{ctx.author.id}>, here's a random item for you!", embed=embed)
+                await ctx.reply(content=f"Hey <@{ctx.author.id}>, here's a random item for you!", embed=embed)
                 logger.info(f"[DISCORD] Random item: {random_key}")
             else:
                 # Item exists but not on sub islands
-                await ctx.send(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to see where it's available!")
+                await ctx.reply(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to see where it's available!")
         else:
-            await ctx.send(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to check availability!")
+            await ctx.reply(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to check availability!")
 
     @commands.hybrid_command(name="status")
     async def status(self, ctx):
@@ -593,7 +593,7 @@ class DiscordCommandCog(commands.Cog):
                 minutes = int((uptime_seconds % 3600) // 60)
                 uptime_str = f"{hours}h {minutes}m"
                 
-                await ctx.send(
+                await ctx.reply(
                     f"**System Status**\n"
                     f"Items Cached: `{len(self.data_manager.cache)}`\n"
                     f"Islands Linked: `{island_count}`\n"
@@ -601,16 +601,16 @@ class DiscordCommandCog(commands.Cog):
                     f"Uptime: `{uptime_str}`"
                 )
             else:
-                await ctx.send("Database loading...")
+                await ctx.reply("Database loading...")
 
-    @commands.hybrid_command(name="islandstatus", aliases=["islands", "checkislands"])
+    @commands.hybrid_command(name="islands", aliases=["islandstatus", "checkislands"])
     async def island_status(self, ctx):
-        """Check the status of all 18 sub islands"""
+        """Check the status of all sub islands"""
         await ctx.defer()
 
         guild = self.bot.get_guild(Config.GUILD_ID)
         if not guild:
-            await ctx.send("Guild not found.")
+            await ctx.reply("Guild not found.")
             return
 
         # Ensure the channel lookup is fresh before checking
@@ -719,25 +719,25 @@ class DiscordCommandCog(commands.Cog):
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
         embed.set_image(url=Config.FOOTER_LINE)
 
-        await ctx.send(embed=embed)
+        await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] Island status check: {online_count}/{total} online")
 
     @commands.hybrid_command(name="refresh")
     @commands.has_permissions(administrator=True)
     async def refresh(self, ctx):
         """Manually refresh cache (Mods only)"""
-        await ctx.send("Refreshing cache and island links...")
+        await ctx.reply("Refreshing cache and island links...")
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self.data_manager.update_cache)
         await self.fetch_islands()
         count = len(getattr(self, 'island_map', {})) 
-        await ctx.send(f"Done. Linked {count} islands.")
+        await ctx.reply(f"Done. Linked {count} islands.")
 
     @refresh.error
     async def refresh_error(self, ctx, error):
         """Handle permission errors cleanly"""
         if isinstance(error, commands.MissingPermissions):
-            await ctx.send("You do not have permission to use this command.")
+            await ctx.reply("You do not have permission to use this command.")
 
 
 class DiscordCommandBot(commands.Bot):
@@ -825,10 +825,11 @@ class DiscordCommandBot(commands.Bot):
                 
                 # If it's a command and not allowed, block it
                 if command_name and command_name not in allowed_commands:
-                    await interaction.response.send_message(
-                        "❌ You can only use `/find` (and its aliases), `/villager`, or `/refresh` commands in this channel.",
-                        ephemeral=True
+                    await interaction.channel.send(
+                        "You can only use `/find` (and its aliases), `/villager` commands in this channel.",
+                        delete_after=5
                     )
+
                     logger.info(f"[DISCORD] Blocked slash command '/{command_name}' in FIND_BOT_CHANNEL from {interaction.user}")
                     return False
             
@@ -892,13 +893,14 @@ class DiscordCommandBot(commands.Bot):
                         await message.delete()
                         # Send DM to user (hidden from channel)
                         try:
-                            await message.author.send(
-                                f"❌ You can only use `!find` (and its aliases), `!villager`, or `!refresh` commands in <#{Config.FIND_BOT_CHANNEL_ID}>."
+                            await message.channel.send(
+                                f"{message.author.mention} You can only use `!find` (and its aliases), `!villager` commands in this channel. *(Enable DMs to receive this privately)*",
+                                delete_after=5
                             )
                         except discord.Forbidden:
                             # If DM fails, send a temporary message in channel
                             await message.channel.send(
-                                f"{message.author.mention} ❌ You can only use `!find` (and its aliases), `!villager`, or `!refresh` commands in this channel. *(Enable DMs to receive this privately)*",
+                                f"{message.author.mention} You can only use `!find` (and its aliases), `!villager` commands in this channel. *(Enable DMs to receive this privately)*",
                                 delete_after=5
                             )
                         logger.info(f"[DISCORD] Blocked command '{command_text}' in FIND_BOT_CHANNEL from {message.author}")
