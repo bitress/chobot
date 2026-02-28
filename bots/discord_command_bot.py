@@ -760,6 +760,30 @@ class DiscordCommandCog(commands.Cog):
             return False
         return getattr(channel, "category_id", None) == Config.CATEGORY_ID
 
+    def _build_status_embed(self, ctx, title: str, description: str, color: discord.Color) -> discord.Embed:
+        """Build a status embed with the given title, description and color."""
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_image(url=Config.FOOTER_LINE)
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        return embed
+
+    def _create_island_down_embed(self, ctx) -> discord.Embed:
+        """Build the standard 'island is down' embed."""
+        return self._build_status_embed(
+            ctx,
+            title="🏝️ Island is Down",
+            description=(
+                "This island is currently **offline** or no information is available.\n\n"
+                "Please use another island in the meantime or wait for this island to come back up."
+            ),
+            color=discord.Color.red(),
+        )
 
     async def _check_island_online(self, guild: discord.Guild, island: str) -> bool:
         """Return True if the island appears to be online, False otherwise."""
@@ -892,8 +916,9 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        # If the island bot is found and offline, do nothing
+        # If the island bot is found and offline, report immediately
         if island_bot and island_bot.status not in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
 
         # Scan recent messages for a dodo code from the island bot
@@ -914,21 +939,13 @@ class DiscordCommandCog(commands.Cog):
                 dodo_code = match.group(0)
                 break
 
-        if not dodo_code:
-            logger.info(f"[DISCORD] Dodo code not found for {ctx.channel.name}")
+        if dodo_code:
+            # Island is working fine — do nothing
+            logger.info(f"[DISCORD] Dodo code found for {ctx.channel.name}, doing nothing")
             return
 
-        embed = discord.Embed(
-            title="✈️ Dodo Code",
-            description=f"The current dodo code for **{ctx.channel.name}** is:\n\n## `{dodo_code}`",
-            color=discord.Color.teal(),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_image(url=Config.FOOTER_LINE)
-        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
-        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-        await ctx.reply(embed=embed)
-        logger.info(f"[DISCORD] Dodo code retrieved for {ctx.channel.name}: {dodo_code}")
+        await ctx.reply(embed=self._create_island_down_embed(ctx))
+        logger.info(f"[DISCORD] Dodo code not found for {ctx.channel.name}")
 
     @commands.hybrid_command(name="visitors")
     async def visitors(self, ctx):
@@ -943,8 +960,9 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        # If the island bot is found and offline, do nothing
+        # If the island bot is found and offline, report immediately
         if island_bot and island_bot.status not in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
 
         # Scan recent messages from the island bot for visitor information
@@ -965,21 +983,13 @@ class DiscordCommandCog(commands.Cog):
                 visitor_msg = msg.content
                 break
 
-        if not visitor_msg:
-            logger.info(f"[DISCORD] Visitor info not found for {ctx.channel.name}")
+        if visitor_msg:
+            # Island is working fine — do nothing
+            logger.info(f"[DISCORD] Visitor info found for {ctx.channel.name}, doing nothing")
             return
 
-        embed = discord.Embed(
-            title="👥 Island Visitors",
-            description=f"**Latest visitor update for {ctx.channel.name}:**\n\n{visitor_msg}",
-            color=discord.Color.teal(),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_image(url=Config.FOOTER_LINE)
-        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
-        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-        await ctx.reply(embed=embed)
-        logger.info(f"[DISCORD] Visitor info retrieved for {ctx.channel.name}")
+        await ctx.reply(embed=self._create_island_down_embed(ctx))
+        logger.info(f"[DISCORD] Visitor info not found for {ctx.channel.name}")
 
     @commands.hybrid_command(name="refresh")
     @commands.has_permissions(administrator=True)
