@@ -387,7 +387,7 @@ class DiscordCommandCog(commands.Cog):
         await self.bot.wait_until_ready()
         await self.fetch_islands()
 
-    @commands.hybrid_command(name="find", aliases=['locate', 'where', 'lookup', 'lp', 'search'])
+    @commands.hybrid_command(name="find", aliases=['locate', 'where', 'search'])
     @app_commands.describe(item="The name of the item or recipe to find")
     @app_commands.autocomplete(item=item_autocomplete)
     async def find(self, ctx, *, item: str = ""):
@@ -495,7 +495,7 @@ class DiscordCommandCog(commands.Cog):
             value=(
                 "`!find <item>` - Find an item across islands\n"
                 "`!villager <name>` - Find a villager\n"
-                "*Aliases: !locate, !where, !lookup, !lp, !search*"
+                "*Aliases: !locate, !where, !search*"
             ),
             inline=False
         )
@@ -1145,7 +1145,7 @@ class DiscordCommandBot(commands.Bot):
             if interaction.channel_id == Config.FIND_BOT_CHANNEL_ID:
                 # Allowed commands in FIND_BOT_CHANNEL
                 allowed_commands = {
-                    'find', 'locate', 'where', 'lookup', 'lp', 'search',  # find and aliases
+                    'find', 'locate', 'where', 'search',  # find and aliases
                     'villager',
                     'refresh'
                 }
@@ -1211,7 +1211,7 @@ class DiscordCommandBot(commands.Bot):
                 
                 # Allowed commands in FIND_BOT_CHANNEL
                 allowed_commands = {
-                    'find', 'locate', 'where', 'lookup', 'lp', 'search',  # find and aliases
+                    'find', 'locate', 'where', 'search',  # find and aliases
                     'villager',
                     'refresh'
                 }
