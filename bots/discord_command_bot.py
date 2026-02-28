@@ -123,8 +123,10 @@ class DiscordCommandCog(commands.Cog):
         self.data_manager = data_manager
         self.cooldowns = {}
         self.sub_island_lookup = {}
+        self.island_states = {}  # island name -> bool (True=up, False=down); missing key means not yet seen
 
         self.auto_refresh_cache.start()
+        self.scan_island_bots.start()
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Filter items from cache for autocomplete"""
@@ -194,6 +196,7 @@ class DiscordCommandCog(commands.Cog):
     def cog_unload(self):
         """Cleanup on unload"""
         self.auto_refresh_cache.cancel()
+        self.scan_island_bots.cancel()
 
     def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
         """Check if user is on cooldown"""
@@ -373,6 +376,115 @@ class DiscordCommandCog(commands.Cog):
         """Wait until ready before starting refresh loop"""
         await self.bot.wait_until_ready()
         await self.fetch_islands()
+
+    async def _check_island_bot_up(self, guild, island, channel_id, island_bot_role) -> bool:
+        """Return True if the given island's bot is detected as online/active."""
+        island_bot = None
+        if island_bot_role:
+            island_clean_target = clean_text(f"chobot {island}")
+            for member in island_bot_role.members:
+                if member.bot and clean_text(member.display_name) == island_clean_target:
+                    island_bot = member
+                    break
+
+        # Check 1: Bot presence status
+        if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+            return True
+
+        # Check 2: Recent messages in the channel
+        if not channel_id:
+            return False
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return False
+
+        try:
+            messages = [msg async for msg in channel.history(limit=25)]
+        except discord.Forbidden:
+            return False
+
+        for msg in messages:
+            if island_bot:
+                if msg.author.id != island_bot.id:
+                    continue
+            elif not msg.author.bot:
+                continue
+
+            if DODO_CODE_PATTERN.search(msg.content):
+                return True
+            if ISLAND_HOST_NAME in msg.content.lower():
+                return True
+
+        return False
+
+    @tasks.loop(minutes=5)
+    async def scan_island_bots(self):
+        """Periodically scan sub island channels and notify on bot status changes."""
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if not guild:
+            return
+
+        await self.fetch_islands()
+
+        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
+
+        for island in Config.SUB_ISLANDS:
+            island_clean = clean_text(island)
+            channel_id = self.sub_island_lookup.get(island_clean)
+
+            if not channel_id:
+                for ch in guild.channels:
+                    if isinstance(ch, discord.TextChannel) and island_clean in clean_text(ch.name):
+                        channel_id = ch.id
+                        break
+
+            is_up = await self._check_island_bot_up(guild, island, channel_id, island_bot_role)
+            prev_state = self.island_states.get(island)
+
+            # First scan — just record state, no notification
+            if prev_state is None:
+                self.island_states[island] = is_up
+                continue
+
+            if prev_state is not None and prev_state == is_up:
+                continue  # No change
+
+            # State changed — update and notify
+            self.island_states[island] = is_up
+
+            if not channel_id:
+                continue
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                continue
+
+            try:
+                if not is_up:
+                    embed = discord.Embed(
+                        title="⚠️ Island Bot Offline",
+                        description=f"**{island}** island bot appears to be down.",
+                        color=discord.Color.red(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    embed.set_image(url="https://cdn.chopaeng.com/misc/Bot-is-Down.jpg")
+                    await channel.send(embed=embed)
+                    logger.info(f"[DISCORD] Island {island} went DOWN — notified channel")
+                else:
+                    embed = discord.Embed(
+                        title="✅ Island Bot Online",
+                        description=f"**{island}** island is backed up and good!",
+                        color=discord.Color.green(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    await channel.send(embed=embed)
+                    logger.info(f"[DISCORD] Island {island} came back UP — notified channel")
+            except discord.Forbidden:
+                logger.warning(f"[DISCORD] Cannot send status notification to {island} channel")
+
+    @scan_island_bots.before_loop
+    async def before_scan_island_bots(self):
+        """Wait until ready before starting island scan loop"""
+        await self.bot.wait_until_ready()
 
     @commands.hybrid_command(name="find", aliases=['locate', 'where', 'lookup', 'lp', 'search'])
     @app_commands.describe(item="The name of the item or recipe to find")
@@ -700,15 +812,10 @@ class DiscordCommandCog(commands.Cog):
 
         # Build embed
         total = len(Config.SUB_ISLANDS)
-        all_online = online_count == total
-        if all_online:
-            description = f"✅ All **{total}** islands are backed up and good!"
-        else:
-            description = f"**{online_count}/{total}** islands active"
         embed = discord.Embed(
             title="🏝️ Sub Island Status",
-            description=description,
-            color=discord.Color.green() if all_online else (
+            description=f"**{online_count}/{total}** islands active",
+            color=discord.Color.green() if online_count == total else (
                 discord.Color.orange() if online_count > 0 else discord.Color.red()
             ),
             timestamp=discord.utils.utcnow()
@@ -722,10 +829,7 @@ class DiscordCommandCog(commands.Cog):
 
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-        if not all_online:
-            embed.set_image(url="https://cdn.chopaeng.com/misc/Bot-is-Down.jpg")
-        else:
-            embed.set_image(url=Config.FOOTER_LINE)
+        embed.set_image(url=Config.FOOTER_LINE)
 
         await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] Island status check: {online_count}/{total} online")
