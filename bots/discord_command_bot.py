@@ -25,6 +25,7 @@ logger = logging.getLogger("DiscordCommandBot")
 # Island status check constants
 DODO_CODE_PATTERN = re.compile(r'\b[A-HJ-NP-Z0-9]{5}\b')
 ISLAND_HOST_NAME = "chopaeng"
+MESSAGE_HISTORY_LIMIT = 30
 
 
 class SuggestionSelect(discord.ui.Select):
@@ -488,6 +489,16 @@ class DiscordCommandCog(commands.Cog):
         )
         
         embed.add_field(
+            name=f"{Config.STAR_PINK} Sub Island Commands",
+            value=(
+                "`!senddodo` or `!sd` - Get the dodo code for this sub island\n"
+                "`!visitors` - Check current visitors on this sub island\n"
+                "*Use these in a sub island channel. If the island is offline, you'll see an 'island is down' message.*"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
             name=f"{Config.STAR_PINK} Utility Commands",
             value=(
                 "`!islandstatus` - Check if all 18 sub island bots are active\n"
@@ -721,6 +732,148 @@ class DiscordCommandCog(commands.Cog):
 
         await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] Island status check: {online_count}/{total} online")
+
+    def _get_island_bot_for_channel(self, guild: discord.Guild, channel: discord.TextChannel):
+        """Return the island bot member for the given channel, or None if not found."""
+        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
+        if not island_bot_role:
+            return None
+
+        chan_clean = clean_text(channel.name)
+        for island in Config.SUB_ISLANDS:
+            if clean_text(island) in chan_clean:
+                target = clean_text(f"chobot {island}")
+                for member in island_bot_role.members:
+                    if member.bot and clean_text(member.display_name) == target:
+                        return member
+                break
+        return None
+
+    def _is_sub_island_channel(self, channel) -> bool:
+        """Return True if the channel belongs to the sub-islands category."""
+        if not Config.CATEGORY_ID:
+            return False
+        return getattr(channel, "category_id", None) == Config.CATEGORY_ID
+
+    def _create_island_down_embed(self, ctx) -> discord.Embed:
+        """Build the standard 'island is down' embed."""
+        embed = discord.Embed(
+            title="🏝️ Island is Down",
+            description=(
+                "This island is currently **offline** or no information is available.\n\n"
+                "Please use another island in the meantime or wait for this island to come back up."
+            ),
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_image(url=Config.FOOTER_LINE)
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        return embed
+
+    @commands.hybrid_command(name="senddodo", aliases=["sd"])
+    async def send_dodo(self, ctx):
+        """Get the dodo code for this sub island"""
+        if not self._is_sub_island_channel(ctx.channel):
+            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
+            return
+
+        if self.check_cooldown(str(ctx.author.id)):
+            return
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
+
+        # If the island bot is found and offline, report immediately
+        if island_bot and island_bot.status not in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+            return
+
+        # Scan recent messages for a dodo code from the island bot
+        try:
+            messages = [msg async for msg in ctx.channel.history(limit=MESSAGE_HISTORY_LIMIT)]
+        except discord.Forbidden:
+            await ctx.reply("I don't have permission to read this channel's history.")
+            return
+
+        dodo_code = None
+        for msg in messages:
+            if island_bot and msg.author.id != island_bot.id:
+                continue
+            elif not island_bot and not msg.author.bot:
+                continue
+            match = DODO_CODE_PATTERN.search(msg.content)
+            if match:
+                dodo_code = match.group(0)
+                break
+
+        if dodo_code:
+            embed = discord.Embed(
+                title="✈️ Dodo Code",
+                description=f"The current dodo code for **{ctx.channel.name}** is:\n\n## `{dodo_code}`",
+                color=discord.Color.teal(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_image(url=Config.FOOTER_LINE)
+            pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+            await ctx.reply(embed=embed)
+            logger.info(f"[DISCORD] Dodo code retrieved for {ctx.channel.name}: {dodo_code}")
+        else:
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+            logger.info(f"[DISCORD] Dodo code not found for {ctx.channel.name}")
+
+    @commands.hybrid_command(name="visitors")
+    async def visitors(self, ctx):
+        """Check current visitors on this sub island"""
+        if not self._is_sub_island_channel(ctx.channel):
+            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
+            return
+
+        if self.check_cooldown(str(ctx.author.id)):
+            return
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
+
+        # If the island bot is found and offline, report immediately
+        if island_bot and island_bot.status not in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+            return
+
+        # Scan recent messages from the island bot for visitor information
+        try:
+            messages = [msg async for msg in ctx.channel.history(limit=MESSAGE_HISTORY_LIMIT)]
+        except discord.Forbidden:
+            await ctx.reply("I don't have permission to read this channel's history.")
+            return
+
+        visitor_msg = None
+        for msg in messages:
+            if island_bot and msg.author.id != island_bot.id:
+                continue
+            elif not island_bot and not msg.author.bot:
+                continue
+            content_lower = msg.content.lower()
+            if "visitor" in content_lower or "arrive" in content_lower or ISLAND_HOST_NAME in content_lower:
+                visitor_msg = msg.content
+                break
+
+        if visitor_msg:
+            embed = discord.Embed(
+                title="👥 Island Visitors",
+                description=f"**Latest visitor update for {ctx.channel.name}:**\n\n{visitor_msg}",
+                color=discord.Color.teal(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_image(url=Config.FOOTER_LINE)
+            pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+            await ctx.reply(embed=embed)
+            logger.info(f"[DISCORD] Visitor info retrieved for {ctx.channel.name}")
+        else:
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+            logger.info(f"[DISCORD] Visitor info not found for {ctx.channel.name}")
 
     @commands.hybrid_command(name="refresh")
     @commands.has_permissions(administrator=True)
