@@ -28,6 +28,13 @@ ISLAND_HOST_NAME = "chopaeng"
 MESSAGE_HISTORY_LIMIT = 30
 ISLAND_DOWN_IMAGE_URL = "https://cdn.chopaeng.com/misc/Bot-is-Down.jpg"
 
+# Patterns for intercepting island bot responses
+ISLAND_VISITORS_PATTERN = re.compile(r"The following visitors are on (.+?):", re.IGNORECASE)
+ISLAND_DODO_SENT_PATTERN = re.compile(r".+?:\s*Sent you the dodo code via DM", re.IGNORECASE)
+VISITOR_LINE_PATTERN = re.compile(r'#\d+:\s*(.+)')
+AVAILABLE_SLOT_TEXT = "available slot"
+ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
+
 
 class SuggestionSelect(discord.ui.Select):
     """Dropdown select for choosing from suggestions"""
@@ -760,13 +767,79 @@ class DiscordCommandCog(commands.Cog):
 
     @commands.hybrid_command(name="senddodo", aliases=["sd"])
     async def send_dodo(self, ctx):
-        """Check if this sub island's bot is online"""
-        await self._check_sub_island_status(ctx)
+        """Send the dodo code to a user via DM"""
+        if not self._is_sub_island_channel(ctx.channel):
+            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
+            return
+
+        if self.check_cooldown(str(ctx.author.id)):
+            return
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
+
+        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+            return
+
+        def dodo_check(msg):
+            return (
+                msg.author.id == island_bot.id
+                and msg.channel.id == ctx.channel.id
+                and ISLAND_DODO_SENT_PATTERN.search(msg.content)
+            )
+
+        try:
+            island_msg = await self.bot.wait_for('message', check=dodo_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
+            await island_msg.delete()
+            await ctx.reply(embed=self._build_dodo_sent_embed(ctx))
+            logger.info(f"[DISCORD] Intercepted and redesigned !sd response for {ctx.channel.name}")
+        except asyncio.TimeoutError:
+            logger.warning(f"[DISCORD] Timeout waiting for island bot !sd response in {ctx.channel.name}")
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
 
     @commands.hybrid_command(name="visitors")
     async def visitors(self, ctx):
-        """Check if this sub island's bot is online"""
-        await self._check_sub_island_status(ctx)
+        """Check current visitors on the sub island"""
+        if not self._is_sub_island_channel(ctx.channel):
+            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
+            return
+
+        if self.check_cooldown(str(ctx.author.id)):
+            return
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
+
+        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+            return
+
+        def visitors_check(msg):
+            return (
+                msg.author.id == island_bot.id
+                and msg.channel.id == ctx.channel.id
+                and ISLAND_VISITORS_PATTERN.search(msg.content)
+            )
+
+        try:
+            island_msg = await self.bot.wait_for('message', check=visitors_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
+
+            match = ISLAND_VISITORS_PATTERN.search(island_msg.content)
+            island_name = match.group(1).strip() if match else ctx.channel.name
+
+            visitor_lines = []
+            for line in island_msg.content.split('\n'):
+                m = VISITOR_LINE_PATTERN.match(line.strip())
+                if m:
+                    visitor_lines.append(m.group(1).strip())
+
+            await island_msg.delete()
+            await ctx.reply(embed=self._build_visitors_embed(ctx, island_name, visitor_lines))
+            logger.info(f"[DISCORD] Intercepted and redesigned !visitors response for {ctx.channel.name}")
+        except asyncio.TimeoutError:
+            logger.warning(f"[DISCORD] Timeout waiting for island bot !visitors response in {ctx.channel.name}")
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
 
     def _get_island_bot_for_channel(self, guild: discord.Guild, channel: discord.TextChannel):
         """Return the island bot member for the given channel, or None if not found."""
@@ -814,6 +887,52 @@ class DiscordCommandCog(commands.Cog):
             ),
             color=discord.Color.red(),
         )
+
+    def _build_visitors_embed(self, ctx, island_name: str, visitor_lines: list) -> discord.Embed:
+        """Build a nicely formatted visitors embed from a parsed visitor list."""
+        filled = [v for v in visitor_lines if v.lower() != AVAILABLE_SLOT_TEXT]
+        total = len(visitor_lines)
+        available = total - len(filled)
+
+        visitor_display = []
+        for i, v in enumerate(visitor_lines, 1):
+            if v.lower() == AVAILABLE_SLOT_TEXT:
+                visitor_display.append(f"`#{i}` 〰️ *Available*")
+            else:
+                visitor_display.append(f"`#{i}` 🧑‍🤝‍🧑 **{v}**")
+
+        color = discord.Color.green() if available > 0 else discord.Color.red()
+        embed = discord.Embed(
+            title=f"🏝️ Visitors on {island_name}",
+            description="\n".join(visitor_display) if visitor_display else "*No visitor data available.*",
+            color=color,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(
+            name="📊 Slots",
+            value=f"`{len(filled)}/{total}` occupied · `{available}` available",
+            inline=False
+        )
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+        return embed
+
+    def _build_dodo_sent_embed(self, ctx) -> discord.Embed:
+        """Build a nicely formatted 'dodo code sent' embed."""
+        embed = discord.Embed(
+            title="✈️ Dodo Code Sent!",
+            description=(
+                f"Hey {ctx.author.mention}! 📬 The dodo code has been sent to your DMs.\n\n"
+                "Head to the airport and open the **Dodo Airlines** app to enter it!"
+            ),
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+        return embed
 
     async def _check_island_online(self, guild: discord.Guild, island: str) -> bool:
         """Return True if the island appears to be online, False otherwise."""
