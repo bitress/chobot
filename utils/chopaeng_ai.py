@@ -178,9 +178,14 @@ A: The Flight Logger is an automatic safety feature. When someone visits a sub
    an alert with buttons to Admit, Warn, Kick, or Ban the visitor.
 
 Q: What are the visitor rules or etiquette?
-A: Only pick up items assigned to you. Do not run over flowers or dig up trees.
-   Do not talk to residents to lure them away. Leave as soon as you are done.
-   Be friendly and thankful in chat. Breaking rules may result in a ban.
+A: Only pick up items assigned to you. Do not run over flowers, dig up trees, or
+   talk to residents to lure them away. Leave as soon as you are done and be
+   friendly in chat — breaking rules may result in a ban.
+
+Q: What commands are available?
+A: Core commands are !find (search items), !villager (search villagers), !senddodo
+   or !sd (get a Dodo code), !ask (ask the AI), !random, !status, !ping, and !help.
+   Admin-only: !refresh.
 """
 
 # ---------------------------------------------------------------------------
@@ -233,6 +238,14 @@ def _wb_match(keyword: str, text: str) -> bool:
     return bool(re.search(rf'\b{re.escape(keyword)}\b', text))
 
 
+def _trim_to_sentences(text: str, n: int = 3) -> str:
+    """Return at most *n* complete sentences from *text*."""
+    # Split on sentence-ending punctuation followed by whitespace or end-of-string.
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    trimmed = ' '.join(sentences[:n])
+    return trimmed
+
+
 def _keyword_answer(question: str) -> str:
     """Return a clean answer by matching Q&A pairs first, then prose paragraphs."""
     q_lower = question.lower()
@@ -256,8 +269,7 @@ def _keyword_answer(question: str) -> str:
             best_qa_answer = a_text
 
     if best_qa_score > 0:
-        answer = best_qa_answer
-        return answer[:397] + '...' if len(answer) > 400 else answer
+        return _trim_to_sentences(best_qa_answer)
 
     # 2. Fall back to the best matching prose paragraph.
     best_prose_score = 0
@@ -270,8 +282,7 @@ def _keyword_answer(question: str) -> str:
             best_prose = para
 
     if best_prose_score > 0:
-        answer = best_prose
-        return answer[:397] + '...' if len(answer) > 400 else answer
+        return _trim_to_sentences(best_prose)
 
     return (
         "I'm not sure about that. Try asking about islands, items, "
@@ -311,8 +322,8 @@ async def _gemini_answer(question: str, api_key: str) -> str:
     prompt = (
         "You are a helpful assistant for the Chopaeng Animal Crossing community. "
         "Use ONLY the knowledge provided below to answer the user's question. "
-        "Reply in plain text (no markdown, no embeds). Keep your answer concise "
-        "(under 400 characters). "
+        "Reply in plain text (no markdown, no embeds). "
+        "Keep your answer to 2–3 sentences maximum. "
         "If the answer is not in the knowledge base, say you don't know.\n\n"
         f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n\n"
         f"### User Question ###\n{question}"
