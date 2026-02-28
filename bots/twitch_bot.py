@@ -11,8 +11,13 @@ from thefuzz import process, fuzz
 
 from utils.config import Config
 from utils.helpers import normalize_text, get_best_suggestions, clean_text, format_locations_text
+from utils.chopaeng_ai import get_ai_answer
 
 logger = logging.getLogger("TwitchBot")
+
+# Twitch chat messages are capped at 500 characters; leave a small buffer.
+TWITCH_MESSAGE_LIMIT = 490
+TWITCH_TRUNCATE_AT = TWITCH_MESSAGE_LIMIT - 3  # room for "..."
 
 
 class TwitchBot(commands.Bot):
@@ -174,7 +179,7 @@ class TwitchBot(commands.Bot):
     @commands.command()
     async def help(self, ctx: commands.Context):
         """Show help message"""
-        await ctx.send("Commands: !find <item> | !villager <name> | !random | !status")
+        await ctx.send("Commands: !find <item> | !villager <name> | !random | !status | !ask <question>")
 
     @commands.command()
     async def random(self, ctx: commands.Context):
@@ -225,3 +230,22 @@ class TwitchBot(commands.Bot):
                 await ctx.send(f"Items: {len(self.data_manager.cache)} | Last Update: {time_str} | Uptime: {uptime_str}")
             else:
                 await ctx.send("Database loading...")
+
+    @commands.command()
+    async def ask(self, ctx: commands.Context, *, question: str = ""):
+        """Ask the Chopaeng AI a question about the community"""
+        if not question:
+            await ctx.send(f"Usage: !ask <question>  e.g. !ask how do I get items?")
+            return
+
+        if self.check_cooldown(str(ctx.author.id), cooldown_sec=5):
+            return
+
+        answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY)
+
+        # Twitch messages are capped at 500 characters
+        reply = f"@{ctx.author.name} {answer}"
+        if len(reply) > TWITCH_MESSAGE_LIMIT:
+            reply = reply[:TWITCH_TRUNCATE_AT] + "..."
+        await ctx.send(reply)
+        logger.info(f"[TWITCH] Ask command by {ctx.author.name}: {question[:80]}")

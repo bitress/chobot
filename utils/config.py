@@ -61,6 +61,9 @@ class Config:
     # Nookipedia
     NOOKIPEDIA_KEY = os.getenv("NOOKIPEDIA_KEY")
 
+    # Gemini AI (free tier — optional)
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
     # Google Sheets
     WORKBOOK_NAME = os.getenv('WORKBOOK_NAME')
     JSON_KEYFILE = 'service_account.json'

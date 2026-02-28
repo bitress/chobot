@@ -10,6 +10,7 @@ from .helpers import (
     parse_locations_json,
     get_best_suggestions
 )
+from .chopaeng_ai import get_ai_answer
 
 __all__ = [
     'Config',
@@ -19,5 +20,6 @@ __all__ = [
     'smart_threshold',
     'format_locations_text',
     'parse_locations_json',
-    'get_best_suggestions'
+    'get_best_suggestions',
+    'get_ai_answer',
 ]

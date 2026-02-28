@@ -19,6 +19,7 @@ from thefuzz import process, fuzz
 from utils.config import Config
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
+from utils.chopaeng_ai import get_ai_answer
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -517,6 +518,7 @@ class DiscordCommandCog(commands.Cog):
                 "`!status` - Show bot status and cache info\n"
                 "`!ping` - Check bot response time\n"
                 "`!random` - Get a random item suggestion\n"
+                "`!ask <question>` - Ask the Chopaeng AI anything\n"
                 "`!help` - Show this help message"
             ),
             inline=False
@@ -625,6 +627,32 @@ class DiscordCommandCog(commands.Cog):
                 )
             else:
                 await ctx.reply("Database loading...")
+
+    @commands.hybrid_command(name="ask")
+    @app_commands.describe(question="Your question about the Chopaeng community")
+    async def ask_ai(self, ctx, *, question: str = ""):
+        """Ask the Chopaeng AI anything about the community"""
+        if not question:
+            await ctx.reply("Usage: `!ask <question>` — e.g. `!ask how do I get a Dodo code?`")
+            return
+
+        await ctx.defer()
+        answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY)
+
+        embed = discord.Embed(
+            title="🤖 Chopaeng AI",
+            color=discord.Color.purple(),
+            timestamp=datetime.now()
+        )
+        # Discord embed field name limit: 256 chars; value limit: 1024 chars
+        embed.add_field(name="Question", value=question[:256], inline=False)
+        embed.add_field(name="Answer", value=answer[:1024], inline=False)
+        embed.set_footer(
+            text=f"Asked by {ctx.author.display_name}",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        )
+        await ctx.reply(embed=embed)
+        logger.info(f"[DISCORD] Ask command by {ctx.author.name}: {question[:80]}")
 
     @commands.hybrid_command(name="islands", aliases=["islandstatus", "checkislands"])
     async def island_status(self, ctx):

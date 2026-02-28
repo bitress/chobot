@@ -22,6 +22,7 @@ Chobot is a unified system to help manage Animal Crossing communities. It watche
     * Check bot response time with !ping command (Discord only).
     * Get random item suggestions with !random command.
     * Comprehensive help system with !help command.
+    * **Chopaeng AI** — ask questions about the community with `!ask` (no paid API needed; optionally supercharged with free Google Gemini).
 
 * **Island Status (Dodo Codes)**
     * API reads Dodo.txt and Visitors.txt to show real-time island status.
@@ -75,6 +76,11 @@ SUB_MOD_CHANNEL_ID=1077960085826961439
 TWITCH_CHANNEL=chopaeng
 WORKBOOK_NAME=ChoPaeng_Database
 IS_PRODUCTION=false
+
+# --- GEMINI AI (optional, free tier) ---
+# Get a free key at https://aistudio.google.com/
+# Leave blank to use the built-in keyword fallback.
+GEMINI_API_KEY=
 ```
 
 ### Executing program
