@@ -700,10 +700,15 @@ class DiscordCommandCog(commands.Cog):
 
         # Build embed
         total = len(Config.SUB_ISLANDS)
+        all_online = online_count == total
+        if all_online:
+            description = f"✅ All **{total}** islands are backed up and good!"
+        else:
+            description = f"**{online_count}/{total}** islands active"
         embed = discord.Embed(
             title="🏝️ Sub Island Status",
-            description=f"**{online_count}/{total}** islands active",
-            color=discord.Color.green() if online_count == total else (
+            description=description,
+            color=discord.Color.green() if all_online else (
                 discord.Color.orange() if online_count > 0 else discord.Color.red()
             ),
             timestamp=discord.utils.utcnow()
@@ -717,7 +722,10 @@ class DiscordCommandCog(commands.Cog):
 
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-        embed.set_image(url=Config.FOOTER_LINE)
+        if not all_online:
+            embed.set_image(url="https://cdn.chopaeng.com/misc/Bot-is-Down.jpg")
+        else:
+            embed.set_image(url=Config.FOOTER_LINE)
 
         await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] Island status check: {online_count}/{total} online")
