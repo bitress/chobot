@@ -639,19 +639,7 @@ class DiscordCommandCog(commands.Cog):
         await ctx.defer()
         answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY)
 
-        embed = discord.Embed(
-            title="🤖 Chopaeng AI",
-            color=discord.Color.purple(),
-            timestamp=datetime.now()
-        )
-        # Discord embed field name limit: 256 chars; value limit: 1024 chars
-        embed.add_field(name="Question", value=question[:256], inline=False)
-        embed.add_field(name="Answer", value=answer[:1024], inline=False)
-        embed.set_footer(
-            text=f"Asked by {ctx.author.display_name}",
-            icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
-        )
-        await ctx.reply(embed=embed)
+        await ctx.reply(f"🤖 **Chopaeng AI:** {answer}")
         logger.info(f"[DISCORD] Ask command by {ctx.author.name}: {question[:80]}")
 
     @commands.hybrid_command(name="islands", aliases=["islandstatus", "checkislands"])
