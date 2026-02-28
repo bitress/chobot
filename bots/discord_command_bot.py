@@ -738,6 +738,36 @@ class DiscordCommandCog(commands.Cog):
         await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] Island status check: {online_count}/{total} online")
 
+    async def _check_sub_island_status(self, ctx) -> bool:
+        """Check if the sub island bot is online. Replies with a down embed and returns False if not."""
+        if not self._is_sub_island_channel(ctx.channel):
+            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
+            return False
+
+        if self.check_cooldown(str(ctx.author.id)):
+            return False
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
+
+        if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+            logger.info(f"[DISCORD] Island bot online for {ctx.channel.name}, doing nothing")
+            return True
+
+        await ctx.reply(embed=self._create_island_down_embed(ctx))
+        logger.info(f"[DISCORD] Island bot offline for {ctx.channel.name}")
+        return False
+
+    @commands.hybrid_command(name="senddodo", aliases=["sd"])
+    async def send_dodo(self, ctx):
+        """Check if this sub island's bot is online"""
+        await self._check_sub_island_status(ctx)
+
+    @commands.hybrid_command(name="visitors")
+    async def visitors(self, ctx):
+        """Check if this sub island's bot is online"""
+        await self._check_sub_island_status(ctx)
+
     def _get_island_bot_for_channel(self, guild: discord.Guild, channel: discord.TextChannel):
         """Return the island bot member for the given channel, or None if not found."""
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
