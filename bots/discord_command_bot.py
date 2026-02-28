@@ -26,6 +26,7 @@ logger = logging.getLogger("DiscordCommandBot")
 DODO_CODE_PATTERN = re.compile(r'\b[A-HJ-NP-Z0-9]{5}\b')
 ISLAND_HOST_NAME = "chopaeng"
 MESSAGE_HISTORY_LIMIT = 30
+ISLAND_DOWN_IMAGE_URL = "https://cdn.chopaeng.com/misc/Bot-is-Down.jpg"
 
 
 class SuggestionSelect(discord.ui.Select):
@@ -126,6 +127,9 @@ class DiscordCommandCog(commands.Cog):
         self.sub_island_lookup = {}
 
         self.auto_refresh_cache.start()
+        # island_clean -> True (down) / False (up); None = not yet initialized
+        self.island_down_states: dict[str, bool | None] = {}
+        self.island_monitor_loop.start()
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Filter items from cache for autocomplete"""
@@ -195,6 +199,7 @@ class DiscordCommandCog(commands.Cog):
     def cog_unload(self):
         """Cleanup on unload"""
         self.auto_refresh_cache.cancel()
+        self.island_monitor_loop.cancel()
 
     def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
         """Check if user is on cooldown"""
@@ -770,6 +775,124 @@ class DiscordCommandCog(commands.Cog):
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
         return embed
+
+    async def _check_island_online(self, guild: discord.Guild, island: str) -> bool:
+        """Return True if the island appears to be online, False otherwise."""
+        island_clean = clean_text(island)
+        channel_id = self.sub_island_lookup.get(island_clean)
+        if not channel_id:
+            return False
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return False
+
+        # Check island bot presence first (fast, no API call)
+        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
+        island_bot = None
+        if island_bot_role:
+            target = clean_text(f"chobot {island}")
+            for member in island_bot_role.members:
+                if member.bot and clean_text(member.display_name) == target:
+                    island_bot = member
+                    break
+
+        if island_bot:
+            return island_bot.status in (discord.Status.online, discord.Status.idle)
+
+        # Fallback: scan recent channel messages for dodo code / host presence
+        try:
+            messages = [msg async for msg in channel.history(limit=MESSAGE_HISTORY_LIMIT)]
+        except discord.Forbidden:
+            return False
+
+        for msg in messages:
+            if not msg.author.bot:
+                continue
+            if DODO_CODE_PATTERN.search(msg.content) or ISLAND_HOST_NAME in msg.content.lower():
+                return True
+
+        return False
+
+    @tasks.loop(minutes=5)
+    async def island_monitor_loop(self):
+        """Background task: detect island down/up transitions and notify in channel."""
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if not guild:
+            return
+
+        if not self.sub_island_lookup:
+            try:
+                await self.fetch_islands()
+            except Exception as e:
+                logger.error(f"[DISCORD] island_monitor_loop failed to fetch islands: {e}")
+                return
+
+        for island in Config.SUB_ISLANDS:
+            island_clean = clean_text(island)
+            channel_id = self.sub_island_lookup.get(island_clean)
+            if not channel_id:
+                continue
+
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                continue
+
+            try:
+                is_online = await self._check_island_online(guild, island)
+            except Exception as e:
+                logger.error(f"[DISCORD] island_monitor_loop error checking {island}: {e}")
+                continue
+
+            previous = self.island_down_states.get(island_clean)  # None = first run
+
+            if previous is None:
+                # First run: always initialize as "not down" so that a "back up"
+                # notification is only ever sent after we have sent a "Bot is Down"
+                # embed in this session (i.e. never on a cold start when the island
+                # is already online).
+                self.island_down_states[island_clean] = False
+                continue
+
+            was_down = previous  # True means it was down
+
+            if not is_online and not was_down:
+                # Transition: online → offline
+                self.island_down_states[island_clean] = True
+                embed = discord.Embed(
+                    title="🏝️ Island is Down",
+                    description=f"**{island}** island is currently **offline**.",
+                    color=discord.Color.red(),
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.set_image(url=ISLAND_DOWN_IMAGE_URL)
+                try:
+                    await channel.send(embed=embed)
+                    logger.info(f"[DISCORD] Island monitor: {island} went OFFLINE")
+                except Exception as e:
+                    logger.error(f"[DISCORD] Failed to send island-down embed for {island}: {e}")
+
+            elif is_online and was_down:
+                # Transition: offline → online
+                self.island_down_states[island_clean] = False
+                embed = discord.Embed(
+                    title="🏝️ Island is Back Up!",
+                    description=f"**{island}** island is back online and ready to visit! 🎉",
+                    color=discord.Color.green(),
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.set_image(url=Config.FOOTER_LINE)
+                try:
+                    await channel.send(embed=embed)
+                    logger.info(f"[DISCORD] Island monitor: {island} is back ONLINE")
+                except Exception as e:
+                    logger.error(f"[DISCORD] Failed to send island-back-up embed for {island}: {e}")
+
+    @island_monitor_loop.before_loop
+    async def before_island_monitor_loop(self):
+        """Wait until bot is ready before starting the island monitor."""
+        await self.bot.wait_until_ready()
+        await self.fetch_islands()
 
     @commands.hybrid_command(name="senddodo", aliases=["sd"])
     async def send_dodo(self, ctx):
