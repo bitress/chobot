@@ -411,7 +411,7 @@ class TravelerActionView(discord.ui.View):
                     return match.group(1).strip()
         return None
 
-    async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None, reason=None):
+    async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None, reason=None, mod_log_url=None):
         """Internal helper to update the alert embed state. Does NOT send interaction responses."""
         target_str      = f"{target_user.mention}" if target_user else "Visitor (unlinked)"
         message_to_edit = log_message or (interaction.message if interaction.response.is_done() else None)
@@ -445,6 +445,8 @@ class TravelerActionView(discord.ui.View):
             action_value = f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>"
             if reason:
                 action_value += f"\n**Reason:** {reason}"
+            if mod_log_url:
+                action_value += f"\n[View in Mod Log]({mod_log_url})"
             embed.add_field(
                 name="<:ChoLove:818216528449241128> Action Taken",
                 value=action_value,
@@ -733,9 +735,10 @@ class FlightLoggerCog(commands.Cog):
             sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
             
             if sub_mod_channel:
-                await sub_mod_channel.send(content=target.mention, embed=log_embed)
+                sent_log = await sub_mod_channel.send(content=target.mention, embed=log_embed)
                 await interaction.followup.send(f"✅ Case `{case_id}` logged in {sub_mod_channel.mention}", ephemeral=True)
             else:
+                sent_log = None
                 await interaction.followup.send(f"✅ Action executed (Case `{case_id}`), but log channel is missing.", ephemeral=True)
 
             # 6. Update Original Alert
@@ -743,7 +746,8 @@ class FlightLoggerCog(commands.Cog):
             if original_view:
                 await original_view._resolve_alert(
                     interaction, action_verb, color, msg_to_mod,
-                    target_user=target, log_message=log_message, reason=reason_text
+                    target_user=target, log_message=log_message, reason=reason_text,
+                    mod_log_url=sent_log.jump_url if sent_log else None
                 )
 
         except discord.Forbidden:
