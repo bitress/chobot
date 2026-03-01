@@ -411,7 +411,7 @@ class TravelerActionView(discord.ui.View):
                     return match.group(1).strip()
         return None
 
-    async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None):
+    async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None, reason=None):
         """Internal helper to update the alert embed state. Does NOT send interaction responses."""
         target_str      = f"{target_user.mention}" if target_user else "Visitor (unlinked)"
         message_to_edit = log_message or (interaction.message if interaction.response.is_done() else None)
@@ -442,9 +442,12 @@ class TravelerActionView(discord.ui.View):
             embed.color = color
             embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
             resolved_ts = int(discord.utils.utcnow().timestamp())
+            action_value = f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>"
+            if reason:
+                action_value += f"\n**Reason:** {reason}"
             embed.add_field(
                 name="<:ChoLove:818216528449241128> Action Taken",
-                value=f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>",
+                value=action_value,
                 inline=False
             )
             self.clear_items()
@@ -740,7 +743,7 @@ class FlightLoggerCog(commands.Cog):
             if original_view:
                 await original_view._resolve_alert(
                     interaction, action_verb, color, msg_to_mod,
-                    target_user=target, log_message=log_message
+                    target_user=target, log_message=log_message, reason=reason_text
                 )
 
         except discord.Forbidden:
