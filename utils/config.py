@@ -77,7 +77,7 @@ class Config:
     DIR_FREE = TWITCH_VILLAGERS_DIR
     DIR_VIP = VILLAGERS_DIR
 
-    # Island Lists
+    # Island Lists (fallback defaults; dynamically updated at runtime from Discord sub-category)
     SUB_ISLANDS = [
         "Adhika", "Alapaap", "Aruga", "Bahaghari", "Bituin", "Bonita", "Dakila",
         "Dalisay", "Diwa", "Gabay", "Galak", "Giliw", "Hiraya", "Kalangitan",

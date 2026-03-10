@@ -785,7 +785,7 @@ class FlightLoggerCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def fetch_islands(self):
-        """Fetch island channels from Discord"""
+        """Fetch island channels from Discord sub-category"""
         guild = self.bot.get_guild(Config.GUILD_ID)
         if not guild:
             logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} not found.")
@@ -803,17 +803,19 @@ class FlightLoggerCog(commands.Cog):
             if channel.id == Config.FLIGHT_LISTEN_CHANNEL_ID:
                 continue
 
-            # e.g. "🌴┆bituin" -> "bituin"
+            # e.g. "🌴┆bituin" -> "bituin", "01-alapaap" -> "01alapaap"
             chan_clean = clean_text(channel.name)
-            if chan_clean:
-                temp_map[chan_clean] = channel.id
-                count += 1
-            
-            all_possible_islands = Config.SUB_ISLANDS
-            for island in all_possible_islands:
-                island_clean = clean_text(island)
-                if island_clean and island_clean in chan_clean:
-                    temp_map[island_clean] = channel.id
+            if not chan_clean:
+                continue
+
+            temp_map[chan_clean] = channel.id
+            count += 1
+
+            # Also map without leading digits for canonical name lookups
+            # e.g. "01alapaap" -> "alapaap"
+            island_clean = re.sub(r'^\d+', '', chan_clean)
+            if island_clean and island_clean != chan_clean:
+                temp_map[island_clean] = channel.id
 
         self.island_map = temp_map
         logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {len(temp_map)} keys.")

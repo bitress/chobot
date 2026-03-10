@@ -179,7 +179,7 @@ class DiscordCommandCog(commands.Cog):
             return []
 
     async def fetch_islands(self):
-        """Fetch island channels from Discord using robust matching"""
+        """Fetch island channels from Discord sub-category"""
         guild = self.bot.get_guild(Config.GUILD_ID)
         if not guild:
             logger.error(f"[DISCORD] Guild {Config.GUILD_ID} not found.")
@@ -191,24 +191,31 @@ class DiscordCommandCog(commands.Cog):
             return
 
         temp_lookup = {}
+        fetched_islands = []
         count = 0
-        all_possible_islands = Config.SUB_ISLANDS
 
         for channel in category.channels:
             if channel.id == Config.IGNORE_CHANNEL_ID:
                 continue
 
             chan_clean = clean_text(channel.name)
+            if not chan_clean:
+                continue
 
-            for island in all_possible_islands:
-                island_clean = clean_text(island)
-                if island_clean in chan_clean:
-                    # Use clean name as key for consistent lookups
-                    temp_lookup[island_clean] = channel.id
-                    count += 1
-                    break
+            # Strip leading digits to get the canonical island name
+            # e.g. "01alapaap" -> "alapaap", "bituin" -> "bituin"
+            island_clean = re.sub(r'^\d+', '', chan_clean)
+            if island_clean:
+                temp_lookup[island_clean] = channel.id
+                fetched_islands.append(island_clean.title())
+                count += 1
 
         self.sub_island_lookup = temp_lookup
+
+        if fetched_islands:
+            Config.SUB_ISLANDS = fetched_islands
+            Config.TWITCH_SUB_ISLANDS = fetched_islands
+
         logger.info(f"[DISCORD] Dynamic Island Fetch Complete. Found {count} islands.")
 
     def cog_unload(self):
