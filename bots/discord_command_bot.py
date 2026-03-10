@@ -4,6 +4,10 @@ Handles Discord commands for item and villager search with rich embeds
 """
 
 import asyncio
+import importlib
+import os
+import subprocess
+import sys
 import time
 import re
 import random
@@ -36,6 +40,7 @@ ISLAND_DODO_SENT_PATTERN = re.compile(r".+?:\s*Sent you the dodo code via DM", r
 VISITOR_LINE_PATTERN = re.compile(r'#\d+:\s*(.+)')
 AVAILABLE_SLOT_TEXT = "available slot"
 ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
+GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
 
 
 def _discord_conv_key(message: discord.Message) -> str:
@@ -1132,6 +1137,84 @@ class DiscordCommandCog(commands.Cog):
     @refresh.error
     async def refresh_error(self, ctx, error):
         """Handle permission errors cleanly"""
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.reply("You do not have permission to use this command.")
+
+    @commands.hybrid_command(name="update")
+    @commands.has_permissions(administrator=True)
+    async def update(self, ctx):
+        """OTA update: pull latest code from git and reload cogs without restarting (Admin only)"""
+        await ctx.reply("🔄 Fetching latest changes from git...")
+
+        # Run git pull, forcing English output for reliable message parsing
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ['git', 'pull'],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env={**os.environ, 'LANG': 'C', 'LC_ALL': 'C'},
+                )
+            )
+            git_output = result.stdout.strip() or result.stderr.strip() or "No output."
+        except Exception as e:
+            await ctx.reply(f"❌ Git pull failed: `{e}`")
+            return
+
+        await ctx.reply(f"```\n{git_output[:GIT_OUTPUT_MAX_LENGTH]}\n```")
+
+        if "already up to date" in git_output.lower():
+            await ctx.reply("✅ Already up to date. No reload needed.")
+            return
+
+        # Reload modules and cogs
+        try:
+            # Reload all loaded utils.* submodules first so reloaded cogs import fresh code
+            for mod_name in sorted(sys.modules.keys()):
+                if mod_name == "utils" or mod_name.startswith("utils."):
+                    importlib.reload(sys.modules[mod_name])
+
+            bot = self.bot
+            data_manager = self.data_manager
+
+            # Reload FlightLoggerCog only if it was already loaded
+            had_flight_logger = 'FlightLoggerCog' in bot.cogs
+            if had_flight_logger:
+                await bot.remove_cog('FlightLoggerCog')
+                import bots.flight_logger as fl_module
+                importlib.reload(fl_module)
+
+            # Reload this module and re-add DiscordCommandCog.
+            # Note: ctx.reply() works even after remove_cog because ctx holds a
+            # direct reference to the channel/message, not to the cog instance.
+            import bots.discord_command_bot as cmd_module
+            await bot.remove_cog('DiscordCommandCog')
+            importlib.reload(cmd_module)
+            await bot.add_cog(cmd_module.DiscordCommandCog(bot, data_manager))
+
+            if had_flight_logger:
+                await bot.add_cog(fl_module.FlightLoggerCog(bot))
+
+            # Re-sync slash commands with updated tree
+            if Config.GUILD_ID:
+                guild_obj = discord.Object(id=Config.GUILD_ID)
+                bot.tree.copy_global_to(guild=guild_obj)
+                await bot.tree.sync(guild=guild_obj)
+            else:
+                await bot.tree.sync()
+
+            await ctx.reply("✅ OTA update complete! All cogs reloaded with new code.")
+            logger.info("[DISCORD] OTA update completed successfully.")
+        except Exception as e:
+            await ctx.reply(f"❌ Reload failed: `{e}`")
+            logger.error(f"[DISCORD] OTA update failed: {e}", exc_info=True)
+
+    @update.error
+    async def update_error(self, ctx, error):
+        """Handle permission errors for update command"""
         if isinstance(error, commands.MissingPermissions):
             await ctx.reply("You do not have permission to use this command.")
 
