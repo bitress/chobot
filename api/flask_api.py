@@ -9,9 +9,10 @@ Combines all API endpoints:
 import os
 import re
 import time
+import sqlite3
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Flask, jsonify, request
@@ -189,6 +190,32 @@ ALLOWED_CATEGORIES = {"public", "member"}
 ALLOWED_THEMES = {"pink", "teal", "purple", "gold"}
 ALLOWED_STATUSES = {"ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE"}
 
+# Flight-logger SQLite database (written by the Discord bot)
+FLIGHT_DB_NAME = "chobot.db"
+
+
+def _get_flight_db():
+    """Return a read-only SQLite connection to the flight-logger database."""
+    if not os.path.exists(FLIGHT_DB_NAME):
+        return None
+    conn = sqlite3.connect(f"file:{FLIGHT_DB_NAME}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _flight_where(guild_id: int, cutoff: int, user_id: int | None) -> tuple[str, list]:
+    """Return a (WHERE clause, params) tuple for flight-logger queries.
+
+    The WHERE clause uses only ``?`` placeholders so user-supplied values are
+    never interpolated directly into SQL strings.
+    """
+    clause = "guild_id = ? AND timestamp > ?"
+    params: list = [guild_id, cutoff]
+    if user_id is not None:
+        clause += " AND user_id = ?"
+        params.append(user_id)
+    return clause, params
+
 # ============================================================================
 # API ROUTES
 # ============================================================================
@@ -204,6 +231,7 @@ def home():
             "villagers": "/villager, /api/villager, /api/villagers/list",
             "islands": "/api/islands",
             "patreon": "/api/patreon/posts, /api/patreon/posts/<id>",
+            "charts": "/api/charts/island_visits, /api/charts/warnings",
             "status": "/status",
             "refresh": "/api/refresh (POST)",
             "health": "/health"
@@ -484,6 +512,172 @@ def get_single_post(post_id):
 
     except Exception as e:
         return jsonify({"error": "Server error", "details": str(e)}), 500
+
+
+# --- CHART ROUTES ---
+
+@app.route('/api/charts/island_visits', methods=['GET'])
+def chart_island_visits():
+    """Aggregated island-visit data for chart rendering.
+
+    Query parameters:
+      guild_id  (required) – Discord guild/server ID to scope the results.
+      days      (optional, default 30) – How many days back to look.
+      user_id   (optional) – Restrict results to a single Discord user.
+    """
+    guild_id = request.args.get('guild_id', type=int)
+    if not guild_id:
+        return jsonify({"error": "guild_id is required"}), 400
+
+    try:
+        days = max(1, int(request.args.get('days', 30)))
+    except (TypeError, ValueError):
+        days = 30
+
+    user_id = request.args.get('user_id', type=int)
+
+    conn = _get_flight_db()
+    if conn is None:
+        return jsonify({"error": "Flight-logger database not available"}), 503
+
+    try:
+        cutoff = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+        where, params = _flight_where(guild_id, cutoff, user_id)
+
+        # Per-day aggregation
+        cursor = conn.execute(
+            "SELECT date(timestamp, 'unixepoch') AS day,"
+            " COUNT(*) AS total,"
+            " SUM(CASE WHEN authorized = 1 THEN 1 ELSE 0 END) AS authorized,"
+            " SUM(CASE WHEN authorized = 0 THEN 1 ELSE 0 END) AS unauthorized"
+            " FROM island_visits WHERE " + where +
+            " GROUP BY day ORDER BY day",
+            params,
+        )
+        by_day = [
+            {
+                "date": row["day"],
+                "total": row["total"],
+                "authorized": row["authorized"],
+                "unauthorized": row["unauthorized"],
+            }
+            for row in cursor.fetchall()
+        ]
+
+        # Per-destination aggregation
+        cursor = conn.execute(
+            "SELECT destination, COUNT(*) AS count"
+            " FROM island_visits WHERE " + where +
+            " GROUP BY destination ORDER BY count DESC",
+            params,
+        )
+        by_destination = [
+            {"destination": (row["destination"] or "unknown").title(), "count": row["count"]}
+            for row in cursor.fetchall()
+        ]
+
+        # Overall totals
+        cursor = conn.execute(
+            "SELECT COUNT(*) AS total,"
+            " SUM(CASE WHEN authorized = 1 THEN 1 ELSE 0 END) AS authorized_count,"
+            " SUM(CASE WHEN authorized = 0 THEN 1 ELSE 0 END) AS unauthorized_count"
+            " FROM island_visits WHERE " + where,
+            params,
+        )
+        row = cursor.fetchone()
+        total = row["total"] or 0
+        authorized_count = row["authorized_count"] or 0
+        unauthorized_count = row["unauthorized_count"] or 0
+
+    except Exception as e:
+        return jsonify({"error": "Database query failed", "details": str(e)}), 500
+    finally:
+        conn.close()
+
+    return jsonify({
+        "period_days": days,
+        "guild_id": guild_id,
+        **({"user_id": user_id} if user_id is not None else {}),
+        "total": total,
+        "authorized_count": authorized_count,
+        "unauthorized_count": unauthorized_count,
+        "by_day": by_day,
+        "by_destination": by_destination,
+    })
+
+
+@app.route('/api/charts/warnings', methods=['GET'])
+def chart_warnings():
+    """Aggregated warning data for chart rendering.
+
+    Query parameters:
+      guild_id  (required) – Discord guild/server ID to scope the results.
+      days      (optional, default 30) – How many days back to look.
+      user_id   (optional) – Restrict results to a single Discord user.
+    """
+    guild_id = request.args.get('guild_id', type=int)
+    if not guild_id:
+        return jsonify({"error": "guild_id is required"}), 400
+
+    try:
+        days = max(1, int(request.args.get('days', 30)))
+    except (TypeError, ValueError):
+        days = 30
+
+    user_id = request.args.get('user_id', type=int)
+
+    conn = _get_flight_db()
+    if conn is None:
+        return jsonify({"error": "Flight-logger database not available"}), 503
+
+    try:
+        cutoff = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+        where, params = _flight_where(guild_id, cutoff, user_id)
+
+        # Per-day aggregation
+        cursor = conn.execute(
+            "SELECT date(timestamp, 'unixepoch') AS day, COUNT(*) AS count"
+            " FROM warnings WHERE " + where +
+            " GROUP BY day ORDER BY day",
+            params,
+        )
+        by_day = [
+            {"date": row["day"], "count": row["count"]}
+            for row in cursor.fetchall()
+        ]
+
+        # Per-reason aggregation
+        cursor = conn.execute(
+            "SELECT reason, COUNT(*) AS count"
+            " FROM warnings WHERE " + where +
+            " GROUP BY reason ORDER BY count DESC",
+            params,
+        )
+        by_reason = [
+            {"reason": row["reason"] or "", "count": row["count"]}
+            for row in cursor.fetchall()
+        ]
+
+        # Overall total
+        cursor = conn.execute(
+            "SELECT COUNT(*) AS total FROM warnings WHERE " + where,
+            params,
+        )
+        total = cursor.fetchone()["total"] or 0
+
+    except Exception as e:
+        return jsonify({"error": "Database query failed", "details": str(e)}), 500
+    finally:
+        conn.close()
+
+    return jsonify({
+        "period_days": days,
+        "guild_id": guild_id,
+        **({"user_id": user_id} if user_id is not None else {}),
+        "total": total,
+        "by_day": by_day,
+        "by_reason": by_reason,
+    })
 
 
 # --- STATUS ROUTE ---
