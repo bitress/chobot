@@ -79,8 +79,8 @@ class Config:
 
     # Island Lists
     SUB_ISLANDS = [
-        "Alapaap", "Aruga", "Bahaghari", "Bituin", "Bonita", "Dakila",
-        "Dalisay", "Diwa", "Gabay", "Galak", "Hiraya", "Kalangitan",
+        "Adhika", "Alapaap", "Aruga", "Bahaghari", "Bituin", "Bonita", "Dakila",
+        "Dalisay", "Diwa", "Gabay", "Galak", "Giliw", "Hiraya", "Kalangitan",
         "Lakan", "Likha", "Malaya", "Marahuyo", "Pangarap", "Tagumpay"
     ]
 
