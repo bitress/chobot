@@ -193,6 +193,9 @@ ALLOWED_STATUSES = {"ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE"}
 # Flight-logger SQLite database (written by the Discord bot)
 FLIGHT_DB_NAME = "chobot.db"
 
+# Default label used when a destination/reason value is NULL or empty
+UNKNOWN_LABEL = "unknown"
+
 
 def _get_flight_db():
     """Return a read-only SQLite connection to the flight-logger database."""
@@ -544,9 +547,10 @@ def chart_island_visits():
         cutoff = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
         where, params = _flight_where(guild_id, cutoff, user_id)
 
-        # Per-day aggregation
+        # Per-day aggregation – 'unixepoch' in SQLite always interprets the value
+        # as seconds since the Unix epoch in UTC, so dates are UTC-based.
         cursor = conn.execute(
-            "SELECT date(timestamp, 'unixepoch') AS day,"
+            "SELECT date(timestamp, 'unixepoch', 'utc') AS day,"
             " COUNT(*) AS total,"
             " SUM(CASE WHEN authorized = 1 THEN 1 ELSE 0 END) AS authorized,"
             " SUM(CASE WHEN authorized = 0 THEN 1 ELSE 0 END) AS unauthorized"
@@ -572,7 +576,7 @@ def chart_island_visits():
             params,
         )
         by_destination = [
-            {"destination": (row["destination"] or "unknown").title(), "count": row["count"]}
+            {"destination": (row["destination"] or UNKNOWN_LABEL).title(), "count": row["count"]}
             for row in cursor.fetchall()
         ]
 
@@ -634,9 +638,10 @@ def chart_warnings():
         cutoff = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
         where, params = _flight_where(guild_id, cutoff, user_id)
 
-        # Per-day aggregation
+        # Per-day aggregation – 'unixepoch' in SQLite always interprets the value
+        # as seconds since the Unix epoch in UTC, so dates are UTC-based.
         cursor = conn.execute(
-            "SELECT date(timestamp, 'unixepoch') AS day, COUNT(*) AS count"
+            "SELECT date(timestamp, 'unixepoch', 'utc') AS day, COUNT(*) AS count"
             " FROM warnings WHERE " + where +
             " GROUP BY day ORDER BY day",
             params,
