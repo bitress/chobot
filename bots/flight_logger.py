@@ -46,6 +46,18 @@ async def init_db():
                 timestamp INTEGER
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS island_visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ign TEXT NOT NULL,
+                origin_island TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                user_id INTEGER,
+                guild_id INTEGER,
+                authorized INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL
+            )
+        """)
         await db.commit()
 
 DEFAULT_REASON_TEXT = (
@@ -648,6 +660,22 @@ class FlightLoggerCog(commands.Cog):
         rows = await cursor.fetchall()
         return [{"reason": r[0], "mod_id": r[1], "timestamp": r[2]} for r in rows]
 
+    async def record_island_visit(self, ign: str, origin_island: str, destination: str, found_members: list[discord.Member], guild_id: int | None, timestamp: int):
+        """Record an island visit (authorized or unauthorized) in the database."""
+        db = await self._get_db()
+        if found_members:
+            for member in found_members:
+                await db.execute(
+                    "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp) VALUES (?, ?, ?, ?, ?, 1, ?)",
+                    (ign, origin_island, destination, member.id, guild_id, timestamp)
+                )
+        else:
+            await db.execute(
+                "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp) VALUES (?, ?, ?, NULL, ?, 0, ?)",
+                (ign, origin_island, destination, guild_id, timestamp)
+            )
+        await db.commit()
+
     async def cleanup_expired_warnings(self):
         """Delete warnings older than WARN_EXPIRY_DAYS from the database."""
         db = await self._get_db()
@@ -887,13 +915,18 @@ class FlightLoggerCog(commands.Cog):
         if not output_channel: return
 
         embed_timestamp = timestamp or discord.utils.utcnow()
+        visit_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        guild_id = guild.id if guild else None
 
         if found_members:
             mentions = " ".join([m.mention for m in found_members])
             logger.info(f"[FLIGHT] Match: {ign} | {mentions}")
+            await self.record_island_visit(ign, island, destination, found_members, guild_id, visit_ts)
         else:
             destination_link = self.get_island_channel_link(destination)
             alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
+            await self.record_island_visit(ign, island, destination, [], guild_id, alert_ts)
 
             # Check if there is already a pending alert for this IGN to avoid flooding the channel
             ign_clean = clean_text(ign)
