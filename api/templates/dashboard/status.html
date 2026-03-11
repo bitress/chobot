@@ -1,0 +1,316 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Island Status — ChoBot Dashboard{% endblock %}
+{% block header %}Island Status{% endblock %}
+
+{% block head %}
+  <script src="{{ url_for('dashboard.static', filename='js/chart.umd.js') }}"></script>
+{% endblock %}
+
+{% block content %}
+
+<!-- Stat tiles -->
+<div class="row row-cols-2 row-cols-md-3 row-cols-lg-5 g-4 mb-4">
+  <div class="col">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-geo-alt-fill me-1"></i>Total Islands</div>
+      <div class="stat-value" style="color:#444;">{{ island_count }}</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="stat-card">
+      <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>Online</div>
+      <div class="stat-value text-nook-green">{{ status_map.get('ONLINE', 0) }}</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="stat-card">
+      <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>Sub Only</div>
+      <div class="stat-value" style="color:#f5a623;">{{ status_map.get('SUB ONLY', 0) }}</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="stat-card">
+      <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>Refreshing</div>
+      <div class="stat-value" style="color:#4f9ef8;">{{ status_map.get('REFRESHING', 0) }}</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="stat-card">
+      <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>Offline</div>
+      <div class="stat-value" style="color:#aaa;">{{ status_map.get('OFFLINE', 0) }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Chart + progress -->
+<div class="row g-4 mb-4">
+
+  <!-- Doughnut chart -->
+  <div class="col-12 col-lg-5">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-pie-chart-fill me-2 text-nook-green"></i>Status Distribution</span>
+        <span class="x-small fw-bold" style="color:#aaa;">{{ island_count }} islands</span>
+      </div>
+      <div class="p-4 d-flex align-items-center gap-4 flex-wrap">
+        <div class="chart-wrap flex-shrink-0" style="width:150px;height:150px;">
+          <canvas id="statusChart"></canvas>
+        </div>
+        <div class="flex-grow-1" style="min-width:140px;">
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="status-dot" style="background:#28a745;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Online</span>
+            <span class="ms-auto fw-black ac-font" style="color:var(--nook-green);font-size:1.2rem;">
+              {{ status_map.get('ONLINE', 0) }}
+            </span>
+          </div>
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="status-dot" style="background:#f5a623;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Sub Only</span>
+            <span class="ms-auto fw-black ac-font" style="color:#f5a623;font-size:1.2rem;">
+              {{ status_map.get('SUB ONLY', 0) }}
+            </span>
+          </div>
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="status-dot" style="background:#4f9ef8;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Refreshing</span>
+            <span class="ms-auto fw-black ac-font" style="color:#4f9ef8;font-size:1.2rem;">
+              {{ status_map.get('REFRESHING', 0) }}
+            </span>
+          </div>
+          <div class="d-flex align-items-center gap-2 mb-3">
+            <span class="status-dot" style="background:#ccc;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Offline</span>
+            <span class="ms-auto fw-black ac-font" style="color:#aaa;font-size:1.2rem;">
+              {{ status_map.get('OFFLINE', 0) }}
+            </span>
+          </div>
+          <div class="divider-dashed mt-0 mb-2"></div>
+          <div class="d-flex align-items-center justify-content-between">
+            <span class="x-small fw-bold" style="color:#ccc;">Online rate</span>
+            <span class="fw-black ac-font" style="color:var(--nook-green);font-size:1.1rem;">{{ online_pct }}%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Online progress + refreshing breakdown -->
+  <div class="col-12 col-lg-7">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-reception-4 me-2 text-nook-green"></i>Capacity Overview</span>
+      </div>
+      <div class="p-4">
+
+        <!-- Online -->
+        <div class="mb-4">
+          <div class="mb-1 d-flex justify-content-between align-items-center">
+            <span class="x-small fw-bold" style="color:#888;">
+              <span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>
+              <strong style="color:var(--nook-green);">{{ status_map.get('ONLINE', 0) }}</strong>
+              of {{ island_count }} islands <strong style="color:var(--nook-green);">ONLINE</strong>
+            </span>
+            <span class="x-small fw-bold" style="color:#ccc;">{{ online_pct }}%</span>
+          </div>
+          <div class="progress rounded-pill" style="height:10px;background:#e9f2e9;">
+            <div class="progress-bar rounded-pill"
+                 role="progressbar"
+                 style="width:{{ online_pct }}%;background:var(--nook-green);"
+                 aria-valuenow="{{ status_map.get('ONLINE', 0) }}"
+                 aria-valuemin="0"
+                 aria-valuemax="{{ island_count }}"></div>
+          </div>
+        </div>
+
+        <!-- Sub Only -->
+        <div class="mb-4">
+          <div class="mb-1 d-flex justify-content-between align-items-center">
+            <span class="x-small fw-bold" style="color:#888;">
+              <span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>
+              <strong style="color:#f5a623;">{{ status_map.get('SUB ONLY', 0) }}</strong>
+              of {{ island_count }} islands <strong style="color:#f5a623;">SUB ONLY</strong>
+            </span>
+            <span class="x-small fw-bold" style="color:#ccc;">{{ sub_pct }}%</span>
+          </div>
+          <div class="progress rounded-pill" style="height:10px;background:#fff8e1;">
+            <div class="progress-bar rounded-pill"
+                 role="progressbar"
+                 style="width:{{ sub_pct }}%;background:#f5a623;"
+                 aria-valuenow="{{ status_map.get('SUB ONLY', 0) }}"
+                 aria-valuemin="0"
+                 aria-valuemax="{{ island_count }}"></div>
+          </div>
+        </div>
+
+        <!-- Refreshing -->
+        <div class="mb-4">
+          <div class="mb-1 d-flex justify-content-between align-items-center">
+            <span class="x-small fw-bold" style="color:#888;">
+              <span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>
+              <strong style="color:#4f9ef8;">{{ status_map.get('REFRESHING', 0) }}</strong>
+              of {{ island_count }} islands <strong style="color:#4f9ef8;">REFRESHING</strong>
+            </span>
+            <span class="x-small fw-bold" style="color:#ccc;">{{ ref_pct }}%</span>
+          </div>
+          <div class="progress rounded-pill" style="height:10px;background:#e3f2fd;">
+            <div class="progress-bar rounded-pill"
+                 role="progressbar"
+                 style="width:{{ ref_pct }}%;background:#4f9ef8;"
+                 aria-valuenow="{{ status_map.get('REFRESHING', 0) }}"
+                 aria-valuemin="0"
+                 aria-valuemax="{{ island_count }}"></div>
+          </div>
+        </div>
+
+        <!-- Offline -->
+        <div>
+          <div class="mb-1 d-flex justify-content-between align-items-center">
+            <span class="x-small fw-bold" style="color:#888;">
+              <span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>
+              <strong style="color:#aaa;">{{ status_map.get('OFFLINE', 0) }}</strong>
+              of {{ island_count }} islands <strong style="color:#aaa;">OFFLINE</strong>
+            </span>
+            <span class="x-small fw-bold" style="color:#ccc;">{{ off_pct }}%</span>
+          </div>
+          <div class="progress rounded-pill" style="height:10px;background:#f5f5f5;">
+            <div class="progress-bar rounded-pill"
+                 role="progressbar"
+                 style="width:{{ off_pct }}%;background:#ccc;"
+                 aria-valuenow="{{ status_map.get('OFFLINE', 0) }}"
+                 aria-valuemin="0"
+                 aria-valuemax="{{ island_count }}"></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Per-status island tables -->
+{% for status_label, color, bg, border in [
+    ('ONLINE',     '#28a745', '#e8f5e9', '#b8dfc0'),
+    ('SUB ONLY',   '#f5a623', '#fff8e1', '#ffe082'),
+    ('REFRESHING', '#4f9ef8', '#e3f2fd', '#90caf9'),
+    ('OFFLINE',    '#aaa',    '#f5f5f5', '#e0e0e0'),
+] %}
+{% set bucket = grouped.get(status_label, []) %}
+{% if bucket %}
+<div class="section-card mb-4">
+  <div class="section-card-header">
+    <span>
+      <span class="status-dot d-inline-block me-2" style="background:{{ color }};"></span>
+      <span style="color:{{ color }};">{{ status_label }}</span>
+      <span class="ms-2 badge rounded-pill fw-bold"
+            style="background:{{ bg }};border:1px solid {{ border }};color:{{ color }};font-size:.65rem;">
+        {{ bucket | length }}
+      </span>
+    </span>
+  </div>
+  <div class="table-responsive">
+    <table class="db-table">
+      <thead>
+        <tr>
+          <th style="width:56px;">Map</th>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Category</th>
+          <th class="text-center">Visitors</th>
+          {% if current_role == 'admin' %}<th></th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for isl in bucket %}
+        <tr>
+          <td>
+            {% if isl.map_url %}
+              <img src="{{ isl.map_url }}" alt="{{ isl.name }}"
+                   style="width:48px;height:36px;object-fit:cover;border-radius:6px;border:2px solid #e1e6d3;">
+            {% else %}
+              <div class="d-flex align-items-center justify-content-center"
+                   style="width:48px;height:36px;border-radius:6px;border:2px dashed #e1e6d3;
+                          background:#f6f8f3;font-size:1.2rem;color:#ccc;">🏝️</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if current_role == 'admin' %}
+            <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}"
+               class="fw-bold text-decoration-none ac-font"
+               style="color:var(--nook-green);">{{ isl.name }}</a>
+            {% else %}
+            <span class="fw-bold ac-font" style="color:#444;">{{ isl.name }}</span>
+            {% endif %}
+          </td>
+          <td style="color:#888;font-size:.85rem;font-weight:600;">{{ isl.type or "—" }}</td>
+          <td>
+            <span class="badge rounded-pill fw-bold"
+                  style="{% if isl.cat == 'member' %}background:#fff3cd;color:#856404;{% else %}background:#e8f5e9;color:#1a6b2a;{% endif %}font-size:.65rem;">
+              {{ isl.cat }}
+            </span>
+          </td>
+          <td class="text-center" style="color:#888;font-weight:700;font-size:.85rem;">
+            {{ isl.visitors if isl.visitors else "—" }}
+          </td>
+          {% if current_role == 'admin' %}
+          <td class="text-end">
+            <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}"
+               class="btn btn-sm fw-bold"
+               style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#666;
+                      border-radius:50px;font-size:.75rem;padding:3px 12px;">
+              <i class="bi bi-pencil-fill me-1"></i>Edit
+            </a>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endfor %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var online   = {{ status_map.get('ONLINE', 0) | tojson }};
+  var subOnly  = {{ status_map.get('SUB ONLY', 0) | tojson }};
+  var refresh  = {{ status_map.get('REFRESHING', 0) | tojson }};
+  var offline  = {{ status_map.get('OFFLINE', 0) | tojson }};
+
+  var ctx = document.getElementById('statusChart');
+  if (!ctx) return;
+
+  new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Online', 'Sub Only', 'Refreshing', 'Offline'],
+      datasets: [{
+        data: [online, subOnly, refresh, offline],
+        backgroundColor: ['#28a745', '#f5a623', '#4f9ef8', '#d9d9d9'],
+        borderWidth: 0,
+        hoverOffset: 6,
+      }]
+    },
+    options: {
+      cutout: '72%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function(tooltipCtx) {
+              return ' ' + tooltipCtx.label + ': ' + tooltipCtx.parsed;
+            }
+          }
+        }
+      }
+    }
+  });
+})();
+</script>
+{% endblock %}

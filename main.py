@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils import Config, DataManager
 from bots import TwitchBot, DiscordCommandBot
-from bots.flight_logger import FlightLoggerCog
+from bots.flight_logger import FlightLoggerCog, FreeFlightCog
 from api import run_flask_app, set_data_manager
 
 # ============================================================================
@@ -215,7 +215,8 @@ async def run_discord(
 
         if flight_logger_only:
             await discord_bot.add_cog(FlightLoggerCog(discord_bot))
-            logger.info("[DISCORD] Loaded cog: FlightLoggerCog (only)")
+            await discord_bot.add_cog(FreeFlightCog(discord_bot))
+            logger.info("[DISCORD] Loaded cog: FlightLoggerCog + FreeFlightCog (only)")
         elif find_only:
             # Load only find/search-related cogs here
             # await discord_bot.add_cog(FindCog(discord_bot))
@@ -223,6 +224,7 @@ async def run_discord(
         else:
             # Full bot — load all cogs
             await discord_bot.add_cog(FlightLoggerCog(discord_bot))
+            await discord_bot.add_cog(FreeFlightCog(discord_bot))
             # await discord_bot.add_cog(FindCog(discord_bot))
             # await discord_bot.add_cog(SomeOtherCog(discord_bot))
             logger.info("[DISCORD] Loaded all cogs ✓")

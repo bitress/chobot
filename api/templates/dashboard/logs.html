@@ -1,0 +1,220 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}XLog Reports — ChoBot Dashboard{% endblock %}
+{% block header %}XLog Reports{% endblock %}
+
+{% block content %}
+
+<!-- Tab switcher -->
+<div class="d-flex gap-2 mb-4">
+  <a href="{{ url_for('dashboard.logs', type='flights', island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
+     class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'flights' %}btn-nook-primary{% else %}btn-sub{% endif %}"
+     style="font-size:.85rem;">
+    ✈️ Flight Logs
+  </a>
+  <a href="{{ url_for('dashboard.logs', type='warnings') }}"
+     class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'warnings' %}btn-nook-primary{% else %}btn-sub{% endif %}"
+     style="font-size:.85rem;">
+    ⚠️ Warning Logs
+  </a>
+</div>
+
+<!-- Filters (flights only) -->
+{% if log_type == 'flights' %}
+<form method="GET" action="{{ url_for('dashboard.logs') }}"
+      class="d-flex flex-wrap align-items-center gap-2 mb-4">
+  <input type="hidden" name="type" value="flights">
+
+  <!-- IGN search -->
+  <div class="input-group" style="width:190px;">
+    <span class="input-group-text border-0"
+          style="background:var(--nook-cream);border:2px solid #e1e6d3;border-right:none;border-radius:12px 0 0 12px;color:#aaa;">
+      <i class="bi bi-search"></i>
+    </span>
+    <input type="text" name="ign" value="{{ ign_filter }}"
+           placeholder="Search IGN…"
+           class="db-input"
+           style="border-left:none;border-radius:0 12px 12px 0;">
+  </div>
+
+  <!-- Island dropdown -->
+  <select name="island" class="db-input" style="width:180px;">
+    <option value="">All islands</option>
+    {% for iname in island_names %}
+    <option value="{{ iname }}" {% if island_filter == iname %}selected{% endif %}>{{ iname }}</option>
+    {% endfor %}
+  </select>
+
+  <!-- Category / tier filter -->
+  <select name="category" class="db-input" style="width:165px;">
+    <option value="">All tiers</option>
+    <option value="public" {% if category_filter == 'public' %}selected{% endif %}>🌍 Public</option>
+    <option value="member" {% if category_filter == 'member' %}selected{% endif %}>⭐ Member / VIP</option>
+  </select>
+
+  <!-- Authorization filter -->
+  <select name="authorized" class="db-input" style="width:165px;">
+    <option value="">All travelers</option>
+    <option value="1" {% if authorized_filter == '1' %}selected{% endif %}>✔ Authorized only</option>
+    <option value="0" {% if authorized_filter == '0' %}selected{% endif %}>? Unknown only</option>
+  </select>
+
+  <!-- Sort controls -->
+  <select name="sort_by" class="db-input" style="width:145px;">
+    <option value="timestamp" {% if sort_by == 'timestamp' %}selected{% endif %}>Sort: Time</option>
+    <option value="ign"       {% if sort_by == 'ign'       %}selected{% endif %}>Sort: IGN</option>
+    <option value="destination" {% if sort_by == 'destination' %}selected{% endif %}>Sort: Island</option>
+  </select>
+  <select name="sort_order" class="db-input" style="width:110px;">
+    <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>↓ Desc</option>
+    <option value="asc"  {% if sort_order == 'asc'  %}selected{% endif %}>↑ Asc</option>
+  </select>
+
+  <button type="submit"
+          class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
+          style="font-size:.85rem;">
+    <i class="bi bi-funnel-fill me-1"></i>Filter
+  </button>
+  {% if island_filter or authorized_filter or category_filter or ign_filter %}
+  <a href="{{ url_for('dashboard.logs', type='flights') }}"
+     class="btn rounded-3 fw-bold px-4 py-2"
+     style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
+    <i class="bi bi-x-circle me-1"></i>Clear
+  </a>
+  {% endif %}
+</form>
+{% elif log_type == 'warnings' %}
+<form method="GET" action="{{ url_for('dashboard.logs') }}"
+      class="d-flex flex-wrap align-items-center gap-2 mb-4">
+  <input type="hidden" name="type" value="warnings">
+  <!-- IGN search for warnings too -->
+  <div class="input-group" style="width:220px;">
+    <span class="input-group-text border-0"
+          style="background:var(--nook-cream);border:2px solid #e1e6d3;border-right:none;border-radius:12px 0 0 12px;color:#aaa;">
+      <i class="bi bi-search"></i>
+    </span>
+    <input type="text" name="ign" value="{{ ign_filter }}"
+           placeholder="Search IGN…"
+           class="db-input"
+           style="border-left:none;border-radius:0 12px 12px 0;">
+  </div>
+  <button type="submit"
+          class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
+          style="font-size:.85rem;">
+    <i class="bi bi-funnel-fill me-1"></i>Filter
+  </button>
+  {% if ign_filter %}
+  <a href="{{ url_for('dashboard.logs', type='warnings') }}"
+     class="btn rounded-3 fw-bold px-4 py-2"
+     style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
+    <i class="bi bi-x-circle me-1"></i>Clear
+  </a>
+  {% endif %}
+</form>
+{% endif %}
+
+<!-- Results info -->
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <span class="x-small fw-bold" style="color:#aaa;">
+    Showing {{ entries|length }} of {{ total }} entries
+    {% if log_type == 'flights' and island_filter %}&nbsp;· island: <strong>{{ island_filter }}</strong>{% endif %}
+    {% if log_type == 'flights' and category_filter %}&nbsp;· tier: <strong>{{ category_filter }}</strong>{% endif %}
+    {% if ign_filter %}&nbsp;· ign: <strong>{{ ign_filter }}</strong>{% endif %}
+  </span>
+  <span class="x-small fw-bold" style="color:#ccc;">Page {{ page }} / {{ total_pages }}</span>
+</div>
+
+<!-- Table -->
+<div class="section-card mb-4">
+  {% if entries %}
+  <div class="table-responsive">
+    <table class="db-table">
+      <thead>
+        <tr>
+          {% if log_type == 'warnings' %}
+            <th>User</th>
+            <th>IGN</th>
+            <th>Island</th>
+            <th>Reason</th>
+            <th>Mod</th>
+            <th>Time</th>
+          {% else %}
+            <th>#</th>
+            <th>IGN</th>
+            <th>Origin</th>
+            <th>Destination</th>
+            <th>Status</th>
+            <th>Time</th>
+          {% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr>
+          {% if log_type == 'warnings' %}
+            <td class="fw-bold" style="color:#444;">{{ entry.user_name }}</td>
+            <td class="fw-bold" style="color:#444;">{{ entry.ign or "—" }}</td>
+            <td>{{ entry.destination or "—" }}</td>
+            <td class="x-small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                title="{{ entry.reason }}">{{ entry.reason or "—" }}</td>
+            <td style="color:#888;">{{ entry.mod_name }}</td>
+            <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
+          {% else %}
+            <td class="x-small" style="color:#bbb;">{{ entry.id }}</td>
+            <td class="fw-bold" style="color:#444;">{{ entry.ign }}</td>
+            <td style="color:#888;">{{ entry.origin_island or "—" }}</td>
+            <td>{{ entry.destination }}</td>
+            <td>
+              {% if entry.authorized %}
+                <span class="badge badge-auth rounded-pill">✔ Auth</span>
+              {% else %}
+                <span class="badge badge-unkn rounded-pill">? Unknown</span>
+              {% endif %}
+            </td>
+            <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+    <i class="bi bi-journal-x fs-3 d-block mb-2" style="opacity:.3;"></i>
+    No log entries found.
+  </div>
+  {% endif %}
+</div>
+
+<!-- Pagination -->
+{% if total_pages > 1 %}
+<nav>
+  <ul class="pagination justify-content-center gap-1" style="flex-wrap:wrap;">
+    {% if page > 1 %}
+    <li class="page-item">
+      <a class="page-link rounded-3 fw-bold"
+         href="{{ url_for('dashboard.logs', page=page-1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
+         style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">← Prev</a>
+    </li>
+    {% endif %}
+    {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
+    <li class="page-item {% if p == page %}active{% endif %}">
+      <a class="page-link rounded-3 fw-bold"
+         href="{{ url_for('dashboard.logs', page=p, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
+         style="{% if p == page %}background:var(--nook-green);border-color:var(--nook-green);{% else %}border:2px solid #e1e6d3;color:#888;{% endif %}font-size:.85rem;">
+        {{ p }}
+      </a>
+    </li>
+    {% endfor %}
+    {% if page < total_pages %}
+    <li class="page-item">
+      <a class="page-link rounded-3 fw-bold"
+         href="{{ url_for('dashboard.logs', page=page+1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
+         style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">Next →</a>
+    </li>
+    {% endif %}
+  </ul>
+</nav>
+{% endif %}
+
+{% endblock %}

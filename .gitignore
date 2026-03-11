@@ -4,5 +4,7 @@ service_account.json
 bot.log
 __pycache__/
 *.pyc
-warnings.db
+chobot.db
 .idea
+cache_dump.json
+chobot.db

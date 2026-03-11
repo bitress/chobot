@@ -10,6 +10,7 @@ import os
 import re
 import time
 import logging
+import sqlite3
 import threading
 from datetime import datetime, timedelta
 
@@ -18,15 +19,27 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from thefuzz import process, fuzz
 
+from werkzeug.middleware.proxy_fix import ProxyFix
+
 from utils.config import Config
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text
+from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value
 
 
 logger = logging.getLogger("FlaskAPI")
 
 # Initialize Flask app
 app = Flask(__name__)
+app.secret_key = Config.FLASK_SECRET_KEY
+# Trust one level of X-Forwarded-For / X-Forwarded-Proto headers from the
+# reverse proxy (nginx, Cloudflare Tunnel, etc.) so that url_for(_external=True)
+# produces the correct https:// URL instead of http://.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Register the mod-only web dashboard
+app.register_blueprint(dashboard, url_prefix="/dashboard")
+init_dashboard_db()
 
 # Suppress Flask/Werkzeug standard logs
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -95,11 +108,6 @@ _file_cache: dict = {}
 _file_cache_lock = threading.Lock()
 _FILE_CACHE_TTL = 3  # seconds
 
-# Island bot staleness thresholds (in seconds)
-# If Dodo.txt hasn't been modified within this time, bot is considered offline
-FREE_ISLAND_STALENESS_THRESHOLD = 180  # 3 minutes - strict check for free islands
-VIP_ISLAND_STALENESS_THRESHOLD = 600   # 10 minutes - more lenient for VIP islands
-
 
 def get_file_content(folder_path, filename):
     """Read file content safely with caching and retry to reduce file-lock contention.
@@ -123,7 +131,7 @@ def get_file_content(folder_path, filename):
 
     for attempt in range(3):
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8-sig') as f:
                 content = f.read().strip()
             with _file_cache_lock:
                 _file_cache[path] = (content, time.monotonic())
@@ -143,35 +151,15 @@ def get_file_content(folder_path, filename):
 
 
 def process_island(entry, island_type):
-    """Process island data for Dodo API
-    
-    For Free islands: Check if bot is online by verifying Dodo.txt was recently updated.
-    For VIP islands: Similar check but always hide actual dodo codes.
-    """
+    """Process island data for Dodo API"""
     name = entry.name.upper()
 
     raw_dodo = get_file_content(entry.path, "Dodo.txt")
-    raw_visitors = get_file_content(entry.path, "Visitors.txt")
+    raw_visitors = _parse_visitor_value(get_file_content(entry.path, "Visitors.txt"))
 
     status = "ONLINE"
-    display_dodo = None
+    display_dodo = raw_dodo
     display_visitors = "0/7"
-    message = ""
-
-    # Check if Dodo.txt file is stale to determine if bot is online
-    # Free islands: Use strict 3-minute threshold
-    # VIP islands: Use 10-minute threshold (more lenient)
-    dodo_file_path = os.path.join(entry.path, "Dodo.txt")
-    is_bot_offline = False
-    if os.path.exists(dodo_file_path):
-        file_mtime = os.path.getmtime(dodo_file_path)
-        age_seconds = time.time() - file_mtime
-        staleness_threshold = FREE_ISLAND_STALENESS_THRESHOLD if island_type == "Free" else VIP_ISLAND_STALENESS_THRESHOLD
-        if age_seconds > staleness_threshold:
-            is_bot_offline = True
-    else:
-        # File doesn't exist = bot is offline
-        is_bot_offline = True
 
     # Visitor Logic
     if raw_visitors:
@@ -182,50 +170,72 @@ def process_island(entry, island_type):
         else:
             display_visitors = raw_visitors
 
-    # Dodo/Status Logic for VIP islands
+    # Dodo/Status Logic
     if island_type == "VIP":
-        display_dodo = "SUB ONLY"  # Always hide the actual dodo code for VIP islands
-        if raw_dodo is None or is_bot_offline:
-            status = "OFFLINE"
-            display_visitors = "0/7"
-            message = "This island is currently down."
-        elif raw_dodo in ["00000", "-----", ""]:
-            status = "REFRESHING"
-            display_visitors = "0/7"
-            message = "This island is currently refreshing."
-        # else: status stays "ONLINE", visitors already resolved above
-    
-    # Dodo/Status Logic for Free islands - check if bot is online/offline
+        status = "SUB ONLY"
+        display_dodo = "SUB ONLY"
     else:
-        # For free islands, bot online/offline status is primary check
-        if is_bot_offline:
+        if raw_dodo is None:
             status = "OFFLINE"
             display_dodo = "....."
             display_visitors = "0/7"
-            message = "This island is currently down."
         elif raw_dodo in ["00000", "-----", ""]:
             status = "REFRESHING"
             display_dodo = "WAIT..."
             display_visitors = "0/7"
-            message = "This island is currently refreshing."
-        elif raw_dodo:
-            # Bot is online and has a valid dodo code
-            status = "ONLINE"
-            display_dodo = raw_dodo
         else:
-            # Bot is online but no dodo code (shouldn't happen, but handle it)
-            status = "OFFLINE"
-            display_dodo = "....."
-            display_visitors = "0/7"
-            message = "This island is currently down."
+            display_dodo = raw_dodo
 
     return {
         "name": name,
         "dodo": display_dodo,
         "status": status,
         "type": island_type,
-        "visitors": display_visitors,
-        "message": message
+        "visitors": display_visitors
+    }
+
+
+def _build_island_response(entry, island_type, db_island, discord_bot_online=None):
+    """Build the enriched island response merging live filesystem data with DB metadata."""
+    name = entry.name.upper()
+
+    raw_dodo = get_file_content(entry.path, "Dodo.txt")
+    raw_visitors = _parse_visitor_value(get_file_content(entry.path, "Visitors.txt"))
+
+    # Parse visitors as integer
+    visitors = 0
+    if raw_visitors and raw_visitors.isdigit():
+        visitors = int(raw_visitors)
+
+    # Determine live status and dodo_code from filesystem
+    if island_type == "VIP":
+        status = "SUB ONLY"
+        dodo_code = None  # Do not expose dodo code for subscriber-only islands
+    elif raw_dodo is None:
+        status = "OFFLINE"
+        dodo_code = None
+    elif raw_dodo in ["00000", "-----", ""]:
+        status = "REFRESHING"
+        dodo_code = None
+    else:
+        status = "ONLINE"
+        dodo_code = raw_dodo
+
+    return {
+        "id":                db_island.get("id", name.lower()),
+        "name":              name,
+        "cat":               db_island.get("cat", "public"),
+        "description":       db_island.get("description", ""),
+        "dodo_code":         dodo_code,
+        "visitors":          visitors,
+        "items":             db_island.get("items", []),
+        "map_url":           db_island.get("map_url"),
+        "seasonal":          db_island.get("seasonal", ""),
+        "status":            status,
+        "theme":             db_island.get("theme", "teal"),
+        "type":              db_island.get("type", ""),
+        "updated_at":        db_island.get("updated_at"),
+        "discord_bot_online": discord_bot_online,
     }
 
 # ============================================================================
@@ -254,7 +264,17 @@ def home():
             "status": "/status",
             "refresh": "/api/refresh (POST)",
             "health": "/health"
-        }
+        },
+        "data_freshness": {
+            "islands": (
+                f"Near-real-time — dodo codes and visitor counts are read directly from "
+                f"island bot files, cached for up to {_FILE_CACHE_TTL} seconds."
+            ),
+            "items_villagers": (
+                "Refreshed from Google Sheets on a scheduled interval. "
+                "See /health for refresh_interval_seconds and next_update."
+            ),
+        },
     })
 
 @app.route('/health')
@@ -264,18 +284,29 @@ def health():
     with data_manager.lock:
         cache_count = len(data_manager.cache)
         last_update = data_manager.last_update
-    
+
     is_healthy = cache_count > 0 and last_update is not None
-    
+
+    refresh_interval_seconds = int(data_manager.cache_refresh_hours * 3600)
+    if last_update is not None:
+        next_update = (last_update + timedelta(seconds=refresh_interval_seconds)).isoformat()
+    else:
+        next_update = None
+
     response = {
         "status": "healthy" if is_healthy else "degraded",
         "timestamp": datetime.now().isoformat(),
         "cache": {
             "items": cache_count,
-            "last_update": last_update.isoformat() if last_update else None
-        }
+            "last_update": last_update.isoformat() if last_update else None,
+            "refresh_interval_seconds": refresh_interval_seconds,
+            "next_update": next_update,
+        },
+        "islands": {
+            "file_cache_ttl_seconds": _FILE_CACHE_TTL,
+        },
     }
-    
+
     status_code = 200 if is_healthy else 503
     return jsonify(response), status_code
 
@@ -450,59 +481,64 @@ def api_list_villagers_by_island():
 
 @app.route('/api/islands', methods=['GET'])
 def get_islands():
-    """Get all island statuses and Dodo codes"""
+    """Get all island statuses and Dodo codes with full metadata."""
+    # Load island metadata from DB, keyed by uppercase name
+    db_map = {}
+    discord_status = {}
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, name, cat, description, items, map_url, seasonal, theme, type, updated_at "
+            "FROM islands ORDER BY name"
+        ).fetchall()
+        for row in rows:
+            isl = row_to_island_dict(dict(row))
+            if isl.get("name"):
+                db_map[isl["name"].upper()] = isl
+        # Load Discord bot presence data
+        bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
+        for r in bot_rows:
+            discord_status[r["island_id"]] = bool(r["is_online"])
+    except sqlite3.Error:
+        logger.exception("Failed to load island metadata from DB for /api/islands")
+    finally:
+        db.close()
+
     results = []
 
-    # Build a map of directory entries from the free-islands folder (keyed by uppercased name)
-    free_dir_entries = {}
-    if Config.DIR_FREE and os.path.exists(Config.DIR_FREE):
+    if os.path.exists(Config.DIR_FREE):
         with os.scandir(Config.DIR_FREE) as entries:
             for entry in entries:
                 if entry.is_dir():
-                    free_dir_entries[entry.name.upper()] = entry
+                    name = entry.name.upper()
+                    results.append(_build_island_response(
+                        entry, "Free", db_map.get(name, {}),
+                        discord_status.get(name.lower()),
+                    ))
 
-    # Use Config.FREE_ISLANDS as the authoritative list so every free island
-    # is always present in the response, even when its directory is missing.
-    for island_name in Config.FREE_ISLANDS:
-        entry = free_dir_entries.get(island_name.upper())
-        if entry:
-            results.append(process_island(entry, "Free"))
-        else:
-            results.append({
-                "name": island_name.upper(),
-                "dodo": ".....",
-                "status": "OFFLINE",
-                "type": "Free",
-                "visitors": "0/7",
-                "message": "This island is currently down."
-            })
-
-    # Build a map of directory entries from the VIP/sub-islands folder (keyed by uppercased name)
-    vip_dir_entries = {}
-    if Config.DIR_VIP and os.path.exists(Config.DIR_VIP):
+    if os.path.exists(Config.DIR_VIP):
         with os.scandir(Config.DIR_VIP) as entries:
             for entry in entries:
                 if entry.is_dir():
-                    vip_dir_entries[entry.name.upper()] = entry
-
-    # Use Config.SUB_ISLANDS as the authoritative list so every sub island
-    # is always present in the response, even when its directory is missing.
-    for island_name in Config.SUB_ISLANDS:
-        entry = vip_dir_entries.get(island_name.upper())
-        if entry:
-            results.append(process_island(entry, "VIP"))
-        else:
-            results.append({
-                "name": island_name.upper(),
-                "dodo": "SUB ONLY",
-                "status": "OFFLINE",
-                "type": "VIP",
-                "visitors": "0/7",
-                "message": "This island is currently down."
-            })
+                    name = entry.name.upper()
+                    results.append(_build_island_response(
+                        entry, "VIP", db_map.get(name, {}),
+                        discord_status.get(name.lower()),
+                    ))
 
     results.sort(key=lambda x: x['name'])
-    return jsonify(results)
+    return jsonify({
+        "meta": {
+            "timestamp": datetime.now().isoformat(),
+            "cache_ttl_seconds": _FILE_CACHE_TTL,
+            "note": (
+                f"Dodo codes and visitor counts are read directly from files written by "
+                f"the C# island bot. Each file read is cached for up to "
+                f"{_FILE_CACHE_TTL} seconds, so data is near-real-time."
+            ),
+        },
+        "data": results,
+    })
 
 
 # --- PATREON ROUTES ---

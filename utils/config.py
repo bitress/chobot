@@ -37,6 +37,7 @@ class Config:
     # Discord IDs (Safe Integer Casting)
     GUILD_ID = _get_int('GUILD_ID')
     CATEGORY_ID = _get_int('SUB_CATEGORY_ID')
+    FREE_CATEGORY_ID = _get_int('FREE_CATEGORY_ID')
     LOG_CHANNEL_ID = _get_int('CHANNEL_ID')
     ISLAND_ACCESS_ROLE = _get_int('ISLAND_ACCESS_ROLE', 788749941949464577)
     FIND_BOT_CHANNEL_ID = _get_int('FIND_BOT_CHANNEL_ID')
@@ -44,12 +45,14 @@ class Config:
     # Environment Specific Channels
     if IS_PRODUCTION:
         FLIGHT_LISTEN_CHANNEL_ID = _get_int('FLIGHT_LISTEN_CHANNEL_ID')
+        FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID = _get_int('FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID')
         FLIGHT_LOG_CHANNEL_ID = _get_int('FLIGHT_LOG_CHANNEL_ID')
         IGNORE_CHANNEL_ID = _get_int('IGNORE_CHANNEL_ID')
         SUB_MOD_CHANNEL_ID = _get_int('SUB_MOD_CHANNEL_ID')
     else:
         # Development / Fallback IDs
         FLIGHT_LISTEN_CHANNEL_ID = 1473286697461616732
+        FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID = None
         FLIGHT_LOG_CHANNEL_ID = 1473286727224524915
         IGNORE_CHANNEL_ID = 809295405128089611
         SUB_MOD_CHANNEL_ID = 1473286794995830845
@@ -60,6 +63,42 @@ class Config:
 
     # Nookipedia
     NOOKIPEDIA_KEY = os.getenv("NOOKIPEDIA_KEY")
+
+    # Gemini AI (free tier — optional)
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+    # Web Dashboard (mod-only)
+    DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
+
+    # Flask session signing key.
+    # If unset, a cryptographically random key is generated each process startup
+    # (browser sessions will be lost on restart).
+    # Set FLASK_SECRET_KEY explicitly in .env for persistent sessions.
+    FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY") or __import__("secrets").token_hex(32)
+
+    # Discord OAuth2 — for dashboard login via Discord.
+    # Register an application at https://discord.com/developers/applications,
+    # set OAuth2 → Redirects to your dashboard's callback URL:
+    #   https://your-domain/dashboard/oauth2/callback
+    # Only DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET need to be set here;
+    # the redirect URI is derived automatically from the incoming request.
+    DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID", "")
+    DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
+
+    # Moderator role IDs for role-based dashboard access.
+    # Administrator / Senior Mod → full dashboard access
+    # Baby Mod → Analytics + XLog Reports only (read-only)
+    ADMIN_ROLE_ID    = _get_int("ADMIN_ROLE_ID",    755528378446250144)
+    BABY_MOD_ROLE_ID = _get_int("BABY_MOD_ROLE_ID", 1062242600343588934)
+
+    # Cloudflare R2 (S3-compatible) — for island map uploads
+    # Endpoint format: https://<account_id>.r2.cloudflarestorage.com
+    R2_ACCOUNT_ID       = os.getenv("R2_ACCOUNT_ID", "")
+    R2_ACCESS_KEY_ID    = os.getenv("R2_ACCESS_KEY_ID", "")
+    R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+    R2_BUCKET_NAME      = os.getenv("R2_BUCKET_NAME", "chobot-maps")
+    # Public base URL for uploaded files (e.g. https://pub-xxx.r2.dev or custom domain)
+    R2_PUBLIC_URL       = os.getenv("R2_PUBLIC_URL", "")
 
     # Google Sheets
     WORKBOOK_NAME = os.getenv('WORKBOOK_NAME')
@@ -74,10 +113,10 @@ class Config:
     DIR_FREE = TWITCH_VILLAGERS_DIR
     DIR_VIP = VILLAGERS_DIR
 
-    # Island Lists
+    # Island Lists (fallback defaults; dynamically updated at runtime from Discord sub-category)
     SUB_ISLANDS = [
-        "Alapaap", "Aruga", "Bahaghari", "Bituin", "Bonita", "Dakila",
-        "Dalisay", "Diwa", "Gabay", "Galak", "Hiraya", "Kalangitan",
+        "Adhika", "Alapaap", "Aruga", "Bahaghari", "Bituin", "Bonita", "Dakila",
+        "Dalisay", "Diwa", "Gabay", "Galak", "Giliw", "Hiraya", "Kalangitan",
         "Lakan", "Likha", "Malaya", "Marahuyo", "Pangarap", "Tagumpay"
     ]
 

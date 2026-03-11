@@ -1,0 +1,175 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Overview — ChoBot Dashboard{% endblock %}
+{% block header %}Overview{% endblock %}
+
+{% block content %}
+
+<!-- Stat cards -->
+<div class="row g-4 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-airplane-fill me-1"></i>Total Visits</div>
+      <div class="stat-value text-nook-green">{{ total_visits }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-calendar-day-fill me-1"></i>Visits Today</div>
+      <div class="stat-value" style="color:var(--dal-blue);">{{ visits_today }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-calendar-week-fill me-1"></i>This Week</div>
+      <div class="stat-value" style="color:#b07cdc;">{{ visits_week }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-exclamation-triangle-fill me-1"></i>Warnings</div>
+      <div class="stat-value" style="color:var(--nook-yellow);">{{ total_warnings }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Island Status Breakdown Panel -->
+<div class="section-card mb-4">
+  <div class="section-card-header">
+    <span><i class="bi bi-geo-alt-fill me-2 text-nook-green"></i>Island Status Breakdown</span>
+    <a href="{{ url_for('dashboard.island_status') }}"
+       class="text-decoration-none fw-bold x-small"
+       style="color:var(--nook-green);">View all →</a>
+  </div>
+  <div class="p-4">
+    <!-- Status count strip -->
+    <div class="row g-3 mb-4">
+      <div class="col-6 col-sm-3">
+        <div class="text-center p-3 rounded-3" style="background:#e8f5e9;border:2px solid #b8dfc0;">
+          <div class="fw-black ac-font" style="color:var(--nook-green);font-size:1.6rem;">{{ status_map.get('ONLINE', 0) }}</div>
+          <div class="x-small fw-bold" style="color:#888;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>Online</div>
+        </div>
+      </div>
+      <div class="col-6 col-sm-3">
+        <div class="text-center p-3 rounded-3" style="background:#fff8e1;border:2px solid #ffe082;">
+          <div class="fw-black ac-font" style="color:#f5a623;font-size:1.6rem;">{{ status_map.get('SUB ONLY', 0) }}</div>
+          <div class="x-small fw-bold" style="color:#888;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>Sub Only</div>
+        </div>
+      </div>
+      <div class="col-6 col-sm-3">
+        <div class="text-center p-3 rounded-3" style="background:#e3f2fd;border:2px solid #90caf9;">
+          <div class="fw-black ac-font" style="color:#4f9ef8;font-size:1.6rem;">{{ status_map.get('REFRESHING', 0) }}</div>
+          <div class="x-small fw-bold" style="color:#888;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>Refreshing</div>
+        </div>
+      </div>
+      <div class="col-6 col-sm-3">
+        <div class="text-center p-3 rounded-3" style="background:#f5f5f5;border:2px solid #e0e0e0;">
+          <div class="fw-black ac-font" style="color:#aaa;font-size:1.6rem;">{{ status_map.get('OFFLINE', 0) }}</div>
+          <div class="x-small fw-bold" style="color:#bbb;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>Offline</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Online capacity progress bar -->
+    {% set online_pct = ((online_count / island_count * 100) | int) if island_count > 0 else 0 %}
+    <div class="mb-1 d-flex justify-content-between align-items-center">
+      <span class="x-small fw-bold" style="color:#888;">
+        <i class="bi bi-reception-4 me-1 text-nook-green"></i>
+        <strong style="color:var(--nook-green);">{{ online_count }}</strong> of {{ island_count }} islands currently <strong style="color:var(--nook-green);">ONLINE</strong>
+      </span>
+      <span class="x-small fw-bold" style="color:#ccc;">{{ online_pct }}%</span>
+    </div>
+    <div class="progress rounded-pill" style="height:10px;background:#e9f2e9;">
+      <div class="progress-bar rounded-pill"
+           role="progressbar"
+           style="width:{{ online_pct }}%;background:var(--nook-green);"
+           aria-valuenow="{{ online_count }}"
+           aria-valuemin="0"
+           aria-valuemax="{{ island_count }}"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Second row: Analytics quick link -->
+<div class="row g-4 mb-4">
+  <div class="col-6 col-lg-3">
+    <a href="{{ url_for('dashboard.analytics') }}" class="stat-card text-decoration-none d-block">
+      <div class="stat-label"><i class="bi bi-bar-chart-fill me-1"></i>Analytics</div>
+      <div class="stat-value" style="color:#b07cdc;">View →</div>
+    </a>
+  </div>
+</div>
+
+<!-- Recent activity -->
+<div class="section-card mb-4">
+  <div class="section-card-header">
+    <span><i class="bi bi-clock-history me-2 text-nook-green"></i>Recent Flight Activity</span>
+    <a href="{{ url_for('dashboard.logs') }}"
+       class="text-decoration-none fw-bold x-small"
+       style="color:var(--nook-green);">View all →</a>
+  </div>
+  {% if recent %}
+    <div class="table-responsive">
+      <table class="db-table">
+        <thead>
+          <tr>
+            <th>IGN</th>
+            <th>Destination</th>
+            <th>Status</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry in recent %}
+          <tr>
+            <td class="fw-bold" style="color:#444;">{{ entry.ign }}</td>
+            <td>{{ entry.destination }}</td>
+            <td>
+              {% if entry.authorized %}
+                <span class="badge badge-auth rounded-pill">✔ Authorized</span>
+              {% else %}
+                <span class="badge badge-unkn rounded-pill">? Unknown</span>
+              {% endif %}
+            </td>
+            <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+      <i class="bi bi-airplane fs-3 d-block mb-2" style="opacity:.3;"></i>
+      No flight data recorded yet.
+    </div>
+  {% endif %}
+</div>
+
+<!-- Quick links -->
+<div class="row g-4">
+  {% if current_role == 'admin' %}
+  <div class="col-12 col-sm-4">
+    <a href="{{ url_for('dashboard.islands') }}" class="quick-card">
+      <div class="fs-2 mb-2">🏝️</div>
+      <div class="fw-black" style="color:#444;">Manage Islands</div>
+      <div class="x-small mt-1" style="color:#aaa;font-weight:700;">View, edit, and update island data</div>
+    </a>
+  </div>
+  {% endif %}
+  <div class="col-12 col-sm-4">
+    <a href="{{ url_for('dashboard.logs') }}" class="quick-card">
+      <div class="fs-2 mb-2">📋</div>
+      <div class="fw-black" style="color:#444;">XLog Reports</div>
+      <div class="x-small mt-1" style="color:#aaa;font-weight:700;">Flight logs &amp; moderation warnings</div>
+    </a>
+  </div>
+  <div class="col-12 col-sm-4">
+    <a href="{{ url_for('dashboard.analytics') }}" class="quick-card">
+      <div class="fs-2 mb-2">📊</div>
+      <div class="fw-black" style="color:#444;">Analytics</div>
+      <div class="x-small mt-1" style="color:#aaa;font-weight:700;">Most visited islands &amp; top travelers</div>
+    </a>
+  </div>
+</div>
+
+{% endblock %}

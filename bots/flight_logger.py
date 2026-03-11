@@ -30,22 +30,47 @@ COLOR_DISMISS = 0x95A5A6       # Grey (for dismissed/false positives)
 COLOR_ALERT = 0xED4245         # Discord red (for unknown traveler alerts)
 
 # --- DATABASE SETUP ---
-DB_NAME = "warnings.db"
+DB_NAME = "chobot.db"
 WARN_EXPIRY_DAYS = 3
+MAX_HISTORY_ENTRIES = 10  # Max entries shown per section in !flighthistory
 
 # --- DATABASE HELPERS ---
 async def init_db():
     """Initializes the database schema."""
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS island_visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ign TEXT NOT NULL,
+                origin_island TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                user_id INTEGER,
+                guild_id INTEGER,
+                authorized INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                island_type TEXT NOT NULL DEFAULT 'sub'
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS warnings (
                 user_id INTEGER,
                 guild_id INTEGER,
                 reason TEXT,
                 mod_id INTEGER,
-                timestamp INTEGER
+                timestamp INTEGER,
+                visit_id INTEGER REFERENCES island_visits(id)
             )
         """)
+        # Migrate existing databases: add visit_id column if it doesn't exist
+        try:
+            await db.execute("ALTER TABLE warnings ADD COLUMN visit_id INTEGER REFERENCES island_visits(id)")
+        except aiosqlite.OperationalError:
+            pass  # Column already exists
+        # Migrate existing databases: add island_type column if it doesn't exist
+        try:
+            await db.execute("ALTER TABLE island_visits ADD COLUMN island_type TEXT NOT NULL DEFAULT 'sub'")
+        except aiosqlite.OperationalError:
+            pass  # Column already exists
         await db.commit()
 
 DEFAULT_REASON_TEXT = (
@@ -394,10 +419,11 @@ class NoteModal(discord.ui.Modal, title="Add Note"):
 
         
 class TravelerActionView(discord.ui.View):
-    def __init__(self, bot=None, ign=None):
+    def __init__(self, bot=None, ign=None, visit_id=None):
         super().__init__(timeout=None)
         self.bot = bot
         self.ign = ign
+        self.visit_id = visit_id
 
     def _get_ign_from_embed(self, embed: discord.Embed):
         """Extracts IGN from the '👤 Traveler (IGN)' field in the alert embed."""
@@ -411,7 +437,7 @@ class TravelerActionView(discord.ui.View):
                     return match.group(1).strip()
         return None
 
-    async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None):
+    async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None, reason=None, mod_log_url=None):
         """Internal helper to update the alert embed state. Does NOT send interaction responses."""
         target_str      = f"{target_user.mention}" if target_user else "Visitor (unlinked)"
         message_to_edit = log_message or (interaction.message if interaction.response.is_done() else None)
@@ -442,9 +468,14 @@ class TravelerActionView(discord.ui.View):
             embed.color = color
             embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
             resolved_ts = int(discord.utils.utcnow().timestamp())
+            action_value = f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>"
+            if reason:
+                action_value += f"\n**Reason:** {reason}"
+            if mod_log_url:
+                action_value += f"\n[View in Mod Log]({mod_log_url})"
             embed.add_field(
                 name="<:ChoLove:818216528449241128> Action Taken",
-                value=f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>",
+                value=action_value,
                 inline=False
             )
             self.clear_items()
@@ -570,15 +601,18 @@ class TravelerActionView(discord.ui.View):
     async def note_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Add a note to the alert without taking action."""
         await interaction.response.send_modal(NoteModal(self))
-    
+
+# Compiled once at module level; shared by all flight-monitoring cogs.
+JOIN_PATTERN = re.compile(
+    r"\[.*?\]\s*.*?\s+(.*?)\s+from\s+(.*?)\s+is joining\s+(.*?)(?:\.|$)",
+    re.IGNORECASE
+)
+
 class FlightLoggerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.island_map = {}
-        self.join_pattern = re.compile(
-            r"\[.*?\]\s*.*?\s+(.*?)\s+from\s+(.*?)\s+is joining\s+(.*?)(?:\.|$)",
-            re.IGNORECASE
-        )
+        self.join_pattern = JOIN_PATTERN
         self._db_conn = None
         self.last_processed = None
         self._pending_alerts: dict[str, int] = {}
@@ -590,10 +624,12 @@ class FlightLoggerCog(commands.Cog):
             self._db_conn = await aiosqlite.connect(DB_NAME)
         return self._db_conn
 
-    async def add_warning(self, user_id, guild_id, reason, mod_id):
+    async def add_warning(self, user_id, guild_id, reason, mod_id, visit_id=None):
         db = await self._get_db()
-        await db.execute("INSERT INTO warnings VALUES (?, ?, ?, ?, ?)",
-                         (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp())))
+        await db.execute(
+            "INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp()), visit_id)
+        )
         await db.commit()
 
     async def get_warn_count(self, user_id: int, guild_id: int, days: int = WARN_EXPIRY_DAYS):
@@ -633,15 +669,76 @@ class FlightLoggerCog(commands.Cog):
         return count
 
     async def get_warnings(self, user_id: int, guild_id: int, days: int = 30):
-        """Get all warnings for a user within the specified number of days."""
+        """Get all warnings for a user within the specified number of days, including any linked island visit."""
         db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
         cursor = await db.execute(
-            "SELECT reason, mod_id, timestamp FROM warnings WHERE user_id = ? AND guild_id = ? AND timestamp > ? ORDER BY timestamp DESC",
+            """SELECT w.reason, w.mod_id, w.timestamp, w.visit_id,
+                      iv.ign, iv.origin_island, iv.destination, iv.timestamp
+               FROM warnings w
+               LEFT JOIN island_visits iv ON w.visit_id = iv.id
+               WHERE w.user_id = ? AND w.guild_id = ? AND w.timestamp > ?
+               ORDER BY w.timestamp DESC""",
             (user_id, guild_id, cutoff)
         )
         rows = await cursor.fetchall()
-        return [{"reason": r[0], "mod_id": r[1], "timestamp": r[2]} for r in rows]
+        return [
+            {
+                "reason": r[0], "mod_id": r[1], "timestamp": r[2], "visit_id": r[3],
+                "visit_ign": r[4], "visit_origin": r[5], "visit_destination": r[6], "visit_ts": r[7],
+            }
+            for r in rows
+        ]
+
+    async def _get_recent_visit_id_by_ign(self, ign: str, hours: int = 24) -> int | None:
+        """Find the most recent island_visits.id for the given IGN within the last N hours."""
+        db = await self._get_db()
+        cutoff = int((discord.utils.utcnow() - datetime.timedelta(hours=hours)).timestamp())
+        cursor = await db.execute(
+            "SELECT id FROM island_visits WHERE ign = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 1",
+            (ign, cutoff)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+    async def get_island_visits(self, user_id: int, guild_id: int, days: int = 30):
+        """Get all island visits for a user within the specified number of days."""
+        db = await self._get_db()
+        cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
+        cursor = await db.execute(
+            """SELECT id, ign, origin_island, destination, authorized, timestamp
+               FROM island_visits
+               WHERE user_id = ? AND guild_id = ? AND timestamp > ?
+               ORDER BY timestamp DESC""",
+            (user_id, guild_id, cutoff)
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "ign": r[1], "origin_island": r[2], "destination": r[3],
+             "authorized": bool(r[4]), "timestamp": r[5]}
+            for r in rows
+        ]
+
+    async def record_island_visit(self, ign: str, origin_island: str, destination: str, found_members: list[discord.Member], guild_id: int | None, timestamp: int, authorized: int | None = None, island_type: str = 'sub') -> int | None:
+        """Record an island visit (authorized or unauthorized) in the database. Returns the visit ID."""
+        db = await self._get_db()
+        visit_id = None
+        if found_members:
+            for member in found_members:
+                cursor = await db.execute(
+                    "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+                    (ign, origin_island, destination, member.id, guild_id, timestamp, island_type)
+                )
+                visit_id = cursor.lastrowid
+        else:
+            auth_val = authorized if authorized is not None else 0
+            cursor = await db.execute(
+                "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
+                (ign, origin_island, destination, guild_id, auth_val, timestamp, island_type)
+            )
+            visit_id = cursor.lastrowid
+        await db.commit()
+        return visit_id
 
     async def cleanup_expired_warnings(self):
         """Delete warnings older than WARN_EXPIRY_DAYS from the database."""
@@ -720,8 +817,29 @@ class FlightLoggerCog(commands.Cog):
             elif action_type == "BAN":
                 await target.ban(reason=f"FlightLog [{case_id}]: {reason_text}")
 
-            # 4. Database Log
-            await self.add_warning(target.id, guild.id, reason_text, mod.id)
+            # 4. Database Log — link to the island visit that triggered this alert if available
+            visit_id = getattr(original_view, 'visit_id', None) if original_view else None
+            if visit_id is None and original_view is not None:
+                # Fall back to IGN-based lookup (handles bot-restart case where visit_id wasn't in view)
+                ign = getattr(original_view, 'ign', None)
+                if not ign and log_message and log_message.embeds:
+                    for field in log_message.embeds[0].fields:
+                        if "Traveler (IGN)" in field.name:
+                            m = re.search(r"```(?:yaml)?\n(.*?)\n?```", field.value)
+                            if m:
+                                ign = m.group(1).strip()
+                            break
+                if ign:
+                    visit_id = await self._get_recent_visit_id_by_ign(ign)
+            if visit_id is not None:
+                # Identify the visitor in the island_visits record now that we know who they are
+                db = await self._get_db()
+                await db.execute(
+                    "UPDATE island_visits SET user_id = ? WHERE id = ? AND user_id IS NULL",
+                    (target.id, visit_id)
+                )
+                await db.commit()
+            await self.add_warning(target.id, guild.id, reason_text, mod.id, visit_id)
             # Use small delay to ensure DB consistency (though commit is awaited)
             new_count = await self.get_warn_count(target.id, guild.id, days=WARN_EXPIRY_DAYS)
 
@@ -730,9 +848,10 @@ class FlightLoggerCog(commands.Cog):
             sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
             
             if sub_mod_channel:
-                await sub_mod_channel.send(content=target.mention, embed=log_embed)
+                sent_log = await sub_mod_channel.send(content=target.mention, embed=log_embed)
                 await interaction.followup.send(f"✅ Case `{case_id}` logged in {sub_mod_channel.mention}", ephemeral=True)
             else:
+                sent_log = None
                 await interaction.followup.send(f"✅ Action executed (Case `{case_id}`), but log channel is missing.", ephemeral=True)
 
             # 6. Update Original Alert
@@ -740,7 +859,8 @@ class FlightLoggerCog(commands.Cog):
             if original_view:
                 await original_view._resolve_alert(
                     interaction, action_verb, color, msg_to_mod,
-                    target_user=target, log_message=log_message
+                    target_user=target, log_message=log_message, reason=reason_text,
+                    mod_log_url=sent_log.jump_url if sent_log else None
                 )
 
         except discord.Forbidden:
@@ -778,7 +898,7 @@ class FlightLoggerCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def fetch_islands(self):
-        """Fetch island channels from Discord"""
+        """Fetch island channels from Discord sub-category"""
         guild = self.bot.get_guild(Config.GUILD_ID)
         if not guild:
             logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} not found.")
@@ -796,17 +916,19 @@ class FlightLoggerCog(commands.Cog):
             if channel.id == Config.FLIGHT_LISTEN_CHANNEL_ID:
                 continue
 
-            # e.g. "🌴┆bituin" -> "bituin"
+            # e.g. "🌴┆bituin" -> "bituin", "01-alapaap" -> "01alapaap"
             chan_clean = clean_text(channel.name)
-            if chan_clean:
-                temp_map[chan_clean] = channel.id
-                count += 1
-            
-            all_possible_islands = Config.SUB_ISLANDS
-            for island in all_possible_islands:
-                island_clean = clean_text(island)
-                if island_clean and island_clean in chan_clean:
-                    temp_map[island_clean] = channel.id
+            if not chan_clean:
+                continue
+
+            temp_map[chan_clean] = channel.id
+            count += 1
+
+            # Also map without leading digits for canonical name lookups
+            # e.g. "01alapaap" -> "alapaap"
+            island_clean = re.sub(r'^\d+', '', chan_clean)
+            if island_clean and island_clean != chan_clean:
+                temp_map[island_clean] = channel.id
 
         self.island_map = temp_map
         logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {len(temp_map)} keys.")
@@ -871,20 +993,26 @@ class FlightLoggerCog(commands.Cog):
             ign_clean = clean_text(ign_raw)
             isl_clean = clean_text(island_raw)
             found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_clean, isl_clean)
-            await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
 
-    async def log_result(self, found_members, status, ign, island, destination, timestamp=None):
+            await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub')
+
+    async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub'):
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
         if not output_channel: return
 
         embed_timestamp = timestamp or discord.utils.utcnow()
+        visit_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        guild_id = guild.id if guild else None
 
         if found_members:
             mentions = " ".join([m.mention for m in found_members])
             logger.info(f"[FLIGHT] Match: {ign} | {mentions}")
+            await self.record_island_visit(ign, island, destination, found_members, guild_id, visit_ts, island_type=island_type)
         else:
             destination_link = self.get_island_channel_link(destination)
             alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
+            visit_id = await self.record_island_visit(ign, island, destination, [], guild_id, alert_ts, island_type=island_type)
 
             # Check if there is already a pending alert for this IGN to avoid flooding the channel
             ign_clean = clean_text(ign)
@@ -954,7 +1082,7 @@ class FlightLoggerCog(commands.Cog):
                 guild_icon = guild.icon.url if guild and guild.icon else None
                 embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
 
-                view = TravelerActionView(self.bot, ign)
+                view = TravelerActionView(self.bot, ign, visit_id=visit_id)
                 sent_msg = await output_channel.send(embed=embed, view=view)
                 self._pending_alerts[ign_clean] = sent_msg.id
 
@@ -1355,10 +1483,17 @@ class FlightLoggerCog(commands.Cog):
             
             timestamp = warn['timestamp']
             reason = warn['reason']
-            
+
+            visit_line = ""
+            if warn.get('visit_id') and warn.get('visit_ign'):
+                visit_ts = warn['visit_ts']
+                origin = (warn.get('visit_origin') or '?').title()
+                dest = (warn.get('visit_destination') or '?').title()
+                visit_line = f"\n🏝️ **Linked Visit:** {warn['visit_ign']} · {origin} → {dest} (<t:{visit_ts}:R>)"
+
             embed.add_field(
                 name=f"#{i} - <t:{timestamp}:R>",
-                value=f"**Moderator:** {mod_text}\n**Reason:** {reason}",
+                value=f"**Moderator:** {mod_text}\n**Reason:** {reason}{visit_line}",
                 inline=False
             )
 
@@ -1367,5 +1502,119 @@ class FlightLoggerCog(commands.Cog):
         else:
             await ctx_or_interaction.send(embed=embed)
 
+    @commands.hybrid_command(name="flighthistory", aliases=["fhistory"])
+    @app_commands.describe(user="The user to check", days="Number of days to look back (default: 30)")
+    @commands.has_permissions(manage_messages=True)
+    async def flight_history(self, ctx, user: discord.Member, days: int = 30):
+        """View a user's combined island visit and warning history."""
+        is_slash = ctx.interaction is not None
+        if is_slash:
+            await ctx.interaction.response.defer(ephemeral=True)
+            guild = ctx.interaction.guild
+        else:
+            guild = ctx.guild
+
+        visits = await self.get_island_visits(user.id, guild.id, days)
+        warnings = await self.get_warnings(user.id, guild.id, days)
+
+        embed = discord.Embed(
+            title=f"Flight History — {user.display_name}",
+            description=f"Showing the last **{days}** days",
+            color=COLOR_INVESTIGATION,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_thumbnail(url=user.display_avatar.url)
+
+        # --- Island Visits ---
+        if visits:
+            lines = []
+            for v in visits[:MAX_HISTORY_ENTRIES]:
+                status_icon = "✅" if v['authorized'] else "🔴"
+                dest = (v.get('destination') or '?').title()
+                lines.append(f"{status_icon} **{dest}** (<t:{v['timestamp']}:R>)")
+            embed.add_field(
+                name=f"✈️ Island Visits ({len(visits)} in {days}d)",
+                value="\n".join(lines) + (f"\n…and {len(visits) - MAX_HISTORY_ENTRIES} more" if len(visits) > MAX_HISTORY_ENTRIES else ""),
+                inline=False
+            )
+        else:
+            embed.add_field(name="✈️ Island Visits", value=f"No visits recorded in the last {days} days.", inline=False)
+
+        # --- Warnings ---
+        if warnings:
+            lines = []
+            for w in warnings[:MAX_HISTORY_ENTRIES]:
+                mod = guild.get_member(w['mod_id'])
+                mod_text = mod.display_name if mod else f"ID: {w['mod_id']}"
+                visit_tag = f" · visit #{w['visit_id']}" if w.get('visit_id') else ""
+                lines.append(f"⚠️ <t:{w['timestamp']}:R> by **{mod_text}**{visit_tag}")
+            embed.add_field(
+                name=f"⚠️ Warnings ({len(warnings)} in {days}d)",
+                value="\n".join(lines) + (f"\n…and {len(warnings) - MAX_HISTORY_ENTRIES} more" if len(warnings) > MAX_HISTORY_ENTRIES else ""),
+                inline=False
+            )
+        else:
+            embed.add_field(name="⚠️ Warnings", value=f"No warnings recorded in the last {days} days.", inline=False)
+
+        if is_slash:
+            await ctx.interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await ctx.send(embed=embed)
+
 async def setup(bot):
     await bot.add_cog(FlightLoggerCog(bot))
+    await bot.add_cog(FreeFlightCog(bot))
+
+
+# ===========================================================================
+# FREE ISLAND FLIGHT COG
+# A lightweight listener for the free-island flight channel.
+# Records visits to the database with island_type='free'.
+# Does NOT post any alerts or embeds to Discord — website tracking only.
+# ===========================================================================
+
+class FreeFlightCog(commands.Cog, name="FreeFlightLogger"):
+    """Silently records free-island flight arrivals into island_visits."""
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    async def cog_load(self):
+        await init_db()
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        listen_id = Config.FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID
+        if not listen_id:
+            return
+        if message.author == self.bot.user or message.channel.id != listen_id:
+            return
+        match = JOIN_PATTERN.search(message.content)
+        if not match:
+            return
+
+        ign_raw    = match.group(1).strip()
+        island_raw = match.group(2).strip()
+        dest_raw   = match.group(3).strip()
+        visit_ts   = int(message.created_at.timestamp())
+        guild      = self.bot.get_guild(Config.GUILD_ID)
+        guild_id   = guild.id if guild else None
+
+        # Delegate to FlightLoggerCog.record_island_visit to avoid duplicating
+        # DB logic; fall back to a direct insert if the cog is not loaded.
+        flight_cog = self.bot.cogs.get("FlightLogger")
+        if flight_cog is not None:
+            await flight_cog.record_island_visit(
+                ign_raw, island_raw, dest_raw, [], guild_id, visit_ts,
+                island_type='free',
+            )
+        else:
+            async with aiosqlite.connect(DB_NAME) as db:
+                await db.execute(
+                    "INSERT INTO island_visits "
+                    "(ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) "
+                    "VALUES (?, ?, ?, NULL, ?, 1, ?, 'free')",
+                    (ign_raw, island_raw, dest_raw, guild_id, visit_ts),
+                )
+                await db.commit()
+        logger.info(f"[FREE-FLIGHT] Recorded visit: {ign_raw} → {dest_raw}")

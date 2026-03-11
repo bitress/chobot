@@ -8,32 +8,102 @@ Chobot is a unified system to help manage Animal Crossing communities. It watche
 
 ### Features
 
-| # | Feature | Platform | Description |
-|---|---------|----------|-------------|
-| 1 | **Item Search** (`!find`) | Discord, Twitch, API | Search for any ACNH item across all islands. Supports fuzzy matching and autocomplete. Aliases: `!locate`, `!where`, `!lookup`, `!lp`, `!search` |
-| 2 | **Villager Search** (`!villager`) | Discord, Twitch, API | Search for a villager by name across all islands. Fuzzy matching included. |
-| 3 | **Fuzzy Suggestions** | Discord, Twitch, API | If a search term doesn't match exactly, the bot suggests the closest item or villager names with an interactive dropdown (Discord) or text list (Twitch/API). |
-| 4 | **Random Item** (`!random`) | Discord, Twitch | Returns a random item from the current island inventory. |
-| 5 | **Bot Status** (`!status`) | Discord, Twitch | Shows cache item count, linked island count, last update time, and bot uptime. |
-| 6 | **Ping** (`!ping`) | Discord | Shows bot latency in milliseconds. |
-| 7 | **Help** (`!help`) | Discord, Twitch | Lists all available commands. |
-| 8 | **Island Status** (`!islandstatus`) | Discord | Checks all 18 sub island bots — reports each as online ✅ or offline ❌ using bot presence and recent message scanning. Aliases: `!islands`, `!checkislands` |
-| 9 | **Cache Refresh** (`!refresh`) | Discord | Admin-only command to manually pull fresh data from Google Sheets. |
-| 10 | **Flight Logger** | Discord (automatic) | Monitors island visitor arrivals in real time. Alerts staff when an unknown traveler is detected. Staff can Admit, Warn, Kick, or Ban via buttons. Tracks warnings and moderation history per user in a local database. |
-| 11 | **Island Offline Notifications** ⭐ New | Discord (automatic) | Background task (every 5 min) that monitors each sub island. Posts `🔴 {island} island is currently down.` to the island's own channel when it goes offline, and `🟢 {island} island is back online!` when it recovers. |
-| 12 | **GET /api/islands** ⭐ New | API | Returns real-time status of all free and VIP islands. Uses `FREE_ISLANDS` config as the authoritative list so every island appears even when its directory is missing. Each entry includes `name`, `dodo`, `status`, `visitors`, and a human-readable `message` field (`"This island is currently down."` when OFFLINE, `"This island is currently refreshing."` when REFRESHING). |
-| 13 | **GET /api/find** | API | JSON item search endpoint with `found`, `query`, `results` (free/sub split), and `suggestions`. |
-| 14 | **GET /api/villager** | API | JSON villager search endpoint. |
-| 15 | **GET /api/villagers/list** | API | Lists all villagers grouped by island. |
-| 16 | **GET /api/patreon/posts** | API | Fetches and caches the 10 most recent Patreon posts (15-minute cache). |
-| 17 | **GET /api/patreon/posts/\<id\>** | API | Fetches a single Patreon post by ID (15-minute cache). |
-| 18 | **GET /health** | API | Health-check endpoint — returns `healthy` (200) or `degraded` (503) with cache stats. |
-| 19 | **POST /api/refresh** | API | Manually triggers a Google Sheets cache refresh in a background thread. |
-| 20 | **Google Sheets Sync** | Background | Automatically re-fetches item and villager data from Google Sheets every hour. |
-| 21 | **Local Cache** | Background | Persists the Google Sheets data to `cache_dump.json` so the bot starts instantly on restart. |
-| 22 | **Patreon Integration** | API | Proxies Patreon post data for use on external websites, with automatic image extraction and caching. |
-| 23 | **Autocomplete** | Discord (slash commands) | `/find` supports Discord native autocomplete with fuzzy matching against the full item catalogue. |
-| 24 | **FIND_BOT_CHANNEL restriction** | Discord | Limits which prefix/slash commands can be used in a designated find-bot channel; silently blocks others and notifies the user via DM. |
+* **Flight Logger (Security)**
+    * Watch people who visit islands in real-time.
+    * Send alert to staff if person is unknown.
+    * Interactive moderation buttons: **Admit**, **Warn**, **Kick**, **Ban**, **Dismiss**, **Investigate**.
+    * Add investigation notes with the **Note** action.
+    * Remove island access role automatically if someone is warned.
+    * Warnings expire automatically after 3 days.
+    * Track all visits in a local SQLite database.
+    * Send detailed moderation log to a dedicated Discord channel.
+    * Guild-specific configuration for multi-server support.
+    * Slash commands:
+        * `/flight_status` — Display current Flight Logger statistics.
+        * `/recover_flights` — Recover any missing flight records.
+        * `/unwarn <user>` — Remove an active warning from a user.
+        * `/warnings <user>` — View the full warning history for a user.
+        * `/flight_history <user>` — View a user's complete island visit history.
+
+* **Discord Bot Commands**
+    * `!find <item>` (alias `!f`) — Search for an item across all islands.
+    * `!villager <name>` — Find which island a villager is on.
+    * `!random` — Get a random item suggestion.
+    * `!islandstatus` — Check if an island is ONLINE, OFFLINE, or FULL.
+    * `!dodo <island>` — Request a dodo code privately via DM.
+    * `!visitors` — List all current visitors on an island.
+    * `!ask <question>` — Ask the Chopaeng AI a question about the community.
+    * `!ping` — Check the bot's current response time.
+    * `!status` — View bot health, uptime, and service information.
+    * `!help` — Display the full help menu.
+    * `!refresh` *(admin only)* — Force an immediate cache refresh from Google Sheets.
+    * `!update` *(admin only)* — Pull the latest code and restart the bot.
+
+* **Twitch Bot Commands**
+    * `!find <item>` (aliases: `!locate`, `!where`, `!lookup`, `!lp`, `!search`) — Search for an item.
+    * `!villager <name>` — Find a villager's location.
+    * `!random` — Get a random item suggestion.
+    * `!ask <question>` — Ask the Chopaeng AI.
+    * `!status` — View bot status.
+    * `!help` — Display available commands.
+
+* **Smart Fuzzy Search**
+    * Multi-strategy search pipeline: exact match → prefix → contains → token overlap → fuzzy → plural fallback.
+    * Context-aware fuzzy thresholds (97 for short queries, down to 80 for longer ones).
+    * Full Unicode support including CJK (Chinese, Japanese, Korean) characters.
+    * Returns close suggestions when an exact match is not found.
+
+* **Island Status & Dodo Codes**
+    * Reads `Dodo.txt` and `Visitors.txt` files to show real-time island status.
+    * Reports island state as **ONLINE**, **OFFLINE**, or **FULL**.
+    * Supports 18 subscriber islands and 27 free islands.
+    * Sends dodo codes securely via DM on request.
+
+* **Chopaeng AI Knowledge Base**
+    * Built-in keyword-based knowledge about the community, guidelines, islands, and VIP info — no paid API required.
+    * Optional upgrade with free **Google Gemini** AI for richer answers.
+    * Per-user conversation history (5-turn memory with a 10-minute expiry).
+    * Available on both Discord (`!ask`) and Twitch (`!ask`).
+
+* **REST API**
+    * `GET /health` or `GET /api/health` — Health check (returns JSON status).
+    * `GET /find?item=<name>` — Search for an item (HTML response).
+    * `GET /api/find` — Search for an item (JSON response).
+    * `GET /api/villager` — Find a villager (JSON response).
+    * `GET /api/villagers/list` — List villagers grouped by island (JSON response).
+    * `GET /api/islands` — Island status, visitors, and dodo codes (JSON response).
+    * `GET /api/patreon/posts` — List cached Patreon posts.
+    * `GET /api/patreon/posts/<id>` — Get a single Patreon post by ID.
+    * `POST /api/refresh` — Trigger a manual cache refresh.
+
+* **Web Dashboard** *(mod-only)*
+    * Secure login with mod-only access.
+    * Island management interface.
+    * Analytics and reporting overview.
+    * Activity logs and visitor tracking.
+
+* **Patreon Integration**
+    * Fetch and cache patron posts via the Patreon API.
+    * Extract and serve post images.
+    * Per-post metadata available through the REST API.
+
+* **Data Management**
+    * Auto-sync with Google Sheets every hour.
+    * Fast local cache in `cache_dump.json` for instant startup.
+    * Thread-safe access shared across all services.
+
+* **Multi-Service Deployment**
+    * Run all services together or independently with 7 launch modes:
+        ```bash
+        python main.py                   # All services
+        python main.py flask             # API only
+        python main.py discord           # Discord bot (all features)
+        python main.py discord-find      # Discord (search commands only)
+        python main.py flight-logger     # Discord (Flight Logger only)
+        python main.py twitch            # Twitch bot (full)
+        python main.py twitch-find       # Twitch (find commands only)
+        ```
+    * Graceful coordinated shutdown on SIGINT/SIGTERM.
 
 
 ## Getting Started
@@ -64,6 +134,7 @@ ISLAND_ACCESS_ROLE=1077997850165772398
 
 # --- FLIGHT LOGGER ---
 FLIGHT_LISTEN_CHANNEL_ID=809295405128089611
+FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID=876490101595721748
 FLIGHT_LOG_CHANNEL_ID=1451990354634080446
 IGNORE_CHANNEL_ID=809295405128089611
 SUB_MOD_CHANNEL_ID=1077960085826961439
@@ -72,6 +143,11 @@ SUB_MOD_CHANNEL_ID=1077960085826961439
 TWITCH_CHANNEL=chopaeng
 WORKBOOK_NAME=ChoPaeng_Database
 IS_PRODUCTION=false
+
+# --- GEMINI AI (optional, free tier) ---
+# Get a free key at https://aistudio.google.com/
+# Leave blank to use the built-in keyword fallback.
+GEMINI_API_KEY=
 ```
 
 ### Executing program

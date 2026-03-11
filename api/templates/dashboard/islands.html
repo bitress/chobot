@@ -1,0 +1,152 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Islands — ChoBot Dashboard{% endblock %}
+{% block header %}Islands{% endblock %}
+
+{% block content %}
+
+<!-- Summary + toolbar -->
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
+  <div class="d-flex align-items-center gap-3 flex-wrap">
+    <span class="fw-black" style="color:#444;font-size:.95rem;">
+      {{ islands | length }} islands
+    </span>
+    <span class="badge rounded-pill fw-bold" style="background:#e8f5e9;color:#1a6b2a;">
+      {{ islands | selectattr("cat","equalto","public") | list | length }} public
+    </span>
+    <span class="badge rounded-pill fw-bold" style="background:#fff3cd;color:#856404;">
+      {{ islands | selectattr("cat","equalto","member") | list | length }} member
+    </span>
+  </div>
+  <div class="d-flex align-items-center gap-2 flex-wrap">
+    <!-- Search -->
+    <div class="d-flex align-items-center gap-2"
+         style="background:#fff;border:2px solid #e1e6d3;border-radius:50px;padding:6px 14px;">
+      <i class="bi bi-search" style="color:#ccc;"></i>
+      <input id="islandSearch" type="text" placeholder="Search islands…"
+             class="border-0 outline-0 shadow-none"
+             style="font-family:var(--font-main);font-weight:700;font-size:.9rem;color:#555;
+                    background:transparent;outline:none;min-width:180px;">
+    </div>
+    <!-- Sync maps from bucket -->
+    <button id="syncMapsBtn" type="button"
+            class="btn btn-sm fw-bold d-flex align-items-center gap-1"
+            style="background:#fff;border:2px solid #e1e6d3;border-radius:50px;
+                   color:#555;font-family:var(--font-main);"
+            title="Scan R2 bucket and back-fill missing map URLs in the database">
+      <i class="bi bi-cloud-download"></i> Sync Maps
+    </button>
+  </div>
+</div>
+
+<!-- Islands table -->
+<div class="section-card">
+  {% if islands %}
+  <div class="table-responsive">
+    <table class="db-table">
+      <thead>
+        <tr>
+          <th style="width:56px;">Map</th>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Category</th>
+          <th>Status</th>
+          <th class="text-center">Visitors</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for isl in islands %}
+        {% set status_cls = {"ONLINE":"online","SUB ONLY":"sub-only","REFRESHING":"refreshing","OFFLINE":"offline"}.get(isl.status,"offline") %}
+        <tr class="island-row" data-name="{{ isl.name }}" data-type="{{ isl.type }}">
+          <!-- Thumbnail -->
+          <td>
+            {% if isl.map_url %}
+              <img src="{{ isl.map_url }}" alt="{{ isl.name }}"
+                   style="width:48px;height:36px;object-fit:cover;border-radius:6px;border:2px solid #e1e6d3;">
+            {% else %}
+              <div class="d-flex align-items-center justify-content-center"
+                   style="width:48px;height:36px;border-radius:6px;border:2px dashed #e1e6d3;
+                          background:#f6f8f3;font-size:1.2rem;color:#ccc;">🏝️</div>
+            {% endif %}
+          </td>
+          <!-- Name -->
+          <td>
+            <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}"
+               class="fw-bold text-decoration-none ac-font"
+               style="color:var(--nook-green);">{{ isl.name }}</a>
+          </td>
+          <!-- Type -->
+          <td style="color:#888;font-size:.85rem;font-weight:600;">{{ isl.type or "—" }}</td>
+          <!-- Category -->
+          <td>
+            <span class="badge rounded-pill fw-bold"
+                  style="{% if isl.cat == 'member' %}background:#fff3cd;color:#856404;{% else %}background:#e8f5e9;color:#1a6b2a;{% endif %}font-size:.65rem;">
+              {{ isl.cat }}
+            </span>
+          </td>
+          <!-- Status -->
+          <td><span class="status-pill {{ status_cls }}" style="position:static;display:inline-block;">{{ isl.status }}</span></td>
+          <!-- Visitors -->
+          <td class="text-center" style="color:#888;font-weight:700;font-size:.85rem;">
+            {{ isl.visitors if isl.visitors else "—" }}
+          </td>
+          <!-- Edit -->
+          <td class="text-end">
+            <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}"
+               class="btn btn-sm fw-bold"
+               style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#666;
+                      border-radius:50px;font-size:.75rem;padding:3px 12px;">
+              <i class="bi bi-pencil-fill me-1"></i>Edit
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+    <i class="bi bi-geo-alt fs-3 d-block mb-2" style="opacity:.3;"></i>
+    No islands found.
+  </div>
+  {% endif %}
+</div>
+
+<script>
+const search = document.getElementById('islandSearch');
+search.addEventListener('input', () => {
+  const q = search.value.toLowerCase();
+  document.querySelectorAll('.island-row').forEach(row => {
+    const text = (row.dataset.name + ' ' + row.dataset.type).toLowerCase();
+    row.style.display = text.includes(q) ? '' : 'none';
+  });
+});
+
+// Sync Maps button — calls the back-fill endpoint then reloads
+document.getElementById('syncMapsBtn').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Syncing…';
+  try {
+    const resp = await fetch('{{ url_for("dashboard.api_sync_maps") }}', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert('Sync failed: ' + (data.error || resp.statusText));
+    } else {
+      const msg = `Synced ${data.synced} map(s)` +
+                  (data.skipped ? `, skipped ${data.skipped}` : '') +
+                  (data.errors && data.errors.length ? `, ${data.errors.length} error(s)` : '') +
+                  '.';
+      alert(msg);
+      if (data.synced > 0) location.reload();
+    }
+  } catch (err) {
+    alert('Network error: ' + err);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-cloud-download"></i> Sync Maps';
+  }
+});
+</script>
+{% endblock %}
