@@ -100,7 +100,10 @@ def _resolve_discord_username(user_id) -> str:
             data = json.loads(resp.read().decode())
         name = data.get("global_name") or data.get("username") or uid
     except urllib.error.HTTPError as exc:
-        logger.warning("Discord user lookup HTTP %s for %s", exc.code, uid)
+        if exc.code == 403:
+            logger.debug("Discord user lookup HTTP 403 for %s (user inaccessible)", uid)
+        else:
+            logger.warning("Discord user lookup HTTP %s for %s", exc.code, uid)
         name = uid
     except Exception as exc:
         logger.debug("Discord user lookup failed for %s: %s", uid, exc)
