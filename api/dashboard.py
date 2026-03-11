@@ -904,6 +904,87 @@ def api_island_upload_map(name):
     return jsonify({"status": "uploaded", "id": island_id, "map_url": map_url})
 
 
+@dashboard.route("/api/islands/sync-maps", methods=["POST"])
+@api_auth_required
+def api_sync_maps():
+    """Scan the R2 bucket for existing map images and back-fill map_url in the DB.
+
+    For every object under the ``maps/`` prefix in the configured R2 bucket,
+    derive the island id from the object key (e.g. ``maps/alapaap.jpg``
+    → island id ``alapaap``), construct the public URL, and write it into the
+    ``islands`` table.  Rows that already have a ``map_url`` are also updated
+    so that any manually renamed/re-uploaded files are corrected.
+
+    Returns a JSON summary ``{"synced": N, "skipped": N, "errors": [...]}``.
+    """
+    client = _get_r2_client()
+    if client is None:
+        return jsonify({"error": "R2 is not configured"}), 503
+
+    base = (Config.R2_PUBLIC_URL or "").rstrip("/")
+    if not base:
+        return jsonify({"error": "R2_PUBLIC_URL is not configured"}), 503
+
+    # Collect all objects under maps/ prefix (handle paginated responses)
+    keys: list[str] = []
+    kwargs: dict = {"Bucket": Config.R2_BUCKET_NAME, "Prefix": "maps/"}
+    while True:
+        try:
+            resp = client.list_objects_v2(**kwargs)
+        except (ClientError, NoCredentialsError) as exc:
+            return jsonify({"error": "R2 list failed", "details": str(exc)}), 502
+        for obj in resp.get("Contents", []):
+            keys.append(obj["Key"])
+        if resp.get("IsTruncated"):
+            kwargs["ContinuationToken"] = resp["NextContinuationToken"]
+        else:
+            break
+
+    synced = 0
+    skipped = 0
+    errors: list[str] = []
+    now = datetime.now(timezone.utc).isoformat()
+
+    db = get_db()
+    try:
+        for key in keys:
+            # key looks like "maps/alapaap.jpg" or "maps/subdirectory/..." – skip nested
+            parts = key.split("/")
+            if len(parts) != 2:
+                skipped += 1
+                continue
+            filename = parts[1]
+            if not filename:
+                skipped += 1
+                continue
+            # Strip extension to get island id
+            island_id = filename.rsplit(".", 1)[0].lower()
+            if not island_id:
+                skipped += 1
+                continue
+            map_url = f"{base}/{key}"
+            try:
+                db.execute(
+                    "UPDATE islands SET map_url = ?, updated_at = ? WHERE id = ?",
+                    (map_url, now, island_id),
+                )
+                if db.execute("SELECT changes()").fetchone()[0] == 0:
+                    # Island row doesn't exist yet — create a minimal one
+                    db.execute(
+                        "INSERT OR IGNORE INTO islands (id, name, map_url, updated_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (island_id, island_id.upper(), map_url, now),
+                    )
+                synced += 1
+            except sqlite3.Error as exc:
+                errors.append(f"{island_id}: {exc}")
+        db.commit()
+    finally:
+        db.close()
+
+    return jsonify({"synced": synced, "skipped": skipped, "errors": errors})
+
+
 @dashboard.route("/api/analytics", methods=["GET"])
 @api_auth_required
 def api_analytics():

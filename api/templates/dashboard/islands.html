@@ -18,14 +18,24 @@
       {{ islands | selectattr("cat","equalto","member") | list | length }} member
     </span>
   </div>
-  <!-- Search -->
-  <div class="d-flex align-items-center gap-2"
-       style="background:#fff;border:2px solid #e1e6d3;border-radius:50px;padding:6px 14px;">
-    <i class="bi bi-search" style="color:#ccc;"></i>
-    <input id="islandSearch" type="text" placeholder="Search islands…"
-           class="border-0 outline-0 shadow-none"
-           style="font-family:var(--font-main);font-weight:700;font-size:.9rem;color:#555;
-                  background:transparent;outline:none;min-width:180px;">
+  <div class="d-flex align-items-center gap-2 flex-wrap">
+    <!-- Search -->
+    <div class="d-flex align-items-center gap-2"
+         style="background:#fff;border:2px solid #e1e6d3;border-radius:50px;padding:6px 14px;">
+      <i class="bi bi-search" style="color:#ccc;"></i>
+      <input id="islandSearch" type="text" placeholder="Search islands…"
+             class="border-0 outline-0 shadow-none"
+             style="font-family:var(--font-main);font-weight:700;font-size:.9rem;color:#555;
+                    background:transparent;outline:none;min-width:180px;">
+    </div>
+    <!-- Sync maps from bucket -->
+    <button id="syncMapsBtn" type="button"
+            class="btn btn-sm fw-bold d-flex align-items-center gap-1"
+            style="background:#fff;border:2px solid #e1e6d3;border-radius:50px;
+                   color:#555;font-family:var(--font-main);"
+            title="Scan R2 bucket and back-fill missing map URLs in the database">
+      <i class="bi bi-cloud-download"></i> Sync Maps
+    </button>
   </div>
 </div>
 
@@ -108,6 +118,32 @@ search.addEventListener('input', () => {
     const text = (row.dataset.name + ' ' + row.dataset.type).toLowerCase();
     row.style.display = text.includes(q) ? '' : 'none';
   });
+});
+
+// Sync Maps button — calls the back-fill endpoint then reloads
+document.getElementById('syncMapsBtn').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Syncing…';
+  try {
+    const resp = await fetch('{{ url_for("dashboard.api_sync_maps") }}', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert('Sync failed: ' + (data.error || resp.statusText));
+    } else {
+      const msg = `Synced ${data.synced} map(s)` +
+                  (data.skipped ? `, skipped ${data.skipped}` : '') +
+                  (data.errors && data.errors.length ? `, ${data.errors.length} error(s)` : '') +
+                  '.';
+      alert(msg);
+      if (data.synced > 0) location.reload();
+    }
+  } catch (err) {
+    alert('Network error: ' + err);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-cloud-download"></i> Sync Maps';
+  }
 });
 </script>
 {% endblock %}
