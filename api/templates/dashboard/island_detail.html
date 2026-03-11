@@ -4,318 +4,328 @@
 {% block header %}Islands / {{ island.name }}{% endblock %}
 
 {% block content %}
-<div style="max-width:780px;">
+<div class="container" style="max-width:1100px;">
 
-  <!-- Back -->
-  <a href="{{ url_for('dashboard.islands') }}"
-     class="btn-nook-back d-inline-flex text-decoration-none mb-4"
-     title="Back to Islands">
-    <i class="bi bi-arrow-left fs-5"></i>
-  </a>
+    <!-- Back -->
+    <a href="{{ url_for('dashboard.islands') }}"
+       class="btn-nook-back d-inline-flex text-decoration-none mb-4"
+       title="Back to Islands">
+        <i class="bi bi-arrow-left fs-5"></i>
+    </a>
 
-  <!-- Main edit card -->
-  <div class="section-card mb-4">
+    <div class="row g-4">
 
-    <!-- Card header -->
-    <div class="section-card-header">
-      <div>
-        <span class="ac-font" style="color:#444;font-size:1.2rem;">{{ island.name }}</span>
-        <span class="x-small ms-2 fw-bold" style="color:#aaa;">
-          {% if island.fs_type == "VIP" %}
-            <span style="color:#b07cdc;"><i class="bi bi-star-fill me-1"></i>VIP Island</span>
-          {% elif island.fs_type == "Free" %}
-            <span style="color:var(--nook-green);"><i class="bi bi-leaf-fill me-1"></i>Free Island</span>
-          {% else %}
-            <span style="color:#ccc;">No folder</span>
-          {% endif %}
-          {% if island.updated_at %}
-            &nbsp;·&nbsp; Saved {{ island.updated_at[:19] | replace("T"," ") }} UTC
-          {% endif %}
-        </span>
-      </div>
-      {% set status_cls = {"ONLINE":"online","SUB ONLY":"sub-only","REFRESHING":"refreshing","OFFLINE":"offline"}.get(island.status,"offline") %}
-      <span class="status-pill {{ status_cls }}" style="position:static;display:inline-block;">{{ island.status }}</span>
-    </div>
+        <!-- ── LEFT COLUMN: edit form ── -->
+        <div class="col-md-6">
+            <div class="section-card mb-4">
 
-    <!-- Edit form -->
-    <form id="islandForm" method="POST"
-          action="{{ url_for('dashboard.island_detail', name=island.id) }}"
-          class="p-4">
+                <!-- Card header -->
+                <div class="section-card-header">
+                    <div>
+                        <span class="ac-font" style="color:#444;font-size:1.2rem;">{{ island.name }}</span>
+                        <span class="x-small ms-2 fw-bold" style="color:#aaa;">
+              {% if island.fs_type == "VIP" %}
+                <span style="color:#b07cdc;"><i class="bi bi-star-fill me-1"></i>VIP Island</span>
+              {% elif island.fs_type == "Free" %}
+                <span style="color:var(--nook-green);"><i class="bi bi-leaf-fill me-1"></i>Free Island</span>
+              {% else %}
+                <span style="color:#ccc;">No folder</span>
+              {% endif %}
+              {% if island.updated_at %}
+                &nbsp;·&nbsp; Saved {{ island.updated_at[:19] | replace("T"," ") }} UTC
+              {% endif %}
+            </span>
+                    </div>
+                    {% set status_cls = {"ONLINE":"online","SUB ONLY":"sub-only","REFRESHING":"refreshing","OFFLINE":"offline"}.get(island.status,"offline") %}
+                    <span class="status-pill {{ status_cls }}" style="position:static;display:inline-block;">{{ island.status }}</span>
+                </div>
 
-      <!-- Row 1: Type + Seasonal -->
-      <div class="row g-3 mb-3">
-        <div class="col-sm-6">
-          <label class="db-label">Island Type</label>
-          <input type="text" name="type" value="{{ island.type }}"
-                 placeholder="e.g. Treasure Island"
-                 class="db-input">
-        </div>
-        <div class="col-sm-6">
-          <label class="db-label">Seasonal</label>
-          <input type="text" name="seasonal" value="{{ island.seasonal }}"
-                 placeholder="e.g. Year-Round, Festive"
-                 class="db-input">
-        </div>
-      </div>
+                <!-- Edit form -->
+                <form id="islandForm" method="POST"
+                      action="{{ url_for('dashboard.island_detail', name=island.id) }}"
+                      class="p-4">
 
-      <!-- Row 2: Cat + Theme + Status -->
-      <div class="row g-3 mb-3">
-        <div class="col-sm-4">
-          <label class="db-label">Category</label>
-          <select name="cat" class="db-input">
-            {% for cat in allowed_categories %}
-              <option value="{{ cat }}" {% if island.cat == cat %}selected{% endif %}>{{ cat.title() }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="col-sm-4">
-          <label class="db-label">Theme</label>
-          <select name="theme" class="db-input">
-            {% for theme in allowed_themes %}
-              <option value="{{ theme }}" {% if island.theme == theme %}selected{% endif %}>{{ theme.title() }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="col-sm-4">
-          <label class="db-label">Status</label>
-          <select name="status" class="db-input">
-            {% for st in allowed_statuses %}
-              <option value="{{ st }}" {% if island.status == st %}selected{% endif %}>{{ st }}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
+                    <!-- Row 1: Type + Seasonal -->
+                    <div class="row g-3 mb-3">
+                        <div class="col-sm-6">
+                            <label class="db-label">Island Type</label>
+                            <input type="text" name="type" value="{{ island.type }}"
+                                   placeholder="e.g. Treasure Island"
+                                   class="db-input">
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="db-label">Seasonal</label>
+                            <input type="text" name="seasonal" value="{{ island.seasonal }}"
+                                   placeholder="e.g. Year-Round, Festive"
+                                   class="db-input">
+                        </div>
+                    </div>
 
-      <!-- Description -->
-      <div class="mb-3">
-        <label class="db-label">Description</label>
-        <textarea name="description" rows="3" placeholder="Short description visible on the island page…"
-                  class="db-input">{{ island.description }}</textarea>
-      </div>
+                    <!-- Row 2: Cat + Theme + Status -->
+                    <div class="row g-3 mb-3">
+                        <div class="col-sm-4">
+                            <label class="db-label">Category</label>
+                            <select name="cat" class="db-input">
+                                {% for cat in allowed_categories %}
+                                <option value="{{ cat }}" {% if island.cat == cat %}selected{% endif %}>{{ cat.title() }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-sm-4">
+                            <label class="db-label">Theme</label>
+                            <select name="theme" class="db-input">
+                                {% for theme in allowed_themes %}
+                                <option value="{{ theme }}" {% if island.theme == theme %}selected{% endif %}>{{ theme.title() }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-sm-4">
+                            <label class="db-label">Status</label>
+                            <select name="status" class="db-input">
+                                {% for st in allowed_statuses %}
+                                <option value="{{ st }}" {% if island.status == st %}selected{% endif %}>{{ st }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
 
-      <!-- Items tag input -->
-      <div class="mb-4">
-        <label class="db-label">
-          Items
-          <span class="text-lowercase" style="font-weight:600;color:#bbb;">(one per line or comma-separated)</span>
-        </label>
+                    <!-- Description -->
+                    <div class="mb-3">
+                        <label class="db-label">Description</label>
+                        <textarea name="description" rows="3" placeholder="Short description visible on the island page…"
+                                  class="db-input">{{ island.description }}</textarea>
+                    </div>
 
-        <!-- Visual tag display -->
-        <div id="tagsDisplay"
-             class="d-flex flex-wrap gap-2 p-2 cursor-pointer"
-             style="min-height:2.5rem;background:var(--nook-cream);border:2px solid #e1e6d3;
-                    border-bottom:none;border-radius:12px 12px 0 0;"
-             onclick="document.getElementById('itemsTextarea').focus()">
-          {% for item in island['items'] %}
-          <span class="d-inline-flex align-items-center gap-1 px-2 py-1 rounded-pill"
-                style="background:#e8f5e9;border:1px solid #b8dfc0;color:#1a6b2a;font-size:.75rem;font-weight:700;">
-            {{ item }}
-            <button type="button" onclick="removeTag(this)"
-                    class="border-0 bg-transparent p-0 lh-1 ms-1"
-                    style="color:inherit;font-size:1rem;">&times;</button>
-          </span>
-          {% endfor %}
-        </div>
+                    <!-- Items tag input -->
+                    <div class="mb-4">
+                        <label class="db-label">
+                            Items
+                            <span class="text-lowercase" style="font-weight:600;color:#bbb;">(one per line or comma-separated)</span>
+                        </label>
 
-        <textarea id="itemsTextarea" rows="3"
-                  placeholder="Add items, one per line or comma-separated…"
-                  class="db-input font-monospace"
-                  style="border-radius:0 0 12px 12px;font-size:.8rem;">{{ island.items_text }}</textarea>
+                        <!-- Visual tag display -->
+                        <div id="tagsDisplay"
+                             class="d-flex flex-wrap gap-2 p-2 cursor-pointer"
+                             style="min-height:2.5rem;background:var(--nook-cream);border:2px solid #e1e6d3;
+                        border-bottom:none;border-radius:12px 12px 0 0;"
+                             onclick="document.getElementById('itemsTextarea').focus()">
+                            {% for item in island['items'] %}
+                            <span class="d-inline-flex align-items-center gap-1 px-2 py-1 rounded-pill"
+                                  style="background:#e8f5e9;border:1px solid #b8dfc0;color:#1a6b2a;font-size:.75rem;font-weight:700;">
+                {{ item }}
+                <button type="button" onclick="removeTag(this)"
+                        class="border-0 bg-transparent p-0 lh-1 ms-1"
+                        style="color:inherit;font-size:1rem;">&times;</button>
+              </span>
+                            {% endfor %}
+                        </div>
 
-        <input type="hidden" name="items_json" id="itemsJson">
-      </div>
+                        <textarea id="itemsTextarea" rows="3"
+                                  placeholder="Add items, one per line or comma-separated…"
+                                  class="db-input font-monospace"
+                                  style="border-radius:0 0 12px 12px;font-size:.8rem;">{{ island.items_text }}</textarea>
 
-      <!-- Actions -->
-      <div class="d-flex align-items-center gap-3">
-        <button type="submit" class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold">
-          <i class="bi bi-check-circle-fill me-2"></i>Save Changes
-        </button>
-        <a href="{{ url_for('dashboard.islands') }}"
-           class="btn fw-bold px-4 py-2 rounded-3"
-           style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;">
-          Cancel
-        </a>
-      </div>
-    </form>
-  </div>
+                        <input type="hidden" name="items_json" id="itemsJson">
+                    </div>
 
-  <!-- Map card -->
-  <div class="section-card mb-4">
-    <div class="section-card-header">
-      <span><i class="bi bi-map-fill me-2 text-nook-green"></i>Island Map</span>
-    </div>
-    <div class="p-4">
+                    <!-- Actions -->
+                    <div class="d-flex align-items-center gap-3">
+                        <button type="submit" class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold">
+                            <i class="bi bi-check-circle-fill me-2"></i>Save Changes
+                        </button>
+                        <a href="{{ url_for('dashboard.islands') }}"
+                           class="btn fw-bold px-4 py-2 rounded-3"
+                           style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;">
+                            Cancel
+                        </a>
+                    </div>
+                </form>
 
-      <!-- Current S3/R2 image -->
-      {% if island.map_url %}
-      <div class="polaroid-stack mb-4">
-        <div class="tape-strip"></div>
-        <div class="map-polaroid">
-          <div class="img-wrapper" style="border-radius:6px;">
-            <img id="mapCurrent" src="{{ island.map_url }}" alt="{{ island.name }} map"
-                 class="map-img" style="max-height:260px;width:100%;border-radius:6px;">
-            <div class="zoom-indicator"><i class="bi bi-zoom-in"></i></div>
-          </div>
-          <div class="polaroid-caption">{{ island.name }}</div>
-        </div>
-      </div>
-      {% else %}
-      <p class="x-small fw-bold mb-3" style="color:#ccc;">
-        <i class="bi bi-image me-1"></i>No map uploaded yet.
-      </p>
-      {% endif %}
+            </div><!-- /section-card -->
+        </div><!-- /col-md-6 LEFT -->
 
-      {% if r2_configured %}
-      <form id="mapForm" class="d-flex align-items-center gap-3">
-        <label class="flex-grow-1 cursor-pointer">
-          <span class="visually-hidden">Choose map image</span>
-          <input type="file" id="mapFile" accept="image/jpeg,image/png,image/webp,image/gif"
-                 class="form-control form-control-sm"
-                 style="background:var(--nook-cream);border:2px solid #e1e6d3;border-radius:10px;
-                        font-family:var(--font-main);font-weight:700;font-size:.82rem;">
-        </label>
-        <button type="button" onclick="uploadMap()"
-                class="btn btn-nook-primary px-3 py-2 rounded-3 fw-bold flex-shrink-0"
-                style="font-size:.82rem;">
-          <i class="bi bi-cloud-arrow-up-fill me-1"></i>Upload
-        </button>
-      </form>
-      <!-- Local preview before upload -->
-      <img id="mapPreview" src="" alt="Preview"
-           class="d-none mt-3 rounded-3 w-100"
-           style="max-height:200px;object-fit:cover;border:2px solid var(--nook-accent);">
-      <p id="mapStatus" class="x-small fw-bold mt-2" style="color:#aaa;"></p>
-      {% else %}
-      <div class="alert border-0 rounded-3 py-2 px-3 mt-2"
-           style="background:#fff3cd;color:#856404;font-weight:700;font-size:.85rem;">
-        <i class="bi bi-exclamation-triangle-fill me-2"></i>
-        R2 is not configured — set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
-        R2_BUCKET_NAME, and R2_PUBLIC_URL in your .env to enable map uploads.
-      </div>
-      {% endif %}
-    </div>
-  </div>
+        <!-- ── RIGHT COLUMN: map + filesystem ── -->
+        <div class="col-md-6">
 
-  <!-- Filesystem info -->
-  {% if island.fs_path %}
-  <div class="section-card">
-    <div class="section-card-header">
-      <span><i class="bi bi-folder2-open me-2" style="color:var(--nook-yellow);"></i>Live Filesystem Data</span>
-    </div>
-    <div class="p-4">
-      <div class="row g-3 x-small fw-bold">
-        <div class="col-sm-6">
-          <span style="color:#bbb;">Dodo (file):</span>
-          <span class="font-monospace ms-1" style="color:var(--nook-green);">{{ island.fs_dodo or "—" }}</span>
-        </div>
-        <div class="col-sm-6">
-          <span style="color:#bbb;">Visitors (file):</span>
-          <span class="ms-1" style="color:#888;">{{ island.fs_visitors or "—" }}</span>
-        </div>
-        <div class="col-12">
-          <span style="color:#bbb;">Path:</span>
-          <span class="font-monospace ms-1" style="color:#bbb;word-break:break-all;">{{ island.fs_path }}</span>
-        </div>
-      </div>
-    </div>
-  </div>
-  {% endif %}
+            <!-- Map card -->
+            <div class="section-card mb-4">
+                <div class="section-card-header">
+                    <span><i class="bi bi-map-fill me-2 text-nook-green"></i>Island Map</span>
+                </div>
+                <div class="p-4">
 
-</div>
+                    {% if island.map_url %}
+                    <div class="polaroid-stack mb-4">
+                        <div class="tape-strip"></div>
+                        <div class="map-polaroid">
+                            <div class="img-wrapper" style="border-radius:6px;">
+                                <img id="mapCurrent" src="{{ island.map_url }}" alt="{{ island.name }} map"
+                                     class="map-img" style="max-height:260px;width:100%;border-radius:6px;">
+                                <div class="zoom-indicator"><i class="bi bi-zoom-in"></i></div>
+                            </div>
+                            <div class="polaroid-caption">{{ island.name }}</div>
+                        </div>
+                    </div>
+                    {% else %}
+                    <p class="x-small fw-bold mb-3" style="color:#ccc;">
+                        <i class="bi bi-image me-1"></i>No map uploaded yet.
+                    </p>
+                    {% endif %}
+
+                    {% if r2_configured %}
+                    <form id="mapForm" class="d-flex align-items-center gap-3">
+                        <label class="flex-grow-1 cursor-pointer">
+                            <span class="visually-hidden">Choose map image</span>
+                            <input type="file" id="mapFile" accept="image/jpeg,image/png,image/webp,image/gif"
+                                   class="form-control form-control-sm"
+                                   style="background:var(--nook-cream);border:2px solid #e1e6d3;border-radius:10px;
+                            font-family:var(--font-main);font-weight:700;font-size:.82rem;">
+                        </label>
+                        <button type="button" onclick="uploadMap()"
+                                class="btn btn-nook-primary px-3 py-2 rounded-3 fw-bold flex-shrink-0"
+                                style="font-size:.82rem;">
+                            <i class="bi bi-cloud-arrow-up-fill me-1"></i>Upload
+                        </button>
+                    </form>
+                    <img id="mapPreview" src="" alt="Preview"
+                         class="d-none mt-3 rounded-3 w-100"
+                         style="max-height:200px;object-fit:cover;border:2px solid var(--nook-accent);">
+                    <p id="mapStatus" class="x-small fw-bold mt-2" style="color:#aaa;"></p>
+                    {% else %}
+                    <div class="alert border-0 rounded-3 py-2 px-3 mt-2"
+                         style="background:#fff3cd;color:#856404;font-weight:700;font-size:.85rem;">
+                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                        R2 is not configured — set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+                        R2_BUCKET_NAME, and R2_PUBLIC_URL in your .env to enable map uploads.
+                    </div>
+                    {% endif %}
+
+                </div>
+            </div><!-- /map card -->
+
+            <!-- Filesystem info -->
+            {% if island.fs_path %}
+            <div class="section-card">
+                <div class="section-card-header">
+                    <span><i class="bi bi-folder2-open me-2" style="color:var(--nook-yellow);"></i>Live Filesystem Data</span>
+                </div>
+                <div class="p-4">
+                    <div class="row g-3 x-small fw-bold">
+                        <div class="col-sm-6">
+                            <span style="color:#bbb;">Dodo (file):</span>
+                            <span class="font-monospace ms-1" style="color:var(--nook-green);">{{ island.fs_dodo or "—" }}</span>
+                        </div>
+                        <div class="col-sm-6">
+                            <span style="color:#bbb;">Visitors (file):</span>
+                            <span class="ms-1" style="color:#888;">{{ island.fs_visitors or "—" }}</span>
+                        </div>
+                        <div class="col-12">
+                            <span style="color:#bbb;">Path:</span>
+                            <span class="font-monospace ms-1" style="color:#bbb;word-break:break-all;">{{ island.fs_path }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+        </div><!-- /col-md-6 RIGHT -->
+
+    </div><!-- /row -->
+</div><!-- /container -->
 
 {% block scripts %}
 <script>
-/* ---- Items tag editor ---- */
-function syncItemsJson() {
-  const textarea = document.getElementById('itemsTextarea');
-  const tags     = Array.from(document.querySelectorAll('#tagsDisplay span'))
-                       .map(s => s.textContent.trim().replace('×','').trim())
-                       .filter(Boolean);
-  const fromTextarea = textarea.value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
-  const all = [...new Set([...tags, ...fromTextarea])];
-  document.getElementById('itemsJson').value = JSON.stringify(all);
-  const display = document.getElementById('tagsDisplay');
-  display.innerHTML = all.map(item =>
-    `<span class="d-inline-flex align-items-center gap-1 px-2 py-1 rounded-pill"
+    /* ---- Items tag editor ---- */
+    function syncItemsJson() {
+        const textarea = document.getElementById('itemsTextarea');
+        const tags     = Array.from(document.querySelectorAll('#tagsDisplay span'))
+            .map(s => s.textContent.trim().replace('×','').trim())
+            .filter(Boolean);
+        const fromTextarea = textarea.value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+        const all = [...new Set([...tags, ...fromTextarea])];
+        document.getElementById('itemsJson').value = JSON.stringify(all);
+        const display = document.getElementById('tagsDisplay');
+        display.innerHTML = all.map(item =>
+            `<span class="d-inline-flex align-items-center gap-1 px-2 py-1 rounded-pill"
            style="background:#e8f5e9;border:1px solid #b8dfc0;color:#1a6b2a;font-size:.75rem;font-weight:700;">
        ${escHtml(item)}
        <button type="button" onclick="removeTag(this)"
                class="border-0 bg-transparent p-0 lh-1 ms-1"
                style="color:inherit;font-size:1rem;">&times;</button>
      </span>`
-  ).join('');
-  textarea.value = '';
-}
-function removeTag(btn) {
-  btn.closest('span').remove();
-  syncItemsJson();
-}
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-document.getElementById('islandForm').addEventListener('submit', function() {
-  syncItemsJson();
-});
-document.getElementById('itemsTextarea').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') { e.preventDefault(); syncItemsJson(); }
-});
-
-/* ---- Map file preview ---- */
-const _mapFileInput = document.getElementById('mapFile');
-if (_mapFileInput) {
-  _mapFileInput.addEventListener('change', function() {
-    const preview = document.getElementById('mapPreview');
-    const file = this.files[0];
-    if (!file) { preview.classList.add('d-none'); preview.src = ''; return; }
-    const reader = new FileReader();
-    reader.onload = e => { preview.src = e.target.result; preview.classList.remove('d-none'); };
-    reader.readAsDataURL(file);
-  });
-}
-
-/* ---- Map upload ---- */
-async function uploadMap() {
-  const file   = document.getElementById('mapFile').files[0];
-  const status = document.getElementById('mapStatus');
-  if (!file) { status.textContent = 'Please choose a file first.'; return; }
-
-  const fd = new FormData();
-  fd.append('map', file);
-  status.textContent = 'Uploading…';
-
-  try {
-    const resp = await fetch('{{ url_for("dashboard.api_island_upload_map", name=island.id) }}', {
-      method: 'POST',
-      body: fd,
-    });
-    const data = await resp.json();
-    if (resp.ok) {
-      status.textContent = 'Uploaded successfully!';
-      const current = document.getElementById('mapCurrent');
-      const preview = document.getElementById('mapPreview');
-      if (current) {
-        current.src = preview.src;
-      } else {
-        const img = document.createElement('img');
-        img.id = 'mapCurrent';
-        img.alt = 'Island map';
-        img.src = preview.src;
-        img.className = 'map-img rounded-3 w-100';
-        img.style.maxHeight = '260px';
-        document.getElementById('mapForm').before(img);
-        const ph = document.querySelector('#mapForm').parentElement.querySelector('p.x-small');
-        if (ph) ph.remove();
-      }
-      preview.classList.add('d-none');
-      preview.src = '';
-      document.getElementById('mapFile').value = '';
-    } else {
-      status.textContent = 'Error: ' + (data.error || resp.statusText);
+        ).join('');
+        textarea.value = '';
     }
-  } catch (err) {
-    status.textContent = 'Upload failed: ' + err.message;
-  }
-}
+    function removeTag(btn) {
+        btn.closest('span').remove();
+        syncItemsJson();
+    }
+    function escHtml(s) {
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+    document.getElementById('islandForm').addEventListener('submit', function() {
+        syncItemsJson();
+    });
+    document.getElementById('itemsTextarea').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); syncItemsJson(); }
+    });
+
+    /* ---- Map file preview ---- */
+    const _mapFileInput = document.getElementById('mapFile');
+    if (_mapFileInput) {
+        _mapFileInput.addEventListener('change', function() {
+            const preview = document.getElementById('mapPreview');
+            const file = this.files[0];
+            if (!file) { preview.classList.add('d-none'); preview.src = ''; return; }
+            const reader = new FileReader();
+            reader.onload = e => { preview.src = e.target.result; preview.classList.remove('d-none'); };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    /* ---- Map upload ---- */
+    async function uploadMap() {
+        const file   = document.getElementById('mapFile').files[0];
+        const status = document.getElementById('mapStatus');
+        if (!file) { status.textContent = 'Please choose a file first.'; return; }
+
+        const fd = new FormData();
+        fd.append('map', file);
+        status.textContent = 'Uploading…';
+
+        try {
+            const resp = await fetch('{{ url_for("dashboard.api_island_upload_map", name=island.id) }}', {
+                method: 'POST',
+                body: fd,
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                status.textContent = 'Uploaded successfully!';
+                const current = document.getElementById('mapCurrent');
+                const preview = document.getElementById('mapPreview');
+                if (current) {
+                    current.src = preview.src;
+                } else {
+                    const img = document.createElement('img');
+                    img.id = 'mapCurrent';
+                    img.alt = 'Island map';
+                    img.src = preview.src;
+                    img.className = 'map-img rounded-3 w-100';
+                    img.style.maxHeight = '260px';
+                    document.getElementById('mapForm').before(img);
+                    const ph = document.querySelector('#mapForm').parentElement.querySelector('p.x-small');
+                    if (ph) ph.remove();
+                }
+                preview.classList.add('d-none');
+                preview.src = '';
+                document.getElementById('mapFile').value = '';
+            } else {
+                status.textContent = 'Error: ' + (data.error || resp.statusText);
+            }
+        } catch (err) {
+            status.textContent = 'Upload failed: ' + err.message;
+        }
+    }
 </script>
 {% endblock %}
 {% endblock %}
