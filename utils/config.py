@@ -74,11 +74,13 @@ class Config:
     FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY") or __import__("secrets").token_hex(32)
 
     # Discord OAuth2 — for dashboard login via Discord.
-    # Register an application at https://discord.com/developers/applications and
-    # add the callback URL as a redirect in the OAuth2 settings.
+    # Register an application at https://discord.com/developers/applications,
+    # set OAuth2 → Redirects to your dashboard's callback URL:
+    #   https://your-domain/dashboard/oauth2/callback
+    # Only DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET need to be set here;
+    # the redirect URI is derived automatically from the incoming request.
     DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID", "")
     DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
-    DISCORD_REDIRECT_URI  = os.getenv("DISCORD_REDIRECT_URI", "")
 
     # Moderator role IDs for role-based dashboard access.
     # Administrator / Senior Mod → full dashboard access

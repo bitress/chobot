@@ -453,9 +453,14 @@ def oauth2_redirect():
         return redirect(url_for("dashboard.login"))
     state = secrets.token_hex(16)
     session["oauth_state"] = state
+    # Derive the callback URL from the current request so operators don't need
+    # to set a DISCORD_REDIRECT_URI env var — just register this URL in the
+    # Discord application's OAuth2 Redirects list:
+    #   https://your-domain/dashboard/oauth2/callback
+    callback_url = url_for("dashboard.oauth2_callback", _external=True)
     params = urllib.parse.urlencode({
         "client_id":     Config.DISCORD_CLIENT_ID,
-        "redirect_uri":  Config.DISCORD_REDIRECT_URI,
+        "redirect_uri":  callback_url,
         "response_type": "code",
         "scope":         "identify guilds.members.read",
         "state":         state,
@@ -482,13 +487,15 @@ def oauth2_callback():
         return redirect(url_for("dashboard.login"))
 
     # Exchange authorization code for access token
+    # The redirect_uri must exactly match what was sent during the authorization request.
+    callback_url = url_for("dashboard.oauth2_callback", _external=True)
     try:
         token_body = urllib.parse.urlencode({
             "client_id":     Config.DISCORD_CLIENT_ID,
             "client_secret": Config.DISCORD_CLIENT_SECRET,
             "grant_type":    "authorization_code",
             "code":          code,
-            "redirect_uri":  Config.DISCORD_REDIRECT_URI,
+            "redirect_uri":  callback_url,
         }).encode()
         req = urllib.request.Request(
             "https://discord.com/api/oauth2/token",
