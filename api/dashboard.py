@@ -975,41 +975,42 @@ def island_status():
     try:
         rows = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
-        bot_status = _load_bot_status_map(db)
     except sqlite3.Error:
         db_islands = []
-        bot_status = {}
     finally:
         db.close()
 
-    # Attach discord_bot_online to each island record (default False if not in bot_status)
-    for isl in db_islands:
-        isl["discord_bot_online"] = bot_status.get(isl.get("id", ""), False)
-
     island_count = len(db_islands)
-    online_count = sum(1 for isl in db_islands if isl.get("discord_bot_online"))
-    offline_count = island_count - online_count
+
+    # Group islands by their status field (matches index dashboard breakdown)
+    grouped = {"ONLINE": [], "SUB ONLY": [], "REFRESHING": [], "OFFLINE": []}
+    for isl in db_islands:
+        isl_status = isl.get("status") if isl.get("status") in grouped else "OFFLINE"
+        grouped[isl_status].append(isl)
+
+    online_count      = len(grouped["ONLINE"])
+    sub_only_count    = len(grouped["SUB ONLY"])
+    refreshing_count  = len(grouped["REFRESHING"])
+    offline_count     = len(grouped["OFFLINE"])
 
     def _pct(count):
         return round(count * 100 / island_count) if island_count else 0
 
-    online_pct = _pct(online_count)
-    off_pct = _pct(offline_count)
-
-    # Group islands by discord_bot_online for the per-section tables
-    grouped = {"ONLINE": [], "OFFLINE": []}
-    for isl in db_islands:
-        if isl.get("discord_bot_online"):
-            grouped["ONLINE"].append(isl)
-        else:
-            grouped["OFFLINE"].append(isl)
+    online_pct     = _pct(online_count)
+    sub_only_pct   = _pct(sub_only_count)
+    refreshing_pct = _pct(refreshing_count)
+    off_pct        = _pct(offline_count)
 
     return render_template(
         "dashboard/status.html",
         island_count=island_count,
         online_count=online_count,
+        sub_only_count=sub_only_count,
+        refreshing_count=refreshing_count,
         offline_count=offline_count,
         online_pct=online_pct,
+        sub_only_pct=sub_only_pct,
+        refreshing_pct=refreshing_pct,
         off_pct=off_pct,
         grouped=grouped,
     )
