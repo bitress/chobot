@@ -471,8 +471,9 @@ def island_detail(name):
         isl_cat          = request.form.get("cat", "public")
         isl_theme        = request.form.get("theme", "teal")
         isl_status       = request.form.get("status", "OFFLINE")
-        isl_dodo         = request.form.get("dodo_code", "").strip() or None
-        isl_visitors_raw = request.form.get("visitors", "0").strip()
+        isl_dodo         = meta["dodo_code"] if meta else _read_file(fs_path, "Dodo.txt")
+        _fs_visitors_raw = _read_file(fs_path, "Visitors.txt") if not meta and fs_path else None
+        isl_visitors_raw = str(meta["visitors"]) if meta else (_fs_visitors_raw or "0")
 
         # items come as a JSON array from the hidden input
         items_raw = request.form.get("items_json", "") or request.form.get("items", "")
@@ -497,10 +498,7 @@ def island_detail(name):
             for e in errors:
                 flash(e, "error")
         else:
-            if isl_dodo and fs_path:
-                _write_file(fs_path, "Dodo.txt", isl_dodo)
-            if fs_path:
-                _write_file(fs_path, "Visitors.txt", str(isl_visitors))
+            # dodo_code and visitors are managed by island bots; do not write to filesystem
 
             db2 = get_db()
             try:
