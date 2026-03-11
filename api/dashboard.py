@@ -11,6 +11,7 @@ import secrets
 import sqlite3
 import logging
 import mimetypes
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -65,57 +66,60 @@ ALLOWED_MAP_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 
 # ---------------------------------------------------------------------------
-# All 47 island seeds  (from the TypeScript ISLANDS_DATA constant)
+# Discord user resolution
 # ---------------------------------------------------------------------------
-_SAMPLE_ISLANDS = [
-    {"id":"adhika","name":"ADHIKA","status":"SUB ONLY","type":"Treasure Island","seasonal":"Year-Round","items":["Pink Furniture Items","Pink Decoration Items","Pink Wall-Mounted Items","Pink Ceiling Items","Villagers"],"visitors":2,"cat":"member","theme":"gold","description":"Subscriber-only treasure island dedicated exclusively to pink items (furniture, decorations, wall-mounted, ceiling) and villagers.","dodo_code":None},
-    {"id":"alapaap","name":"ALAPAAP","status":"SUB ONLY","type":"Treasure Island","seasonal":"Year-Round","items":["Random 2.0 Items","New DIYs","2.0 Villager Photos and Posters","New Vehicles","Old and New Materials","Cool New Items","Gyroids","New Food Items","2.0 Fence","2.0 Nook Miles Redemption","2.0 Furnitures","Villagers in Boxes","Turnips"],"visitors":2,"cat":"member","theme":"gold","description":"Subscriber-only treasure island packed with full 2.0 content, DIYs, vehicles, gyroids, and villagers in boxes.","dodo_code":None},
-    {"id":"aruga","name":"ARUGA","status":"SUB ONLY","type":"Patreon Exclusive","seasonal":"Year-Round","items":["Cherry Blossom Items","Young Spring Bamboo Items","Summer Items","Tree's Bounty Items","Maple Leaf Items","Mush Items","Ice Furniture","Christmas (Festive) Items","January Seasonal Items","February Seasonal Items","March Seasonal Items","April Seasonal Items","May Seasonal Items","June Seasonal Items","July Seasonal Items","August Items","September Items","October & November Seasonal Items","December Seasonal Items","Bunny Day Items","Festivale Items","Materials","Golden Tools","Nook Miles Ticket","Turnips","Villagers in Boxes"],"visitors":0,"cat":"member","theme":"gold","description":"Patreon-exclusive seasonal island featuring complete event items, materials, golden tools, and rotating monthly sets.","dodo_code":None},
-    {"id":"bahaghari","name":"BAHAGHARI","status":"SUB ONLY","type":"Treasure Island","seasonal":"Year-Round","items":["Random 2.0 Items","New DIYs","2.0 Villager Photos and Posters","New Vehicles","Old and New Materials","Cool New Items","Gyroids","New Food Items","2.0 Fence","2.0 Nook Miles Redemption","2.0 Furnitures","Villagers in Boxes","Turnips"],"visitors":4,"cat":"member","theme":"gold","description":"Subscriber-only treasure island offering a balanced mix of 2.0 items, DIYs, vehicles, food, and villagers.","dodo_code":None},
-    {"id":"bituin","name":"BITUIN","status":"SUB ONLY","type":"Treasure Island","seasonal":"Year-Round","items":["Bathroom Appliances","Electronics","Tables","Toys","Home Decor","Home Appliances","Beds","Outdoor Decor","Vanity Mirror","Foods","Camping Items","Beach Items","Garden Decor","Plants","Lamps & Lights","Nook's Sports Items","Chairs & Sofas","Garden Items","Musical Instruments","Turnips","Villagers in Boxes"],"visitors":0,"cat":"member","theme":"gold","description":"Subscriber-only furniture island focused on household items, decor, electronics, plants, and lifestyle essentials.","dodo_code":None},
-    {"id":"bonita","name":"BONITA","status":"SUB ONLY","type":"Treasure Island","seasonal":"Year-Round","items":["All Tops","All Bottoms","All Dress-Up","All Headwear","All Shoes","All Bags","All Accessories","Umbrellas","Turnips","Villagers in Boxes"],"visitors":0,"cat":"member","theme":"gold","description":"Subscriber-only fashion island with complete clothing sets, accessories, bags, shoes, and umbrellas.","dodo_code":None},
-    {"id":"dalisay","name":"DALISAY","status":"SUB ONLY","type":"Patreon Exclusive","seasonal":"Year-Round","items":["DIY Equipment","DIY Housewares","DIY Miscellaneous","DIY Rug Wallpaper Flooring","DIY Tools Wall Mounted Fence and Others","DIY Savory & Sweets","Fish","Sea Creatures","Bugs","Fruits","Full Grown Trees","Flower Seeds","Flowers","Gyroids","Fence","Wallpaper & Flooring","Wrapping Paper","NMT Bells Royal Crown","Turnips","Villagers in Boxes"],"visitors":0,"cat":"member","theme":"gold","description":"Patreon-exclusive resource island featuring DIYs, critters, plants, materials, currency items, and villagers.","dodo_code":None},
-    {"id":"galak","name":"GALAK","status":"SUB ONLY","type":"Treasure Island","seasonal":"Year-Round","items":["Cherry Blossom Items","Young Spring Bamboo Items","Summer Items","Tree's Bounty Items","Maple Leaf Items","Mush Items","Ice Furniture","Christmas (Festive) Items","January Seasonal Items","February Seasonal Items","March Seasonal Items","April Seasonal Items","May Seasonal Items","June Seasonal Items","July Seasonal Items","August Items","September Items","October & November Seasonal Items","December Seasonal Items","Bunny Day Items","Festivale Items","Materials","Golden Tools","Nook Miles Ticket","Turnips","Villagers in Boxes"],"visitors":0,"cat":"member","theme":"gold","description":"Subscriber-only seasonal island stocked with event furniture, materials, golden tools, and rare collectibles.","dodo_code":None},
-    {"id":"giliw","name":"GILIW","status":"SUB ONLY","type":"Treasure Island","seasonal":"Year-Round","items":["Pink Furniture Items","Pink Decoration Items","Pink Wall-Mounted Items","Pink Ceiling Items","Villagers"],"visitors":2,"cat":"member","theme":"gold","description":"Subscriber-only treasure island dedicated exclusively to pink items (furniture, decorations, wall-mounted, ceiling) and villagers.","dodo_code":None},
-    {"id":"hiraya","name":"HIRAYA","status":"SUB ONLY","type":"Patreon Exclusive","seasonal":"Year-Round","items":["Antique Set","Imperial Set","Cute Set","Diner Set","Ratan Set","Robot Heroes","Nook Miles Redemption","Pocket Camp Items","Birthday Items","Butterfly Models","Wedding Items","Celeste Items","Bunny Day Items","K.K. Slider Songs","Library Items","Mats","Kitchen Items","NMT Customization Kits","Fish Baits","Pitfall Seeds","Zodiac Items","Seasonal Items","Gulliver Items","Trash Items","Hello Kitty","Gullivar Items","Mermaid Items","Moms Items","Flowers","Bug Off Fishing Tourney Gift Wrapper","Golden Tools","Simple Panels","Turnips","Villagers in Boxes"],"visitors":0,"cat":"member","theme":"gold","description":"Patreon-exclusive curated island featuring premium furniture sets, Sanrio items, Celeste items, and rare decor.","dodo_code":None},
-    {"id":"lakan","name":"LAKAN","status":"SUB ONLY","type":"Treasure Island","seasonal":"Year-Round","items":["Bathroom Appliances","Home Appliances","Electronics","Beds","Tables","Chairs & Sofas","Toys","Vanity Mirror","Home Decor","Outdoor Decor","Plants","Foods","Lamps & Lights","Garden Items","Garden Decor","Camping Items","Beach Items","Nooks Sports Items","Musical Instruments","Turnips","Villagers in Boxes"],"visitors":1,"cat":"member","theme":"gold","description":"Subscriber-only furniture island offering a wide selection of indoor, outdoor, and themed home furnishings.","dodo_code":None},
-    {"id":"likha","name":"LIKHA","status":"SUB ONLY","type":"Treasure Island","seasonal":"Year-Round","items":["DIY Equipment","DIY Housewares","Fish","Sea Creatures","Bugs","Full Grown Trees","Flowers","Flower Seeds","Bush","DIY Miscellaneous","DIY Rug","Wallpaper","Flooring","DIY Tools","Wall Mounted Items","Fence","DIY Savory & Sweets","Gyroids","Wallpaper & Flooring","Wrapping Paper","NMT","Bells","Royal Crown","Turnips","Villagers in Boxes"],"visitors":1,"cat":"member","theme":"gold","description":"Subscriber-only materials and DIY island filled with crafting resources, critters, plants, and essential tools.","dodo_code":None},
-    {"id":"marahuyo","name":"MARAHUYO","status":"SUB ONLY","type":"Patreon Exclusive","seasonal":"Year-Round","items":["Critters","Shrubs / Bush","Flowers","Complete DIY 1","Complete DIY 2","Mats","K.K. Slider","Kicks Items","Musical Instruments","Fences","Fossils","Bookshelf","Manhole Cover","Floor Lights","Special Character Posters","Paintings and Statues","Sahara Items","Complete Wrapping Paper","All House Plant Items","Villager Photos","Nook Miles Ticket","Updated Items","Royal Crown","Trash","Bugs and Fish Models","Simple Panels","Seasonal Nook Items","Turnips","Villagers in Boxes"],"visitors":0,"cat":"member","theme":"gold","description":"Patreon-exclusive island focused on rare items, complete DIYs, art, villager photos, and high-value collectibles.","dodo_code":None},
-    {"id":"tagumpay","name":"TAGUMPAY","status":"SUB ONLY","type":"Patreon Exclusive","seasonal":"Year-Round","items":["Antique Set","Imperial Set","Cute Set","Diner Set","Rattan Set","Robot Heroes","Kitchen Items","Mats","Simple Panels","Library Items","Nook Miles Redemption","Pocket Camp Items","Birthday Items","Wedding Items","Bunny Day Items","Seasonal Items","Zodiac Items","Bug-Off","Fishing Tourney","Gift Wrapper","Flowers","Butterfly Models","Celeste Items","Gulliver Items","Gullivar Items","Mom's Items","Mermaid Items","Sanrio Items","Hello Kitty","Golden Tools","Turnips","NMT Customization Kits","Fish Baits","Pitfall Seeds","Trash Items","K.K. Slider Songs","Updated Items","Villagers in Boxes"],"visitors":1,"cat":"member","theme":"gold","description":"Patreon-exclusive island showcasing carefully curated premium and exclusive item sets.","dodo_code":None},
-    {"id":"kilig","name":"KILIG","status":"ONLINE","type":"1.0 Treasure Island","seasonal":"Year-Round","items":["Antique Set","Imperial Set","Cute Set","Diner Set","Ratan Set","Robot Heroes","Nook Miles Redemption","Pocket Camp Items","Birthday Items","Butterfly Models","Wedding Items","Celeste Items","Bunny Day Items","K.K. Slider Songs","Library Items","Mats","Kitchen Items","Zodiac Items","Seasonal Items","Moms Items","Flowers","Bug Off","Fishing Tourney","Gift Wrapper","Sanrio Items","Updated Items","Golden Tools","Simple Panels","Turnips","Villagers in Boxes","NMT","Customization Kits","Fish Baits","Pitfall Seeds","Gulliver Items","Trash Items","Hello Kitty","Gullivar Items","Mermaid Items"],"visitors":4,"cat":"public","theme":"teal","description":"Classic 1.0 treasure island featuring complete furniture sets, rare items, DIYs, and villagers in boxes.","dodo_code":"6FVD0"},
-    {"id":"maharlika","name":"MAHARLIKA","status":"ONLINE","type":"Furniture Island","seasonal":"Year-Round","items":["Bathroom Appliances","Home Appliances","Electronics","Beds","Tables","Chairs & Sofas","Toys","Vanity Mirror","Home Decor","Outdoor Decor","Plants","Foods","Lamps & Lights","Garden Items","Garden Decor","Camping Items","Beach Items","Nooks Sports Items","Musical Instruments","Turnips","Villagers in Boxes"],"visitors":4,"cat":"public","theme":"purple","description":"Furniture-focused island offering elegant housewares, appliances, decor, and complete home essentials.","dodo_code":"2V23R"},
-    {"id":"harana","name":"HARANA","status":"ONLINE","type":"Critters & DIY","seasonal":"Year-Round","items":["Critters","Shrubs / Bush","Flowers","Complete DIY 1","Complete DIY 2","Mats","K.K. Slider","Kicks Items","Musical Instruments","Fences","Fossils","Bookshelf Manhole Cover Floor Lights","Special Character Posters","Paintings and Statues","Complete Wrapping Paper","All House Plant Items","Saharah Items","Fruits","Villager Photos","Nook Miles Ticket","Updated Items","Trash","Bugs and Fish Models","Seasonal Nook Items","Turnips","Villagers in Boxes"],"visitors":4,"cat":"public","theme":"teal","description":"Curated island for DIYs, art, critter models, posters, and must-have progression items.","dodo_code":"J8QLW"},
-    {"id":"kakanggata","name":"KAKANGGATA","status":"ONLINE","type":"1.0 Treasure Island","seasonal":"Summer","items":["Antique Set","Imperial Set","Cute Set","Diner Set","Ratan Set","Robot Heroes","Nook Miles Redemption","Pocket Camp Items","Birthday Items","Butterfly Models","Wedding Items","Celeste Items","Bunny Day Items","K.K. Slider Songs","Library Items","Mats","Kitchen Items","NMT Customization Kits","Fish Baits","Pitfall Seeds","Zodiac Items","Seasonal Items","Gulliver Items","Trash Items","Hello Kitty","Gullivar Items","Mermaid Items","Moms Items","Flowers","Bug Off Fishing Tourney Gift Wrapper","Sanrio Items","Updated Items","Golden Tools","Simple Panels","Turnips","Villagers in Boxes"],"visitors":0,"cat":"public","theme":"teal","description":"Summer-themed treasure island featuring beach items, seasonal furniture, and warm-weather collectibles.","dodo_code":"GETTIN"},
-    {"id":"bathala","name":"BATHALA","status":"ONLINE","type":"2.0 Treasure Island","seasonal":"Year-Round","items":["Random 2.0 Items","New DIYs","2.0 Villager Photos and Posters","New Vehicles","Old and New Materials","Cool New Items","Gyroids","New Food Items","2.0 Fence","2.0 Nook Miles Redemption","2.0 Furnitures","Villagers in Boxes","Turnips"],"visitors":4,"cat":"public","theme":"teal","description":"Full 2.0 treasure island featuring vehicles, vines, moss, cooking items, and modern furniture.","dodo_code":"GR643"},
-    {"id":"kaulayaw","name":"KAULAYAW","status":"ONLINE","type":"2.0 Treasure Island","seasonal":"Year-Round","items":["Random 2.0 Items","New DIYs","2.0 Villager Photos and Posters","New Vehicles","Old and New Materials","Cool New Items","Gyroids","New Food Items","2.0 Fence","2.0 Nook Miles Redemption","2.0 Furnitures","Villagers in Boxes","Turnips"],"visitors":3,"cat":"public","theme":"teal","description":"2.0-focused island centered on cooking, food items, and contemporary furniture pieces.","dodo_code":"2PYP0"},
-    {"id":"tadhana","name":"TADHANA","status":"ONLINE","type":"Furniture Island","seasonal":"Year-Round","items":["Bathroom Appliances","Home Appliances","Electronics","Beds","Tables","Chairs & Sofas","Toys","Vanity Mirror","Home Decor","Outdoor Decor","Plants","Foods","Lamps & Lights","Garden Items","Garden Decor","Camping Items","Beach Items","Nooks Sports Items","Musical Instruments","Turnips","Villagers in Boxes"],"visitors":1,"cat":"public","theme":"purple","description":"Furniture island featuring popular themed sets and a wide range of stylish home decor.","dodo_code":"77KB4"},
-    {"id":"pagsuyo","name":"PAGSUYO","status":"ONLINE","type":"Critters & DIY","seasonal":"Year-Round","items":["Critters","Shrubs / Bush","Flowers","Complete DIY 1","Complete DIY 2","Mats","K.K. Slider","Kicks Items","Musical Instruments","Fences","Fossils","Bookshelf","Manhole Cover","Floor Lights","Special Character Posters","Paintings and Statues","Sahara Items","Complete Wrapping Paper","All House Plant Items","Villager Photos","Nook Miles Ticket","Updated Items","Royal Crown","Trash","Bugs and Fish Models","Simple Panels","Seasonal Nook Items","Turnips","Villagers in Boxes"],"visitors":4,"cat":"public","theme":"teal","description":"Dedicated island for fish and bug models plus genuine and decorative art.","dodo_code":"G2BBV"},
-    {"id":"kalawakan","name":"KALAWAKAN","status":"ONLINE","type":"1.0 Treasure Island","seasonal":"Year-Round","items":["Antique Set","Imperial Set","Cute Set","Diner Set","Ratan Set","Robot Heroes","Nook Miles Redemption","Pocket Camp Items","Birthday Items","Butterfly Models","Wedding Items","Celeste Items","Bunny Day Items","K.K. Slider Songs","Library Items","Mats","Kitchen Items","NMT Customization Kits","Fish Baits","Pitfall Seeds","Zodiac Items","Seasonal Items","Gulliver Items","Trash Items","Hello Kitty","Gullivar Items","Mermaid Items","Moms Items","Flowers","Bug Off Fishing Tourney Gift Wrapper","Sanrio Items","Updated Items","Golden Tools","Simple Panels","Turnips","Villagers in Boxes"],"visitors":3,"cat":"public","theme":"teal","description":"Retro-inspired island with rattan, diner, and throwback furniture sets.","dodo_code":"671SW"},
-    {"id":"dalangin","name":"DALANGIN","status":"ONLINE","type":"2.0 Treasure Island","seasonal":"Year-Round","items":["Random 2.0 Items","New DIYs","2.0 Villager Photos and Posters","New Vehicles","Old and New Materials","Cool New Items","Gyroids","New Food Items","2.0 Fence","2.0 Nook Miles Redemption","2.0 Furnitures","Villagers in Boxes","Turnips"],"visitors":6,"cat":"public","theme":"teal","description":"2.0 island featuring gyroids, new furniture, and shopping-related items.","dodo_code":"2S7Y5"},
-    {"id":"pagsamo","name":"PAGSAMO","status":"ONLINE","type":"Furniture Island","seasonal":"Year-Round","items":["Bathroom Appliances","Home Appliances","Electronics","Beds","Tables","Chairs & Sofas","Toys","Vanity Mirror","Home Decor","Outdoor Decor","Plants","Foods","Lamps & Lights","Garden Items","Garden Decor","Camping Items","Beach Items","Nooks Sports Items","Musical Instruments","Turnips","Villagers in Boxes"],"visitors":5,"cat":"public","theme":"purple","description":"Furniture island focused on elegant, nordic, and ranch-style aesthetics.","dodo_code":"C1DXQ"},
-    {"id":"tala","name":"TALA","status":"ONLINE","type":"Materials and DIY","seasonal":"Year-Round","items":["DIY Equipment","DIY Housewares","Fish","Sea Creatures","Bugs","Full Grown Trees","Flowers","Flower Seeds","Bush","DIY Miscellaneous","DIY Rug","Wallpaper","Flooring","DIY Tools","Wall Mounted Items","Fence","DIY Savory & Sweets","Gyroids","Wallpaper & Flooring","Wrapping Paper","NMT","Bells","Royal Crown","Turnips","Villagers in Boxes"],"visitors":5,"cat":"public","theme":"teal","description":"Material island stocked with crafting resources and star fragments.","dodo_code":"8LVHT"},
-    {"id":"matahom","name":"MATAHOM","status":"ONLINE","type":"Clothing Island","seasonal":"Spring","items":["All Tops","All Bottoms","All Accessories","All Bags","All Headwear","All Dress-Up","All Shoes","Umbrellas","Turnips","Villagers in Boxes"],"visitors":3,"cat":"public","theme":"pink","description":"Fashion island offering traditional and modern clothing accessories.","dodo_code":"LGCWJ"},
-    {"id":"kundiman","name":"KUNDIMAN","status":"ONLINE","type":"1.0 Treasure Island","seasonal":"Year-Round","items":["Antique Set","Imperial Set","Cute Set","Diner Set","Ratan Set","Robot Heroes","Nook Miles Redemption","Pocket Camp Items","Birthday Items","Butterfly Models","Wedding Items","Celeste Items","Bunny Day Items","K.K. Slider Songs","Library Items","Mats","Kitchen Items","Zodiac Items","Seasonal Items","Moms Items","Flowers","Bug Off","Fishing Tourney","Gift Wrapper","Sanrio Items","Updated Items","Golden Tools","Simple Panels","Turnips","Villagers in Boxes","NMT","Customization Kits","Fish Baits","Pitfall Seeds","Gulliver Items","Trash Items","Hello Kitty","Gullivar Items","Mermaid Items"],"visitors":3,"cat":"public","theme":"teal","description":"Classic island for complete 1.0 furniture sets and interior walls and floors.","dodo_code":"3F3SR"},
-    {"id":"gunita","name":"GUNITA","status":"ONLINE","type":"2.0 Treasure Island","seasonal":"Year-Round","items":["Random 2.0 Items","New DIYs","2.0 Villager Photos and Posters","New Vehicles","Old and New Materials","Cool New Items","Gyroids","New Food Items","2.0 Fence","2.0 Nook Miles Redemption","2.0 Furnitures","Villagers in Boxes","Turnips"],"visitors":5,"cat":"public","theme":"teal","description":"2.0 treasure island featuring the latest items, gyroids, and food items.","dodo_code":"2XBP1"},
-    {"id":"silakbo","name":"SILAKBO","status":"ONLINE","type":"Seasonal Items","seasonal":"Halloween","items":["Cherry Blossom Items","Young Spring Bamboo Items","Summer Items","Tree's Bounty Items","Maple Leaf Items","Mush Items","Ice Furniture","Christmas (Festive) Items","January Seasonal Items","February Seasonal Items","March Seasonal Items","April Seasonal Items","May Seasonal Items","June Seasonal Items","July Seasonal Items","August Items","September Items","October & November Seasonal Items","December Seasonal Items","Bunny Day Items","Festivale Items","Materials","Golden Tools","Nook Miles Ticket","Turnips","Villagers in Boxes"],"visitors":2,"cat":"public","theme":"teal","description":"Halloween-themed island with spooky furniture and seasonal treats.","dodo_code":"332CR"},
-    {"id":"sinagtala","name":"SINAGTALA","status":"ONLINE","type":"Materials and DIY","seasonal":"Year-Round","items":["DIY Equipment","DIY Housewares","Fish","Sea Creatures","Bugs","Full Grown Trees","Flowers","Flower Seeds","Bush","DIY Miscellaneous","DIY Rug","Wallpaper","Flooring","DIY Tools","Wall Mounted Items","Fence","DIY Savory & Sweets","Gyroids","Wallpaper & Flooring","Wrapping Paper","NMT","Bells","Royal Crown","Turnips","Villagers in Boxes"],"visitors":0,"cat":"public","theme":"teal","description":"Celestial materials island featuring star fragments and seasonal crafting mats.","dodo_code":"NNK75"},
-    {"id":"paraluman","name":"PARALUMAN","status":"ONLINE","type":"Clothing Island","seasonal":"Winter","items":["All Tops","All Bottoms","All Accessories","All Bags","All Headwear","All Dress-Up","All Shoes","Umbrellas","Turnips","Villagers in Boxes"],"visitors":6,"cat":"public","theme":"pink","description":"Cold-weather fashion island with coats, boots, and stylish headwear.","dodo_code":"FNKT6"},
-    {"id":"amihan","name":"AMIHAN","status":"ONLINE","type":"Seasonal Items","seasonal":"Festive","items":["Cherry Blossom Items","Young Spring Bamboo Items","Summer Items","Tree's Bounty Items","Maple Leaf Items","Mush Items","Ice Furniture","Christmas (Festive) Items","January Seasonal Items","February Seasonal Items","March Seasonal Items","April Seasonal Items","May Seasonal Items","June Seasonal Items","July Seasonal Items","August Items","September Items","October & November Seasonal Items","December Seasonal Items","Bunny Day Items","Festivale Items","Materials","Golden Tools","Nook Miles Ticket","Turnips","Villagers in Boxes"],"visitors":1,"cat":"public","theme":"teal","description":"Winter and holiday island featuring festive decorations and Toy Day items.","dodo_code":"9NK7J"},
-    {"id":"babaylan","name":"BABAYLAN","status":"ONLINE","type":"Seasonal Items","seasonal":"Cherry Blossom","items":["Cherry Blossom Items","Young Spring Bamboo Items","Summer Items","Tree's Bounty Items","Maple Leaf Items","Mush Items","Ice Furniture","Christmas (Festive) Items","January Seasonal Items","February Seasonal Items","March Seasonal Items","April Seasonal Items","May Seasonal Items","June Seasonal Items","July Seasonal Items","August Items","September Items","October & November Seasonal Items","December Seasonal Items","Bunny Day Items","Festivale Items","Materials","Golden Tools","Nook Miles Ticket","Turnips","Villagers in Boxes"],"visitors":2,"cat":"public","theme":"teal","description":"Spring-themed island with cherry-blossom petals, bonsai, and branches.","dodo_code":"17YMJ"},
-    {"id":"dakila","name":"DAKILA","status":"SUB ONLY","type":"Themed Treasure Island","seasonal":"Year-Round","items":["Zelda Theme","Splatoon Theme","Lego Theme","Mario / Tubular Theme","Hotel Theme","Marble Theme","Kiddie Theme","Artful Theme","Standalone Items","Turnips","Villagers"],"visitors":0,"cat":"member","theme":"gold","description":"Subscriber-exclusive themed island featuring Zelda, Splatoon, Lego, and various aesthetic furniture sets.","dodo_code":None},
-    {"id":"kalangitan","name":"KALANGITAN","status":"SUB ONLY","type":"Themed Treasure Island","seasonal":"Year-Round","items":["Zelda Theme","Splatoon Theme","Lego Theme","Mario / Tubular Theme","Hotel Theme","Marble Theme","Kiddie Theme","Artful Theme","Standalone Items","Turnips","Villagers"],"visitors":0,"cat":"member","theme":"gold","description":"Subscriber-exclusive themed island featuring Zelda, Splatoon, Lego, and various aesthetic furniture sets.","dodo_code":None},
-    {"id":"malaya","name":"MALAYA","status":"SUB ONLY","type":"Themed Treasure Island","seasonal":"Year-Round","items":["Zelda Theme","Splatoon Theme","Lego Theme","Mario / Tubular Theme","Hotel Theme","Marble Theme","Kiddie Theme","Artful Theme","Standalone Items","Turnips","Villagers"],"visitors":0,"cat":"member","theme":"gold","description":"Subscriber-exclusive themed island featuring Zelda, Splatoon, Lego, and various aesthetic furniture sets.","dodo_code":None},
-    {"id":"pangarap","name":"PANGARAP","status":"SUB ONLY","type":"Themed Treasure Island","seasonal":"Year-Round","items":["Zelda Theme","Splatoon Theme","Lego Theme","Mario / Tubular Theme","Hotel Theme","Marble Theme","Kiddie Theme","Artful Theme","Standalone Items","Turnips","Villagers"],"visitors":0,"cat":"member","theme":"gold","description":"Subscriber-exclusive themed island featuring Zelda, Splatoon, Lego, and various aesthetic furniture sets.","dodo_code":None},
-    {"id":"dangal","name":"DANGAL","status":"ONLINE","type":"3.0 Themed Island","seasonal":"Year-Round","items":["Zelda Theme","Splatoon Theme","Lego Theme","Mario / Tubular Theme","Hotel Theme","Marble Theme","Kiddie Theme","Artful Theme","Standalone Items","Turnips","Villagers"],"visitors":4,"cat":"public","theme":"teal","description":"3.0 update island featuring Zelda, Splatoon, Lego, and specific aesthetic themes.","dodo_code":"JQ1KB"},
-    {"id":"kariktan","name":"KARIKTAN","status":"ONLINE","type":"3.0 Themed Island","seasonal":"Year-Round","items":["Zelda Theme","Splatoon Theme","Lego Theme","Mario / Tubular Theme","Hotel Theme","Marble Theme","Kiddie Theme","Artful Theme","Standalone Items","Turnips","Villagers"],"visitors":3,"cat":"public","theme":"teal","description":"3.0 update island featuring Zelda, Splatoon, Lego, and specific aesthetic themes.","dodo_code":"33W2J"},
-    {"id":"banaag","name":"BANAAG","status":"ONLINE","type":"3.0 Themed Island","seasonal":"Year-Round","items":["Zelda Theme","Splatoon Theme","Lego Theme","Mario / Tubular Theme","Hotel Theme","Marble Theme","Kiddie Theme","Artful Theme","Standalone Items","Turnips","Villagers"],"visitors":2,"cat":"public","theme":"teal","description":"3.0 update island featuring Zelda, Splatoon, Lego, and specific aesthetic themes.","dodo_code":"LXXQW"},
-    {"id":"sinag","name":"SINAG","status":"ONLINE","type":"3.0 Themed Island","seasonal":"Year-Round","items":["Zelda Theme","Splatoon Theme","Lego Theme","Mario / Tubular Theme","Hotel Theme","Marble Theme","Kiddie Theme","Artful Theme","Standalone Items","Turnips","Villagers"],"visitors":6,"cat":"public","theme":"teal","description":"3.0 update island featuring Zelda, Splatoon, Lego, and specific aesthetic themes.","dodo_code":"3D7L6"},
-    {"id":"giting","name":"GITING","status":"ONLINE","type":"3.0 Themed Island","seasonal":"Year-Round","items":["Zelda Theme","Splatoon Theme","Lego Theme","Mario / Tubular Theme","Hotel Theme","Marble Theme","Kiddie Theme","Artful Theme","Standalone Items","Turnips","Villagers"],"visitors":4,"cat":"public","theme":"teal","description":"3.0 update island featuring Zelda, Splatoon, Lego, and specific aesthetic themes.","dodo_code":"CG3PD"},
-    {"id":"diwa","name":"DIWA","status":"SUB ONLY","type":"Themed Treasure Island","seasonal":"Year-Round","items":["Critters","Shrubs & Bushes","Flowers","Complete DIY Set 1","Complete DIY Set 2","Materials","Kicks Items","K.K. Slider Songs","Musical Instruments","Fences","Fossils","Bookshelf / Manhole Covers / Floor Lights","Special Character Posters","Saharah Items","Paintings & Statues","Complete Wrapping Paper","All House Plant Items","Villager Photos","Nook Miles Tickets","Updated Items","Turnips","Royal Crown","Trash Items","Bugs & Fish Models","Simple Panels","Seasonal Nook Items","Villagers in Boxes"],"visitors":0,"cat":"member","theme":"gold","description":"Subscriber-exclusive island with fully organized item categories including DIY sets, materials, furniture collections, posters, fossils, models, and villagers in boxes.","dodo_code":None},
-    {"id":"gabay","name":"GABAY","status":"SUB ONLY","type":"Themed Treasure Island","seasonal":"Year-Round","items":["All Tops","All Bottoms","All Dress-Up","All Shoes","All Headwear","All Accessories","All Bags","Umbrellas","Turnips","Villagers in Boxes"],"visitors":0,"cat":"member","theme":"gold","description":"Subscriber-exclusive clothing island featuring fully organized wearables including tops, bottoms, dress-up outfits, shoes, headwear, accessories, bags, and umbrellas.","dodo_code":None},
-    {"id":"tinig","name":"TINIG","status":"ONLINE","type":"Materials and DIY","seasonal":"Year-Round","items":["DIY Equipment","DIY Housewares","Fish","Sea Creatures","Bugs","Full Grown Trees","Flowers","Flower Seeds","Bush","DIY Miscellaneous","DIY Rug","Wallpaper","Flooring","DIY Tools","Wall Mounted Items","Fence","DIY Savory & Sweets","Gyroids","Wallpaper & Flooring","Wrapping Paper","NMT","Bells","Royal Crown","Turnips","Villagers in Boxes"],"visitors":6,"cat":"public","theme":"teal","description":"Celestial materials island featuring star fragments and seasonal crafting mats.","dodo_code":"GDY4M"},
-    {"id":"marilag","name":"MARILAG","status":"ONLINE","type":"Clothing Island","seasonal":"Spring","items":["All Tops","All Bottoms","All Accessories","All Bags","All Headwear","All Dress-Up","All Shoes","Umbrellas","Turnips","Villagers in Boxes"],"visitors":0,"cat":"public","theme":"pink","description":"Fashion island offering traditional and modern clothing accessories.","dodo_code":"745QL"},
-]
+# Cache: maps user_id → (display_name, cache_time)
+_discord_user_cache: dict[str, tuple[str, float]] = {}
+_discord_user_cache_lock = threading.Lock()
+_DISCORD_CACHE_TTL = 3600  # seconds — refresh names after 1 hour
+
+
+def _resolve_discord_username(user_id) -> str:
+    """Return the display name for a Discord user ID.
+
+    Calls GET /api/v10/users/{id} using the Bot token and caches results for
+    up to one hour.  Falls back to the raw ID string on any failure or when
+    the token is not configured.
+    """
+    if not user_id:
+        return "—"
+    uid = str(user_id)
+    with _discord_user_cache_lock:
+        cached = _discord_user_cache.get(uid)
+        if cached and (time.monotonic() - cached[1]) < _DISCORD_CACHE_TTL:
+            return cached[0]
+    token = Config.DISCORD_TOKEN
+    if not token:
+        return uid
+    try:
+        req = urllib.request.Request(
+            f"https://discord.com/api/v10/users/{uid}",
+            headers={"Authorization": f"Bot {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        name = data.get("global_name") or data.get("username") or uid
+    except urllib.error.HTTPError as exc:
+        logger.warning("Discord user lookup HTTP %s for %s", exc.code, uid)
+        name = uid
+    except Exception as exc:
+        logger.debug("Discord user lookup failed for %s: %s", uid, exc)
+        name = uid
+    with _discord_user_cache_lock:
+        _discord_user_cache[uid] = (name, time.monotonic())
+    return name
+
+
+def _resolve_discord_usernames(user_ids) -> dict[str, str]:
+    """Resolve a collection of Discord user IDs to display names in one pass.
+
+    Deduplicates the input so each distinct ID is fetched at most once per
+    call.  Returns a mapping of id → display name.
+    """
+    result: dict[str, str] = {}
+    for uid in dict.fromkeys(str(i) for i in user_ids if i):
+        result[uid] = _resolve_discord_username(uid)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +133,7 @@ def get_db():
 
 
 def init_dashboard_db():
-    """Create / migrate dashboard-specific tables and seed island data."""
+    """Create dashboard-specific tables if they do not already exist."""
     try:
         conn = get_db()
 
@@ -173,25 +177,9 @@ def init_dashboard_db():
             )
         """)
 
-        # Seed all 47 islands (INSERT OR IGNORE — never overwrites manual edits)
-        now = datetime.now(timezone.utc).isoformat()
-        for isl in _SAMPLE_ISLANDS:
-            conn.execute(
-                """INSERT OR IGNORE INTO islands
-                       (id, name, type, items, theme, cat, description, seasonal,
-                        status, visitors, dodo_code, map_url, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    isl["id"], isl["name"], isl["type"],
-                    json.dumps(isl["items"]),
-                    isl["theme"], isl["cat"], isl["description"], isl["seasonal"],
-                    isl["status"], isl["visitors"], isl.get("dodo_code"), None, now,
-                ),
-            )
-
         conn.commit()
         conn.close()
-        logger.info("Dashboard DB initialised — %d seed islands available", len(_SAMPLE_ISLANDS))
+        logger.info("Dashboard DB initialised")
     except sqlite3.Error as exc:
         logger.warning("Could not initialise dashboard DB: %s", exc)
 
@@ -867,11 +855,16 @@ def logs():
                 f"{where} ORDER BY w.timestamp DESC LIMIT ? OFFSET ?",
                 params + [per_page, (page - 1) * per_page],
             ).fetchall()
+            name_map = _resolve_discord_usernames(
+                [r["user_id"] for r in rows] + [r["mod_id"] for r in rows if r["mod_id"]]
+            )
             entries = [
                 {
                     "user_id":     r["user_id"],
+                    "user_name":   name_map.get(str(r["user_id"]), str(r["user_id"])),
                     "reason":      r["reason"],
                     "mod_id":      r["mod_id"],
+                    "mod_name":    name_map.get(str(r["mod_id"]), str(r["mod_id"])) if r["mod_id"] else "—",
                     "timestamp":   _ts_to_str(r["timestamp"]),
                     "ign":         r["ign"],
                     "destination": r["destination"],
@@ -1057,6 +1050,9 @@ def analytics():
                 "ORDER BY warn_count DESC LIMIT 10"
             ).fetchall()
         ]
+        warned_name_map = _resolve_discord_usernames(r["user_id"] for r in top_warned)
+        for row in top_warned:
+            row["user_name"] = warned_name_map.get(str(row["user_id"]), str(row["user_id"]))
         # Quick summary stats
         visits_today = db.execute(
             "SELECT COUNT(*) FROM island_visits "

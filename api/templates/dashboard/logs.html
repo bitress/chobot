@@ -132,11 +132,11 @@
       <thead>
         <tr>
           {% if log_type == 'warnings' %}
-            <th>User ID</th>
+            <th>User</th>
             <th>IGN</th>
             <th>Island</th>
             <th>Reason</th>
-            <th>Mod ID</th>
+            <th>Mod</th>
             <th>Time</th>
           {% else %}
             <th>#</th>
@@ -152,12 +152,12 @@
         {% for entry in entries %}
         <tr>
           {% if log_type == 'warnings' %}
-            <td class="font-monospace x-small" style="color:#bbb;">{{ entry.user_id }}</td>
+            <td class="fw-bold" style="color:#444;">{{ entry.user_name }}</td>
             <td class="fw-bold" style="color:#444;">{{ entry.ign or "—" }}</td>
             <td>{{ entry.destination or "—" }}</td>
             <td class="x-small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                 title="{{ entry.reason }}">{{ entry.reason or "—" }}</td>
-            <td class="font-monospace x-small" style="color:#bbb;">{{ entry.mod_id }}</td>
+            <td style="color:#888;">{{ entry.mod_name }}</td>
             <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
           {% else %}
             <td class="x-small" style="color:#bbb;">{{ entry.id }}</td>
