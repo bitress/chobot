@@ -9,7 +9,6 @@ import os
 import sqlite3
 import logging
 import mimetypes
-import uuid
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -202,7 +201,7 @@ def _upload_map_to_r2(file_bytes: bytes, content_type: str, island_id: str) -> s
         )
     ext = mimetypes.guess_extension(content_type) or ".png"
     ext = {".jpe": ".jpg", ".jfif": ".jpg"}.get(ext, ext)
-    key = f"islands/{island_id}/{uuid.uuid4().hex}{ext}"
+    key = f"maps/{island_id}{ext}"
     client.put_object(
         Bucket=Config.R2_BUCKET_NAME,
         Key=key,
