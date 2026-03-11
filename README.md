@@ -9,35 +9,101 @@ Chobot is a unified system to help manage Animal Crossing communities. It watche
 ### Features
 
 * **Flight Logger (Security)**
-    * Watch people who visit islands.
+    * Watch people who visit islands in real-time.
     * Send alert to staff if person is unknown.
-    * Buttons for Admit, Warn, Kick, Ban.
-    * Remove access role automatically if someone is warned.
-    * Send moderation log to channel.
+    * Interactive moderation buttons: **Admit**, **Warn**, **Kick**, **Ban**, **Dismiss**, **Investigate**.
+    * Add investigation notes with the **Note** action.
+    * Remove island access role automatically if someone is warned.
+    * Warnings expire automatically after 3 days.
+    * Track all visits in a local SQLite database.
+    * Send detailed moderation log to a dedicated Discord channel.
+    * Guild-specific configuration for multi-server support.
+    * Slash commands:
+        * `/flight_status` — Display current Flight Logger statistics.
+        * `/recover_flights` — Recover any missing flight records.
+        * `/unwarn <user>` — Remove an active warning from a user.
+        * `/warnings <user>` — View the full warning history for a user.
+        * `/flight_history <user>` — View a user's complete island visit history.
 
-* **Discord & Twitch Utility**
-    * Find items and villagers across sub-islands (!find, !villager).
-    * Smart fuzzy search suggests correct names if you type wrong.
-    * Check bot health with !status command (includes uptime tracking).
-    * Check bot response time with !ping command (Discord only).
-    * Get random item suggestions with !random command.
-    * Comprehensive help system with !help command.
-    * **Chopaeng AI** — ask questions about the community with `!ask` (no paid API needed; optionally supercharged with free Google Gemini).
+* **Discord Bot Commands**
+    * `!find <item>` (alias `!f`) — Search for an item across all islands.
+    * `!villager <name>` — Find which island a villager is on.
+    * `!random` — Get a random item suggestion.
+    * `!islandstatus` — Check if an island is ONLINE, OFFLINE, or FULL.
+    * `!dodo <island>` — Request a dodo code privately via DM.
+    * `!visitors` — List all current visitors on an island.
+    * `!ask <question>` — Ask the Chopaeng AI a question about the community.
+    * `!ping` — Check the bot's current response time.
+    * `!status` — View bot health, uptime, and service information.
+    * `!help` — Display the full help menu.
+    * `!refresh` *(admin only)* — Force an immediate cache refresh from Google Sheets.
+    * `!update` *(admin only)* — Pull the latest code and restart the bot.
 
-* **Island Status (Dodo Codes)**
-    * API reads Dodo.txt and Visitors.txt to show real-time island status.
-    * Show if island is ONLINE, OFFLINE, or FULL.
+* **Twitch Bot Commands**
+    * `!find <item>` (aliases: `!locate`, `!where`, `!lookup`, `!lp`, `!search`) — Search for an item.
+    * `!villager <name>` — Find a villager's location.
+    * `!random` — Get a random item suggestion.
+    * `!ask <question>` — Ask the Chopaeng AI.
+    * `!status` — View bot status.
+    * `!help` — Display available commands.
+
+* **Smart Fuzzy Search**
+    * Multi-strategy search pipeline: exact match → prefix → contains → token overlap → fuzzy → plural fallback.
+    * Context-aware fuzzy thresholds (97 for short queries, down to 80 for longer ones).
+    * Full Unicode support including CJK (Chinese, Japanese, Korean) characters.
+    * Returns close suggestions when an exact match is not found.
+
+* **Island Status & Dodo Codes**
+    * Reads `Dodo.txt` and `Visitors.txt` files to show real-time island status.
+    * Reports island state as **ONLINE**, **OFFLINE**, or **FULL**.
+    * Supports 18 subscriber islands and 27 free islands.
+    * Sends dodo codes securely via DM on request.
+
+* **Chopaeng AI Knowledge Base**
+    * Built-in keyword-based knowledge about the community, guidelines, islands, and VIP info — no paid API required.
+    * Optional upgrade with free **Google Gemini** AI for richer answers.
+    * Per-user conversation history (5-turn memory with a 10-minute expiry).
+    * Available on both Discord (`!ask`) and Twitch (`!ask`).
+
+* **REST API**
+    * `GET /health` or `GET /api/health` — Health check (returns JSON status).
+    * `GET /find?item=<name>` — Search for an item (HTML response).
+    * `GET /api/find` — Search for an item (JSON response).
+    * `GET /api/villager` — Find a villager (JSON response).
+    * `GET /api/villagers/list` — List villagers grouped by island (JSON response).
+    * `GET /api/islands` — Island status, visitors, and dodo codes (JSON response).
+    * `GET /api/patreon/posts` — List cached Patreon posts.
+    * `GET /api/patreon/posts/<id>` — Get a single Patreon post by ID.
+    * `POST /api/refresh` — Trigger a manual cache refresh.
+
+* **Web Dashboard** *(mod-only)*
+    * Secure login with mod-only access.
+    * Island management interface.
+    * Analytics and reporting overview.
+    * Activity logs and visitor tracking.
 
 * **Patreon Integration**
-    * API can fetch and cache your Patreon posts for your website.
+    * Fetch and cache patron posts via the Patreon API.
+    * Extract and serve post images.
+    * Per-post metadata available through the REST API.
 
 * **Data Management**
     * Auto-sync with Google Sheets every hour.
-    * Fast local cache in cache_dump.json.
+    * Fast local cache in `cache_dump.json` for instant startup.
+    * Thread-safe access shared across all services.
 
-* **API Features**
-    * RESTful API endpoints for items, villagers, islands, and Patreon.
-    * Health check endpoint (/health) for monitoring and uptime checks.
+* **Multi-Service Deployment**
+    * Run all services together or independently with 7 launch modes:
+        ```bash
+        python main.py                   # All services
+        python main.py flask             # API only
+        python main.py discord           # Discord bot (all features)
+        python main.py discord-find      # Discord (search commands only)
+        python main.py flight-logger     # Discord (Flight Logger only)
+        python main.py twitch            # Twitch bot (full)
+        python main.py twitch-find       # Twitch (find commands only)
+        ```
+    * Graceful coordinated shutdown on SIGINT/SIGTERM.
 
 
 ## Getting Started

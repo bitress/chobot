@@ -25,6 +25,18 @@
       class="d-flex flex-wrap align-items-center gap-2 mb-4">
   <input type="hidden" name="type" value="flights">
 
+  <!-- IGN search -->
+  <div class="input-group" style="width:190px;">
+    <span class="input-group-text border-0"
+          style="background:var(--nook-cream);border:2px solid #e1e6d3;border-right:none;border-radius:12px 0 0 12px;color:#aaa;">
+      <i class="bi bi-search"></i>
+    </span>
+    <input type="text" name="ign" value="{{ ign_filter }}"
+           placeholder="Search IGN…"
+           class="db-input"
+           style="border-left:none;border-radius:0 12px 12px 0;">
+  </div>
+
   <!-- Island dropdown -->
   <select name="island" class="db-input" style="width:180px;">
     <option value="">All islands</option>
@@ -63,8 +75,36 @@
           style="font-size:.85rem;">
     <i class="bi bi-funnel-fill me-1"></i>Filter
   </button>
-  {% if island_filter or authorized_filter or category_filter %}
+  {% if island_filter or authorized_filter or category_filter or ign_filter %}
   <a href="{{ url_for('dashboard.logs', type='flights') }}"
+     class="btn rounded-3 fw-bold px-4 py-2"
+     style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
+    <i class="bi bi-x-circle me-1"></i>Clear
+  </a>
+  {% endif %}
+</form>
+{% elif log_type == 'warnings' %}
+<form method="GET" action="{{ url_for('dashboard.logs') }}"
+      class="d-flex flex-wrap align-items-center gap-2 mb-4">
+  <input type="hidden" name="type" value="warnings">
+  <!-- IGN search for warnings too -->
+  <div class="input-group" style="width:220px;">
+    <span class="input-group-text border-0"
+          style="background:var(--nook-cream);border:2px solid #e1e6d3;border-right:none;border-radius:12px 0 0 12px;color:#aaa;">
+      <i class="bi bi-search"></i>
+    </span>
+    <input type="text" name="ign" value="{{ ign_filter }}"
+           placeholder="Search IGN…"
+           class="db-input"
+           style="border-left:none;border-radius:0 12px 12px 0;">
+  </div>
+  <button type="submit"
+          class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
+          style="font-size:.85rem;">
+    <i class="bi bi-funnel-fill me-1"></i>Filter
+  </button>
+  {% if ign_filter %}
+  <a href="{{ url_for('dashboard.logs', type='warnings') }}"
      class="btn rounded-3 fw-bold px-4 py-2"
      style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
     <i class="bi bi-x-circle me-1"></i>Clear
@@ -79,6 +119,7 @@
     Showing {{ entries|length }} of {{ total }} entries
     {% if log_type == 'flights' and island_filter %}&nbsp;· island: <strong>{{ island_filter }}</strong>{% endif %}
     {% if log_type == 'flights' and category_filter %}&nbsp;· tier: <strong>{{ category_filter }}</strong>{% endif %}
+    {% if ign_filter %}&nbsp;· ign: <strong>{{ ign_filter }}</strong>{% endif %}
   </span>
   <span class="x-small fw-bold" style="color:#ccc;">Page {{ page }} / {{ total_pages }}</span>
 </div>

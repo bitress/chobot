@@ -710,7 +710,7 @@ class FlightLoggerCog(commands.Cog):
             for r in rows
         ]
 
-    async def record_island_visit(self, ign: str, origin_island: str, destination: str, found_members: list[discord.Member], guild_id: int | None, timestamp: int) -> int | None:
+    async def record_island_visit(self, ign: str, origin_island: str, destination: str, found_members: list[discord.Member], guild_id: int | None, timestamp: int, authorized: int | None = None) -> int | None:
         """Record an island visit (authorized or unauthorized) in the database. Returns the visit ID."""
         db = await self._get_db()
         visit_id = None
@@ -722,9 +722,10 @@ class FlightLoggerCog(commands.Cog):
                 )
                 visit_id = cursor.lastrowid
         else:
+            auth_val = authorized if authorized is not None else 0
             cursor = await db.execute(
-                "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp) VALUES (?, ?, ?, NULL, ?, 0, ?)",
-                (ign, origin_island, destination, guild_id, timestamp)
+                "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp) VALUES (?, ?, ?, NULL, ?, ?, ?)",
+                (ign, origin_island, destination, guild_id, auth_val, timestamp)
             )
             visit_id = cursor.lastrowid
         await db.commit()
@@ -983,6 +984,7 @@ class FlightLoggerCog(commands.Cog):
             ign_clean = clean_text(ign_raw)
             isl_clean = clean_text(island_raw)
             found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_clean, isl_clean)
+
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
 
     async def log_result(self, found_members, status, ign, island, destination, timestamp=None):

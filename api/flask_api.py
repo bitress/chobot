@@ -19,6 +19,8 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from thefuzz import process, fuzz
 
+from werkzeug.middleware.proxy_fix import ProxyFix
+
 from utils.config import Config
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text
 from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value
@@ -29,6 +31,10 @@ logger = logging.getLogger("FlaskAPI")
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = Config.FLASK_SECRET_KEY
+# Trust one level of X-Forwarded-For / X-Forwarded-Proto headers from the
+# reverse proxy (nginx, Cloudflare Tunnel, etc.) so that url_for(_external=True)
+# produces the correct https:// URL instead of http://.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Register the mod-only web dashboard
