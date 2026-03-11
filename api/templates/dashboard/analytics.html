@@ -4,7 +4,9 @@
 {% block header %}Analytics{% endblock %}
 
 {% block head %}
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"
+          integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb"
+          crossorigin="anonymous"></script>
 {% endblock %}
 
 {% block content %}
@@ -311,8 +313,10 @@
     labels:  [{% for r in visits_by_day_30 %}"{{ r.day }}"{% if not loop.last %},{% endif %}{% endfor %}],
     counts:  [{% for r in visits_by_day_30 %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}]
   };
-  const hourLabels = [{% for r in visits_by_hour %}"{{ '%02d'|format(r.hour) }}:00"{% if not loop.last %},{% endif %}{% endfor %}];
-  const hourCounts = [{% for r in visits_by_hour %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}];
+  const dataHour = {
+    labels: [{% for r in visits_by_hour %}"{{ '%02d'|format(r.hour) }}:00"{% if not loop.last %},{% endif %}{% endfor %}],
+    counts: [{% for r in visits_by_hour %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}]
+  };
 
   // ---------- Shared chart defaults ----------
   const tickFont = { size: 11, family: 'Quicksand', weight: '700' };
@@ -464,10 +468,10 @@
   new Chart(document.getElementById('hourChart'), {
     type: 'bar',
     data: {
-      labels: hourLabels,
+      labels: dataHour.labels,
       datasets: [{
         label: 'Visits',
-        data: hourCounts,
+        data: dataHour.counts,
         backgroundColor: 'rgba(245,166,35,0.65)',
         borderRadius: 4,
         borderSkipped: false,
