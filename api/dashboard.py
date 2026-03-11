@@ -570,6 +570,8 @@ def island_detail(name):
     )
 
 
+_ALLOWED_SORT_COLS = {"ign", "destination", "timestamp"}
+
 @dashboard.route("/logs")
 @login_required
 def logs():
@@ -577,10 +579,25 @@ def logs():
     per_page          = 25
     island_filter     = request.args.get("island", "").strip()
     authorized_filter = request.args.get("authorized", "")
+    category_filter   = request.args.get("category", "")
+    sort_by           = request.args.get("sort_by", "timestamp")
+    sort_order        = request.args.get("sort_order", "desc")
     log_type          = request.args.get("type", "flights")
+
+    # Sanitise sort params
+    if sort_by not in _ALLOWED_SORT_COLS:
+        sort_by = "timestamp"
+    sort_order = "asc" if sort_order == "asc" else "desc"
 
     db = get_db()
     try:
+        # Fetch island list for dropdown (used in flights filter UI)
+        island_names = [
+            r[0] for r in db.execute(
+                "SELECT name FROM islands ORDER BY name"
+            ).fetchall()
+        ]
+
         if log_type == "warnings":
             conditions, params = [], []
             where = _where_clause(conditions)
@@ -607,21 +624,47 @@ def logs():
             ]
         else:
             conditions, params = [], []
+            use_island_join = bool(category_filter in ("public", "member"))
+
             if island_filter:
-                conditions.append("destination LIKE ?")
-                params.append(f"%{island_filter}%")
+                col = "iv.destination" if use_island_join else "destination"
+                conditions.append(f"{col} = ?")
+                params.append(island_filter)
             if authorized_filter in ("0", "1"):
-                conditions.append("authorized = ?")
+                col = "iv.authorized" if use_island_join else "authorized"
+                conditions.append(f"{col} = ?")
                 params.append(int(authorized_filter))
-            where = _where_clause(conditions)
-            total = db.execute(
-                f"SELECT COUNT(*) FROM island_visits {where}", params
-            ).fetchone()[0]
-            rows = db.execute(
-                f"SELECT * FROM island_visits {where} "
-                f"ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                params + [per_page, (page - 1) * per_page],
-            ).fetchall()
+            if use_island_join:
+                conditions.append("isl.cat = ?")
+                params.append(category_filter)
+
+            if use_island_join:
+                join_sql = (
+                    "FROM island_visits iv "
+                    "JOIN islands isl ON LOWER(iv.destination) = isl.id"
+                )
+                order_sql = f"iv.{sort_by} {sort_order.upper()}"
+                where = _where_clause(conditions)
+                total = db.execute(
+                    f"SELECT COUNT(*) {join_sql} {where}", params
+                ).fetchone()[0]
+                rows = db.execute(
+                    f"SELECT iv.* {join_sql} {where} "
+                    f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                    params + [per_page, (page - 1) * per_page],
+                ).fetchall()
+            else:
+                where = _where_clause(conditions)
+                order_sql = f"{sort_by} {sort_order.upper()}"
+                total = db.execute(
+                    f"SELECT COUNT(*) FROM island_visits {where}", params
+                ).fetchone()[0]
+                rows = db.execute(
+                    f"SELECT * FROM island_visits {where} "
+                    f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                    params + [per_page, (page - 1) * per_page],
+                ).fetchall()
+
             entries = [
                 {
                     "id":            r["id"],
@@ -634,7 +677,7 @@ def logs():
                 for r in rows
             ]
     except sqlite3.Error:
-        total, entries = 0, []
+        total, entries, island_names = 0, [], []
     finally:
         db.close()
 
@@ -647,7 +690,11 @@ def logs():
         total_pages=max(1, (total + per_page - 1) // per_page),
         island_filter=island_filter,
         authorized_filter=authorized_filter,
+        category_filter=category_filter,
+        sort_by=sort_by,
+        sort_order=sort_order,
         log_type=log_type,
+        island_names=island_names,
     )
 
 
@@ -681,14 +728,24 @@ def analytics():
         auth_raw = db.execute(
             "SELECT authorized, COUNT(*) AS count FROM island_visits GROUP BY authorized"
         ).fetchall()
+        # Visits by island category (public vs member/VIP)
+        cat_raw = db.execute(
+            "SELECT isl.cat, COUNT(*) AS visit_count "
+            "FROM island_visits iv "
+            "JOIN islands isl ON LOWER(iv.destination) = isl.id "
+            "GROUP BY isl.cat"
+        ).fetchall()
     except sqlite3.Error:
         top_islands = top_travelers = visits_by_day = []
         auth_raw = []
+        cat_raw = []
     finally:
         db.close()
 
     auth_map   = {r["authorized"]: r["count"] for r in auth_raw}
     auth_stats = {"authorized": auth_map.get(1, 0), "unauthorized": auth_map.get(0, 0)}
+    cat_map    = {r["cat"]: r["visit_count"] for r in cat_raw}
+    cat_stats  = {"public": cat_map.get("public", 0), "member": cat_map.get("member", 0)}
 
     return render_template(
         "dashboard/analytics.html",
@@ -696,6 +753,7 @@ def analytics():
         top_travelers=top_travelers,
         visits_by_day=visits_by_day,
         auth_stats=auth_stats,
+        cat_stats=cat_stats,
     )
 
 
