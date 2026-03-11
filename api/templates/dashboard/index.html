@@ -15,12 +15,14 @@
     <p class="text-3xl font-bold text-amber-400">{{ total_warnings }}</p>
   </div>
   <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-    <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Free Islands</p>
-    <p class="text-3xl font-bold text-emerald-400">{{ free_count }}</p>
+    <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Islands</p>
+    <p class="text-3xl font-bold text-emerald-400">{{ island_count }}</p>
   </div>
   <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-    <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">VIP Islands</p>
-    <p class="text-3xl font-bold text-purple-400">{{ vip_count }}</p>
+    <a href="{{ url_for('dashboard.analytics') }}" class="block hover:opacity-80 transition">
+      <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Analytics →</p>
+      <p class="text-3xl font-bold text-purple-400">View</p>
+    </a>
   </div>
 </div>
 

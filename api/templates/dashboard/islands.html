@@ -4,70 +4,96 @@
 {% block header %}Islands{% endblock %}
 
 {% block content %}
-<div class="bg-gray-900 border border-gray-800 rounded-xl">
-  <div class="px-5 py-4 border-b border-gray-800 flex items-center justify-between">
-    <h2 class="text-sm font-semibold text-gray-200">
-      All Islands
-      <span class="ml-2 px-2 py-0.5 rounded-full bg-gray-800 text-gray-400 text-xs font-normal">{{ islands|length }}</span>
-    </h2>
-    <div class="flex gap-2 text-xs text-gray-500">
-      <span class="px-2 py-1 rounded bg-emerald-900/40 text-emerald-400 border border-emerald-800/50">Free</span>
-      <span class="px-2 py-1 rounded bg-purple-900/40 text-purple-400 border border-purple-800/50">VIP</span>
-    </div>
+<div class="space-y-5">
+
+  <!-- Summary bar -->
+  <div class="flex items-center justify-between">
+    <p class="text-sm text-gray-400">
+      <span class="font-semibold text-gray-200">{{ islands | length }}</span> islands
+      &nbsp;·&nbsp;
+      <span class="text-teal-400">{{ islands | selectattr("cat", "equalto", "public") | list | length }} public</span>
+      &nbsp;·&nbsp;
+      <span class="text-amber-400">{{ islands | selectattr("cat", "equalto", "member") | list | length }} member</span>
+    </p>
+    <!-- Quick search (client-side) -->
+    <input id="islandSearch" type="text" placeholder="Search islands…"
+           class="w-56 px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-sm
+                  text-gray-200 placeholder-gray-600 focus:outline-none focus:border-teal-500">
   </div>
 
-  {% if islands %}
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="text-left text-xs text-gray-500 border-b border-gray-800">
-            <th class="px-5 py-3 font-medium">Island</th>
-            <th class="px-5 py-3 font-medium">Type</th>
-            <th class="px-5 py-3 font-medium">Dodo Code</th>
-            <th class="px-5 py-3 font-medium">Visitors</th>
-            <th class="px-5 py-3 font-medium">Category</th>
-            <th class="px-5 py-3 font-medium">Theme</th>
-            <th class="px-5 py-3 font-medium">Notes</th>
-            <th class="px-5 py-3 font-medium"></th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-800">
-          {% for isl in islands %}
-            <tr class="hover:bg-gray-800/50 transition">
-              <td class="px-5 py-3 font-semibold text-gray-100">{{ isl.name }}</td>
-              <td class="px-5 py-3">
-                {% if isl.type == "VIP" %}
-                  <span class="px-2 py-0.5 rounded-full text-xs bg-purple-900/60 text-purple-300 border border-purple-800">VIP</span>
-                {% else %}
-                  <span class="px-2 py-0.5 rounded-full text-xs bg-emerald-900/60 text-emerald-300 border border-emerald-800">Free</span>
-                {% endif %}
-              </td>
-              <td class="px-5 py-3 font-mono text-teal-400">{{ isl.dodo }}</td>
-              <td class="px-5 py-3 text-gray-300">{{ isl.visitors }}</td>
-              <td class="px-5 py-3 text-gray-400 capitalize">{{ isl.category }}</td>
-              <td class="px-5 py-3">
-                <span class="inline-block w-3 h-3 rounded-full mr-1
-                  {% if isl.theme == 'pink' %}bg-pink-400
-                  {% elif isl.theme == 'teal' %}bg-teal-400
-                  {% elif isl.theme == 'purple' %}bg-purple-400
-                  {% elif isl.theme == 'gold' %}bg-yellow-400
-                  {% else %}bg-gray-400{% endif %}"></span>
-                {{ isl.theme }}
-              </td>
-              <td class="px-5 py-3 text-gray-500 text-xs max-w-xs truncate">{{ isl.notes or "—" }}</td>
-              <td class="px-5 py-3">
-                <a href="{{ url_for('dashboard.island_detail', name=isl.name) }}"
-                   class="text-xs text-teal-400 hover:text-teal-300 font-medium transition">Edit →</a>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <div class="px-5 py-16 text-center">
-      <p class="text-gray-600 text-sm">No islands found. Check that VILLAGERS_DIR / TWITCH_VILLAGERS_DIR are configured.</p>
-    </div>
-  {% endif %}
+  <!-- Island cards grid -->
+  <div id="islandGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    {% for isl in islands %}
+    {% set theme_ring = {
+        "gold":   "border-amber-600/60  hover:border-amber-500",
+        "teal":   "border-teal-700/60   hover:border-teal-500",
+        "purple": "border-purple-700/60 hover:border-purple-500",
+        "pink":   "border-pink-700/60   hover:border-pink-500",
+    }.get(isl.theme, "border-gray-700") %}
+    {% set status_dot = {
+        "ONLINE":      "bg-emerald-400",
+        "SUB ONLY":    "bg-amber-400",
+        "REFRESHING":  "bg-sky-400",
+        "OFFLINE":     "bg-gray-600",
+    }.get(isl.status, "bg-gray-600") %}
+
+    <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}"
+       data-name="{{ isl.name }}" data-type="{{ isl.type }}"
+       class="island-card block bg-gray-900 border {{ theme_ring }} rounded-xl p-4 transition group">
+
+      <div class="flex items-start justify-between gap-2">
+        <!-- Name + status -->
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="inline-block w-2 h-2 rounded-full {{ status_dot }} flex-shrink-0"></span>
+            <span class="text-sm font-bold text-gray-100 group-hover:text-white">{{ isl.name }}</span>
+          </div>
+          <p class="text-xs text-gray-500 mt-0.5">{{ isl.status }}</p>
+        </div>
+        <!-- Category badge -->
+        <span class="text-xs px-2 py-0.5 rounded-full flex-shrink-0
+          {% if isl.cat == 'member' %}bg-amber-900/50 text-amber-300{% else %}bg-teal-900/50 text-teal-300{% endif %}">
+          {{ isl.cat }}
+        </span>
+      </div>
+
+      <!-- Type / Seasonal -->
+      <p class="mt-2 text-xs text-gray-400 font-medium truncate">{{ isl.type or "—" }}</p>
+      <p class="text-xs text-gray-600 truncate">{{ isl.seasonal or "" }}</p>
+
+      <!-- Description (truncated) -->
+      {% if isl.description %}
+      <p class="mt-2 text-xs text-gray-500 line-clamp-2">{{ isl.description }}</p>
+      {% endif %}
+
+      <!-- Items pill count -->
+      <div class="mt-3 flex items-center justify-between text-xs text-gray-600">
+        <span>{{ isl['items'] | length }} item type{{ 's' if isl['items'] | length != 1 }}</span>
+        {% if isl.dodo_code or isl.fs_dodo %}
+        <span class="font-mono text-teal-500">{{ isl.dodo_code or isl.fs_dodo }}</span>
+        {% endif %}
+      </div>
+
+      <!-- Map thumbnail if available -->
+      {% if isl.map_url %}
+      <img src="{{ isl.map_url }}" alt="{{ isl.name }} map"
+           class="mt-3 w-full h-24 object-cover rounded-lg border border-gray-800">
+      {% endif %}
+
+    </a>
+    {% endfor %}
+  </div>
+
 </div>
+
+<script>
+const search = document.getElementById('islandSearch');
+search.addEventListener('input', () => {
+  const q = search.value.toLowerCase();
+  document.querySelectorAll('.island-card').forEach(card => {
+    const text = (card.dataset.name + ' ' + card.dataset.type).toLowerCase();
+    card.closest('a').style.display = text.includes(q) ? '' : 'none';
+  });
+});
+</script>
 {% endblock %}
