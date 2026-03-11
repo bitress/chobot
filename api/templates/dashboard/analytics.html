@@ -376,7 +376,7 @@
     <div class="d-flex align-items-center gap-3 px-4 py-3"
          style="border-bottom:1px solid #f0f4ec;">
       <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
-      <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_id }}</span>
+      <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
       <div class="d-flex align-items-center gap-2 flex-shrink-0">
         <div style="height:6px;border-radius:3px;background:var(--nook-yellow);
                     width:{{ [(row.warn_count / [top_warned[0].warn_count, 1]|max * 80)|int, 4]|max }}px;

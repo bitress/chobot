@@ -11,6 +11,7 @@ import secrets
 import sqlite3
 import logging
 import mimetypes
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -62,6 +63,63 @@ _DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 # Max map upload size: 5 MB
 MAX_MAP_SIZE      = 5 * 1024 * 1024
 ALLOWED_MAP_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+
+# ---------------------------------------------------------------------------
+# Discord user resolution
+# ---------------------------------------------------------------------------
+# Cache: maps user_id → (display_name, cache_time)
+_discord_user_cache: dict[str, tuple[str, float]] = {}
+_discord_user_cache_lock = threading.Lock()
+_DISCORD_CACHE_TTL = 3600  # seconds — refresh names after 1 hour
+
+
+def _resolve_discord_username(user_id) -> str:
+    """Return the display name for a Discord user ID.
+
+    Calls GET /api/v10/users/{id} using the Bot token and caches results for
+    up to one hour.  Falls back to the raw ID string on any failure or when
+    the token is not configured.
+    """
+    if not user_id:
+        return "—"
+    uid = str(user_id)
+    with _discord_user_cache_lock:
+        cached = _discord_user_cache.get(uid)
+        if cached and (time.monotonic() - cached[1]) < _DISCORD_CACHE_TTL:
+            return cached[0]
+    token = Config.DISCORD_TOKEN
+    if not token:
+        return uid
+    try:
+        req = urllib.request.Request(
+            f"https://discord.com/api/v10/users/{uid}",
+            headers={"Authorization": f"Bot {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        name = data.get("global_name") or data.get("username") or uid
+    except urllib.error.HTTPError as exc:
+        logger.warning("Discord user lookup HTTP %s for %s", exc.code, uid)
+        name = uid
+    except Exception as exc:
+        logger.debug("Discord user lookup failed for %s: %s", uid, exc)
+        name = uid
+    with _discord_user_cache_lock:
+        _discord_user_cache[uid] = (name, time.monotonic())
+    return name
+
+
+def _resolve_discord_usernames(user_ids) -> dict[str, str]:
+    """Resolve a collection of Discord user IDs to display names in one pass.
+
+    Deduplicates the input so each distinct ID is fetched at most once per
+    call.  Returns a mapping of id → display name.
+    """
+    result: dict[str, str] = {}
+    for uid in dict.fromkeys(str(i) for i in user_ids if i):
+        result[uid] = _resolve_discord_username(uid)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -797,11 +855,16 @@ def logs():
                 f"{where} ORDER BY w.timestamp DESC LIMIT ? OFFSET ?",
                 params + [per_page, (page - 1) * per_page],
             ).fetchall()
+            name_map = _resolve_discord_usernames(
+                [r["user_id"] for r in rows] + [r["mod_id"] for r in rows if r["mod_id"]]
+            )
             entries = [
                 {
                     "user_id":     r["user_id"],
+                    "user_name":   name_map.get(str(r["user_id"]), str(r["user_id"])),
                     "reason":      r["reason"],
                     "mod_id":      r["mod_id"],
+                    "mod_name":    name_map.get(str(r["mod_id"]), str(r["mod_id"])) if r["mod_id"] else "—",
                     "timestamp":   _ts_to_str(r["timestamp"]),
                     "ign":         r["ign"],
                     "destination": r["destination"],
@@ -987,6 +1050,9 @@ def analytics():
                 "ORDER BY warn_count DESC LIMIT 10"
             ).fetchall()
         ]
+        warned_name_map = _resolve_discord_usernames(r["user_id"] for r in top_warned)
+        for row in top_warned:
+            row["user_name"] = warned_name_map.get(str(row["user_id"]), str(row["user_id"]))
         # Quick summary stats
         visits_today = db.execute(
             "SELECT COUNT(*) FROM island_visits "
