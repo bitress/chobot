@@ -257,7 +257,17 @@ def home():
             "status": "/status",
             "refresh": "/api/refresh (POST)",
             "health": "/health"
-        }
+        },
+        "data_freshness": {
+            "islands": (
+                f"Near-real-time — dodo codes and visitor counts are read directly from "
+                f"island bot files, cached for up to {_FILE_CACHE_TTL} seconds."
+            ),
+            "items_villagers": (
+                "Refreshed from Google Sheets on a scheduled interval. "
+                "See /health for refresh_interval_seconds and next_update."
+            ),
+        },
     })
 
 @app.route('/health')
@@ -499,7 +509,18 @@ def get_islands():
                     results.append(_build_island_response(entry, "VIP", db_map.get(name, {})))
 
     results.sort(key=lambda x: x['name'])
-    return jsonify(results)
+    return jsonify({
+        "meta": {
+            "timestamp": datetime.now().isoformat(),
+            "cache_ttl_seconds": _FILE_CACHE_TTL,
+            "note": (
+                f"Dodo codes and visitor counts are read directly from files written by "
+                f"the C# island bot. Each file read is cached for up to "
+                f"{_FILE_CACHE_TTL} seconds, so data is near-real-time."
+            ),
+        },
+        "data": results,
+    })
 
 
 # --- PATREON ROUTES ---
