@@ -5,7 +5,7 @@
 
 {% block content %}
 
-<!-- Summary + search bar -->
+<!-- Summary + toolbar -->
 <div class="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
   <div class="d-flex align-items-center gap-3 flex-wrap">
     <span class="fw-black" style="color:#444;font-size:.95rem;">
@@ -39,75 +39,91 @@
   </div>
 </div>
 
-<!-- Island grid -->
-<div id="islandGrid" class="row g-4">
-  {% for isl in islands %}
-  {% set theme_color = {"gold":"#f0c040","teal":"#88e0d0","purple":"#d0bfff","pink":"#ffb7ce"}.get(isl.theme,"#e1e6d3") %}
-  {% set status_cls = {"ONLINE":"online","SUB ONLY":"sub-only","REFRESHING":"refreshing","OFFLINE":"offline"}.get(isl.status,"offline") %}
-
-  <div class="col-12 col-sm-6 col-lg-4 island-row" data-name="{{ isl.name }}" data-type="{{ isl.type }}">
-    <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}" class="text-decoration-none d-block h-100">
-      <div class="ticket-card h-100" style="border-top:4px solid {{ theme_color }};">
-
-        <!-- Map image / placeholder -->
-        <div class="card-image-container">
-          {% if isl.map_url %}
-            <img src="{{ isl.map_url }}" alt="{{ isl.name }} map" class="map-img">
-          {% else %}
-            <div class="d-flex align-items-center justify-content-center h-100 sepia"
-                 style="background:linear-gradient(135deg,#e8f0e3,#d4e8d0);font-size:3rem;">🏝️</div>
-          {% endif %}
-          <!-- Status pill -->
-          <span class="status-pill {{ status_cls }}">{{ isl.status }}</span>
-          <!-- Visitor badge -->
-          {% if isl.visitors %}
-          <span class="visitor-badge">👥 {{ isl.visitors }}</span>
-          {% endif %}
-        </div>
-
-        <!-- Card body -->
-        <div class="card-body">
-          <div class="d-flex align-items-start justify-content-between gap-2 mb-1">
-            <div class="card-title ac-font">{{ isl.name }}</div>
-            <span class="badge rounded-pill fw-bold flex-shrink-0"
+<!-- Islands table -->
+<div class="section-card">
+  {% if islands %}
+  <div class="table-responsive">
+    <table class="db-table">
+      <thead>
+        <tr>
+          <th style="width:56px;">Map</th>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Category</th>
+          <th>Status</th>
+          <th class="text-center">Visitors</th>
+          <th>Dodo Code</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for isl in islands %}
+        {% set status_cls = {"ONLINE":"online","SUB ONLY":"sub-only","REFRESHING":"refreshing","OFFLINE":"offline"}.get(isl.status,"offline") %}
+        <tr class="island-row" data-name="{{ isl.name }}" data-type="{{ isl.type }}">
+          <!-- Thumbnail -->
+          <td>
+            {% if isl.map_url %}
+              <img src="{{ isl.map_url }}" alt="{{ isl.name }}"
+                   style="width:48px;height:36px;object-fit:cover;border-radius:6px;border:2px solid #e1e6d3;">
+            {% else %}
+              <div class="d-flex align-items-center justify-content-center"
+                   style="width:48px;height:36px;border-radius:6px;border:2px dashed #e1e6d3;
+                          background:#f6f8f3;font-size:1.2rem;color:#ccc;">🏝️</div>
+            {% endif %}
+          </td>
+          <!-- Name -->
+          <td>
+            <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}"
+               class="fw-bold text-decoration-none ac-font"
+               style="color:var(--nook-green);">{{ isl.name }}</a>
+          </td>
+          <!-- Type -->
+          <td style="color:#888;font-size:.85rem;font-weight:600;">{{ isl.type or "—" }}</td>
+          <!-- Category -->
+          <td>
+            <span class="badge rounded-pill fw-bold"
                   style="{% if isl.cat == 'member' %}background:#fff3cd;color:#856404;{% else %}background:#e8f5e9;color:#1a6b2a;{% endif %}font-size:.65rem;">
               {{ isl.cat }}
             </span>
-          </div>
-          <div class="card-subtitle mb-2">{{ isl.type or "—" }}</div>
-
-          {% if isl.description %}
-          <p class="line-clamp-2 mb-3"
-             style="font-size:.82rem;color:#888;font-weight:600;">{{ isl.description }}</p>
-          {% endif %}
-
-          <div class="divider-dashed"></div>
-
-          <!-- Items loot pills -->
-          {% if isl['items'] %}
-          <div class="loot-container mb-3">
-            {% for item in isl['items'][:4] %}
-              <span class="loot-pill">{{ item }}</span>
-            {% endfor %}
-            {% if isl['items'] | length > 4 %}
-              <span class="loot-pill more">+{{ isl['items'] | length - 4 }} more</span>
+          </td>
+          <!-- Status -->
+          <td><span class="status-pill {{ status_cls }}">{{ isl.status }}</span></td>
+          <!-- Visitors -->
+          <td class="text-center" style="color:#888;font-weight:700;font-size:.85rem;">
+            {{ isl.visitors if isl.visitors else "—" }}
+          </td>
+          <!-- Dodo code -->
+          <td>
+            {% if isl.dodo_code or isl.fs_dodo %}
+              <span class="font-monospace fw-bold"
+                    style="background:#f6f8f3;border:1px solid #e1e6d3;border-radius:6px;
+                           padding:2px 8px;font-size:.82rem;color:#555;letter-spacing:.05em;">
+                {{ isl.dodo_code or isl.fs_dodo }}
+              </span>
+            {% else %}
+              <span style="color:#ddd;font-size:.8rem;">—</span>
             {% endif %}
-          </div>
-          {% endif %}
-
-          <!-- Dodo ticket -->
-          {% if isl.dodo_code or isl.fs_dodo %}
-          <div class="dodo-ticket" style="display:inline-block;">
-            <span class="label">DODO CODE</span>
-            <span class="code">{{ isl.dodo_code or isl.fs_dodo }}</span>
-          </div>
-          {% endif %}
-        </div>
-
-      </div>
-    </a>
+          </td>
+          <!-- Edit -->
+          <td class="text-end">
+            <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}"
+               class="btn btn-sm fw-bold"
+               style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#666;
+                      border-radius:50px;font-size:.75rem;padding:3px 12px;">
+              <i class="bi bi-pencil-fill me-1"></i>Edit
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
-  {% endfor %}
+  {% else %}
+  <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+    <i class="bi bi-geo-alt fs-3 d-block mb-2" style="opacity:.3;"></i>
+    No islands found.
+  </div>
+  {% endif %}
 </div>
 
 <script>
