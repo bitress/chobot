@@ -6,133 +6,147 @@
 {% block content %}
 
 <!-- Tab switcher -->
-<div class="flex gap-2 mb-5 border-b border-gray-800 pb-0">
+<div class="d-flex gap-2 mb-4">
   <a href="{{ url_for('dashboard.logs', type='flights', island=island_filter, authorized=authorized_filter) }}"
-     class="px-4 py-2 text-sm font-medium border-b-2 transition
-            {% if log_type == 'flights' %}border-teal-500 text-teal-400{% else %}border-transparent text-gray-500 hover:text-gray-300{% endif %}">
+     class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'flights' %}btn-nook-primary{% else %}btn-sub{% endif %}"
+     style="font-size:.85rem;">
     ✈️ Flight Logs
   </a>
   <a href="{{ url_for('dashboard.logs', type='warnings') }}"
-     class="px-4 py-2 text-sm font-medium border-b-2 transition
-            {% if log_type == 'warnings' %}border-amber-500 text-amber-400{% else %}border-transparent text-gray-500 hover:text-gray-300{% endif %}">
+     class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'warnings' %}btn-nook-primary{% else %}btn-sub{% endif %}"
+     style="font-size:.85rem;">
     ⚠️ Warning Logs
   </a>
 </div>
 
+<!-- Filters (flights only) -->
 {% if log_type == 'flights' %}
-  <!-- Flight log filters -->
-  <form method="GET" action="{{ url_for('dashboard.logs') }}" class="flex flex-wrap gap-3 mb-5">
-    <input type="hidden" name="type" value="flights">
-    <input
-      type="text"
-      name="island"
-      value="{{ island_filter }}"
-      placeholder="Filter by island…"
-      class="px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 placeholder-gray-600
-             focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 w-44"
-    />
-    <select name="authorized"
-            class="px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200
-                   focus:outline-none focus:border-teal-500">
-      <option value="">All travelers</option>
-      <option value="1" {% if authorized_filter == '1' %}selected{% endif %}>Authorized only</option>
-      <option value="0" {% if authorized_filter == '0' %}selected{% endif %}>Unknown only</option>
-    </select>
-    <button type="submit"
-            class="px-4 py-2 rounded-lg bg-teal-700 hover:bg-teal-600 text-white text-sm font-medium transition">
-      Filter
-    </button>
-    {% if island_filter or authorized_filter %}
-      <a href="{{ url_for('dashboard.logs', type='flights') }}"
-         class="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 text-sm transition">Clear</a>
-    {% endif %}
-  </form>
+<form method="GET" action="{{ url_for('dashboard.logs') }}"
+      class="d-flex flex-wrap align-items-center gap-2 mb-4">
+  <input type="hidden" name="type" value="flights">
+  <input type="text" name="island" value="{{ island_filter }}"
+         placeholder="Filter by island…"
+         class="db-input" style="width:180px;">
+  <select name="authorized" class="db-input" style="width:180px;">
+    <option value="">All travelers</option>
+    <option value="1" {% if authorized_filter == '1' %}selected{% endif %}>Authorized only</option>
+    <option value="0" {% if authorized_filter == '0' %}selected{% endif %}>Unknown only</option>
+  </select>
+  <button type="submit"
+          class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
+          style="font-size:.85rem;">
+    <i class="bi bi-funnel-fill me-1"></i>Filter
+  </button>
+  {% if island_filter or authorized_filter %}
+  <a href="{{ url_for('dashboard.logs', type='flights') }}"
+     class="btn rounded-3 fw-bold px-4 py-2"
+     style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
+    <i class="bi bi-x-circle me-1"></i>Clear
+  </a>
+  {% endif %}
+</form>
 {% endif %}
 
 <!-- Results info -->
-<div class="flex items-center justify-between mb-3">
-  <p class="text-xs text-gray-500">
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <span class="x-small fw-bold" style="color:#aaa;">
     Showing {{ entries|length }} of {{ total }} entries
     {% if log_type == 'flights' and island_filter %}&nbsp;· filtered by "{{ island_filter }}"{% endif %}
-  </p>
-  <p class="text-xs text-gray-600">Page {{ page }} / {{ total_pages }}</p>
+  </span>
+  <span class="x-small fw-bold" style="color:#ccc;">Page {{ page }} / {{ total_pages }}</span>
 </div>
 
 <!-- Table -->
-<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-x-auto">
+<div class="section-card mb-4">
   {% if entries %}
-    <table class="w-full text-sm">
+  <div class="table-responsive">
+    <table class="db-table">
       <thead>
-        <tr class="text-left text-xs text-gray-500 border-b border-gray-800">
+        <tr>
           {% if log_type == 'warnings' %}
-            <th class="px-5 py-3 font-medium">User ID</th>
-            <th class="px-5 py-3 font-medium">IGN</th>
-            <th class="px-5 py-3 font-medium">Island</th>
-            <th class="px-5 py-3 font-medium">Reason</th>
-            <th class="px-5 py-3 font-medium">Mod ID</th>
-            <th class="px-5 py-3 font-medium">Time</th>
+            <th>User ID</th>
+            <th>IGN</th>
+            <th>Island</th>
+            <th>Reason</th>
+            <th>Mod ID</th>
+            <th>Time</th>
           {% else %}
-            <th class="px-5 py-3 font-medium">#</th>
-            <th class="px-5 py-3 font-medium">IGN</th>
-            <th class="px-5 py-3 font-medium">Origin</th>
-            <th class="px-5 py-3 font-medium">Destination</th>
-            <th class="px-5 py-3 font-medium">Status</th>
-            <th class="px-5 py-3 font-medium">Time</th>
+            <th>#</th>
+            <th>IGN</th>
+            <th>Origin</th>
+            <th>Destination</th>
+            <th>Status</th>
+            <th>Time</th>
           {% endif %}
         </tr>
       </thead>
-      <tbody class="divide-y divide-gray-800">
+      <tbody>
         {% for entry in entries %}
-          <tr class="hover:bg-gray-800/50 transition">
-            {% if log_type == 'warnings' %}
-              <td class="px-5 py-3 text-gray-400 text-xs font-mono">{{ entry.user_id }}</td>
-              <td class="px-5 py-3 text-gray-200 font-medium">{{ entry.ign or "—" }}</td>
-              <td class="px-5 py-3 text-gray-300">{{ entry.destination or "—" }}</td>
-              <td class="px-5 py-3 text-gray-400 text-xs max-w-xs truncate" title="{{ entry.reason }}">{{ entry.reason or "—" }}</td>
-              <td class="px-5 py-3 text-gray-500 text-xs font-mono">{{ entry.mod_id }}</td>
-              <td class="px-5 py-3 text-gray-500 text-xs">{{ entry.timestamp }}</td>
-            {% else %}
-              <td class="px-5 py-3 text-gray-600 text-xs">{{ entry.id }}</td>
-              <td class="px-5 py-3 font-medium text-gray-100">{{ entry.ign }}</td>
-              <td class="px-5 py-3 text-gray-400">{{ entry.origin_island or "—" }}</td>
-              <td class="px-5 py-3 text-gray-300">{{ entry.destination }}</td>
-              <td class="px-5 py-3">
-                {% if entry.authorized %}
-                  <span class="px-2 py-0.5 rounded-full text-xs bg-emerald-900/60 text-emerald-400 border border-emerald-800">Auth</span>
-                {% else %}
-                  <span class="px-2 py-0.5 rounded-full text-xs bg-red-900/60 text-red-400 border border-red-800">Unknown</span>
-                {% endif %}
-              </td>
-              <td class="px-5 py-3 text-gray-500 text-xs">{{ entry.timestamp }}</td>
-            {% endif %}
-          </tr>
+        <tr>
+          {% if log_type == 'warnings' %}
+            <td class="font-monospace x-small" style="color:#bbb;">{{ entry.user_id }}</td>
+            <td class="fw-bold" style="color:#444;">{{ entry.ign or "—" }}</td>
+            <td>{{ entry.destination or "—" }}</td>
+            <td class="x-small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                title="{{ entry.reason }}">{{ entry.reason or "—" }}</td>
+            <td class="font-monospace x-small" style="color:#bbb;">{{ entry.mod_id }}</td>
+            <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
+          {% else %}
+            <td class="x-small" style="color:#bbb;">{{ entry.id }}</td>
+            <td class="fw-bold" style="color:#444;">{{ entry.ign }}</td>
+            <td style="color:#888;">{{ entry.origin_island or "—" }}</td>
+            <td>{{ entry.destination }}</td>
+            <td>
+              {% if entry.authorized %}
+                <span class="badge badge-auth rounded-pill">✔ Auth</span>
+              {% else %}
+                <span class="badge badge-unkn rounded-pill">? Unknown</span>
+              {% endif %}
+            </td>
+            <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
+          {% endif %}
+        </tr>
         {% endfor %}
       </tbody>
     </table>
+  </div>
   {% else %}
-    <div class="py-16 text-center text-gray-600 text-sm">No log entries found.</div>
+  <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+    <i class="bi bi-journal-x fs-3 d-block mb-2" style="opacity:.3;"></i>
+    No log entries found.
+  </div>
   {% endif %}
 </div>
 
 <!-- Pagination -->
 {% if total_pages > 1 %}
-  <div class="flex items-center justify-center gap-2 mt-5">
+<nav>
+  <ul class="pagination justify-content-center gap-1" style="flex-wrap:wrap;">
     {% if page > 1 %}
-      <a href="{{ url_for('dashboard.logs', page=page-1, type=log_type, island=island_filter, authorized=authorized_filter) }}"
-         class="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition">← Prev</a>
+    <li class="page-item">
+      <a class="page-link rounded-3 fw-bold"
+         href="{{ url_for('dashboard.logs', page=page-1, type=log_type, island=island_filter, authorized=authorized_filter) }}"
+         style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">← Prev</a>
+    </li>
     {% endif %}
     {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
-      <a href="{{ url_for('dashboard.logs', page=p, type=log_type, island=island_filter, authorized=authorized_filter) }}"
-         class="px-3 py-1.5 rounded-lg text-sm transition
-                {% if p == page %}bg-teal-700 text-white{% else %}bg-gray-800 hover:bg-gray-700 text-gray-300{% endif %}">
+    <li class="page-item {% if p == page %}active{% endif %}">
+      <a class="page-link rounded-3 fw-bold"
+         href="{{ url_for('dashboard.logs', page=p, type=log_type, island=island_filter, authorized=authorized_filter) }}"
+         style="{% if p == page %}background:var(--nook-green);border-color:var(--nook-green);{% else %}border:2px solid #e1e6d3;color:#888;{% endif %}font-size:.85rem;">
         {{ p }}
       </a>
+    </li>
     {% endfor %}
     {% if page < total_pages %}
-      <a href="{{ url_for('dashboard.logs', page=page+1, type=log_type, island=island_filter, authorized=authorized_filter) }}"
-         class="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition">Next →</a>
+    <li class="page-item">
+      <a class="page-link rounded-3 fw-bold"
+         href="{{ url_for('dashboard.logs', page=page+1, type=log_type, island=island_filter, authorized=authorized_filter) }}"
+         style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">Next →</a>
+    </li>
     {% endif %}
-  </div>
+  </ul>
+</nav>
 {% endif %}
 
 {% endblock %}

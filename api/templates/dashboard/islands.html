@@ -4,95 +4,109 @@
 {% block header %}Islands{% endblock %}
 
 {% block content %}
-<div class="space-y-5">
 
-  <!-- Summary bar -->
-  <div class="flex items-center justify-between">
-    <p class="text-sm text-gray-400">
-      <span class="font-semibold text-gray-200">{{ islands | length }}</span> islands
-      &nbsp;·&nbsp;
-      <span class="text-teal-400">{{ islands | selectattr("cat", "equalto", "public") | list | length }} public</span>
-      &nbsp;·&nbsp;
-      <span class="text-amber-400">{{ islands | selectattr("cat", "equalto", "member") | list | length }} member</span>
-    </p>
-    <!-- Quick search (client-side) -->
+<!-- Summary + search bar -->
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
+  <div class="d-flex align-items-center gap-3 flex-wrap">
+    <span class="fw-black" style="color:#444;font-size:.95rem;">
+      {{ islands | length }} islands
+    </span>
+    <span class="badge rounded-pill fw-bold" style="background:#e8f5e9;color:#1a6b2a;">
+      {{ islands | selectattr("cat","equalto","public") | list | length }} public
+    </span>
+    <span class="badge rounded-pill fw-bold" style="background:#fff3cd;color:#856404;">
+      {{ islands | selectattr("cat","equalto","member") | list | length }} member
+    </span>
+  </div>
+  <!-- Search -->
+  <div class="d-flex align-items-center gap-2"
+       style="background:#fff;border:2px solid #e1e6d3;border-radius:50px;padding:6px 14px;">
+    <i class="bi bi-search" style="color:#ccc;"></i>
     <input id="islandSearch" type="text" placeholder="Search islands…"
-           class="w-56 px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-sm
-                  text-gray-200 placeholder-gray-600 focus:outline-none focus:border-teal-500">
+           class="border-0 outline-0 shadow-none"
+           style="font-family:var(--font-main);font-weight:700;font-size:.9rem;color:#555;
+                  background:transparent;outline:none;min-width:180px;">
   </div>
+</div>
 
-  <!-- Island cards grid -->
-  <div id="islandGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-    {% for isl in islands %}
-    {% set theme_ring = {
-        "gold":   "border-amber-600/60  hover:border-amber-500",
-        "teal":   "border-teal-700/60   hover:border-teal-500",
-        "purple": "border-purple-700/60 hover:border-purple-500",
-        "pink":   "border-pink-700/60   hover:border-pink-500",
-    }.get(isl.theme, "border-gray-700") %}
-    {% set status_dot = {
-        "ONLINE":      "bg-emerald-400",
-        "SUB ONLY":    "bg-amber-400",
-        "REFRESHING":  "bg-sky-400",
-        "OFFLINE":     "bg-gray-600",
-    }.get(isl.status, "bg-gray-600") %}
+<!-- Island grid -->
+<div id="islandGrid" class="row g-4">
+  {% for isl in islands %}
+  {% set theme_color = {"gold":"#f0c040","teal":"#88e0d0","purple":"#d0bfff","pink":"#ffb7ce"}.get(isl.theme,"#e1e6d3") %}
+  {% set status_cls = {"ONLINE":"online","SUB ONLY":"sub-only","REFRESHING":"refreshing","OFFLINE":"offline"}.get(isl.status,"offline") %}
 
-    <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}"
-       data-name="{{ isl.name }}" data-type="{{ isl.type }}"
-       class="island-card block bg-gray-900 border {{ theme_ring }} rounded-xl p-4 transition group">
+  <div class="col-12 col-sm-6 col-lg-4 island-row" data-name="{{ isl.name }}" data-type="{{ isl.type }}">
+    <a href="{{ url_for('dashboard.island_detail', name=isl.id) }}" class="text-decoration-none d-block h-100">
+      <div class="ticket-card h-100" style="border-top:4px solid {{ theme_color }};">
 
-      <div class="flex items-start justify-between gap-2">
-        <!-- Name + status -->
-        <div>
-          <div class="flex items-center gap-2">
-            <span class="inline-block w-2 h-2 rounded-full {{ status_dot }} flex-shrink-0"></span>
-            <span class="text-sm font-bold text-gray-100 group-hover:text-white">{{ isl.name }}</span>
-          </div>
-          <p class="text-xs text-gray-500 mt-0.5">{{ isl.status }}</p>
+        <!-- Map image / placeholder -->
+        <div class="card-image-container">
+          {% if isl.map_url %}
+            <img src="{{ isl.map_url }}" alt="{{ isl.name }} map" class="map-img">
+          {% else %}
+            <div class="d-flex align-items-center justify-content-center h-100 sepia"
+                 style="background:linear-gradient(135deg,#e8f0e3,#d4e8d0);font-size:3rem;">🏝️</div>
+          {% endif %}
+          <!-- Status pill -->
+          <span class="status-pill {{ status_cls }}">{{ isl.status }}</span>
+          <!-- Visitor badge -->
+          {% if isl.visitors %}
+          <span class="visitor-badge">👥 {{ isl.visitors }}</span>
+          {% endif %}
         </div>
-        <!-- Category badge -->
-        <span class="text-xs px-2 py-0.5 rounded-full flex-shrink-0
-          {% if isl.cat == 'member' %}bg-amber-900/50 text-amber-300{% else %}bg-teal-900/50 text-teal-300{% endif %}">
-          {{ isl.cat }}
-        </span>
+
+        <!-- Card body -->
+        <div class="card-body">
+          <div class="d-flex align-items-start justify-content-between gap-2 mb-1">
+            <div class="card-title ac-font">{{ isl.name }}</div>
+            <span class="badge rounded-pill fw-bold flex-shrink-0"
+                  style="{% if isl.cat == 'member' %}background:#fff3cd;color:#856404;{% else %}background:#e8f5e9;color:#1a6b2a;{% endif %}font-size:.65rem;">
+              {{ isl.cat }}
+            </span>
+          </div>
+          <div class="card-subtitle mb-2">{{ isl.type or "—" }}</div>
+
+          {% if isl.description %}
+          <p class="line-clamp-2 mb-3"
+             style="font-size:.82rem;color:#888;font-weight:600;">{{ isl.description }}</p>
+          {% endif %}
+
+          <div class="divider-dashed"></div>
+
+          <!-- Items loot pills -->
+          {% if isl['items'] %}
+          <div class="loot-container mb-3">
+            {% for item in isl['items'][:4] %}
+              <span class="loot-pill">{{ item }}</span>
+            {% endfor %}
+            {% if isl['items'] | length > 4 %}
+              <span class="loot-pill more">+{{ isl['items'] | length - 4 }} more</span>
+            {% endif %}
+          </div>
+          {% endif %}
+
+          <!-- Dodo ticket -->
+          {% if isl.dodo_code or isl.fs_dodo %}
+          <div class="dodo-ticket" style="display:inline-block;">
+            <span class="label">DODO CODE</span>
+            <span class="code">{{ isl.dodo_code or isl.fs_dodo }}</span>
+          </div>
+          {% endif %}
+        </div>
+
       </div>
-
-      <!-- Type / Seasonal -->
-      <p class="mt-2 text-xs text-gray-400 font-medium truncate">{{ isl.type or "—" }}</p>
-      <p class="text-xs text-gray-600 truncate">{{ isl.seasonal or "" }}</p>
-
-      <!-- Description (truncated) -->
-      {% if isl.description %}
-      <p class="mt-2 text-xs text-gray-500 line-clamp-2">{{ isl.description }}</p>
-      {% endif %}
-
-      <!-- Items pill count -->
-      <div class="mt-3 flex items-center justify-between text-xs text-gray-600">
-        <span>{{ isl['items'] | length }} item type{{ 's' if isl['items'] | length != 1 }}</span>
-        {% if isl.dodo_code or isl.fs_dodo %}
-        <span class="font-mono text-teal-500">{{ isl.dodo_code or isl.fs_dodo }}</span>
-        {% endif %}
-      </div>
-
-      <!-- Map thumbnail if available -->
-      {% if isl.map_url %}
-      <img src="{{ isl.map_url }}" alt="{{ isl.name }} map"
-           class="mt-3 w-full h-24 object-cover rounded-lg border border-gray-800">
-      {% endif %}
-
     </a>
-    {% endfor %}
   </div>
-
+  {% endfor %}
 </div>
 
 <script>
 const search = document.getElementById('islandSearch');
 search.addEventListener('input', () => {
   const q = search.value.toLowerCase();
-  document.querySelectorAll('.island-card').forEach(card => {
-    const text = (card.dataset.name + ' ' + card.dataset.type).toLowerCase();
-    card.closest('a').style.display = text.includes(q) ? '' : 'none';
+  document.querySelectorAll('.island-row').forEach(row => {
+    const text = (row.dataset.name + ' ' + row.dataset.type).toLowerCase();
+    row.style.display = text.includes(q) ? '' : 'none';
   });
 });
 </script>

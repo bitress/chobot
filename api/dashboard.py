@@ -33,7 +33,7 @@ dashboard = Blueprint(
     __name__,
     template_folder="templates",
     static_folder="static",
-    static_url_path="/dashboard/static",
+    static_url_path="/static",
 )
 
 # Absolute path to the shared SQLite database
@@ -471,7 +471,7 @@ def island_detail(name):
         isl_cat          = request.form.get("cat", "public")
         isl_theme        = request.form.get("theme", "teal")
         isl_status       = request.form.get("status", "OFFLINE")
-        isl_dodo         = meta["dodo_code"] if meta else _read_file(fs_path, "Dodo.txt")
+        isl_dodo         = meta["dodo_code"] if meta else (_read_file(fs_path, "Dodo.txt") if fs_path else None)
         _fs_visitors_raw = _read_file(fs_path, "Visitors.txt") if not meta and fs_path else None
         isl_visitors_raw = str(meta["visitors"]) if meta else (_fs_visitors_raw or "0")
 

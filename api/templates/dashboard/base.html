@@ -1,124 +1,124 @@
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-gray-950">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}ChoBot Dashboard{% endblock %}</title>
-  <!-- Tailwind Play CDN (development/internal use).
-       The Play CDN is a dynamic script and does not support Subresource Integrity.
-       For production deployments, replace with a pre-built Tailwind CSS bundle. -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            brand: {
-              50:  '#f0fdfa',
-              100: '#ccfbf1',
-              200: '#99f6e4',
-              400: '#2dd4bf',
-              500: '#14b8a6',
-              600: '#0d9488',
-              700: '#0f766e',
-              800: '#115e59',
-              900: '#134e4a',
-            }
-          }
-        }
-      }
-    }
-  </script>
+  <!-- Bootstrap 5 -->
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+        integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+        crossorigin="anonymous">
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <!-- ACNH Custom CSS -->
+  <link rel="stylesheet" href="{{ url_for('dashboard.static', filename='css/dashboard.css') }}">
   {% block head %}{% endblock %}
 </head>
-<body class="h-full flex bg-gray-950 text-gray-100 font-sans">
+<body>
+<div class="d-flex" style="min-height:100vh">
 
-  <!-- Sidebar -->
-  <aside class="w-60 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col min-h-screen">
-    <!-- Logo -->
-    <div class="px-5 py-5 border-b border-gray-800">
-      <span class="text-xl font-bold text-brand-400 tracking-wide">🌿 ChoBot</span>
-      <p class="text-xs text-gray-500 mt-0.5">Mod Dashboard</p>
+  <!-- ── Sidebar ── -->
+  <aside class="db-sidebar flex-shrink-0">
+    <!-- Brand -->
+    <div class="sidebar-brand d-flex align-items-center gap-3">
+      <div class="logo-box flex-shrink-0">
+        <span class="d-flex align-items-center justify-content-center h-100 fs-5">🌿</span>
+      </div>
+      <div>
+        <div class="ac-font fw-bold" style="color:var(--nook-green);font-size:1.1rem;">ChoBot</div>
+        <div class="x-small" style="color:#aaa;font-weight:700;">Mod Dashboard</div>
+      </div>
     </div>
 
-    <!-- Nav links -->
-    <nav class="flex-1 px-3 py-4 space-y-1 text-sm">
+    <!-- Navigation -->
+    <nav class="flex-grow-1 p-3">
       <a href="{{ url_for('dashboard.index') }}"
-         class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800 transition
-                {% if request.endpoint == 'dashboard.index' %}bg-gray-800 text-brand-400{% else %}text-gray-300{% endif %}">
-        <span>🏠</span> Overview
+         class="nav-pill-link {% if request.endpoint == 'dashboard.index' %}active{% endif %}">
+        <i class="bi bi-house-door-fill"></i> Overview
       </a>
       <a href="{{ url_for('dashboard.islands') }}"
-         class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800 transition
-                {% if request.endpoint in ('dashboard.islands','dashboard.island_detail') %}bg-gray-800 text-brand-400{% else %}text-gray-300{% endif %}">
-        <span>🏝️</span> Islands
+         class="nav-pill-link {% if request.endpoint in ('dashboard.islands','dashboard.island_detail') %}active{% endif %}">
+        <i class="bi bi-geo-alt-fill"></i> Islands
       </a>
       <a href="{{ url_for('dashboard.logs') }}"
-         class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800 transition
-                {% if request.endpoint == 'dashboard.logs' %}bg-gray-800 text-brand-400{% else %}text-gray-300{% endif %}">
-        <span>📋</span> XLog Reports
+         class="nav-pill-link {% if request.endpoint == 'dashboard.logs' %}active{% endif %}">
+        <i class="bi bi-journal-text"></i> XLog Reports
       </a>
       <a href="{{ url_for('dashboard.analytics') }}"
-         class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800 transition
-                {% if request.endpoint == 'dashboard.analytics' %}bg-gray-800 text-brand-400{% else %}text-gray-300{% endif %}">
-        <span>📊</span> Analytics
+         class="nav-pill-link {% if request.endpoint == 'dashboard.analytics' %}active{% endif %}">
+        <i class="bi bi-bar-chart-fill"></i> Analytics
       </a>
 
-      <!-- API reference section -->
-      <div class="pt-4 border-t border-gray-800 mt-4">
-        <p class="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">API</p>
-        <a href="{{ url_for('dashboard.api_islands_list') }}"
-           class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-400 text-xs">
-          <span>🔗</span> /dashboard/api/islands
-        </a>
-        <a href="{{ url_for('dashboard.api_analytics') }}"
-           class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-400 text-xs">
-          <span>🔗</span> /dashboard/api/analytics
-        </a>
-        <a href="{{ url_for('dashboard.api_logs') }}"
-           class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-400 text-xs">
-          <span>🔗</span> /dashboard/api/logs
-        </a>
-      </div>
+      <!-- API links -->
+      <div class="sidebar-section-label mt-3">API</div>
+      <a href="{{ url_for('dashboard.api_islands_list') }}" class="nav-pill-link" style="font-size:.8rem">
+        <i class="bi bi-link-45deg"></i> /api/islands
+      </a>
+      <a href="{{ url_for('dashboard.api_analytics') }}" class="nav-pill-link" style="font-size:.8rem">
+        <i class="bi bi-link-45deg"></i> /api/analytics
+      </a>
+      <a href="{{ url_for('dashboard.api_logs') }}" class="nav-pill-link" style="font-size:.8rem">
+        <i class="bi bi-link-45deg"></i> /api/logs
+      </a>
     </nav>
 
     <!-- Logout -->
-    <div class="px-3 py-4 border-t border-gray-800">
+    <div class="p-3 border-top" style="border-color:#e1e6d3!important">
       <a href="{{ url_for('dashboard.logout') }}"
-         class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-gray-400 hover:bg-red-900/40 hover:text-red-400 transition">
-        <span>🚪</span> Logout
+         class="nav-pill-link text-danger"
+         style="color:#dc3545!important">
+        <i class="bi bi-box-arrow-left"></i> Logout
       </a>
     </div>
   </aside>
 
-  <!-- Main content -->
-  <div class="flex-1 flex flex-col min-h-screen overflow-y-auto">
+  <!-- ── Main area ── -->
+  <div class="db-main flex-grow-1">
+
     <!-- Top bar -->
-    <header class="h-14 border-b border-gray-800 bg-gray-900/60 px-6 flex items-center justify-between shrink-0">
-      <h1 class="text-sm font-semibold text-gray-200">{% block header %}Dashboard{% endblock %}</h1>
-      <span class="text-xs text-gray-500">Mod access only</span>
-    </header>
+    <div class="db-topbar">
+      <div class="d-flex align-items-center gap-2">
+        <span class="fw-black ac-font" style="color:var(--nook-green);font-size:1.05rem;">
+          {% block header %}Dashboard{% endblock %}
+        </span>
+      </div>
+      <span class="badge rounded-pill"
+            style="background:var(--nook-accent);color:#1a4d1d;font-weight:800;font-size:.7rem;">
+        <i class="bi bi-shield-lock-fill me-1"></i>Mod access
+      </span>
+    </div>
 
     <!-- Flash messages -->
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
-        <div class="px-6 pt-4 space-y-2">
+        <div class="px-4 pt-3">
           {% for category, message in messages %}
-            <div class="px-4 py-3 rounded-lg text-sm
-              {% if category == 'error' %}bg-red-900/50 border border-red-700 text-red-300
-              {% else %}bg-emerald-900/50 border border-emerald-700 text-emerald-300{% endif %}">
+            <div class="alert {% if category == 'error' %}alert-danger{% else %}alert-success{% endif %}
+                         alert-dismissible fade show rounded-3 border-0 shadow-sm py-2 px-3 mb-2"
+                 role="alert" style="font-weight:700;font-size:.88rem;">
+              <i class="bi {% if category == 'error' %}bi-exclamation-triangle-fill{% else %}bi-check-circle-fill{% endif %} me-2"></i>
               {{ message }}
+              <button type="button" class="btn-close btn-close-sm" data-bs-dismiss="alert"></button>
             </div>
           {% endfor %}
         </div>
       {% endif %}
     {% endwith %}
 
-    <!-- Page body -->
-    <main class="flex-1 p-6">
+    <!-- Page content -->
+    <main class="db-body">
       {% block content %}{% endblock %}
     </main>
   </div>
 
+</div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-YvpcrYf0tY3lHB60NNkmXc4s9bIOgUxi8T/jzmEtmT49YJZBtX+mHJFsxnXMoaZX"
+        crossorigin="anonymous"></script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

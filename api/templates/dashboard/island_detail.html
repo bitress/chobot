@@ -4,94 +4,81 @@
 {% block header %}Islands / {{ island.name }}{% endblock %}
 
 {% block content %}
-<div class="max-w-3xl space-y-6">
+<div style="max-width:780px;">
 
-  <!-- Back link -->
+  <!-- Back -->
   <a href="{{ url_for('dashboard.islands') }}"
-     class="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-teal-400 transition">
-    ← Back to Islands
+     class="btn-nook-back d-inline-flex text-decoration-none mb-4"
+     title="Back to Islands">
+    <i class="bi bi-arrow-left fs-5"></i>
   </a>
 
   <!-- Main edit card -->
-  <div class="bg-gray-900 border border-gray-800 rounded-xl">
+  <div class="section-card mb-4">
 
-    <!-- Header -->
-    <div class="px-6 py-5 border-b border-gray-800 flex items-center justify-between">
+    <!-- Card header -->
+    <div class="section-card-header">
       <div>
-        <h2 class="text-lg font-bold text-gray-100">{{ island.name }}</h2>
-        <p class="text-xs text-gray-500 mt-0.5">
+        <span class="ac-font" style="color:#444;font-size:1.2rem;">{{ island.name }}</span>
+        <span class="x-small ms-2 fw-bold" style="color:#aaa;">
           {% if island.fs_type == "VIP" %}
-            <span class="text-purple-400">VIP Island</span>
+            <span style="color:#b07cdc;"><i class="bi bi-star-fill me-1"></i>VIP Island</span>
           {% elif island.fs_type == "Free" %}
-            <span class="text-emerald-400">Free Island</span>
+            <span style="color:var(--nook-green);"><i class="bi bi-leaf-fill me-1"></i>Free Island</span>
           {% else %}
-            <span class="text-gray-600">No filesystem folder found</span>
+            <span style="color:#ccc;">No folder</span>
           {% endif %}
           {% if island.updated_at %}
-            &nbsp;·&nbsp; Last saved {{ island.updated_at[:19] | replace("T"," ") }} UTC
+            &nbsp;·&nbsp; Saved {{ island.updated_at[:19] | replace("T"," ") }} UTC
           {% endif %}
-        </p>
+        </span>
       </div>
-      <!-- Status badge -->
-      <span class="text-xs px-2.5 py-1 rounded-full font-semibold
-        {% if island.status == 'ONLINE'     %}bg-emerald-900/50 text-emerald-300
-        {% elif island.status == 'SUB ONLY' %}bg-amber-900/50   text-amber-300
-        {% elif island.status == 'REFRESHING'%}bg-sky-900/50   text-sky-300
-        {% else %}bg-gray-800 text-gray-500{% endif %}">
-        {{ island.status }}
-      </span>
+      {% set status_cls = {"ONLINE":"online","SUB ONLY":"sub-only","REFRESHING":"refreshing","OFFLINE":"offline"}.get(island.status,"offline") %}
+      <span class="status-pill {{ status_cls }}" style="position:static;display:inline-block;">{{ island.status }}</span>
     </div>
 
     <!-- Edit form -->
     <form id="islandForm" method="POST"
           action="{{ url_for('dashboard.island_detail', name=island.id) }}"
-          class="px-6 py-6 space-y-5">
+          class="p-4">
 
       <!-- Row 1: Type + Seasonal -->
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Island Type</label>
+      <div class="row g-3 mb-3">
+        <div class="col-sm-6">
+          <label class="db-label">Island Type</label>
           <input type="text" name="type" value="{{ island.type }}"
                  placeholder="e.g. Treasure Island"
-                 class="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 text-sm
-                        placeholder-gray-600 focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500">
+                 class="db-input">
         </div>
-        <div>
-          <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Seasonal</label>
+        <div class="col-sm-6">
+          <label class="db-label">Seasonal</label>
           <input type="text" name="seasonal" value="{{ island.seasonal }}"
                  placeholder="e.g. Year-Round, Festive"
-                 class="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 text-sm
-                        placeholder-gray-600 focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500">
+                 class="db-input">
         </div>
       </div>
 
       <!-- Row 2: Cat + Theme + Status -->
-      <div class="grid grid-cols-3 gap-4">
-        <div>
-          <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Category</label>
-          <select name="cat"
-                  class="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 text-sm
-                         focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500">
+      <div class="row g-3 mb-3">
+        <div class="col-sm-4">
+          <label class="db-label">Category</label>
+          <select name="cat" class="db-input">
             {% for cat in allowed_categories %}
               <option value="{{ cat }}" {% if island.cat == cat %}selected{% endif %}>{{ cat.title() }}</option>
             {% endfor %}
           </select>
         </div>
-        <div>
-          <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Theme</label>
-          <select name="theme"
-                  class="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 text-sm
-                         focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500">
+        <div class="col-sm-4">
+          <label class="db-label">Theme</label>
+          <select name="theme" class="db-input">
             {% for theme in allowed_themes %}
               <option value="{{ theme }}" {% if island.theme == theme %}selected{% endif %}>{{ theme.title() }}</option>
             {% endfor %}
           </select>
         </div>
-        <div>
-          <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Status</label>
-          <select name="status"
-                  class="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 text-sm
-                         focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500">
+        <div class="col-sm-4">
+          <label class="db-label">Status</label>
+          <select name="status" class="db-input">
             {% for st in allowed_statuses %}
               <option value="{{ st }}" {% if island.status == st %}selected{% endif %}>{{ st }}</option>
             {% endfor %}
@@ -100,115 +87,135 @@
       </div>
 
       <!-- Description -->
-      <div>
-        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Description</label>
-        <textarea name="description" rows="3"
-                  placeholder="Short description visible on the island page…"
-                  class="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 text-sm resize-none
-                         placeholder-gray-600 focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
-        >{{ island.description }}</textarea>
+      <div class="mb-3">
+        <label class="db-label">Description</label>
+        <textarea name="description" rows="3" placeholder="Short description visible on the island page…"
+                  class="db-input">{{ island.description }}</textarea>
       </div>
 
       <!-- Items tag input -->
-      <div>
-        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
+      <div class="mb-4">
+        <label class="db-label">
           Items
-          <span class="text-gray-600 font-normal normal-case">(one per line or comma-separated)</span>
+          <span class="text-lowercase" style="font-weight:600;color:#bbb;">(one per line or comma-separated)</span>
         </label>
 
         <!-- Visual tag display -->
         <div id="tagsDisplay"
-             class="flex flex-wrap gap-1.5 min-h-[2.5rem] px-3 py-2 rounded-t-lg bg-gray-800 border border-b-0
-                    border-gray-700 cursor-text"
+             class="d-flex flex-wrap gap-2 p-2 cursor-pointer"
+             style="min-height:2.5rem;background:var(--nook-cream);border:2px solid #e1e6d3;
+                    border-bottom:none;border-radius:12px 12px 0 0;"
              onclick="document.getElementById('itemsTextarea').focus()">
           {% for item in island['items'] %}
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-teal-900/60 border border-teal-700/60
-                       text-teal-200 text-xs rounded-full">
+          <span class="d-inline-flex align-items-center gap-1 px-2 py-1 rounded-pill"
+                style="background:#e8f5e9;border:1px solid #b8dfc0;color:#1a6b2a;font-size:.75rem;font-weight:700;">
             {{ item }}
-            <button type="button" onclick="removeTag(this)" class="hover:text-red-400 leading-none">&times;</button>
+            <button type="button" onclick="removeTag(this)"
+                    class="border-0 bg-transparent p-0 lh-1 ms-1"
+                    style="color:inherit;font-size:1rem;">&times;</button>
           </span>
           {% endfor %}
         </div>
 
-        <textarea id="itemsTextarea" rows="4"
+        <textarea id="itemsTextarea" rows="3"
                   placeholder="Add items, one per line or comma-separated…"
-                  class="w-full px-3 py-2 rounded-b-lg bg-gray-800 border border-gray-700 text-gray-300 text-xs
-                         font-mono resize-y placeholder-gray-600 focus:outline-none focus:border-teal-500"
-        >{{ island.items_text }}</textarea>
+                  class="db-input font-monospace"
+                  style="border-radius:0 0 12px 12px;font-size:.8rem;">{{ island.items_text }}</textarea>
 
-        <!-- Hidden JSON field that gets submitted -->
         <input type="hidden" name="items_json" id="itemsJson">
       </div>
 
-      <!-- Submit buttons -->
-      <div class="flex items-center gap-3 pt-1">
-        <button type="submit"
-                class="px-5 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-sm font-semibold transition">
-          Save Changes
+      <!-- Actions -->
+      <div class="d-flex align-items-center gap-3">
+        <button type="submit" class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold">
+          <i class="bi bi-check-circle-fill me-2"></i>Save Changes
         </button>
         <a href="{{ url_for('dashboard.islands') }}"
-           class="px-5 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm transition">
+           class="btn fw-bold px-4 py-2 rounded-3"
+           style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;">
           Cancel
         </a>
       </div>
     </form>
   </div>
 
-  <!-- Map upload card -->
-  <div class="bg-gray-900 border border-gray-800 rounded-xl px-6 py-5">
-    <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Island Map</p>
+  <!-- Map card -->
+  <div class="section-card mb-4">
+    <div class="section-card-header">
+      <span><i class="bi bi-map-fill me-2 text-nook-green"></i>Island Map</span>
+    </div>
+    <div class="p-4">
 
-    <!-- Current S3/R2 image — always shown when one exists -->
-    {% if island.map_url %}
-    <img id="mapCurrent" src="{{ island.map_url }}" alt="{{ island.name }} map"
-         class="w-full max-h-64 object-cover rounded-lg border border-gray-700 mb-3">
-    {% else %}
-    <p class="text-xs text-gray-600 mb-3">No map uploaded yet.</p>
-    {% endif %}
+      <!-- Current S3/R2 image -->
+      {% if island.map_url %}
+      <div class="polaroid-stack mb-4">
+        <div class="tape-strip"></div>
+        <div class="map-polaroid">
+          <div class="img-wrapper" style="border-radius:6px;">
+            <img id="mapCurrent" src="{{ island.map_url }}" alt="{{ island.name }} map"
+                 class="map-img" style="max-height:260px;width:100%;border-radius:6px;">
+            <div class="zoom-indicator"><i class="bi bi-zoom-in"></i></div>
+          </div>
+          <div class="polaroid-caption">{{ island.name }}</div>
+        </div>
+      </div>
+      {% else %}
+      <p class="x-small fw-bold mb-3" style="color:#ccc;">
+        <i class="bi bi-image me-1"></i>No map uploaded yet.
+      </p>
+      {% endif %}
 
-    {% if r2_configured %}
-    <form id="mapForm" class="flex items-center gap-3">
-      <label class="cursor-pointer flex-1">
-        <span class="sr-only">Choose map image</span>
-        <input type="file" id="mapFile" accept="image/jpeg,image/png,image/webp,image/gif"
-               class="block w-full text-xs text-gray-400
-                      file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0
-                      file:text-xs file:font-semibold file:bg-gray-700 file:text-gray-200
-                      hover:file:bg-gray-600">
-      </label>
-      <button type="button" onclick="uploadMap()"
-              class="px-4 py-2 rounded-lg bg-sky-700 hover:bg-sky-600 text-white text-xs font-semibold transition">
-        Upload
-      </button>
-    </form>
-    <!-- Local preview of the newly selected file (shown before upload) -->
-    <img id="mapPreview" src="" alt="Preview"
-         class="hidden mt-3 w-full max-h-64 object-cover rounded-lg border border-sky-700/60">
-    <p id="mapStatus" class="text-xs text-gray-600 mt-2"></p>
-    {% else %}
-    <p class="text-xs text-amber-500">
-      R2 is not configured. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
-      R2_BUCKET_NAME, and R2_PUBLIC_URL in your .env file to enable map uploads.
-    </p>
-    {% endif %}
+      {% if r2_configured %}
+      <form id="mapForm" class="d-flex align-items-center gap-3">
+        <label class="flex-grow-1 cursor-pointer">
+          <span class="visually-hidden">Choose map image</span>
+          <input type="file" id="mapFile" accept="image/jpeg,image/png,image/webp,image/gif"
+                 class="form-control form-control-sm"
+                 style="background:var(--nook-cream);border:2px solid #e1e6d3;border-radius:10px;
+                        font-family:var(--font-main);font-weight:700;font-size:.82rem;">
+        </label>
+        <button type="button" onclick="uploadMap()"
+                class="btn btn-nook-primary px-3 py-2 rounded-3 fw-bold flex-shrink-0"
+                style="font-size:.82rem;">
+          <i class="bi bi-cloud-arrow-up-fill me-1"></i>Upload
+        </button>
+      </form>
+      <!-- Local preview before upload -->
+      <img id="mapPreview" src="" alt="Preview"
+           class="d-none mt-3 rounded-3 w-100"
+           style="max-height:200px;object-fit:cover;border:2px solid var(--nook-accent);">
+      <p id="mapStatus" class="x-small fw-bold mt-2" style="color:#aaa;"></p>
+      {% else %}
+      <div class="alert border-0 rounded-3 py-2 px-3 mt-2"
+           style="background:#fff3cd;color:#856404;font-weight:700;font-size:.85rem;">
+        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+        R2 is not configured — set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+        R2_BUCKET_NAME, and R2_PUBLIC_URL in your .env to enable map uploads.
+      </div>
+      {% endif %}
+    </div>
   </div>
 
-  <!-- Filesystem info card -->
+  <!-- Filesystem info -->
   {% if island.fs_path %}
-  <div class="bg-gray-900/50 border border-gray-800 rounded-xl px-6 py-4">
-    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Live Filesystem Data</p>
-    <div class="grid grid-cols-2 gap-2 text-xs">
-      <div>
-        <span class="text-gray-600">Dodo (file):</span>
-        <span class="text-teal-500 font-mono ml-1">{{ island.fs_dodo or "—" }}</span>
-      </div>
-      <div>
-        <span class="text-gray-600">Visitors (file):</span>
-        <span class="text-gray-400 ml-1">{{ island.fs_visitors or "—" }}</span>
-      </div>
-      <div class="col-span-2">
-        <span class="text-gray-600">Path:</span>
-        <span class="text-gray-600 font-mono ml-1 break-all">{{ island.fs_path }}</span>
+  <div class="section-card">
+    <div class="section-card-header">
+      <span><i class="bi bi-folder2-open me-2" style="color:var(--nook-yellow);"></i>Live Filesystem Data</span>
+    </div>
+    <div class="p-4">
+      <div class="row g-3 x-small fw-bold">
+        <div class="col-sm-6">
+          <span style="color:#bbb;">Dodo (file):</span>
+          <span class="font-monospace ms-1" style="color:var(--nook-green);">{{ island.fs_dodo or "—" }}</span>
+        </div>
+        <div class="col-sm-6">
+          <span style="color:#bbb;">Visitors (file):</span>
+          <span class="ms-1" style="color:#888;">{{ island.fs_visitors or "—" }}</span>
+        </div>
+        <div class="col-12">
+          <span style="color:#bbb;">Path:</span>
+          <span class="font-monospace ms-1" style="color:#bbb;word-break:break-all;">{{ island.fs_path }}</span>
+        </div>
       </div>
     </div>
   </div>
@@ -216,6 +223,7 @@
 
 </div>
 
+{% block scripts %}
 <script>
 /* ---- Items tag editor ---- */
 function syncItemsJson() {
@@ -223,17 +231,17 @@ function syncItemsJson() {
   const tags     = Array.from(document.querySelectorAll('#tagsDisplay span'))
                        .map(s => s.textContent.trim().replace('×','').trim())
                        .filter(Boolean);
-  // merge textarea content
   const fromTextarea = textarea.value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
   const all = [...new Set([...tags, ...fromTextarea])];
   document.getElementById('itemsJson').value = JSON.stringify(all);
-  // refresh visual tags
   const display = document.getElementById('tagsDisplay');
   display.innerHTML = all.map(item =>
-    `<span class="inline-flex items-center gap-1 px-2 py-0.5 bg-teal-900/60 border border-teal-700/60
-                  text-teal-200 text-xs rounded-full">
+    `<span class="d-inline-flex align-items-center gap-1 px-2 py-1 rounded-pill"
+           style="background:#e8f5e9;border:1px solid #b8dfc0;color:#1a6b2a;font-size:.75rem;font-weight:700;">
        ${escHtml(item)}
-       <button type="button" onclick="removeTag(this)" class="hover:text-red-400 leading-none">&times;</button>
+       <button type="button" onclick="removeTag(this)"
+               class="border-0 bg-transparent p-0 lh-1 ms-1"
+               style="color:inherit;font-size:1rem;">&times;</button>
      </span>`
   ).join('');
   textarea.value = '';
@@ -248,7 +256,6 @@ function escHtml(s) {
 document.getElementById('islandForm').addEventListener('submit', function() {
   syncItemsJson();
 });
-// Also allow comma/enter in textarea to create tags
 document.getElementById('itemsTextarea').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') { e.preventDefault(); syncItemsJson(); }
 });
@@ -259,9 +266,9 @@ if (_mapFileInput) {
   _mapFileInput.addEventListener('change', function() {
     const preview = document.getElementById('mapPreview');
     const file = this.files[0];
-    if (!file) { preview.classList.add('hidden'); preview.src = ''; return; }
+    if (!file) { preview.classList.add('d-none'); preview.src = ''; return; }
     const reader = new FileReader();
-    reader.onload = e => { preview.src = e.target.result; preview.classList.remove('hidden'); };
+    reader.onload = e => { preview.src = e.target.result; preview.classList.remove('d-none'); };
     reader.readAsDataURL(file);
   });
 }
@@ -284,24 +291,22 @@ async function uploadMap() {
     const data = await resp.json();
     if (resp.ok) {
       status.textContent = 'Uploaded successfully!';
-      // Update the current-map preview in place so the new image is visible immediately
       const current = document.getElementById('mapCurrent');
       const preview = document.getElementById('mapPreview');
       if (current) {
         current.src = preview.src;
       } else {
-        // No existing image element yet — inject one
         const img = document.createElement('img');
         img.id = 'mapCurrent';
         img.alt = 'Island map';
         img.src = preview.src;
-        img.className = 'w-full max-h-64 object-cover rounded-lg border border-gray-700 mb-3';
+        img.className = 'map-img rounded-3 w-100';
+        img.style.maxHeight = '260px';
         document.getElementById('mapForm').before(img);
-        // Remove the "No map uploaded yet." placeholder if present
-        const placeholder = document.querySelector('#mapForm').parentElement.querySelector('p.text-xs.text-gray-600.mb-3');
-        if (placeholder) placeholder.remove();
+        const ph = document.querySelector('#mapForm').parentElement.querySelector('p.x-small');
+        if (ph) ph.remove();
       }
-      preview.classList.add('hidden');
+      preview.classList.add('d-none');
       preview.src = '';
       document.getElementById('mapFile').value = '';
     } else {
@@ -312,4 +317,5 @@ async function uploadMap() {
   }
 }
 </script>
+{% endblock %}
 {% endblock %}

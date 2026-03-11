@@ -4,7 +4,6 @@
 {% block header %}Analytics{% endblock %}
 
 {% block head %}
-  <!-- Chart.js with Subresource Integrity verification -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"
           integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb"
           crossorigin="anonymous"></script>
@@ -13,105 +12,139 @@
 {% block content %}
 
 <!-- Auth ratio + visit trend row -->
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
+<div class="row g-4 mb-4">
 
   <!-- Auth ratio doughnut -->
-  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-    <h3 class="text-sm font-semibold text-gray-200 mb-4">Traveler Authorization</h3>
-    <div class="flex items-center gap-6">
-      <div class="relative w-36 h-36 shrink-0">
-        <canvas id="authChart"></canvas>
+  <div class="col-12 col-lg-5">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-pie-chart-fill me-2" style="color:var(--nook-green);"></i>Traveler Authorization</span>
       </div>
-      <div class="space-y-2 text-sm">
-        <div class="flex items-center gap-2">
-          <span class="w-3 h-3 rounded-full bg-emerald-500 shrink-0"></span>
-          <span class="text-gray-400">Authorized</span>
-          <span class="ml-auto font-bold text-emerald-400">{{ auth_stats.authorized }}</span>
+      <div class="p-4 d-flex align-items-center gap-4">
+        <div class="chart-wrap flex-shrink-0" style="width:140px;height:140px;">
+          <canvas id="authChart"></canvas>
         </div>
-        <div class="flex items-center gap-2">
-          <span class="w-3 h-3 rounded-full bg-red-500 shrink-0"></span>
-          <span class="text-gray-400">Unknown</span>
-          <span class="ml-auto font-bold text-red-400">{{ auth_stats.unauthorized }}</span>
-        </div>
-        <div class="flex items-center gap-2 pt-2 border-t border-gray-800">
-          <span class="text-gray-500 text-xs">Total</span>
-          <span class="ml-auto font-bold text-gray-200">{{ auth_stats.authorized + auth_stats.unauthorized }}</span>
+        <div>
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="status-dot" style="background:#28a745;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Authorized</span>
+            <span class="ms-auto fw-black ac-font" style="color:var(--nook-green);font-size:1.3rem;">
+              {{ auth_stats.authorized }}
+            </span>
+          </div>
+          <div class="d-flex align-items-center gap-2 mb-3">
+            <span class="status-dot" style="background:#e06c75;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Unknown</span>
+            <span class="ms-auto fw-black ac-font" style="color:#e06c75;font-size:1.3rem;">
+              {{ auth_stats.unauthorized }}
+            </span>
+          </div>
+          <div class="divider-dashed mt-0 mb-2"></div>
+          <div class="d-flex align-items-center justify-content-between">
+            <span class="x-small fw-bold" style="color:#ccc;">Total</span>
+            <span class="fw-black ac-font" style="color:#444;font-size:1.2rem;">
+              {{ auth_stats.authorized + auth_stats.unauthorized }}
+            </span>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Visits per day (7 days) -->
-  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-    <h3 class="text-sm font-semibold text-gray-200 mb-4">Visits — Last 7 Days</h3>
-    <div class="h-36">
-      <canvas id="visitChart"></canvas>
+  <!-- Visits per day -->
+  <div class="col-12 col-lg-7">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-graph-up-arrow me-2" style="color:var(--dal-blue);"></i>Visits — Last 7 Days</span>
+      </div>
+      <div class="p-4">
+        <div class="chart-wrap" style="height:140px;">
+          <canvas id="visitChart"></canvas>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
 <!-- Top islands + Top travelers row -->
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
+<div class="row g-4 mb-4">
 
   <!-- Top islands -->
-  <div class="bg-gray-900 border border-gray-800 rounded-xl">
-    <div class="px-5 py-4 border-b border-gray-800">
-      <h3 class="text-sm font-semibold text-gray-200">🏝️ Most Visited Islands</h3>
-    </div>
-    {% if top_islands %}
-      <div class="divide-y divide-gray-800">
+  <div class="col-12 col-lg-6">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span>🏝️ Most Visited Islands</span>
+      </div>
+      {% if top_islands %}
+      <div>
         {% for row in top_islands %}
-          <div class="px-5 py-3 flex items-center gap-3">
-            <span class="text-xs text-gray-600 w-5 text-right shrink-0">{{ loop.index }}</span>
-            <span class="flex-1 text-sm text-gray-200 font-medium">{{ row.destination }}</span>
-            <div class="flex items-center gap-2 shrink-0">
-              <div class="h-1.5 rounded-full bg-teal-600 min-w-1"
-                   style="width: {{ [(row.visit_count / top_islands[0].visit_count * 100)|int, 4]|max }}px; max-width: 80px;"></div>
-              <span class="text-xs text-teal-400 font-bold w-8 text-right">{{ row.visit_count }}</span>
-            </div>
+        <div class="d-flex align-items-center gap-3 px-4 py-3"
+             style="border-bottom:1px solid #f0f4ec;">
+          <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
+          <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.destination }}</span>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            <div style="height:6px;border-radius:3px;background:var(--nook-green);
+                        width:{{ [(row.visit_count / top_islands[0].visit_count * 80)|int, 4]|max }}px;
+                        max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:var(--nook-green);width:24px;text-align:right;">
+              {{ row.visit_count }}
+            </span>
           </div>
+        </div>
         {% endfor %}
       </div>
-    {% else %}
-      <div class="py-10 text-center text-gray-600 text-sm">No visit data yet.</div>
-    {% endif %}
+      {% else %}
+      <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">No visit data yet.</div>
+      {% endif %}
+    </div>
   </div>
 
   <!-- Top travelers -->
-  <div class="bg-gray-900 border border-gray-800 rounded-xl">
-    <div class="px-5 py-4 border-b border-gray-800">
-      <h3 class="text-sm font-semibold text-gray-200">✈️ Most Active Travelers</h3>
-    </div>
-    {% if top_travelers %}
-      <div class="divide-y divide-gray-800">
+  <div class="col-12 col-lg-6">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span>✈️ Most Active Travelers</span>
+      </div>
+      {% if top_travelers %}
+      <div>
         {% for row in top_travelers %}
-          <div class="px-5 py-3 flex items-center gap-3">
-            <span class="text-xs text-gray-600 w-5 text-right shrink-0">{{ loop.index }}</span>
-            <span class="flex-1 text-sm text-gray-200">{{ row.ign }}</span>
-            <div class="flex items-center gap-2 shrink-0">
-              <div class="h-1.5 rounded-full bg-purple-600 min-w-1"
-                   style="width: {{ [(row.visit_count / top_travelers[0].visit_count * 100)|int, 4]|max }}px; max-width: 80px;"></div>
-              <span class="text-xs text-purple-400 font-bold w-8 text-right">{{ row.visit_count }}</span>
-            </div>
+        <div class="d-flex align-items-center gap-3 px-4 py-3"
+             style="border-bottom:1px solid #f0f4ec;">
+          <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
+          <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.ign }}</span>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            <div style="height:6px;border-radius:3px;background:#b07cdc;
+                        width:{{ [(row.visit_count / top_travelers[0].visit_count * 80)|int, 4]|max }}px;
+                        max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:#b07cdc;width:24px;text-align:right;">
+              {{ row.visit_count }}
+            </span>
           </div>
+        </div>
         {% endfor %}
       </div>
-    {% else %}
-      <div class="py-10 text-center text-gray-600 text-sm">No traveler data yet.</div>
-    {% endif %}
+      {% else %}
+      <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">No traveler data yet.</div>
+      {% endif %}
+    </div>
   </div>
 </div>
 
 <!-- Island visit bar chart -->
 {% if top_islands %}
-<div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-  <h3 class="text-sm font-semibold text-gray-200 mb-4">Island Visit Breakdown</h3>
-  <div class="h-56">
-    <canvas id="islandBarChart"></canvas>
+<div class="section-card">
+  <div class="section-card-header">
+    <span><i class="bi bi-bar-chart-fill me-2" style="color:var(--dal-blue);"></i>Island Visit Breakdown</span>
+  </div>
+  <div class="p-4">
+    <div class="chart-wrap" style="height:220px;">
+      <canvas id="islandBarChart"></canvas>
+    </div>
   </div>
 </div>
 {% endif %}
 
+{% block scripts %}
 <script>
   // Auth doughnut
   new Chart(document.getElementById('authChart'), {
@@ -120,7 +153,7 @@
       labels: ['Authorized', 'Unknown'],
       datasets: [{
         data: [{{ auth_stats.authorized }}, {{ auth_stats.unauthorized }}],
-        backgroundColor: ['#10b981', '#ef4444'],
+        backgroundColor: ['#28a745', '#e06c75'],
         borderWidth: 0,
         hoverOffset: 4,
       }]
@@ -143,12 +176,13 @@
       datasets: [{
         label: 'Visits',
         data: visitCounts,
-        borderColor: '#14b8a6',
-        backgroundColor: 'rgba(20,184,166,0.15)',
+        borderColor: '#28a745',
+        backgroundColor: 'rgba(40,167,69,0.12)',
         fill: true,
-        tension: 0.3,
-        pointRadius: 3,
-        borderWidth: 2,
+        tension: 0.4,
+        pointRadius: 4,
+        pointBackgroundColor: '#28a745',
+        borderWidth: 2.5,
       }]
     },
     options: {
@@ -156,8 +190,10 @@
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: '#6b7280', font: { size: 11 } }, grid: { color: '#1f2937' } },
-        y: { ticks: { color: '#6b7280', font: { size: 11 } }, grid: { color: '#1f2937' }, beginAtZero: true }
+        x: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
+             grid: { color: '#f0f4ec' } },
+        y: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
+             grid: { color: '#f0f4ec' }, beginAtZero: true }
       }
     }
   });
@@ -171,8 +207,9 @@
       datasets: [{
         label: 'Visits',
         data: [{% for r in top_islands %}{{ r.visit_count }}{% if not loop.last %},{% endif %}{% endfor %}],
-        backgroundColor: 'rgba(20,184,166,0.7)',
-        borderRadius: 4,
+        backgroundColor: 'rgba(40,167,69,0.65)',
+        borderRadius: 8,
+        borderSkipped: false,
       }]
     },
     options: {
@@ -180,11 +217,14 @@
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: '#9ca3af', font: { size: 11 } }, grid: { color: '#1f2937' } },
-        y: { ticks: { color: '#9ca3af', font: { size: 11 } }, grid: { color: '#1f2937' }, beginAtZero: true }
+        x: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
+             grid: { color: '#f0f4ec' } },
+        y: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
+             grid: { color: '#f0f4ec' }, beginAtZero: true }
       }
     }
   });
   {% endif %}
 </script>
+{% endblock %}
 {% endblock %}

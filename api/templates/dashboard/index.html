@@ -4,89 +4,103 @@
 {% block header %}Overview{% endblock %}
 
 {% block content %}
+
 <!-- Stat cards -->
-<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-    <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Total Visits</p>
-    <p class="text-3xl font-bold text-teal-400">{{ total_visits }}</p>
+<div class="row g-4 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-airplane-fill me-1"></i>Total Visits</div>
+      <div class="stat-value text-nook-green">{{ total_visits }}</div>
+    </div>
   </div>
-  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-    <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Total Warnings</p>
-    <p class="text-3xl font-bold text-amber-400">{{ total_warnings }}</p>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-exclamation-triangle-fill me-1"></i>Warnings</div>
+      <div class="stat-value" style="color:var(--nook-yellow);">{{ total_warnings }}</div>
+    </div>
   </div>
-  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-    <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Islands</p>
-    <p class="text-3xl font-bold text-emerald-400">{{ island_count }}</p>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-geo-alt-fill me-1"></i>Islands</div>
+      <div class="stat-value" style="color:var(--dal-blue);">{{ island_count }}</div>
+    </div>
   </div>
-  <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
-    <a href="{{ url_for('dashboard.analytics') }}" class="block hover:opacity-80 transition">
-      <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Analytics →</p>
-      <p class="text-3xl font-bold text-purple-400">View</p>
+  <div class="col-6 col-lg-3">
+    <a href="{{ url_for('dashboard.analytics') }}" class="stat-card text-decoration-none d-block">
+      <div class="stat-label"><i class="bi bi-bar-chart-fill me-1"></i>Analytics</div>
+      <div class="stat-value" style="color:#b07cdc;">View →</div>
     </a>
   </div>
 </div>
 
 <!-- Recent activity -->
-<div class="bg-gray-900 border border-gray-800 rounded-xl">
-  <div class="px-5 py-4 border-b border-gray-800 flex items-center justify-between">
-    <h2 class="text-sm font-semibold text-gray-200">Recent Flight Activity</h2>
-    <a href="{{ url_for('dashboard.logs') }}" class="text-xs text-teal-400 hover:underline">View all →</a>
+<div class="section-card mb-4">
+  <div class="section-card-header">
+    <span><i class="bi bi-clock-history me-2 text-nook-green"></i>Recent Flight Activity</span>
+    <a href="{{ url_for('dashboard.logs') }}"
+       class="text-decoration-none fw-bold x-small"
+       style="color:var(--nook-green);">View all →</a>
   </div>
   {% if recent %}
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
+    <div class="table-responsive">
+      <table class="db-table">
         <thead>
-          <tr class="text-left text-xs text-gray-500 border-b border-gray-800">
-            <th class="px-5 py-3 font-medium">IGN</th>
-            <th class="px-5 py-3 font-medium">Destination</th>
-            <th class="px-5 py-3 font-medium">Status</th>
-            <th class="px-5 py-3 font-medium">Time</th>
+          <tr>
+            <th>IGN</th>
+            <th>Destination</th>
+            <th>Status</th>
+            <th>Time</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-gray-800">
+        <tbody>
           {% for entry in recent %}
-            <tr class="hover:bg-gray-800/50 transition">
-              <td class="px-5 py-3 font-medium text-gray-200">{{ entry.ign }}</td>
-              <td class="px-5 py-3 text-gray-300">{{ entry.destination }}</td>
-              <td class="px-5 py-3">
-                {% if entry.authorized %}
-                  <span class="px-2 py-0.5 rounded-full text-xs bg-emerald-900/60 text-emerald-400 border border-emerald-800">Authorized</span>
-                {% else %}
-                  <span class="px-2 py-0.5 rounded-full text-xs bg-red-900/60 text-red-400 border border-red-800">Unknown</span>
-                {% endif %}
-              </td>
-              <td class="px-5 py-3 text-gray-500 text-xs">{{ entry.timestamp }}</td>
-            </tr>
+          <tr>
+            <td class="fw-bold" style="color:#444;">{{ entry.ign }}</td>
+            <td>{{ entry.destination }}</td>
+            <td>
+              {% if entry.authorized %}
+                <span class="badge badge-auth rounded-pill">✔ Authorized</span>
+              {% else %}
+                <span class="badge badge-unkn rounded-pill">? Unknown</span>
+              {% endif %}
+            </td>
+            <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
+          </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
   {% else %}
-    <div class="px-5 py-10 text-center text-gray-600 text-sm">
+    <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+      <i class="bi bi-airplane fs-3 d-block mb-2" style="opacity:.3;"></i>
       No flight data recorded yet.
     </div>
   {% endif %}
 </div>
 
 <!-- Quick links -->
-<div class="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
-  <a href="{{ url_for('dashboard.islands') }}"
-     class="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-teal-700 transition group">
-    <div class="text-2xl mb-2">🏝️</div>
-    <p class="text-sm font-semibold text-gray-200 group-hover:text-teal-400 transition">Manage Islands</p>
-    <p class="text-xs text-gray-500 mt-0.5">View, edit, and update island data</p>
-  </a>
-  <a href="{{ url_for('dashboard.logs') }}"
-     class="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-teal-700 transition group">
-    <div class="text-2xl mb-2">📋</div>
-    <p class="text-sm font-semibold text-gray-200 group-hover:text-teal-400 transition">XLog Reports</p>
-    <p class="text-xs text-gray-500 mt-0.5">Flight logs &amp; moderation warnings</p>
-  </a>
-  <a href="{{ url_for('dashboard.analytics') }}"
-     class="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-teal-700 transition group">
-    <div class="text-2xl mb-2">📊</div>
-    <p class="text-sm font-semibold text-gray-200 group-hover:text-teal-400 transition">Analytics</p>
-    <p class="text-xs text-gray-500 mt-0.5">Most visited islands &amp; top travelers</p>
-  </a>
+<div class="row g-4">
+  <div class="col-12 col-sm-4">
+    <a href="{{ url_for('dashboard.islands') }}" class="quick-card">
+      <div class="fs-2 mb-2">🏝️</div>
+      <div class="fw-black" style="color:#444;">Manage Islands</div>
+      <div class="x-small mt-1" style="color:#aaa;font-weight:700;">View, edit, and update island data</div>
+    </a>
+  </div>
+  <div class="col-12 col-sm-4">
+    <a href="{{ url_for('dashboard.logs') }}" class="quick-card">
+      <div class="fs-2 mb-2">📋</div>
+      <div class="fw-black" style="color:#444;">XLog Reports</div>
+      <div class="x-small mt-1" style="color:#aaa;font-weight:700;">Flight logs &amp; moderation warnings</div>
+    </a>
+  </div>
+  <div class="col-12 col-sm-4">
+    <a href="{{ url_for('dashboard.analytics') }}" class="quick-card">
+      <div class="fs-2 mb-2">📊</div>
+      <div class="fw-black" style="color:#444;">Analytics</div>
+      <div class="x-small mt-1" style="color:#aaa;font-weight:700;">Most visited islands &amp; top travelers</div>
+    </a>
+  </div>
 </div>
+
 {% endblock %}
