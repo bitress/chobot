@@ -209,7 +209,7 @@ def index():
             "ign": r["ign"],
             "destination": r["destination"],
             "authorized": bool(r["authorized"]),
-            "timestamp": _ts_to_str(r["timestamp"]),
+            "timestamp": str(r["timestamp"]),
         }
         for r in recent_raw
     ]
@@ -378,7 +378,7 @@ def logs():
                     "user_id": r["user_id"],
                     "reason": r["reason"],
                     "mod_id": r["mod_id"],
-                    "timestamp": _ts_to_str(r["timestamp"]),
+                    "timestamp": str(r["timestamp"]),
                     "ign": r["ign"],
                     "destination": r["destination"],
                 }
