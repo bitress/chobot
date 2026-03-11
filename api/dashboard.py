@@ -628,7 +628,7 @@ def logs():
 
             if island_filter:
                 col = "iv.destination" if use_island_join else "destination"
-                conditions.append(f"{col} = ?")
+                conditions.append(f"LOWER({col}) = LOWER(?)")
                 params.append(island_filter)
             if authorized_filter in ("0", "1"):
                 col = "iv.authorized" if use_island_join else "authorized"
