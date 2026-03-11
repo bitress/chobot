@@ -10,29 +10,35 @@
 {% block content %}
 
 <!-- Stat tiles -->
-<div class="row g-4 mb-4">
-  <div class="col-6 col-lg-3">
+<div class="row row-cols-2 row-cols-md-3 row-cols-lg-5 g-4 mb-4">
+  <div class="col">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-geo-alt-fill me-1"></i>Total Islands</div>
       <div class="stat-value" style="color:#444;">{{ island_count }}</div>
     </div>
   </div>
-  <div class="col-6 col-lg-3">
+  <div class="col">
     <div class="stat-card">
       <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>Online</div>
       <div class="stat-value text-nook-green">{{ status_map.get('ONLINE', 0) }}</div>
     </div>
   </div>
-  <div class="col-6 col-lg-3">
+  <div class="col">
     <div class="stat-card">
       <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>Sub Only</div>
       <div class="stat-value" style="color:#f5a623;">{{ status_map.get('SUB ONLY', 0) }}</div>
     </div>
   </div>
-  <div class="col-6 col-lg-3">
+  <div class="col">
+    <div class="stat-card">
+      <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>Refreshing</div>
+      <div class="stat-value" style="color:#4f9ef8;">{{ status_map.get('REFRESHING', 0) }}</div>
+    </div>
+  </div>
+  <div class="col">
     <div class="stat-card">
       <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>Offline</div>
-      <div class="stat-value" style="color:#aaa;">{{ status_map.get('OFFLINE', 0) + status_map.get('REFRESHING', 0) }}</div>
+      <div class="stat-value" style="color:#aaa;">{{ status_map.get('OFFLINE', 0) }}</div>
     </div>
   </div>
 </div>
@@ -119,13 +125,12 @@
         </div>
 
         <!-- Sub Only -->
-        {% set sub_pct = ((status_map.get('SUB ONLY', 0) / island_count * 100) | int) if island_count > 0 else 0 %}
         <div class="mb-4">
           <div class="mb-1 d-flex justify-content-between align-items-center">
             <span class="x-small fw-bold" style="color:#888;">
               <span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>
               <strong style="color:#f5a623;">{{ status_map.get('SUB ONLY', 0) }}</strong>
-              islands <strong style="color:#f5a623;">SUB ONLY</strong>
+              of {{ island_count }} islands <strong style="color:#f5a623;">SUB ONLY</strong>
             </span>
             <span class="x-small fw-bold" style="color:#ccc;">{{ sub_pct }}%</span>
           </div>
@@ -140,13 +145,12 @@
         </div>
 
         <!-- Refreshing -->
-        {% set ref_pct = ((status_map.get('REFRESHING', 0) / island_count * 100) | int) if island_count > 0 else 0 %}
         <div class="mb-4">
           <div class="mb-1 d-flex justify-content-between align-items-center">
             <span class="x-small fw-bold" style="color:#888;">
               <span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>
               <strong style="color:#4f9ef8;">{{ status_map.get('REFRESHING', 0) }}</strong>
-              islands <strong style="color:#4f9ef8;">REFRESHING</strong>
+              of {{ island_count }} islands <strong style="color:#4f9ef8;">REFRESHING</strong>
             </span>
             <span class="x-small fw-bold" style="color:#ccc;">{{ ref_pct }}%</span>
           </div>
@@ -161,13 +165,12 @@
         </div>
 
         <!-- Offline -->
-        {% set off_pct = ((status_map.get('OFFLINE', 0) / island_count * 100) | int) if island_count > 0 else 0 %}
         <div>
           <div class="mb-1 d-flex justify-content-between align-items-center">
             <span class="x-small fw-bold" style="color:#888;">
               <span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>
               <strong style="color:#aaa;">{{ status_map.get('OFFLINE', 0) }}</strong>
-              islands <strong style="color:#aaa;">OFFLINE</strong>
+              of {{ island_count }} islands <strong style="color:#aaa;">OFFLINE</strong>
             </span>
             <span class="x-small fw-bold" style="color:#ccc;">{{ off_pct }}%</span>
           </div>

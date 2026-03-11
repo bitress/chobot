@@ -975,7 +975,14 @@ def island_status():
     status_map = {r["status"]: r["cnt"] for r in status_rows}
     island_count = sum(status_map.values())
     online_count = status_map.get("ONLINE", 0)
-    online_pct = int(online_count * 100 / island_count) if island_count else 0
+
+    def _pct(count):
+        return round(count * 100 / island_count) if island_count else 0
+
+    online_pct = _pct(online_count)
+    sub_pct = _pct(status_map.get("SUB ONLY", 0))
+    ref_pct = _pct(status_map.get("REFRESHING", 0))
+    off_pct = _pct(status_map.get("OFFLINE", 0))
 
     # Group islands by status for the per-section tables
     grouped = {"ONLINE": [], "SUB ONLY": [], "REFRESHING": [], "OFFLINE": []}
@@ -988,6 +995,9 @@ def island_status():
         island_count=island_count,
         status_map=status_map,
         online_pct=online_pct,
+        sub_pct=sub_pct,
+        ref_pct=ref_pct,
+        off_pct=off_pct,
         grouped=grouped,
     )
 
