@@ -1,0 +1,201 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Blocklist — ChoBot Dashboard{% endblock %}
+{% block header %}Traveler Blocklist / Allowlist{% endblock %}
+
+{% block content %}
+
+<!-- Header + add button -->
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+  <div>
+    <p class="x-small fw-bold mb-0" style="color:#aaa;">
+      Block or allow specific Discord user IDs or IGNs across all islands.
+      Blocked travelers trigger a special alert; allowlisted travelers are admitted automatically.
+    </p>
+  </div>
+  <button class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
+          style="font-size:.85rem;"
+          data-bs-toggle="modal" data-bs-target="#addModal">
+    <i class="bi bi-plus-circle-fill me-2"></i>Add Entry
+  </button>
+</div>
+
+<!-- Blocklist table -->
+<div class="section-card mb-4">
+  {% if entries %}
+  <div class="table-responsive">
+    <table class="db-table">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Value Type</th>
+          <th>Value</th>
+          <th>Reason</th>
+          <th>Added by</th>
+          <th>Added</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr>
+          <td>
+            {% if entry.entry_type == 'block' %}
+              <span class="badge rounded-pill" style="background:#f8d7da;color:#842029;font-weight:800;">
+                <i class="bi bi-slash-circle-fill me-1"></i>Block
+              </span>
+            {% else %}
+              <span class="badge rounded-pill" style="background:#d1e7dd;color:#0f5132;font-weight:800;">
+                <i class="bi bi-check-circle-fill me-1"></i>Allow
+              </span>
+            {% endif %}
+          </td>
+          <td class="x-small fw-bold" style="color:#888;">
+            {% if entry.value_type == 'discord_id' %}
+              <i class="bi bi-discord me-1" style="color:#5865F2;"></i>Discord ID
+            {% else %}
+              <i class="bi bi-controller me-1"></i>IGN
+            {% endif %}
+          </td>
+          <td class="fw-bold font-monospace" style="color:#444;">{{ entry.value }}</td>
+          <td class="x-small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+              title="{{ entry.reason }}">{{ entry.reason or "—" }}</td>
+          <td class="x-small font-monospace" style="color:#bbb;">{{ entry.mod_id or "—" }}</td>
+          <td class="x-small" style="color:#aaa;">{{ entry.timestamp_str }}</td>
+          <td>
+            <button class="btn btn-sm rounded-3 fw-bold px-3"
+                    style="background:#fff5f5;color:#dc3545;border:1px solid #f5c6cb;font-size:.78rem;"
+                    onclick="deleteEntry({{ entry.id }}, '{{ entry.value | e }}')">
+              <i class="bi bi-trash3-fill"></i>
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+    <i class="bi bi-shield-check fs-3 d-block mb-2" style="opacity:.3;"></i>
+    No blocklist or allowlist entries yet.
+  </div>
+  {% endif %}
+</div>
+
+<!-- Add Entry Modal -->
+<div class="modal fade" id="addModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content rounded-4 border-0 shadow"
+         style="font-family:var(--font-main);">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-black ac-font" style="color:var(--nook-green);">
+          <i class="bi bi-plus-circle-fill me-2"></i>Add Entry
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body pt-3">
+        <div id="addError" class="alert alert-danger border-0 rounded-3 py-2 px-3 mb-3 d-none"
+             style="font-weight:700;font-size:.85rem;"></div>
+
+        <div class="mb-3">
+          <label class="db-label">List Type</label>
+          <select id="entryType" class="db-input">
+            <option value="block">🚫 Blocklist (ban from islands)</option>
+            <option value="allow">✅ Allowlist (auto-admit)</option>
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="db-label">Value Type</label>
+          <select id="valueType" class="db-input">
+            <option value="ign">In-Game Name (IGN)</option>
+            <option value="discord_id">Discord User ID</option>
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="db-label" id="valueLabel">IGN</label>
+          <input type="text" id="entryValue" class="db-input"
+                 placeholder="Enter IGN or Discord user ID…">
+        </div>
+        <div class="mb-3">
+          <label class="db-label">Reason <span style="color:#ccc;">(optional)</span></label>
+          <input type="text" id="entryReason" class="db-input"
+                 placeholder="Brief reason for this entry…">
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn fw-bold rounded-3 px-4"
+                data-bs-dismiss="modal"
+                style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;">
+          Cancel
+        </button>
+        <button type="button" class="btn btn-nook-primary fw-bold rounded-3 px-4"
+                onclick="submitAdd()">
+          <i class="bi bi-plus-circle-fill me-1"></i>Add
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% block scripts %}
+<script>
+  // Update value label based on type selection
+  document.getElementById('valueType').addEventListener('change', function() {
+    document.getElementById('valueLabel').textContent =
+      this.value === 'discord_id' ? 'Discord User ID' : 'IGN';
+    document.getElementById('entryValue').placeholder =
+      this.value === 'discord_id' ? 'e.g. 123456789012345678' : 'In-game name…';
+  });
+
+  async function submitAdd() {
+    const errBox = document.getElementById('addError');
+    errBox.classList.add('d-none');
+
+    const body = {
+      entry_type: document.getElementById('entryType').value,
+      value_type: document.getElementById('valueType').value,
+      value:      document.getElementById('entryValue').value.trim(),
+      reason:     document.getElementById('entryReason').value.trim(),
+    };
+    if (!body.value) {
+      errBox.textContent = 'Value is required.';
+      errBox.classList.remove('d-none');
+      return;
+    }
+    try {
+      const resp = await fetch('{{ url_for("dashboard.api_blocklist_add") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        errBox.textContent = data.error || 'Failed to add entry.';
+        errBox.classList.remove('d-none');
+        return;
+      }
+      window.location.reload();
+    } catch (err) {
+      errBox.textContent = 'Request failed: ' + err.message;
+      errBox.classList.remove('d-none');
+    }
+  }
+
+  async function deleteEntry(id, value) {
+    if (!confirm('Remove "' + value + '" from the list?')) return;
+    try {
+      const resp = await fetch('/dashboard/api/blocklist/' + id, { method: 'DELETE' });
+      if (resp.ok) {
+        window.location.reload();
+      } else {
+        const data = await resp.json().catch(() => ({}));
+        alert('Error: ' + (data.error || resp.statusText));
+      }
+    } catch (err) {
+      alert('Request failed: ' + err.message);
+    }
+  }
+</script>
+{% endblock %}
+
+{% endblock %}

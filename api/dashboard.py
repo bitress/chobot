@@ -7,9 +7,14 @@ Access is protected by a secret key (DASHBOARD_SECRET env var).
 import json
 import os
 import re
+import secrets
 import sqlite3
 import logging
 import mimetypes
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -19,7 +24,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 
 from flask import (
     Blueprint, render_template, request, redirect,
-    url_for, session, flash, jsonify,
+    url_for, session, flash, jsonify, abort, g,
 )
 
 from utils.config import Config
@@ -46,6 +51,13 @@ _DB_PATH = os.path.join(
 ALLOWED_CATEGORIES = ("public", "member")
 ALLOWED_THEMES     = ("pink", "teal", "purple", "gold")
 ALLOWED_STATUSES   = ("ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE")
+
+# Moderator role IDs used during Discord OAuth login
+ADMIN_ROLE_ID    = Config.ADMIN_ROLE_ID
+BABY_MOD_ROLE_ID = Config.BABY_MOD_ROLE_ID
+
+# Day-of-week label order (SQLite strftime('%w'): 0=Sunday … 6=Saturday)
+_DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 # Max map upload size: 5 MB
 MAX_MAP_SIZE      = 5 * 1024 * 1024
@@ -151,6 +163,20 @@ def init_dashboard_db():
             )
         """)
 
+        # Traveler blocklist / allowlist for cross-island moderation
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS traveler_blocklist (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_type TEXT NOT NULL DEFAULT 'block',
+                value_type TEXT NOT NULL,
+                value      TEXT NOT NULL,
+                reason     TEXT,
+                mod_id     TEXT,
+                timestamp  INTEGER NOT NULL,
+                UNIQUE(entry_type, value_type, value)
+            )
+        """)
+
         # Seed all 47 islands (INSERT OR IGNORE — never overwrites manual edits)
         now = datetime.now(timezone.utc).isoformat()
         for isl in _SAMPLE_ISLANDS:
@@ -230,6 +256,11 @@ def _check_session():
     return bool(session.get("mod_logged_in"))
 
 
+def _get_session_role():
+    """Return the current session role ('admin' or 'baby_mod')."""
+    return session.get("mod_role", "admin")
+
+
 def _check_bearer():
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer ") and Config.DASHBOARD_SECRET:
@@ -247,6 +278,18 @@ def login_required(f):
     return _decorated
 
 
+def admin_required(f):
+    """Decorator for admin-only web routes — returns 403 for baby_mod role."""
+    @wraps(f)
+    def _decorated(*args, **kwargs):
+        if not _check_session():
+            return redirect(url_for("dashboard.login"))
+        if _get_session_role() != "admin":
+            abort(403)
+        return f(*args, **kwargs)
+    return _decorated
+
+
 def api_auth_required(f):
     """Decorator for JSON API routes — returns 401 when token/session is missing."""
     @wraps(f)
@@ -255,6 +298,19 @@ def api_auth_required(f):
             return jsonify({"error": "Unauthorized — send 'Authorization: Bearer <DASHBOARD_SECRET>'"}), 401
         return f(*args, **kwargs)
     return _decorated
+
+
+# ---------------------------------------------------------------------------
+# Template context processor — injects current_role into every page
+# ---------------------------------------------------------------------------
+@dashboard.context_processor
+def _inject_user():
+    return {
+        "current_role":      session.get("mod_role", "admin"),
+        "discord_username":  session.get("discord_username", ""),
+        "discord_user_id":   session.get("discord_user_id", ""),
+        "oauth_configured":  bool(Config.DISCORD_CLIENT_ID),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +412,10 @@ def _merge_island(db_row: dict, fs: dict | None) -> dict:
 # WEB ROUTES
 # ===========================================================================
 
+@dashboard.errorhandler(403)
+def _forbidden(_e):
+    return render_template("dashboard/403.html"), 403
+
 @dashboard.route("/login", methods=["GET", "POST"])
 def login():
     if _check_session():
@@ -364,7 +424,8 @@ def login():
         secret = request.form.get("secret", "")
         if secret and Config.DASHBOARD_SECRET and secret == Config.DASHBOARD_SECRET:
             session["mod_logged_in"] = True
-            session.permanent = True
+            session["mod_role"]      = "admin"
+            session.permanent        = True
             return redirect(url_for("dashboard.index"))
         flash("Invalid secret key. Please try again.", "error")
     return render_template("dashboard/login.html")
@@ -372,8 +433,133 @@ def login():
 
 @dashboard.route("/logout")
 def logout():
-    session.pop("mod_logged_in", None)
+    session.pop("mod_logged_in",    None)
+    session.pop("mod_role",         None)
+    session.pop("discord_user_id",  None)
+    session.pop("discord_username", None)
+    session.pop("oauth_state",      None)
     return redirect(url_for("dashboard.login"))
+
+
+# ---------------------------------------------------------------------------
+# Discord OAuth2 routes
+# ---------------------------------------------------------------------------
+
+@dashboard.route("/oauth2/redirect")
+def oauth2_redirect():
+    """Redirect the user to Discord's authorization page."""
+    if not Config.DISCORD_CLIENT_ID:
+        flash("Discord OAuth is not configured on this server.", "error")
+        return redirect(url_for("dashboard.login"))
+    state = secrets.token_hex(16)
+    session["oauth_state"] = state
+    params = urllib.parse.urlencode({
+        "client_id":     Config.DISCORD_CLIENT_ID,
+        "redirect_uri":  Config.DISCORD_REDIRECT_URI,
+        "response_type": "code",
+        "scope":         "identify guilds.members.read",
+        "state":         state,
+    })
+    return redirect(f"https://discord.com/api/oauth2/authorize?{params}")
+
+
+@dashboard.route("/oauth2/callback")
+def oauth2_callback():
+    """Handle the OAuth2 callback from Discord."""
+    error = request.args.get("error")
+    if error:
+        flash(f"Discord authorization denied: {error}", "error")
+        return redirect(url_for("dashboard.login"))
+
+    state = request.args.get("state", "")
+    if state != session.pop("oauth_state", ""):
+        flash("Invalid OAuth state — possible CSRF. Please try again.", "error")
+        return redirect(url_for("dashboard.login"))
+
+    code = request.args.get("code", "")
+    if not code:
+        flash("No authorization code received from Discord.", "error")
+        return redirect(url_for("dashboard.login"))
+
+    # Exchange authorization code for access token
+    try:
+        token_body = urllib.parse.urlencode({
+            "client_id":     Config.DISCORD_CLIENT_ID,
+            "client_secret": Config.DISCORD_CLIENT_SECRET,
+            "grant_type":    "authorization_code",
+            "code":          code,
+            "redirect_uri":  Config.DISCORD_REDIRECT_URI,
+        }).encode()
+        req = urllib.request.Request(
+            "https://discord.com/api/oauth2/token",
+            data=token_body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            token_resp = json.loads(resp.read().decode())
+    except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
+        logger.error("OAuth token exchange failed: %s", exc)
+        flash("Failed to exchange authorization code with Discord.", "error")
+        return redirect(url_for("dashboard.login"))
+
+    access_token = token_resp.get("access_token")
+    if not access_token:
+        flash("No access token returned by Discord.", "error")
+        return redirect(url_for("dashboard.login"))
+
+    # Fetch the user's guild-member record (includes roles)
+    role = None
+    try:
+        mem_req = urllib.request.Request(
+            f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        with urllib.request.urlopen(mem_req, timeout=10) as resp:
+            member_data = json.loads(resp.read().decode())
+        member_roles = [str(r) for r in member_data.get("roles", [])]
+        if str(ADMIN_ROLE_ID) in member_roles:
+            role = "admin"
+        elif str(BABY_MOD_ROLE_ID) in member_roles:
+            role = "baby_mod"
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            flash("You are not a member of this server.", "error")
+        else:
+            logger.error("OAuth member fetch HTTP error %s", exc.code)
+            flash("Could not fetch your server roles. Please try again.", "error")
+        return redirect(url_for("dashboard.login"))
+    except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
+        logger.error("OAuth member fetch failed: %s", exc)
+        flash("Could not fetch your server roles. Please try again.", "error")
+        return redirect(url_for("dashboard.login"))
+
+    if role is None:
+        flash("You do not have a moderator role on this server.", "error")
+        return redirect(url_for("dashboard.login"))
+
+    # Fetch basic user info for display
+    discord_username = ""
+    discord_user_id  = ""
+    try:
+        user_req = urllib.request.Request(
+            "https://discord.com/api/users/@me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        with urllib.request.urlopen(user_req, timeout=10) as resp:
+            user_data = json.loads(resp.read().decode())
+        discord_user_id  = str(user_data.get("id", ""))
+        discord_username = user_data.get("global_name") or user_data.get("username", "")
+    except (urllib.error.URLError, json.JSONDecodeError, OSError):
+        pass  # Non-critical — display name is optional
+
+    session["mod_logged_in"]   = True
+    session["mod_role"]        = role
+    session["discord_user_id"] = discord_user_id
+    session["discord_username"]= discord_username
+    session.permanent          = True
+    logger.info("OAuth login: user=%s role=%s", discord_username, role)
+    return redirect(url_for("dashboard.index"))
 
 
 @dashboard.route("/")
@@ -414,10 +600,17 @@ def index():
     db2 = get_db()
     try:
         island_count = db2.execute("SELECT COUNT(*) FROM islands").fetchone()[0]
+        status_rows  = db2.execute(
+            "SELECT status, COUNT(*) AS cnt FROM islands GROUP BY status"
+        ).fetchall()
     except sqlite3.Error:
         island_count = 0
+        status_rows  = []
     finally:
         db2.close()
+
+    status_map = {r["status"]: r["cnt"] for r in status_rows}
+    online_count = status_map.get("ONLINE", 0)
 
     return render_template(
         "dashboard/index.html",
@@ -427,11 +620,13 @@ def index():
         visits_week=visits_week,
         recent=recent,
         island_count=island_count,
+        status_map=status_map,
+        online_count=online_count,
     )
 
 
 @dashboard.route("/islands")
-@login_required
+@admin_required
 def islands():
     db = get_db()
     try:
@@ -467,7 +662,7 @@ def islands():
 
 
 @dashboard.route("/islands/<name>", methods=["GET", "POST"])
-@login_required
+@admin_required
 def island_detail(name):
     island_id = name.lower()
     upper     = name.upper()
@@ -568,6 +763,25 @@ def island_detail(name):
     island["fs_visitors"] = _parse_visitor_value(_read_file(fs_path, "Visitors.txt")) if fs_path else None
     island["items_text"]  = ", ".join(island["items"]) if isinstance(island.get("items"), list) else ""
 
+    # Per-island 7-day visit sparkline
+    sparkline_7d = []
+    db_sp = get_db()
+    try:
+        sparkline_7d = [
+            dict(r) for r in db_sp.execute(
+                "SELECT DATE(timestamp, 'unixepoch') AS day, COUNT(*) AS count "
+                "FROM island_visits "
+                "WHERE LOWER(destination) = LOWER(?) "
+                "AND timestamp > strftime('%s','now','-7 days') "
+                "GROUP BY day ORDER BY day",
+                (upper,),
+            ).fetchall()
+        ]
+    except sqlite3.Error:
+        sparkline_7d = []
+    finally:
+        db_sp.close()
+
     r2_configured = bool(Config.R2_ACCOUNT_ID and Config.R2_ACCESS_KEY_ID and Config.R2_SECRET_ACCESS_KEY)
 
     return render_template(
@@ -577,6 +791,7 @@ def island_detail(name):
         allowed_themes=ALLOWED_THEMES,
         allowed_statuses=ALLOWED_STATUSES,
         r2_configured=r2_configured,
+        sparkline_7d=sparkline_7d,
     )
 
 
@@ -593,6 +808,7 @@ def logs():
     sort_by           = request.args.get("sort_by", "timestamp")
     sort_order        = request.args.get("sort_order", "desc")
     log_type          = request.args.get("type", "flights")
+    ign_filter        = request.args.get("ign", "").strip()
 
     # Sanitise sort params
     if sort_by not in _ALLOWED_SORT_COLS:
@@ -610,9 +826,15 @@ def logs():
 
         if log_type == "warnings":
             conditions, params = [], []
+            if ign_filter:
+                conditions.append("LOWER(iv.ign) LIKE LOWER(?)")
+                params.append(f"%{ign_filter}%")
             where = _where_clause(conditions)
             total = db.execute(
-                f"SELECT COUNT(*) FROM warnings {where}", params
+                f"SELECT COUNT(*) FROM warnings w "
+                f"LEFT JOIN island_visits iv ON w.visit_id = iv.id "
+                f"{where}",
+                params,
             ).fetchone()[0]
             rows = db.execute(
                 f"SELECT w.*, iv.ign, iv.destination "
@@ -640,6 +862,10 @@ def logs():
                 col = "iv.destination" if use_island_join else "destination"
                 conditions.append(f"LOWER({col}) = LOWER(?)")
                 params.append(island_filter)
+            if ign_filter:
+                col = "iv.ign" if use_island_join else "ign"
+                conditions.append(f"LOWER({col}) LIKE LOWER(?)")
+                params.append(f"%{ign_filter}%")
             if authorized_filter in ("0", "1"):
                 col = "iv.authorized" if use_island_join else "authorized"
                 conditions.append(f"{col} = ?")
@@ -705,6 +931,7 @@ def logs():
         sort_order=sort_order,
         log_type=log_type,
         island_names=island_names,
+        ign_filter=ign_filter,
     )
 
 
@@ -782,6 +1009,33 @@ def analytics():
             "SELECT COUNT(*) FROM warnings "
             "WHERE timestamp > strftime('%s','now','-7 days')"
         ).fetchone()[0]
+        # Day-of-week breakdown (0=Sunday … 6=Saturday)
+        dow_raw = [
+            dict(r) for r in db.execute(
+                "SELECT CAST(strftime('%w', timestamp, 'unixepoch') AS INTEGER) AS dow, "
+                "COUNT(*) AS count "
+                "FROM island_visits GROUP BY dow ORDER BY dow"
+            ).fetchall()
+        ]
+        # New vs returning travelers (7d and 30d)
+        new_7d = db.execute(
+            "SELECT COUNT(DISTINCT ign) FROM ("
+            "  SELECT ign, MIN(timestamp) AS first_visit FROM island_visits GROUP BY ign"
+            ") WHERE first_visit > strftime('%s','now','-7 days')"
+        ).fetchone()[0]
+        total_unique_7d = db.execute(
+            "SELECT COUNT(DISTINCT ign) FROM island_visits "
+            "WHERE timestamp > strftime('%s','now','-7 days')"
+        ).fetchone()[0]
+        new_30d = db.execute(
+            "SELECT COUNT(DISTINCT ign) FROM ("
+            "  SELECT ign, MIN(timestamp) AS first_visit FROM island_visits GROUP BY ign"
+            ") WHERE first_visit > strftime('%s','now','-30 days')"
+        ).fetchone()[0]
+        total_unique_30d = db.execute(
+            "SELECT COUNT(DISTINCT ign) FROM island_visits "
+            "WHERE timestamp > strftime('%s','now','-30 days')"
+        ).fetchone()[0]
     except sqlite3.Error:
         top_islands = top_travelers = visits_by_day = visits_by_day_30 = []
         visits_by_hour = []
@@ -789,6 +1043,8 @@ def analytics():
         cat_raw = []
         top_warned = []
         visits_today = visits_week = warnings_week = 0
+        dow_raw = []
+        new_7d = total_unique_7d = new_30d = total_unique_30d = 0
     finally:
         db.close()
 
@@ -801,6 +1057,17 @@ def analytics():
     hour_map = {r["hour"]: r["count"] for r in visits_by_hour}
     visits_by_hour_full = [{"hour": h, "count": hour_map.get(h, 0)} for h in range(24)]
 
+    # Build full 7-day-of-week array (fill missing days with 0)
+    dow_map = {r["dow"]: r["count"] for r in dow_raw}
+    visits_by_dow = [{"dow": d, "label": _DOW_LABELS[d], "count": dow_map.get(d, 0)} for d in range(7)]
+
+    returning_7d  = max(total_unique_7d  - new_7d,  0)
+    returning_30d = max(total_unique_30d - new_30d, 0)
+    new_returning = {
+        "new_7d":  new_7d,  "returning_7d":  returning_7d,  "total_7d":  total_unique_7d,
+        "new_30d": new_30d, "returning_30d": returning_30d, "total_30d": total_unique_30d,
+    }
+
     return render_template(
         "dashboard/analytics.html",
         top_islands=top_islands,
@@ -808,12 +1075,14 @@ def analytics():
         visits_by_day=visits_by_day,
         visits_by_day_30=visits_by_day_30,
         visits_by_hour=visits_by_hour_full,
+        visits_by_dow=visits_by_dow,
         auth_stats=auth_stats,
         cat_stats=cat_stats,
         top_warned=top_warned,
         visits_today=visits_today,
         visits_week=visits_week,
         warnings_week=warnings_week,
+        new_returning=new_returning,
     )
 
 
@@ -1166,6 +1435,7 @@ def api_logs():
     page          = request.args.get("page", 1, type=int)
     per_page      = min(request.args.get("per_page", 25, type=int), 100)
     island_filter = request.args.get("island", "").strip()
+    ign_filter    = request.args.get("ign", "").strip()
 
     db = get_db()
     try:
@@ -1173,6 +1443,9 @@ def api_logs():
         if island_filter:
             conditions.append("destination LIKE ?")
             params.append(f"%{island_filter}%")
+        if ign_filter:
+            conditions.append("LOWER(ign) LIKE LOWER(?)")
+            params.append(f"%{ign_filter}%")
         where = _where_clause(conditions)
         total = db.execute(
             f"SELECT COUNT(*) FROM island_visits {where}", params
@@ -1193,3 +1466,105 @@ def api_logs():
         "total":    total,
         "entries":  [dict(r) for r in rows],
     })
+
+
+# ===========================================================================
+# Traveler Blocklist / Allowlist
+# ===========================================================================
+
+_ALLOWED_ENTRY_TYPES  = ("block", "allow")
+_ALLOWED_VALUE_TYPES  = ("discord_id", "ign")
+
+
+@dashboard.route("/blocklist")
+@login_required
+def blocklist():
+    """Traveler blocklist / allowlist manager UI."""
+    db = get_db()
+    try:
+        entries = [
+            dict(r) for r in db.execute(
+                "SELECT * FROM traveler_blocklist ORDER BY entry_type, value_type, value"
+            ).fetchall()
+        ]
+    except sqlite3.Error:
+        entries = []
+    finally:
+        db.close()
+
+    for e in entries:
+        e["timestamp_str"] = _ts_to_str(e.get("timestamp"))
+    return render_template("dashboard/blocklist.html", entries=entries)
+
+
+@dashboard.route("/api/blocklist", methods=["GET"])
+@api_auth_required
+def api_blocklist_list():
+    """Return all blocklist/allowlist entries as JSON."""
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT * FROM traveler_blocklist ORDER BY entry_type, value_type, value"
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        db.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@dashboard.route("/api/blocklist", methods=["POST"])
+@login_required
+def api_blocklist_add():
+    """Add a new blocklist or allowlist entry."""
+    data       = request.get_json(silent=True) or {}
+    entry_type = data.get("entry_type", "block").strip().lower()
+    value_type = data.get("value_type", "ign").strip().lower()
+    value      = (data.get("value") or "").strip()
+    reason     = (data.get("reason") or "").strip()
+    mod_id     = str(session.get("discord_user_id") or "")
+
+    if entry_type not in _ALLOWED_ENTRY_TYPES:
+        return jsonify({"error": f"entry_type must be one of {_ALLOWED_ENTRY_TYPES}"}), 400
+    if value_type not in _ALLOWED_VALUE_TYPES:
+        return jsonify({"error": f"value_type must be one of {_ALLOWED_VALUE_TYPES}"}), 400
+    if not value:
+        return jsonify({"error": "value is required"}), 400
+
+    db = get_db()
+    try:
+        db.execute(
+            "INSERT OR REPLACE INTO traveler_blocklist "
+            "(entry_type, value_type, value, reason, mod_id, timestamp) "
+            "VALUES (?,?,?,?,?,?)",
+            (entry_type, value_type, value, reason, mod_id, int(time.time())),
+        )
+        db.commit()
+        row = db.execute(
+            "SELECT * FROM traveler_blocklist "
+            "WHERE entry_type=? AND value_type=? AND value=?",
+            (entry_type, value_type, value),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        db.close()
+
+    logger.info("Blocklist entry added: %s/%s/%s by %s", entry_type, value_type, value, mod_id)
+    return jsonify(dict(row)), 201
+
+
+@dashboard.route("/api/blocklist/<int:entry_id>", methods=["DELETE"])
+@login_required
+def api_blocklist_delete(entry_id):
+    """Remove a blocklist/allowlist entry by ID."""
+    db = get_db()
+    try:
+        db.execute("DELETE FROM traveler_blocklist WHERE id = ?", (entry_id,))
+        db.commit()
+    except sqlite3.Error as exc:
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        db.close()
+    logger.info("Blocklist entry %d deleted", entry_id)
+    return jsonify({"status": "deleted", "id": entry_id})

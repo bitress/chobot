@@ -60,6 +60,18 @@ async def init_db():
                 visit_id INTEGER REFERENCES island_visits(id)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS traveler_blocklist (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_type TEXT NOT NULL DEFAULT 'block',
+                value_type TEXT NOT NULL,
+                value      TEXT NOT NULL,
+                reason     TEXT,
+                mod_id     TEXT,
+                timestamp  INTEGER NOT NULL,
+                UNIQUE(entry_type, value_type, value)
+            )
+        """)
         # Migrate existing databases: add visit_id column if it doesn't exist
         try:
             await db.execute("ALTER TABLE warnings ADD COLUMN visit_id INTEGER REFERENCES island_visits(id)")
@@ -710,7 +722,7 @@ class FlightLoggerCog(commands.Cog):
             for r in rows
         ]
 
-    async def record_island_visit(self, ign: str, origin_island: str, destination: str, found_members: list[discord.Member], guild_id: int | None, timestamp: int) -> int | None:
+    async def record_island_visit(self, ign: str, origin_island: str, destination: str, found_members: list[discord.Member], guild_id: int | None, timestamp: int, authorized: int | None = None) -> int | None:
         """Record an island visit (authorized or unauthorized) in the database. Returns the visit ID."""
         db = await self._get_db()
         visit_id = None
@@ -722,9 +734,10 @@ class FlightLoggerCog(commands.Cog):
                 )
                 visit_id = cursor.lastrowid
         else:
+            auth_val = authorized if authorized is not None else 0
             cursor = await db.execute(
-                "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp) VALUES (?, ?, ?, NULL, ?, 0, ?)",
-                (ign, origin_island, destination, guild_id, timestamp)
+                "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp) VALUES (?, ?, ?, NULL, ?, ?, ?)",
+                (ign, origin_island, destination, guild_id, auth_val, timestamp)
             )
             visit_id = cursor.lastrowid
         await db.commit()
@@ -983,9 +996,57 @@ class FlightLoggerCog(commands.Cog):
             ign_clean = clean_text(ign_raw)
             isl_clean = clean_text(island_raw)
             found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_clean, isl_clean)
+
+            # Check blocklist and allowlist before logging
+            is_blocked, block_reason = await self._check_traveler_list("block", ign_clean, found)
+            is_allowed, _allow_reason = await self._check_traveler_list("allow", ign_clean, found)
+
+            if is_blocked:
+                await self.log_result(
+                    found, "JOINING", ign_raw, island_raw, dest_raw,
+                    blocklisted=True, block_reason=block_reason,
+                )
+                return
+            if is_allowed:
+                # Treat allowlisted traveler as authorized even if not found in member list
+                if not found:
+                    found = []  # empty but mark authorized below
+                await self.log_result(
+                    found, "JOINING", ign_raw, island_raw, dest_raw,
+                    allowlisted=True,
+                )
+                return
+
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw)
 
-    async def log_result(self, found_members, status, ign, island, destination, timestamp=None):
+    async def _check_traveler_list(self, entry_type: str, ign_clean: str, found_members: list):
+        """Return (True, reason) if the traveler matches any entry in the given list type."""
+        try:
+            async with aiosqlite.connect(DB_NAME) as db:
+                db.row_factory = aiosqlite.Row
+                # Check by IGN
+                row = await (await db.execute(
+                    "SELECT reason FROM traveler_blocklist "
+                    "WHERE entry_type=? AND value_type='ign' AND LOWER(value)=LOWER(?)",
+                    (entry_type, ign_clean),
+                )).fetchone()
+                if row:
+                    return True, row["reason"] or ""
+                # Check by Discord user ID for found members
+                for member in found_members:
+                    row = await (await db.execute(
+                        "SELECT reason FROM traveler_blocklist "
+                        "WHERE entry_type=? AND value_type='discord_id' AND value=?",
+                        (entry_type, str(member.id)),
+                    )).fetchone()
+                    if row:
+                        return True, row["reason"] or ""
+        except Exception as exc:
+            logger.warning("Blocklist check failed: %s", exc)
+        return False, ""
+
+    async def log_result(self, found_members, status, ign, island, destination, timestamp=None,
+                         blocklisted=False, block_reason="", allowlisted=False):
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
         if not output_channel: return
 
@@ -993,6 +1054,38 @@ class FlightLoggerCog(commands.Cog):
         visit_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
         guild = self.bot.get_guild(Config.GUILD_ID)
         guild_id = guild.id if guild else None
+
+        if blocklisted:
+            # Blocklisted traveler — always alert even if they look like a known member
+            logger.info(f"[FLIGHT] BLOCKLISTED: {ign}")
+            visit_id = await self.record_island_visit(ign, island, destination, [], guild_id, visit_ts)
+            destination_link = self.get_island_channel_link(destination)
+            embed = discord.Embed(
+                description=(
+                    f"### 🚫 Blocklisted Traveler Detected\n"
+                    f"A **blocklisted** traveler is attempting to join **{destination_link}**.\n"
+                    f"Immediate action is recommended."
+                ),
+                color=COLOR_BAN,
+                timestamp=embed_timestamp,
+            )
+            embed.add_field(name="🎮 IGN",           value=f"**{ign}**",          inline=True)
+            embed.add_field(name="🏠 From",          value=island or "Unknown",   inline=True)
+            embed.add_field(name="📌 Status",        value="**🚫 BLOCKLISTED**",  inline=True)
+            if block_reason:
+                embed.add_field(name="📋 Block Reason", value=block_reason,        inline=False)
+            embed.set_footer(text="Traveler Blocklist Alert")
+            view = TravelerActionView(self.bot, ign, visit_id=visit_id)
+            await output_channel.send(embed=embed, view=view)
+            return
+
+        if allowlisted and not found_members:
+            # Allowlisted but not in member registry — treat as authorized, silent log.
+            # If the traveler IS in the member registry (found_members is not empty), fall
+            # through to the normal authorized flow below so the usual match log is produced.
+            logger.info(f"[FLIGHT] ALLOWLISTED (not in registry): {ign}")
+            await self.record_island_visit(ign, island, destination, [], guild_id, visit_ts, authorized=1)
+            return
 
         if found_members:
             mentions = " ".join([m.mention for m in found_members])

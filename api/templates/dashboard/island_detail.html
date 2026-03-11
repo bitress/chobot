@@ -203,35 +203,61 @@
                 </div>
             </div><!-- /map card -->
 
-            <!-- Filesystem info -->
-            {% if island.fs_path %}
-            <div class="section-card">
-                <div class="section-card-header">
-                    <span><i class="bi bi-folder2-open me-2" style="color:var(--nook-yellow);"></i>Live Filesystem Data</span>
-                </div>
-                <div class="p-4">
-                    <div class="row g-3 x-small fw-bold">
-                        <div class="col-sm-6">
-                            <span style="color:#bbb;">Dodo (file):</span>
-                            <span class="font-monospace ms-1" style="color:var(--nook-green);">{{ island.fs_dodo or "—" }}</span>
-                        </div>
-                        <div class="col-sm-6">
-                            <span style="color:#bbb;">Visitors (file):</span>
-                            <span class="ms-1" style="color:#888;">{{ island.fs_visitors or "—" }}</span>
-                        </div>
-                        <div class="col-12">
-                            <span style="color:#bbb;">Path:</span>
-                            <span class="font-monospace ms-1" style="color:#bbb;word-break:break-all;">{{ island.fs_path }}</span>
-                        </div>
+        <!-- Filesystem info -->
+        {% if island.fs_path %}
+        <div class="section-card mb-4">
+            <div class="section-card-header">
+                <span><i class="bi bi-folder2-open me-2" style="color:var(--nook-yellow);"></i>Live Filesystem Data</span>
+            </div>
+            <div class="p-4">
+                <div class="row g-3 x-small fw-bold">
+                    <div class="col-sm-6">
+                        <span style="color:#bbb;">Dodo (file):</span>
+                        <span class="font-monospace ms-1" style="color:var(--nook-green);">{{ island.fs_dodo or "—" }}</span>
+                    </div>
+                    <div class="col-sm-6">
+                        <span style="color:#bbb;">Visitors (file):</span>
+                        <span class="ms-1" style="color:#888;">{{ island.fs_visitors or "—" }}</span>
+                    </div>
+                    <div class="col-12">
+                        <span style="color:#bbb;">Path:</span>
+                        <span class="font-monospace ms-1" style="color:#bbb;word-break:break-all;">{{ island.fs_path }}</span>
                     </div>
                 </div>
             </div>
-            {% endif %}
+        </div>
+        {% endif %}
+
+        <!-- 7-day visit sparkline -->
+        <div class="section-card">
+            <div class="section-card-header">
+                <span><i class="bi bi-graph-up-arrow me-2" style="color:var(--dal-blue);"></i>Visits — Last 7 Days</span>
+            </div>
+            <div class="p-4">
+                {% if sparkline_7d %}
+                <div style="height:100px;">
+                    <canvas id="sparklineChart"></canvas>
+                </div>
+                <div class="x-small fw-bold text-center mt-2" style="color:#aaa;">
+                    {{ sparkline_7d | sum(attribute='count') }} total visit(s) in the last 7 days
+                </div>
+                {% else %}
+                <div class="py-3 text-center" style="color:#ccc;font-weight:700;font-size:.85rem;">
+                    <i class="bi bi-graph-up fs-4 d-block mb-1" style="opacity:.3;"></i>
+                    No visits recorded in the last 7 days.
+                </div>
+                {% endif %}
+            </div>
+        </div>
 
         </div><!-- /col-md-6 RIGHT -->
 
     </div><!-- /row -->
 </div><!-- /container -->
+
+{% block head %}
+  <script src="{{ url_for('dashboard.static', filename='js/chart.umd.js') }}"></script>
+{% endblock %}
 
 {% block scripts %}
 <script>
@@ -326,6 +352,42 @@
             status.textContent = 'Upload failed: ' + err.message;
         }
     }
+
+    /* ---- 7-day sparkline chart ---- */
+    {% if sparkline_7d %}
+    (function() {
+        const sparkCtx = document.getElementById('sparklineChart');
+        if (!sparkCtx) return;
+        const labels = [{% for r in sparkline_7d %}"{{ r.day }}"{% if not loop.last %},{% endif %}{% endfor %}];
+        const counts = [{% for r in sparkline_7d %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}];
+        new Chart(sparkCtx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Visits',
+                    data: counts,
+                    borderColor: 'var(--dal-blue)',
+                    backgroundColor: 'rgba(79,158,248,0.12)',
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 3,
+                    pointBackgroundColor: 'var(--dal-blue)',
+                    borderWidth: 2,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { ticks: { color: '#aaa', font: { size: 10, family: 'Quicksand', weight: '700' } }, grid: { color: '#f0f4ec' } },
+                    y: { ticks: { color: '#aaa', font: { size: 10, family: 'Quicksand', weight: '700' } }, grid: { color: '#f0f4ec' }, beginAtZero: true }
+                }
+            }
+        });
+    })();
+    {% endif %}
 </script>
 {% endblock %}
 {% endblock %}

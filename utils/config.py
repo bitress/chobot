@@ -73,6 +73,19 @@ class Config:
     # Set FLASK_SECRET_KEY explicitly in .env for persistent sessions.
     FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY") or __import__("secrets").token_hex(32)
 
+    # Discord OAuth2 — for dashboard login via Discord.
+    # Register an application at https://discord.com/developers/applications and
+    # add the callback URL as a redirect in the OAuth2 settings.
+    DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID", "")
+    DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
+    DISCORD_REDIRECT_URI  = os.getenv("DISCORD_REDIRECT_URI", "")
+
+    # Moderator role IDs for role-based dashboard access.
+    # Administrator / Senior Mod → full dashboard access
+    # Baby Mod → Analytics + XLog Reports only (read-only)
+    ADMIN_ROLE_ID    = _get_int("ADMIN_ROLE_ID",    755528378446250144)
+    BABY_MOD_ROLE_ID = _get_int("BABY_MOD_ROLE_ID", 1062242600343588934)
+
     # Cloudflare R2 (S3-compatible) — for island map uploads
     # Endpoint format: https://<account_id>.r2.cloudflarestorage.com
     R2_ACCOUNT_ID       = os.getenv("R2_ACCOUNT_ID", "")
