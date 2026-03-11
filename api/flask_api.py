@@ -20,7 +20,7 @@ from thefuzz import process, fuzz
 
 from utils.config import Config
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text
-from api.dashboard import dashboard, init_dashboard_db
+from api.dashboard import dashboard, init_dashboard_db, get_db, _row_to_island_dict
 
 
 logger = logging.getLogger("FlaskAPI")
@@ -185,6 +185,49 @@ def process_island(entry, island_type):
         "status": status,
         "type": island_type,
         "visitors": display_visitors
+    }
+
+
+def _build_island_response(entry, island_type, db_island):
+    """Build the enriched island response merging live filesystem data with DB metadata."""
+    name = entry.name.upper()
+
+    raw_dodo = get_file_content(entry.path, "Dodo.txt")
+    raw_visitors = get_file_content(entry.path, "Visitors.txt")
+
+    # Parse visitors as integer
+    visitors = 0
+    if raw_visitors and raw_visitors.isdigit():
+        visitors = int(raw_visitors)
+
+    # Determine live status and dodo_code from filesystem
+    if island_type == "VIP":
+        status = "SUB ONLY"
+        dodo_code = None  # Do not expose dodo code for subscriber-only islands
+    elif raw_dodo is None:
+        status = "OFFLINE"
+        dodo_code = None
+    elif raw_dodo in ["00000", "-----", ""]:
+        status = "REFRESHING"
+        dodo_code = None
+    else:
+        status = "ONLINE"
+        dodo_code = raw_dodo
+
+    return {
+        "id":          db_island.get("id", name.lower()),
+        "name":        name,
+        "cat":         db_island.get("cat", "public"),
+        "description": db_island.get("description", ""),
+        "dodo_code":   dodo_code,
+        "visitors":    visitors,
+        "items":       db_island.get("items", []),
+        "map_url":     db_island.get("map_url"),
+        "seasonal":    db_island.get("seasonal", ""),
+        "status":      status,
+        "theme":       db_island.get("theme", "teal"),
+        "type":        db_island.get("type", ""),
+        "updated_at":  db_island.get("updated_at"),
     }
 
 # ============================================================================
@@ -409,20 +452,39 @@ def api_list_villagers_by_island():
 
 @app.route('/api/islands', methods=['GET'])
 def get_islands():
-    """Get all island statuses and Dodo codes"""
+    """Get all island statuses and Dodo codes with full metadata."""
+    # Load island metadata from DB, keyed by uppercase name
+    db_map = {}
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, name, cat, description, items, map_url, seasonal, theme, type, updated_at "
+            "FROM islands ORDER BY name"
+        ).fetchall()
+        for row in rows:
+            isl = _row_to_island_dict(dict(row))
+            if isl.get("name"):
+                db_map[isl["name"].upper()] = isl
+    except Exception:
+        logger.exception("Failed to load island metadata from DB for /api/islands")
+    finally:
+        db.close()
+
     results = []
 
     if os.path.exists(Config.DIR_FREE):
         with os.scandir(Config.DIR_FREE) as entries:
             for entry in entries:
                 if entry.is_dir():
-                    results.append(process_island(entry, "Free"))
+                    name = entry.name.upper()
+                    results.append(_build_island_response(entry, "Free", db_map.get(name, {})))
 
     if os.path.exists(Config.DIR_VIP):
         with os.scandir(Config.DIR_VIP) as entries:
             for entry in entries:
                 if entry.is_dir():
-                    results.append(process_island(entry, "VIP"))
+                    name = entry.name.upper()
+                    results.append(_build_island_response(entry, "VIP", db_map.get(name, {})))
 
     results.sort(key=lambda x: x['name'])
     return jsonify(results)
