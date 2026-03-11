@@ -132,7 +132,7 @@
 
 <!-- Island visit bar chart -->
 {% if top_islands %}
-<div class="section-card">
+<div class="section-card mb-4">
   <div class="section-card-header">
     <span><i class="bi bi-bar-chart-fill me-2" style="color:var(--dal-blue);"></i>Island Visit Breakdown</span>
   </div>
@@ -143,6 +143,62 @@
   </div>
 </div>
 {% endif %}
+
+<!-- Traveler activity bar chart + Category breakdown row -->
+<div class="row g-4 mb-4">
+  <!-- Top travelers bar chart -->
+  {% if top_travelers %}
+  <div class="col-12 col-lg-8">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-person-fill me-2" style="color:#b07cdc;"></i>Top Travelers — Visit Count</span>
+      </div>
+      <div class="p-4">
+        <div class="chart-wrap" style="height:220px;">
+          <canvas id="travelerBarChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Public vs Member/VIP visits doughnut -->
+  <div class="col-12 col-lg-4">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-pie-chart-fill me-2" style="color:var(--dal-blue);"></i>Visits by Tier</span>
+      </div>
+      <div class="p-4 d-flex align-items-center gap-4">
+        <div class="chart-wrap flex-shrink-0" style="width:120px;height:120px;">
+          <canvas id="catChart"></canvas>
+        </div>
+        <div>
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="status-dot" style="background:#4f9ef8;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Public</span>
+            <span class="ms-auto fw-black ac-font" style="color:#4f9ef8;font-size:1.2rem;">
+              {{ cat_stats.public }}
+            </span>
+          </div>
+          <div class="d-flex align-items-center gap-2 mb-3">
+            <span class="status-dot" style="background:#f5a623;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Member / VIP</span>
+            <span class="ms-auto fw-black ac-font" style="color:#f5a623;font-size:1.2rem;">
+              {{ cat_stats.member }}
+            </span>
+          </div>
+          <div class="divider-dashed mt-0 mb-2"></div>
+          <div class="d-flex align-items-center justify-content-between">
+            <span class="x-small fw-bold" style="color:#ccc;">Total matched</span>
+            <span class="fw-black ac-font" style="color:#444;font-size:1.1rem;">
+              {{ cat_stats.public + cat_stats.member }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 {% block scripts %}
 <script>
@@ -225,6 +281,54 @@
     }
   });
   {% endif %}
+
+  {% if top_travelers %}
+  // Traveler bar chart
+  new Chart(document.getElementById('travelerBarChart'), {
+    type: 'bar',
+    data: {
+      labels: [{% for r in top_travelers %}"{{ r.ign }}"{% if not loop.last %},{% endif %}{% endfor %}],
+      datasets: [{
+        label: 'Visits',
+        data: [{% for r in top_travelers %}{{ r.visit_count }}{% if not loop.last %},{% endif %}{% endfor %}],
+        backgroundColor: 'rgba(176,124,220,0.65)',
+        borderRadius: 8,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' }, maxRotation: 35, minRotation: 0 },
+             grid: { color: '#f0f4ec' } },
+        y: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
+             grid: { color: '#f0f4ec' }, beginAtZero: true }
+      }
+    }
+  });
+  {% endif %}
+
+  // Visits by tier (public vs member/VIP) doughnut
+  new Chart(document.getElementById('catChart'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Public', 'Member / VIP'],
+      datasets: [{
+        data: [{{ cat_stats.public }}, {{ cat_stats.member }}],
+        backgroundColor: ['#4f9ef8', '#f5a623'],
+        borderWidth: 0,
+        hoverOffset: 4,
+      }]
+    },
+    options: {
+      cutout: '65%',
+      plugins: { legend: { display: false } },
+      responsive: true,
+      maintainAspectRatio: true,
+    }
+  });
 </script>
 {% endblock %}
 {% endblock %}

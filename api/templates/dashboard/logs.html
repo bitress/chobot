@@ -7,7 +7,7 @@
 
 <!-- Tab switcher -->
 <div class="d-flex gap-2 mb-4">
-  <a href="{{ url_for('dashboard.logs', type='flights', island=island_filter, authorized=authorized_filter) }}"
+  <a href="{{ url_for('dashboard.logs', type='flights', island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
      class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'flights' %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.85rem;">
     ✈️ Flight Logs
@@ -24,20 +24,46 @@
 <form method="GET" action="{{ url_for('dashboard.logs') }}"
       class="d-flex flex-wrap align-items-center gap-2 mb-4">
   <input type="hidden" name="type" value="flights">
-  <input type="text" name="island" value="{{ island_filter }}"
-         placeholder="Filter by island…"
-         class="db-input" style="width:180px;">
-  <select name="authorized" class="db-input" style="width:180px;">
-    <option value="">All travelers</option>
-    <option value="1" {% if authorized_filter == '1' %}selected{% endif %}>Authorized only</option>
-    <option value="0" {% if authorized_filter == '0' %}selected{% endif %}>Unknown only</option>
+
+  <!-- Island dropdown -->
+  <select name="island" class="db-input" style="width:180px;">
+    <option value="">All islands</option>
+    {% for iname in island_names %}
+    <option value="{{ iname }}" {% if island_filter == iname %}selected{% endif %}>{{ iname }}</option>
+    {% endfor %}
   </select>
+
+  <!-- Category / tier filter -->
+  <select name="category" class="db-input" style="width:165px;">
+    <option value="">All tiers</option>
+    <option value="public" {% if category_filter == 'public' %}selected{% endif %}>🌍 Public</option>
+    <option value="member" {% if category_filter == 'member' %}selected{% endif %}>⭐ Member / VIP</option>
+  </select>
+
+  <!-- Authorization filter -->
+  <select name="authorized" class="db-input" style="width:165px;">
+    <option value="">All travelers</option>
+    <option value="1" {% if authorized_filter == '1' %}selected{% endif %}>✔ Authorized only</option>
+    <option value="0" {% if authorized_filter == '0' %}selected{% endif %}>? Unknown only</option>
+  </select>
+
+  <!-- Sort controls -->
+  <select name="sort_by" class="db-input" style="width:145px;">
+    <option value="timestamp" {% if sort_by == 'timestamp' %}selected{% endif %}>Sort: Time</option>
+    <option value="ign"       {% if sort_by == 'ign'       %}selected{% endif %}>Sort: IGN</option>
+    <option value="destination" {% if sort_by == 'destination' %}selected{% endif %}>Sort: Island</option>
+  </select>
+  <select name="sort_order" class="db-input" style="width:110px;">
+    <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>↓ Desc</option>
+    <option value="asc"  {% if sort_order == 'asc'  %}selected{% endif %}>↑ Asc</option>
+  </select>
+
   <button type="submit"
           class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
           style="font-size:.85rem;">
     <i class="bi bi-funnel-fill me-1"></i>Filter
   </button>
-  {% if island_filter or authorized_filter %}
+  {% if island_filter or authorized_filter or category_filter %}
   <a href="{{ url_for('dashboard.logs', type='flights') }}"
      class="btn rounded-3 fw-bold px-4 py-2"
      style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
@@ -51,7 +77,8 @@
 <div class="d-flex align-items-center justify-content-between mb-3">
   <span class="x-small fw-bold" style="color:#aaa;">
     Showing {{ entries|length }} of {{ total }} entries
-    {% if log_type == 'flights' and island_filter %}&nbsp;· filtered by "{{ island_filter }}"{% endif %}
+    {% if log_type == 'flights' and island_filter %}&nbsp;· island: <strong>{{ island_filter }}</strong>{% endif %}
+    {% if log_type == 'flights' and category_filter %}&nbsp;· tier: <strong>{{ category_filter }}</strong>{% endif %}
   </span>
   <span class="x-small fw-bold" style="color:#ccc;">Page {{ page }} / {{ total_pages }}</span>
 </div>
@@ -125,14 +152,14 @@
     {% if page > 1 %}
     <li class="page-item">
       <a class="page-link rounded-3 fw-bold"
-         href="{{ url_for('dashboard.logs', page=page-1, type=log_type, island=island_filter, authorized=authorized_filter) }}"
+         href="{{ url_for('dashboard.logs', page=page-1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
          style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">← Prev</a>
     </li>
     {% endif %}
     {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
     <li class="page-item {% if p == page %}active{% endif %}">
       <a class="page-link rounded-3 fw-bold"
-         href="{{ url_for('dashboard.logs', page=p, type=log_type, island=island_filter, authorized=authorized_filter) }}"
+         href="{{ url_for('dashboard.logs', page=p, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
          style="{% if p == page %}background:var(--nook-green);border-color:var(--nook-green);{% else %}border:2px solid #e1e6d3;color:#888;{% endif %}font-size:.85rem;">
         {{ p }}
       </a>
@@ -141,7 +168,7 @@
     {% if page < total_pages %}
     <li class="page-item">
       <a class="page-link rounded-3 fw-bold"
-         href="{{ url_for('dashboard.logs', page=page+1, type=log_type, island=island_filter, authorized=authorized_filter) }}"
+         href="{{ url_for('dashboard.logs', page=page+1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
          style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">Next →</a>
     </li>
     {% endif %}
