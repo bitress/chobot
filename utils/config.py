@@ -73,6 +73,15 @@ class Config:
     # Set FLASK_SECRET_KEY explicitly in .env for persistent sessions.
     FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY") or __import__("secrets").token_hex(32)
 
+    # Cloudflare R2 (S3-compatible) — for island map uploads
+    # Endpoint format: https://<account_id>.r2.cloudflarestorage.com
+    R2_ACCOUNT_ID       = os.getenv("R2_ACCOUNT_ID", "")
+    R2_ACCESS_KEY_ID    = os.getenv("R2_ACCESS_KEY_ID", "")
+    R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+    R2_BUCKET_NAME      = os.getenv("R2_BUCKET_NAME", "chobot-maps")
+    # Public base URL for uploaded files (e.g. https://pub-xxx.r2.dev or custom domain)
+    R2_PUBLIC_URL       = os.getenv("R2_PUBLIC_URL", "")
+
     # Google Sheets
     WORKBOOK_NAME = os.getenv('WORKBOOK_NAME')
     JSON_KEYFILE = 'service_account.json'
