@@ -383,12 +383,20 @@ def index():
     try:
         total_visits   = db.execute("SELECT COUNT(*) FROM island_visits").fetchone()[0]
         total_warnings = db.execute("SELECT COUNT(*) FROM warnings").fetchone()[0]
+        visits_today   = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            "WHERE timestamp > strftime('%s','now','start of day')"
+        ).fetchone()[0]
+        visits_week    = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            "WHERE timestamp > strftime('%s','now','-7 days')"
+        ).fetchone()[0]
         recent_raw     = db.execute(
             "SELECT ign, destination, authorized, timestamp "
             "FROM island_visits ORDER BY timestamp DESC LIMIT 10"
         ).fetchall()
     except sqlite3.Error:
-        total_visits = total_warnings = 0
+        total_visits = total_warnings = visits_today = visits_week = 0
         recent_raw = []
     finally:
         db.close()
@@ -415,6 +423,8 @@ def index():
         "dashboard/index.html",
         total_visits=total_visits,
         total_warnings=total_warnings,
+        visits_today=visits_today,
+        visits_week=visits_week,
         recent=recent,
         island_count=island_count,
     )
@@ -725,6 +735,22 @@ def analytics():
                 "GROUP BY day ORDER BY day"
             ).fetchall()
         ]
+        visits_by_day_30 = [
+            dict(r) for r in db.execute(
+                "SELECT DATE(timestamp, 'unixepoch') AS day, COUNT(*) AS count "
+                "FROM island_visits "
+                "WHERE timestamp > strftime('%s','now','-30 days') "
+                "GROUP BY day ORDER BY day"
+            ).fetchall()
+        ]
+        visits_by_hour = [
+            dict(r) for r in db.execute(
+                "SELECT CAST(strftime('%H', timestamp, 'unixepoch') AS INTEGER) AS hour, "
+                "COUNT(*) AS count "
+                "FROM island_visits "
+                "GROUP BY hour ORDER BY hour"
+            ).fetchall()
+        ]
         auth_raw = db.execute(
             "SELECT authorized, COUNT(*) AS count FROM island_visits GROUP BY authorized"
         ).fetchall()
@@ -735,10 +761,34 @@ def analytics():
             "JOIN islands isl ON LOWER(iv.destination) = isl.id "
             "GROUP BY isl.cat"
         ).fetchall()
+        # Top warned users
+        top_warned = [
+            dict(r) for r in db.execute(
+                "SELECT user_id, COUNT(*) AS warn_count "
+                "FROM warnings GROUP BY user_id "
+                "ORDER BY warn_count DESC LIMIT 10"
+            ).fetchall()
+        ]
+        # Quick summary stats
+        visits_today = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            "WHERE timestamp > strftime('%s','now','start of day')"
+        ).fetchone()[0]
+        visits_week = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            "WHERE timestamp > strftime('%s','now','-7 days')"
+        ).fetchone()[0]
+        warnings_week = db.execute(
+            "SELECT COUNT(*) FROM warnings "
+            "WHERE timestamp > strftime('%s','now','-7 days')"
+        ).fetchone()[0]
     except sqlite3.Error:
-        top_islands = top_travelers = visits_by_day = []
+        top_islands = top_travelers = visits_by_day = visits_by_day_30 = []
+        visits_by_hour = []
         auth_raw = []
         cat_raw = []
+        top_warned = []
+        visits_today = visits_week = warnings_week = 0
     finally:
         db.close()
 
@@ -747,13 +797,23 @@ def analytics():
     cat_map    = {r["cat"]: r["visit_count"] for r in cat_raw}
     cat_stats  = {"public": cat_map.get("public", 0), "member": cat_map.get("member", 0)}
 
+    # Build full 24-hour array (fill missing hours with 0)
+    hour_map = {r["hour"]: r["count"] for r in visits_by_hour}
+    visits_by_hour_full = [{"hour": h, "count": hour_map.get(h, 0)} for h in range(24)]
+
     return render_template(
         "dashboard/analytics.html",
         top_islands=top_islands,
         top_travelers=top_travelers,
         visits_by_day=visits_by_day,
+        visits_by_day_30=visits_by_day_30,
+        visits_by_hour=visits_by_hour_full,
         auth_stats=auth_stats,
         cat_stats=cat_stats,
+        top_warned=top_warned,
+        visits_today=visits_today,
+        visits_week=visits_week,
+        warnings_week=warnings_week,
     )
 
 

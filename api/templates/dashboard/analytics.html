@@ -4,12 +4,38 @@
 {% block header %}Analytics{% endblock %}
 
 {% block head %}
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"
-          integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb"
-          crossorigin="anonymous"></script>
+  <script src="{{ url_for('dashboard.static', filename='js/chart.umd.js') }}"></script>
 {% endblock %}
 
 {% block content %}
+
+<!-- Quick summary stats row -->
+<div class="row g-4 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-calendar-day-fill me-1"></i>Visits Today</div>
+      <div class="stat-value text-nook-green">{{ visits_today }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-calendar-week-fill me-1"></i>Visits This Week</div>
+      <div class="stat-value" style="color:var(--dal-blue);">{{ visits_week }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-exclamation-triangle-fill me-1"></i>Warnings (7d)</div>
+      <div class="stat-value" style="color:var(--nook-yellow);">{{ warnings_week }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-airplane-fill me-1"></i>Total Visits</div>
+      <div class="stat-value" style="color:#b07cdc;">{{ auth_stats.authorized + auth_stats.unauthorized }}</div>
+    </div>
+  </div>
+</div>
 
 <!-- Auth ratio + visit trend row -->
 <div class="row g-4 mb-4">
@@ -21,9 +47,16 @@
         <span><i class="bi bi-pie-chart-fill me-2" style="color:var(--nook-green);"></i>Traveler Authorization</span>
       </div>
       <div class="p-4 d-flex align-items-center gap-4">
+        {% if auth_stats.authorized + auth_stats.unauthorized > 0 %}
         <div class="chart-wrap flex-shrink-0" style="width:140px;height:140px;">
           <canvas id="authChart"></canvas>
         </div>
+        {% else %}
+        <div class="flex-shrink-0 d-flex align-items-center justify-content-center"
+             style="width:140px;height:140px;border-radius:50%;border:10px solid #f0f4ec;">
+          <i class="bi bi-pie-chart" style="font-size:2rem;color:#ccc;"></i>
+        </div>
+        {% endif %}
         <div>
           <div class="d-flex align-items-center gap-2 mb-2">
             <span class="status-dot" style="background:#28a745;"></span>
@@ -55,12 +88,31 @@
   <div class="col-12 col-lg-7">
     <div class="section-card h-100">
       <div class="section-card-header">
-        <span><i class="bi bi-graph-up-arrow me-2" style="color:var(--dal-blue);"></i>Visits — Last 7 Days</span>
+        <span><i class="bi bi-graph-up-arrow me-2" style="color:var(--dal-blue);"></i>Visit Trend</span>
+        <div class="d-flex gap-1">
+          <button id="btn7d" onclick="switchTrend(7)"
+                  class="btn btn-sm rounded-pill fw-bold"
+                  style="font-size:.72rem;padding:2px 10px;background:var(--nook-green);color:#fff;border:none;">
+            7 Days
+          </button>
+          <button id="btn30d" onclick="switchTrend(30)"
+                  class="btn btn-sm rounded-pill fw-bold"
+                  style="font-size:.72rem;padding:2px 10px;background:#e9f2e9;color:var(--nook-green);border:none;">
+            30 Days
+          </button>
+        </div>
       </div>
       <div class="p-4">
+        {% if visits_by_day or visits_by_day_30 %}
         <div class="chart-wrap" style="height:140px;">
           <canvas id="visitChart"></canvas>
         </div>
+        {% else %}
+        <div class="py-4 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+          <i class="bi bi-graph-up fs-3 d-block mb-2" style="opacity:.3;"></i>
+          No visit data in the selected period.
+        </div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -169,9 +221,16 @@
         <span><i class="bi bi-pie-chart-fill me-2" style="color:var(--dal-blue);"></i>Visits by Tier</span>
       </div>
       <div class="p-4 d-flex align-items-center gap-4">
+        {% if cat_stats.public + cat_stats.member > 0 %}
         <div class="chart-wrap flex-shrink-0" style="width:120px;height:120px;">
           <canvas id="catChart"></canvas>
         </div>
+        {% else %}
+        <div class="flex-shrink-0 d-flex align-items-center justify-content-center"
+             style="width:120px;height:120px;border-radius:50%;border:8px solid #f0f4ec;">
+          <i class="bi bi-pie-chart" style="font-size:1.6rem;color:#ccc;"></i>
+        </div>
+        {% endif %}
         <div>
           <div class="d-flex align-items-center gap-2 mb-2">
             <span class="status-dot" style="background:#4f9ef8;"></span>
@@ -200,9 +259,69 @@
   </div>
 </div>
 
+<!-- Visits by Hour of Day chart -->
+<div class="section-card mb-4">
+  <div class="section-card-header">
+    <span><i class="bi bi-clock-fill me-2" style="color:#f5a623;"></i>Visits by Hour of Day (UTC)</span>
+  </div>
+  <div class="p-4">
+    <div class="chart-wrap" style="height:200px;">
+      <canvas id="hourChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Top Warned Users -->
+{% if top_warned %}
+<div class="section-card mb-4">
+  <div class="section-card-header">
+    <span><i class="bi bi-exclamation-triangle-fill me-2" style="color:var(--nook-yellow);"></i>Top Warned Users</span>
+    <a href="{{ url_for('dashboard.logs') }}?type=warnings"
+       class="text-decoration-none fw-bold x-small"
+       style="color:var(--nook-yellow);">View all →</a>
+  </div>
+  <div>
+    {% for row in top_warned %}
+    <div class="d-flex align-items-center gap-3 px-4 py-3"
+         style="border-bottom:1px solid #f0f4ec;">
+      <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
+      <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_id }}</span>
+      <div class="d-flex align-items-center gap-2 flex-shrink-0">
+        <div style="height:6px;border-radius:3px;background:var(--nook-yellow);
+                    width:{{ [(row.warn_count / [top_warned[0].warn_count, 1]|max * 80)|int, 4]|max }}px;
+                    max-width:80px;"></div>
+        <span class="fw-black x-small" style="color:var(--nook-yellow);width:24px;text-align:right;">
+          {{ row.warn_count }}
+        </span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% block scripts %}
 <script>
-  // Auth doughnut
+  // ---------- Data from server ----------
+  const data7d = {
+    labels:  [{% for r in visits_by_day %}"{{ r.day }}"{% if not loop.last %},{% endif %}{% endfor %}],
+    counts:  [{% for r in visits_by_day %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}]
+  };
+  const data30d = {
+    labels:  [{% for r in visits_by_day_30 %}"{{ r.day }}"{% if not loop.last %},{% endif %}{% endfor %}],
+    counts:  [{% for r in visits_by_day_30 %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}]
+  };
+  const dataHour = {
+    labels: [{% for r in visits_by_hour %}"{{ '%02d'|format(r.hour) }}:00"{% if not loop.last %},{% endif %}{% endfor %}],
+    counts: [{% for r in visits_by_hour %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}]
+  };
+
+  // ---------- Shared chart defaults ----------
+  const tickFont = { size: 11, family: 'Quicksand', weight: '700' };
+  const gridColor = '#f0f4ec';
+
+  // ---------- Auth doughnut ----------
+  {% if auth_stats.authorized + auth_stats.unauthorized > 0 %}
   new Chart(document.getElementById('authChart'), {
     type: 'doughnut',
     data: {
@@ -221,41 +340,56 @@
       maintainAspectRatio: true,
     }
   });
+  {% endif %}
 
-  // Visits per day line
-  const visitDays = [{% for r in visits_by_day %}"{{ r.day }}"{% if not loop.last %},{% endif %}{% endfor %}];
-  const visitCounts = [{% for r in visits_by_day %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}];
-  new Chart(document.getElementById('visitChart'), {
-    type: 'line',
-    data: {
-      labels: visitDays,
-      datasets: [{
-        label: 'Visits',
-        data: visitCounts,
-        borderColor: '#28a745',
-        backgroundColor: 'rgba(40,167,69,0.12)',
-        fill: true,
-        tension: 0.4,
-        pointRadius: 4,
-        pointBackgroundColor: '#28a745',
-        borderWidth: 2.5,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
-             grid: { color: '#f0f4ec' } },
-        y: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
-             grid: { color: '#f0f4ec' }, beginAtZero: true }
+  // ---------- Visit trend line (7d / 30d toggle) ----------
+  {% if visits_by_day or visits_by_day_30 %}
+  let visitChart = null;
+
+  function buildVisitChart(days) {
+    const d = days === 30 ? data30d : data7d;
+    if (visitChart) visitChart.destroy();
+    visitChart = new Chart(document.getElementById('visitChart'), {
+      type: 'line',
+      data: {
+        labels: d.labels,
+        datasets: [{
+          label: 'Visits',
+          data: d.counts,
+          borderColor: '#28a745',
+          backgroundColor: 'rgba(40,167,69,0.12)',
+          fill: true,
+          tension: 0.4,
+          pointRadius: 4,
+          pointBackgroundColor: '#28a745',
+          borderWidth: 2.5,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor } },
+          y: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor }, beginAtZero: true }
+        }
       }
-    }
-  });
+    });
+  }
 
+  function switchTrend(days) {
+    buildVisitChart(days);
+    document.getElementById('btn7d').style.background  = days === 7  ? 'var(--nook-green)' : '#e9f2e9';
+    document.getElementById('btn7d').style.color       = days === 7  ? '#fff' : 'var(--nook-green)';
+    document.getElementById('btn30d').style.background = days === 30 ? 'var(--nook-green)' : '#e9f2e9';
+    document.getElementById('btn30d').style.color      = days === 30 ? '#fff' : 'var(--nook-green)';
+  }
+
+  buildVisitChart(7);
+  {% endif %}
+
+  // ---------- Island bar chart ----------
   {% if top_islands %}
-  // Island bar chart
   new Chart(document.getElementById('islandBarChart'), {
     type: 'bar',
     data: {
@@ -273,17 +407,15 @@
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
-             grid: { color: '#f0f4ec' } },
-        y: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
-             grid: { color: '#f0f4ec' }, beginAtZero: true }
+        x: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor } },
+        y: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor }, beginAtZero: true }
       }
     }
   });
   {% endif %}
 
+  // ---------- Traveler bar chart ----------
   {% if top_travelers %}
-  // Traveler bar chart
   new Chart(document.getElementById('travelerBarChart'), {
     type: 'bar',
     data: {
@@ -301,16 +433,15 @@
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' }, maxRotation: 35, minRotation: 0 },
-             grid: { color: '#f0f4ec' } },
-        y: { ticks: { color: '#aaa', font: { size: 11, family: 'Quicksand', weight: '700' } },
-             grid: { color: '#f0f4ec' }, beginAtZero: true }
+        x: { ticks: { color: '#aaa', font: tickFont, maxRotation: 35, minRotation: 0 }, grid: { color: gridColor } },
+        y: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor }, beginAtZero: true }
       }
     }
   });
   {% endif %}
 
-  // Visits by tier (public vs member/VIP) doughnut
+  // ---------- Tier doughnut ----------
+  {% if cat_stats.public + cat_stats.member > 0 %}
   new Chart(document.getElementById('catChart'), {
     type: 'doughnut',
     data: {
@@ -327,6 +458,32 @@
       plugins: { legend: { display: false } },
       responsive: true,
       maintainAspectRatio: true,
+    }
+  });
+  {% endif %}
+
+  // ---------- Visits by Hour bar chart ----------
+  new Chart(document.getElementById('hourChart'), {
+    type: 'bar',
+    data: {
+      labels: dataHour.labels,
+      datasets: [{
+        label: 'Visits',
+        data: dataHour.counts,
+        backgroundColor: 'rgba(245,166,35,0.65)',
+        borderRadius: 4,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#aaa', font: { size: 10, family: 'Quicksand', weight: '700' }, maxRotation: 45 },
+             grid: { color: gridColor } },
+        y: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor }, beginAtZero: true }
+      }
     }
   });
 </script>

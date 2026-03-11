@@ -17,16 +17,20 @@
   {% block head %}{% endblock %}
 </head>
 <body>
+
+<!-- Mobile overlay (tap to close sidebar) -->
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="sbClose()"></div>
+
 <div class="d-flex" style="min-height:100vh">
 
   <!-- ── Sidebar ── -->
-  <aside class="db-sidebar flex-shrink-0">
+  <aside class="db-sidebar" id="dbSidebar">
     <!-- Brand -->
-    <div class="sidebar-brand d-flex align-items-center gap-3">
+    <div class="sidebar-brand">
       <div class="logo-box flex-shrink-0">
         <span class="d-flex align-items-center justify-content-center h-100 fs-5">🌿</span>
       </div>
-      <div>
+      <div class="brand-text">
         <div class="ac-font fw-bold" style="color:var(--nook-green);font-size:1.1rem;">ChoBot</div>
         <div class="x-small" style="color:#aaa;font-weight:700;">Mod Dashboard</div>
       </div>
@@ -35,41 +39,54 @@
     <!-- Navigation -->
     <nav class="flex-grow-1 p-3">
       <a href="{{ url_for('dashboard.index') }}"
-         class="nav-pill-link {% if request.endpoint == 'dashboard.index' %}active{% endif %}">
-        <i class="bi bi-house-door-fill"></i> Overview
+         class="nav-pill-link {% if request.endpoint == 'dashboard.index' %}active{% endif %}"
+         title="Overview">
+        <i class="bi bi-house-door-fill"></i>
+        <span class="link-text">Overview</span>
       </a>
       <a href="{{ url_for('dashboard.islands') }}"
-         class="nav-pill-link {% if request.endpoint in ('dashboard.islands','dashboard.island_detail') %}active{% endif %}">
-        <i class="bi bi-geo-alt-fill"></i> Islands
+         class="nav-pill-link {% if request.endpoint in ('dashboard.islands','dashboard.island_detail') %}active{% endif %}"
+         title="Islands">
+        <i class="bi bi-geo-alt-fill"></i>
+        <span class="link-text">Islands</span>
       </a>
       <a href="{{ url_for('dashboard.logs') }}"
-         class="nav-pill-link {% if request.endpoint == 'dashboard.logs' %}active{% endif %}">
-        <i class="bi bi-journal-text"></i> XLog Reports
+         class="nav-pill-link {% if request.endpoint == 'dashboard.logs' %}active{% endif %}"
+         title="XLog Reports">
+        <i class="bi bi-journal-text"></i>
+        <span class="link-text">XLog Reports</span>
       </a>
       <a href="{{ url_for('dashboard.analytics') }}"
-         class="nav-pill-link {% if request.endpoint == 'dashboard.analytics' %}active{% endif %}">
-        <i class="bi bi-bar-chart-fill"></i> Analytics
+         class="nav-pill-link {% if request.endpoint == 'dashboard.analytics' %}active{% endif %}"
+         title="Analytics">
+        <i class="bi bi-bar-chart-fill"></i>
+        <span class="link-text">Analytics</span>
       </a>
 
       <!-- API links -->
       <div class="sidebar-section-label mt-3">API</div>
-      <a href="{{ url_for('dashboard.api_islands_list') }}" class="nav-pill-link" style="font-size:.8rem">
-        <i class="bi bi-link-45deg"></i> /api/islands
+      <a href="{{ url_for('dashboard.api_islands_list') }}" class="nav-pill-link" style="font-size:.8rem" title="/api/islands">
+        <i class="bi bi-link-45deg"></i>
+        <span class="link-text">/api/islands</span>
       </a>
-      <a href="{{ url_for('dashboard.api_analytics') }}" class="nav-pill-link" style="font-size:.8rem">
-        <i class="bi bi-link-45deg"></i> /api/analytics
+      <a href="{{ url_for('dashboard.api_analytics') }}" class="nav-pill-link" style="font-size:.8rem" title="/api/analytics">
+        <i class="bi bi-link-45deg"></i>
+        <span class="link-text">/api/analytics</span>
       </a>
-      <a href="{{ url_for('dashboard.api_logs') }}" class="nav-pill-link" style="font-size:.8rem">
-        <i class="bi bi-link-45deg"></i> /api/logs
+      <a href="{{ url_for('dashboard.api_logs') }}" class="nav-pill-link" style="font-size:.8rem" title="/api/logs">
+        <i class="bi bi-link-45deg"></i>
+        <span class="link-text">/api/logs</span>
       </a>
     </nav>
 
     <!-- Logout -->
     <div class="p-3 border-top" style="border-color:#e1e6d3!important">
       <a href="{{ url_for('dashboard.logout') }}"
-         class="nav-pill-link text-danger"
-         style="color:#dc3545!important">
-        <i class="bi bi-box-arrow-left"></i> Logout
+         class="nav-pill-link"
+         style="color:#dc3545!important"
+         title="Logout">
+        <i class="bi bi-box-arrow-left"></i>
+        <span class="link-text">Logout</span>
       </a>
     </div>
   </aside>
@@ -80,6 +97,10 @@
     <!-- Top bar -->
     <div class="db-topbar">
       <div class="d-flex align-items-center gap-2">
+        <!-- Sidebar toggle (hamburger / collapse) -->
+        <button id="sbToggleBtn" class="sb-toggle-btn" onclick="sbToggle()" aria-label="Toggle sidebar">
+          <i class="bi bi-list"></i>
+        </button>
         <span class="fw-black ac-font" style="color:var(--nook-green);font-size:1.05rem;">
           {% block header %}Dashboard{% endblock %}
         </span>
@@ -119,6 +140,51 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
         integrity="sha384-YvpcrYf0tY3lHB60NNkmXc4s9bIOgUxi8T/jzmEtmT49YJZBtX+mHJFsxnXMoaZX"
         crossorigin="anonymous"></script>
+
+<script>
+  var _sidebar  = document.getElementById('dbSidebar');
+  var _overlay  = document.getElementById('sidebarOverlay');
+  var _isMobile = function() { return window.innerWidth <= 767; };
+
+  function sbToggle() {
+    if (_isMobile()) {
+      _sidebar.classList.toggle('sb-open');
+      _overlay.classList.toggle('active');
+    } else {
+      var collapsed = _sidebar.classList.toggle('sb-collapsed');
+      try { localStorage.setItem('sb-collapsed', collapsed ? '1' : '0'); } catch(e) {}
+    }
+  }
+
+  function sbClose() {
+    _sidebar.classList.remove('sb-open');
+    _overlay.classList.remove('active');
+  }
+
+  /* Restore desktop collapse preference */
+  (function() {
+    try {
+      if (!_isMobile() && localStorage.getItem('sb-collapsed') === '1') {
+        _sidebar.classList.add('sb-collapsed');
+      }
+    } catch(e) {}
+  })();
+
+  /* Close sidebar on Escape */
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') sbClose();
+  });
+
+  /* Re-evaluate on resize (e.g. rotate phone to tablet) */
+  window.addEventListener('resize', function() {
+    if (!_isMobile()) {
+      _sidebar.classList.remove('sb-open');
+      _overlay.classList.remove('active');
+    }
+  });
+</script>
+
 {% block scripts %}{% endblock %}
 </body>
 </html>
+
