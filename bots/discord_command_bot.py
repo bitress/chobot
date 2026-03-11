@@ -739,8 +739,13 @@ class DiscordCommandCog(commands.Cog):
         logger.info(f"[DISCORD] Ask command by {ctx.author.name}: {question[:80]}")
 
     @commands.hybrid_command(name="islands", aliases=["islandstatus", "checkislands"])
-    async def island_status(self, ctx):
-        """Check the status of all sub islands"""
+    @app_commands.describe(kind="Which islands to check: sub, free, or leave blank for both.")
+    @app_commands.choices(kind=[
+        app_commands.Choice(name="sub — Sub Islands",   value="sub"),
+        app_commands.Choice(name="free — Free Islands", value="free"),
+    ])
+    async def island_status(self, ctx, kind: str = ""):
+        """Check island bot status. Use 'sub', 'free', or leave blank for both."""
         await ctx.defer()
 
         guild = self.bot.get_guild(Config.GUILD_ID)
@@ -748,185 +753,198 @@ class DiscordCommandCog(commands.Cog):
             await ctx.reply("Guild not found.")
             return
 
-        # Ensure the channel lookup is fresh before checking
-        await self.fetch_islands()
+        kind = kind.strip().lower()
 
-        results = []
-        online_count = 0
+        # Validate explicit arguments
+        if kind and kind not in ("sub", "free"):
+            await ctx.reply("Usage: `/islands [sub|free]`", ephemeral=True)
+            return
 
-        # Resolve the shared island-bot role once
+        show_sub  = kind in ("", "sub")
+        show_free = kind in ("", "free")
+
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
         if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
             logger.warning(f"[DISCORD] ISLAND_BOT_ROLE_ID {Config.ISLAND_BOT_ROLE_ID} not found in guild; bot name matching disabled")
 
-        for island in Config.SUB_ISLANDS:
-            island_clean = clean_text(island)
-            channel_id = self.sub_island_lookup.get(island_clean)
+        # --- Sub island results ---
+        sub_results: list = []
+        sub_online = 0
+        if show_sub:
+            await self.fetch_islands()
+            for island in Config.SUB_ISLANDS:
+                island_clean = clean_text(island)
+                channel_id = self.sub_island_lookup.get(island_clean)
 
-            # Fallback: scan all guild text channels if not found via category lookup
-            if not channel_id:
-                for ch in guild.channels:
-                    if isinstance(ch, discord.TextChannel) and island_clean in clean_text(ch.name):
-                        channel_id = ch.id
-                        break
+                if not channel_id:
+                    for ch in guild.channels:
+                        if isinstance(ch, discord.TextChannel) and island_clean in clean_text(ch.name):
+                            channel_id = ch.id
+                            break
 
-            if not channel_id:
-                results.append((island, "❓", "Channel not found", None))
-                continue
-
-            channel = guild.get_channel(channel_id)
-            if not channel:
-                results.append((island, "❓", "Channel not found", None))
-                continue
-
-            # Find the bot for this island by name: "Chobot <island name>"
-            # Bots share ISLAND_BOT_ROLE_ID and may use fancy Unicode in their display name
-            # (e.g. "ℂ𝕙𝕠𝔹𝕠𝕥 (ᴀʟᴀᴘᴀᴀᴘ)") — clean_text normalises both sides for matching
-            island_bot = None
-            if island_bot_role:
-                island_clean_target = clean_text(f"chobot {island}")
-                for member in island_bot_role.members:
-                    if member.bot and clean_text(member.display_name) == island_clean_target:
-                        island_bot = member
-                        break
-
-            # Check 1: If the island's bot is found and online or idle, it's working
-            if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
-                results.append((island, "✅", "Bot online", channel_id))
-                online_count += 1
-                continue
-
-            # Check 2: Scan recent channel messages for dodo codes or Chopaeng visitor
-            try:
-                messages = [msg async for msg in channel.history(limit=25)]
-            except discord.Forbidden:
-                results.append((island, "❓", "No channel access", channel_id))
-                continue
-
-            island_up = False
-            status_reason = ""
-
-            for msg in messages:
-                # Only examine messages from this island's bot (if known),
-                # otherwise fall back to any bot in the channel
-                if island_bot:
-                    if msg.author.id != island_bot.id:
-                        continue
-                elif not msg.author.bot:
+                if not channel_id:
+                    sub_results.append((island, "❓", "Channel not found", None))
                     continue
 
-                # Dodo code: 5 uppercase alphanumeric chars (ACNH format excludes I and O)
-                if DODO_CODE_PATTERN.search(msg.content):
-                    island_up = True
-                    status_reason = "Dodo code active"
-                    break
+                channel = guild.get_channel(channel_id)
+                if not channel:
+                    sub_results.append((island, "❓", "Channel not found", None))
+                    continue
 
-                # Chopaeng present in visitors response
-                if ISLAND_HOST_NAME in msg.content.lower():
-                    island_up = True
-                    status_reason = "Chopaeng is visiting"
-                    break
+                island_bot = None
+                if island_bot_role:
+                    target = clean_text(f"chobot {island}")
+                    for member in island_bot_role.members:
+                        if member.bot and clean_text(member.display_name) == target:
+                            island_bot = member
+                            break
 
-            if island_up:
-                results.append((island, "✅", status_reason, channel_id))
-                online_count += 1
-            else:
-                results.append((island, "❌", "No recent activity", channel_id))
+                if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+                    sub_results.append((island, "✅", "Bot online", channel_id))
+                    sub_online += 1
+                    continue
 
-        # Build embed
-        total = len(Config.SUB_ISLANDS)
-        embed = discord.Embed(
-            title="🏝️ Sub Island Status",
-            description=f"**{online_count}/{total}** islands active",
-            color=discord.Color.green() if online_count == total else (
-                discord.Color.orange() if online_count > 0 else discord.Color.red()
-            ),
-            timestamp=discord.utils.utcnow()
-        )
+                try:
+                    messages = [msg async for msg in channel.history(limit=25)]
+                except discord.Forbidden:
+                    sub_results.append((island, "❓", "No channel access", channel_id))
+                    continue
 
-        online_lines = [f"<#{ch_id}>" if ch_id else f"**{name}**" for name, status, _, ch_id in results if status == "✅"]
-        offline_lines = [f"<#{ch_id}>" if ch_id else f"**{name}**" for name, status, _, ch_id in results if status != "✅"]
-
-        embed.add_field(name="🟢 ONLINE", value="\n".join(online_lines) or "*none*", inline=True)
-        embed.add_field(name="🔴 OFFLINE", value="\n".join(offline_lines) or "*none*", inline=True)
-
-        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
-        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-        embed.set_image(url=Config.FOOTER_LINE)
-
-        await ctx.reply(embed=embed)
-        logger.info(f"[DISCORD] Island status check: {online_count}/{total} online")
-
-    @commands.hybrid_command(name="freeislands", aliases=["freeislandstatus", "checkfreeislands"])
-    async def free_island_status(self, ctx):
-        """Check the status of all free islands"""
-        await ctx.defer()
-
-        guild = self.bot.get_guild(Config.GUILD_ID)
-        if not guild:
-            await ctx.reply("Guild not found.")
-            return
-
-        # Ensure the free island channel lookup is fresh before checking
-        await self.fetch_free_islands()
-
-        if not Config.FREE_CATEGORY_ID:
-            await ctx.reply("Free island category is not configured.")
-            return
-
-        results = []
-        online_count = 0
-
-        # Resolve the shared island-bot role once
-        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
-        if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
-            logger.warning(f"[DISCORD] ISLAND_BOT_ROLE_ID {Config.ISLAND_BOT_ROLE_ID} not found in guild; bot name matching disabled")
-
-        for island in Config.FREE_ISLANDS:
-            island_clean = clean_text(island)
-            channel_id = self.free_island_lookup.get(island_clean)
-
-            # Find the bot for this island by name: "Chobot <island name>"
-            island_bot = None
-            if island_bot_role:
-                island_clean_target = clean_text(f"chobot {island}")
-                for member in island_bot_role.members:
-                    if member.bot and clean_text(member.display_name) == island_clean_target:
-                        island_bot = member
+                island_up   = False
+                status_reason = ""
+                for msg in messages:
+                    if island_bot:
+                        if msg.author.id != island_bot.id:
+                            continue
+                    elif not msg.author.bot:
+                        continue
+                    if DODO_CODE_PATTERN.search(msg.content):
+                        island_up = True
+                        status_reason = "Dodo code active"
+                        break
+                    if ISLAND_HOST_NAME in msg.content.lower():
+                        island_up = True
+                        status_reason = "Chopaeng is visiting"
                         break
 
-            # Status is determined solely by the bot's presence (online or idle = up)
-            if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
-                results.append((island, "✅", "Bot online", channel_id))
-                online_count += 1
-            elif island_bot:
-                results.append((island, "❌", "Bot offline", channel_id))
-            else:
-                results.append((island, "❓", "Bot not found", channel_id))
+                if island_up:
+                    sub_results.append((island, "✅", status_reason, channel_id))
+                    sub_online += 1
+                else:
+                    sub_results.append((island, "❌", "No recent activity", channel_id))
 
-        # Build embed
-        total = len(Config.FREE_ISLANDS)
-        embed = discord.Embed(
-            title="🌴 Free Island Status",
-            description=f"**{online_count}/{total}** islands active",
-            color=discord.Color.green() if online_count == total else (
-                discord.Color.orange() if online_count > 0 else discord.Color.red()
-            ),
-            timestamp=discord.utils.utcnow()
-        )
+        # --- Free island results ---
+        free_results: list = []
+        free_online = 0
+        if show_free:
+            await self.fetch_free_islands()
+            for island in Config.FREE_ISLANDS:
+                island_clean = clean_text(island)
+                channel_id = self.free_island_lookup.get(island_clean)
 
-        online_lines = [f"<#{ch_id}>" if ch_id else f"**{name}**" for name, status, _, ch_id in results if status == "✅"]
-        offline_lines = [f"<#{ch_id}>" if ch_id else f"**{name}**" for name, status, _, ch_id in results if status != "✅"]
+                island_bot = None
+                if island_bot_role:
+                    target = clean_text(f"chobot {island}")
+                    for member in island_bot_role.members:
+                        if member.bot and clean_text(member.display_name) == target:
+                            island_bot = member
+                            break
 
-        embed.add_field(name="🟢 ONLINE", value="\n".join(online_lines) or "*none*", inline=True)
-        embed.add_field(name="🔴 OFFLINE", value="\n".join(offline_lines) or "*none*", inline=True)
+                if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+                    free_results.append((island, "✅", "Bot online", channel_id))
+                    free_online += 1
+                elif island_bot:
+                    free_results.append((island, "❌", "Bot offline", channel_id))
+                else:
+                    free_results.append((island, "❓", "Bot not found", channel_id))
 
+        # --- Build embed(s) ---
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
-        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-        embed.set_image(url=Config.FOOTER_LINE)
 
-        await ctx.reply(embed=embed)
-        logger.info(f"[DISCORD] Free island status check: {online_count}/{total} online")
+        if kind == "sub":
+            total = len(Config.SUB_ISLANDS)
+            embed = discord.Embed(
+                title="🏝️ Sub Island Status",
+                description=f"**{sub_online}/{total}** islands active",
+                color=discord.Color.green() if sub_online == total else (
+                    discord.Color.orange() if sub_online > 0 else discord.Color.red()
+                ),
+                timestamp=discord.utils.utcnow()
+            )
+            on_lines  = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in sub_results if s == "✅"]
+            off_lines = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in sub_results if s != "✅"]
+            embed.add_field(name="🟢 ONLINE",  value="\n".join(on_lines)  or "*none*", inline=True)
+            embed.add_field(name="🔴 OFFLINE", value="\n".join(off_lines) or "*none*", inline=True)
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+            embed.set_image(url=Config.FOOTER_LINE)
+            await ctx.reply(embed=embed)
+            logger.info(f"[DISCORD] Sub island status check: {sub_online}/{total} online")
+
+        elif kind == "free":
+            total = len(Config.FREE_ISLANDS)
+            embed = discord.Embed(
+                title="🌴 Free Island Status",
+                description=f"**{free_online}/{total}** islands active",
+                color=discord.Color.green() if free_online == total else (
+                    discord.Color.orange() if free_online > 0 else discord.Color.red()
+                ),
+                timestamp=discord.utils.utcnow()
+            )
+            on_lines  = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in free_results if s == "✅"]
+            off_lines = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in free_results if s != "✅"]
+            embed.add_field(name="🟢 ONLINE",  value="\n".join(on_lines)  or "*none*", inline=True)
+            embed.add_field(name="🔴 OFFLINE", value="\n".join(off_lines) or "*none*", inline=True)
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+            embed.set_image(url=Config.FOOTER_LINE)
+            await ctx.reply(embed=embed)
+            logger.info(f"[DISCORD] Free island status check: {free_online}/{total} online")
+
+        else:
+            # Combined embed (no argument)
+            sub_total  = len(Config.SUB_ISLANDS)
+            free_total = len(Config.FREE_ISLANDS)
+            total      = sub_total + free_total
+            combined_online = sub_online + free_online
+            embed = discord.Embed(
+                title="🏝️ Island Status",
+                description=f"**{combined_online}/{total}** islands active",
+                color=discord.Color.green() if combined_online == total else (
+                    discord.Color.orange() if combined_online > 0 else discord.Color.red()
+                ),
+                timestamp=discord.utils.utcnow()
+            )
+            sub_on  = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in sub_results  if s == "✅"]
+            sub_off = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in sub_results  if s != "✅"]
+            free_on  = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in free_results if s == "✅"]
+            free_off = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in free_results if s != "✅"]
+            embed.add_field(
+                name=f"🏝️ Sub — {sub_online}/{sub_total}",
+                value=(
+                    ("🟢 " + "\n🟢 ".join(sub_on)  if sub_on  else "") +
+                    ("\n" if sub_on and sub_off else "") +
+                    ("🔴 " + "\n🔴 ".join(sub_off) if sub_off else "") or "*none*"
+                ),
+                inline=True,
+            )
+            embed.add_field(
+                name=f"🌴 Free — {free_online}/{free_total}",
+                value=(
+                    ("🟢 " + "\n🟢 ".join(free_on)  if free_on  else "") +
+                    ("\n" if free_on and free_off else "") +
+                    ("🔴 " + "\n🔴 ".join(free_off) if free_off else "") or "*none*"
+                ),
+                inline=True,
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+            embed.set_image(url=Config.FOOTER_LINE)
+            await ctx.reply(embed=embed)
+            logger.info(f"[DISCORD] Combined island status: sub {sub_online}/{sub_total}, free {free_online}/{free_total}")
+
+    # Backward-compatible aliases so !freeislands / !freeislandstatus still work
+    @commands.command(name="freeislands", aliases=["freeislandstatus", "checkfreeislands"], hidden=True)
+    async def free_island_status(self, ctx):
+        """Alias for !islands free"""
+        await self.island_status(ctx, kind="free")
 
     async def _check_sub_island_status(self, ctx) -> bool:
         """Check if the sub island bot is online. Replies with a down embed and returns False if not."""
