@@ -8,6 +8,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import re
 import random
@@ -1360,8 +1361,16 @@ class DiscordCommandCog(commands.Cog):
         await ctx.reply("✅ Update pulled! Restarting bot now... 🔁")
         logger.info("[DISCORD] OTA update pulled new code. Restarting process...")
         await asyncio.sleep(1)
+
+        # Schedule the restart in a separate thread so it survives the event-loop
+        # teardown that follows bot.close().  daemon=False ensures the thread is
+        # not killed before os.execv() replaces the process image.
+        def _restart():
+            time.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        threading.Thread(target=_restart, daemon=False, name="OTARestart").start()
         await self.bot.close()
-        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     @update.error
     async def update_error(self, ctx, error):
