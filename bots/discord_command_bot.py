@@ -1354,6 +1354,12 @@ class DiscordCommandCog(commands.Cog):
 
         await ctx.reply(f"```\n{git_output[:GIT_OUTPUT_MAX_LENGTH]}\n```")
 
+        if result.returncode != 0:
+            await ctx.reply(
+                f"❌ Git pull failed (exit code {result.returncode}). Not restarting."
+            )
+            return
+
         if "already up to date" in git_output.lower():
             await ctx.reply("✅ Already up to date. No restart needed.")
             return

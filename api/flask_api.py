@@ -20,6 +20,7 @@ from flask_cors import CORS
 from thefuzz import process, fuzz
 
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.serving import ThreadedWSGIServer
 
 from utils.config import Config
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text
@@ -638,6 +639,29 @@ def api_refresh():
 
 
 def run_flask_app(host='0.0.0.0', port=8100):
-    """Run Flask app"""
+    """Run Flask app with retry logic for port binding after OTA restart."""
     logger.info(f"[FLASK] Starting API server on {host}:{port}...")
-    app.run(host=host, port=port, debug=False, use_reloader=False)
+    max_retries = 5
+    retry_delay = 3  # seconds between attempts
+    for attempt in range(1, max_retries + 1):
+        try:
+            # ThreadedWSGIServer already sets SO_REUSEADDR before binding.
+            # Using it directly (instead of app.run) gives explicit control
+            # and allows retrying when the port is still in TIME_WAIT after
+            # an os.execv()-based OTA restart.
+            server = ThreadedWSGIServer(host, port, app)
+            logger.info(f"[FLASK] API server listening on {host}:{port}")
+            server.serve_forever()
+            return
+        except OSError as e:
+            if attempt < max_retries:
+                logger.warning(
+                    f"[FLASK] Port {port} not available (attempt {attempt}/{max_retries}): {e}. "
+                    f"Retrying in {retry_delay}s..."
+                )
+                time.sleep(retry_delay)
+            else:
+                logger.error(
+                    f"[FLASK] Failed to bind to port {port} after {max_retries} attempts: {e}"
+                )
+                raise
