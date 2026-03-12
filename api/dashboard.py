@@ -78,6 +78,11 @@ _DISCORD_CACHE_TTL = 3600  # seconds — refresh names after 1 hour
 # User-Agent (error 1010).  The DiscordBot format is the accepted convention.
 _DISCORD_USER_AGENT = "DiscordBot (https://github.com/bitress/chobot, 1.0)"
 
+# Discord permission bit for the built-in Administrator privilege.
+# Guild members with this bit set bypass role-ID checks and always get
+# full admin access to the dashboard.
+_ADMINISTRATOR_PERM = 0x8
+
 
 def _resolve_discord_username(user_id) -> str:
     """Return the display name for a Discord user ID.
@@ -467,6 +472,9 @@ def oauth2_redirect():
     if not Config.DISCORD_CLIENT_ID:
         flash("Discord OAuth is not configured on this server.", "error")
         return redirect(url_for("dashboard.login"))
+    if not Config.GUILD_ID:
+        flash("Discord OAuth is not fully configured on this server (GUILD_ID missing).", "error")
+        return redirect(url_for("dashboard.login"))
     state = secrets.token_hex(16)
     session["oauth_state"] = state
     # Derive the callback URL from the current request so operators don't need
@@ -546,8 +554,9 @@ def oauth2_callback():
         flash("No access token returned by Discord.", "error")
         return redirect(url_for("dashboard.login"))
 
-    # Fetch the user's guild-member record (includes roles)
+    # Fetch the user's guild-member record (includes roles and computed permissions)
     role = None
+    member_perms = 0
     try:
         mem_req = urllib.request.Request(
             f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
@@ -559,9 +568,17 @@ def oauth2_callback():
         with urllib.request.urlopen(mem_req, timeout=10) as resp:
             member_data = json.loads(resp.read().decode())
         member_roles = [str(r) for r in member_data.get("roles", [])]
-        if str(ADMIN_ROLE_ID) in member_roles:
+        try:
+            member_perms = int(member_data.get("permissions", "0") or "0")
+        except (ValueError, TypeError):
+            member_perms = 0
+        # Guild administrators (ADMINISTRATOR permission bit) always get admin access,
+        # regardless of whether ADMIN_ROLE_ID is configured.
+        if member_perms & _ADMINISTRATOR_PERM:
             role = "admin"
-        elif str(BABY_MOD_ROLE_ID) in member_roles:
+        elif ADMIN_ROLE_ID and str(ADMIN_ROLE_ID) in member_roles:
+            role = "admin"
+        elif BABY_MOD_ROLE_ID and str(BABY_MOD_ROLE_ID) in member_roles:
             role = "baby_mod"
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -576,6 +593,11 @@ def oauth2_callback():
         return redirect(url_for("dashboard.login"))
 
     if role is None:
+        logger.warning(
+            "OAuth role check: no qualifying role — "
+            "member_roles=%s, admin_id=%s, baby_mod_id=%s, permissions=%s",
+            member_roles, ADMIN_ROLE_ID, BABY_MOD_ROLE_ID, member_perms,
+        )
         flash("You do not have a moderator role on this server.", "error")
         return redirect(url_for("dashboard.login"))
 
