@@ -1086,13 +1086,13 @@ class FlightLoggerCog(commands.Cog):
                 sent_msg = await output_channel.send(embed=embed, view=view)
                 self._pending_alerts[ign_clean] = sent_msg.id
 
-    @commands.hybrid_command(name="recoverflights")
+    @commands.hybrid_command(name="recover_flights", aliases=["recoverflights"])
     @app_commands.describe(hours="How many hours to scan back (default: 48)", mode="Execution mode: 'dry' or 'run'")
     @commands.has_permissions(administrator=True)
     async def recover_flights(self, ctx, hours: int = 48, mode: str = "dry"):
         """
         Scrapes past logs chronologically (Oldest -> Newest).
-        Usage: !recoverflights [hours_back] [dry/run]
+        Usage: /recover_flights [hours_back] [dry/run] or !recover_flights [hours_back] [dry/run]
         """
         listen_channel = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
         if not listen_channel:
@@ -1137,11 +1137,11 @@ class FlightLoggerCog(commands.Cog):
                         logger.error(f"[RECOVER] Failed to process message {message.id}: {e}")
 
         if dry_run:
-            await status_msg.edit(content=f"**Scan Complete (Dry Run)**\nFound: {found_count} matches.\n\nCommand to execute:\n`!recoverflights {hours} run`")
+            await status_msg.edit(content=f"**Scan Complete (Dry Run)**\nFound: {found_count} matches.\n\nCommand to execute:\n`!recover_flights {hours} run`")
         else:
             await status_msg.edit(content=f"**Recovery Complete**\nProcessed: {processed_count} flights.")
 
-    @commands.hybrid_command(name="flightstatus", aliases=["fstatus"])
+    @commands.hybrid_command(name="flight_status", aliases=["flightstatus", "fstatus"])
     @commands.has_permissions(manage_messages=True)
     async def flight_status(self, ctx):
         """Diagnose connection, channels, and last activity."""

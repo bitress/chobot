@@ -610,7 +610,8 @@ class DiscordCommandCog(commands.Cog):
         embed.add_field(
             name=f"{Config.STAR_PINK} Utility Commands",
             value=(
-                "`!islandstatus` - Check if all 18 sub island bots are active\n"
+                "`!islands [sub|free]` - Check island bot status (sub, free, or both)\n"
+                "*Aliases: !islandstatus, !checkislands*\n"
                 "`!status` - Show bot status and cache info\n"
                 "`!ping` - Check bot response time\n"
                 "`!random` - Get a random item suggestion\n"
@@ -626,14 +627,20 @@ class DiscordCommandCog(commands.Cog):
                 "🛫 Monitors island visitor arrivals in real time\n"
                 "🔍 Alerts staff when unknown travelers are detected\n"
                 "🛡️ Staff can Admit, Warn, Kick, or Ban via buttons\n"
-                "📋 Tracks warnings and moderation history per user"
+                "📋 Tracks warnings and moderation history per user\n"
+                "`/flight_status` - Diagnose flight logger connection and activity\n"
+                "`/recover_flights [hours] [dry/run]` - Recover missing flight records\n"
+                "`/unwarn <user>` - Remove all warnings from a user"
             ),
             inline=False
         )
 
         embed.add_field(
             name=f"{Config.STAR_PINK} Admin Commands",
-            value="`!refresh` - Manually refresh cache (Admin only)",
+            value=(
+                "`!refresh` - Manually refresh cache (Admin only)\n"
+                "`!update` - Pull latest code from git and restart the bot (Admin only)"
+            ),
             inline=False
         )
 
