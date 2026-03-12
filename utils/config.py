@@ -85,15 +85,10 @@ class Config:
     DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID", "")
     DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
 
-    # Moderator role IDs for role-based dashboard access.
-    # Administrator / Senior Mod → full dashboard access
-    # Baby Mod → Analytics + XLog Reports only (read-only)
-    # These MUST be set in your .env file — there are no safe defaults because
-    # role IDs are unique per Discord server.  Leave unset (or set to empty) and
-    # any guild member with the Discord Administrator permission will still be
-    # granted admin access automatically.
-    ADMIN_ROLE_ID    = _get_int("ADMIN_ROLE_ID")
-    BABY_MOD_ROLE_ID = _get_int("BABY_MOD_ROLE_ID")
+    # Senior Mod role ID for dashboard access via Discord OAuth.
+    # Any member holding this role (or having the Discord Administrator permission)
+    # gets full access.  Must be set in your .env — role IDs are unique per server.
+    ADMIN_ROLE_ID = _get_int("ADMIN_ROLE_ID")
 
     # Cloudflare R2 (S3-compatible) — for island map uploads
     # Endpoint format: https://<account_id>.r2.cloudflarestorage.com

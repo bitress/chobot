@@ -53,9 +53,8 @@ ALLOWED_CATEGORIES = ("public", "member")
 ALLOWED_THEMES     = ("pink", "teal", "purple", "gold")
 ALLOWED_STATUSES   = ("ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE")
 
-# Moderator role IDs used during Discord OAuth login
-ADMIN_ROLE_ID    = Config.ADMIN_ROLE_ID
-BABY_MOD_ROLE_ID = Config.BABY_MOD_ROLE_ID
+# Senior Mod role ID used during Discord OAuth login
+ADMIN_ROLE_ID = Config.ADMIN_ROLE_ID
 
 # Day-of-week label order (SQLite strftime('%w'): 0=Sunday … 6=Saturday)
 _DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -257,7 +256,7 @@ def _check_session():
 
 
 def _get_session_role():
-    """Return the current session role ('admin' or 'baby_mod')."""
+    """Return the current session role (always 'admin' for authenticated sessions)."""
     return session.get("mod_role", "admin")
 
 
@@ -279,7 +278,8 @@ def login_required(f):
 
 
 def admin_required(f):
-    """Decorator for admin-only web routes — returns 403 for baby_mod role."""
+    """Decorator for admin-only web routes — redirects to login if not authenticated,
+    or returns 403 Forbidden if authenticated but lacking admin privileges."""
     @wraps(f)
     def _decorated(*args, **kwargs):
         if not _check_session():
@@ -578,8 +578,6 @@ def oauth2_callback():
             role = "admin"
         elif ADMIN_ROLE_ID and str(ADMIN_ROLE_ID) in member_roles:
             role = "admin"
-        elif BABY_MOD_ROLE_ID and str(BABY_MOD_ROLE_ID) in member_roles:
-            role = "baby_mod"
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             flash("You are not a member of this server.", "error")
@@ -595,8 +593,8 @@ def oauth2_callback():
     if role is None:
         logger.warning(
             "OAuth role check: no qualifying role — "
-            "member_roles=%s, admin_id=%s, baby_mod_id=%s, permissions=%s",
-            member_roles, ADMIN_ROLE_ID, BABY_MOD_ROLE_ID, member_perms,
+            "member_roles=%s, admin_id=%s, permissions=%s",
+            member_roles, ADMIN_ROLE_ID, member_perms,
         )
         flash("You do not have a moderator role on this server.", "error")
         return redirect(url_for("dashboard.login"))
@@ -629,7 +627,7 @@ def oauth2_callback():
 
 
 @dashboard.route("/")
-@login_required
+@admin_required
 def index():
     db = get_db()
     try:
@@ -864,7 +862,7 @@ def island_detail(name):
 _ALLOWED_SORT_COLS = {"ign", "destination", "timestamp"}
 
 @dashboard.route("/logs")
-@login_required
+@admin_required
 def logs():
     page              = request.args.get("page", 1, type=int)
     per_page          = 25
@@ -1007,7 +1005,7 @@ def logs():
 
 
 @dashboard.route("/status")
-@login_required
+@admin_required
 def island_status():
     """Dedicated Island Status Breakdown page."""
     db = get_db()
@@ -1055,7 +1053,7 @@ def island_status():
 
 
 @dashboard.route("/analytics")
-@login_required
+@admin_required
 def analytics():
     # ── Island-type filter (free / sub / all) ──────────────────────────────
     island_type_filter = request.args.get("island_type", "").lower()

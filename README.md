@@ -81,7 +81,7 @@ Chobot is a unified system to help manage Animal Crossing communities. It watche
     * Island management interface.
     * Analytics and reporting overview.
     * Activity logs and visitor tracking.
-    * Role-based access: Admin/Senior Mod gets full access; Baby Mod gets read-only analytics and logs.
+    * Role-based access: Admin/Senior Mod and Discord server administrators get full dashboard access.
 
 * **Patreon Integration**
     * Fetch and cache patron posts via the Patreon API.
@@ -167,7 +167,7 @@ The dashboard supports two login methods:
       DISCORD_CLIENT_ID=your_client_id
       DISCORD_CLIENT_SECRET=your_client_secret
       ```
-   5. Optionally set `ADMIN_ROLE_ID` and `BABY_MOD_ROLE_ID` to match your server's moderator role IDs (defaults are pre-configured in `utils/config.py`).
+   5. Set `ADMIN_ROLE_ID` to your server's Senior Mod role ID. Any member with the Discord Administrator permission is also granted access automatically.
 
 Once `DISCORD_CLIENT_ID` is set, the **Log in with Discord** button will appear on the login page automatically.
 
