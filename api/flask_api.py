@@ -221,6 +221,11 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
         status = "ONLINE"
         dodo_code = raw_dodo
 
+    # When the Discord bot is not confirmed online, hide live data to avoid stale values
+    if not discord_bot_online:
+        visitors = 0
+        dodo_code = None
+
     return {
         "id":                db_island.get("id", name.lower()),
         "name":              name,
