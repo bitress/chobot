@@ -115,6 +115,17 @@
         </span>
       </div>
       <div class="d-flex align-items-center gap-2">
+        {% if current_role == 'admin' %}
+        <button id="apiRefreshBtn"
+                class="sb-toggle-btn"
+                onclick="triggerApiRefresh()"
+                data-bs-toggle="tooltip"
+                data-bs-placement="bottom"
+                title="Refresh API cache from Google Sheets"
+                aria-label="Refresh API cache">
+          <i class="bi bi-arrow-clockwise" id="refreshBtnIcon"></i>
+        </button>
+        {% endif %}
         {% if discord_username %}
         <div class="d-flex align-items-center gap-2">
           {% if discord_avatar_url %}
@@ -219,6 +230,58 @@
       _overlay.classList.remove('active');
     }
   });
+</script>
+
+<script>
+  /* Initialize Bootstrap tooltips */
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
+      new bootstrap.Tooltip(el);
+    });
+  });
+
+  /* API cache refresh */
+  function triggerApiRefresh() {
+    var btn  = document.getElementById('apiRefreshBtn');
+    var icon = document.getElementById('refreshBtnIcon');
+    btn.disabled = true;
+    icon.classList.add('spin-anim');
+
+    fetch('/api/refresh', { method: 'POST' })
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(res) {
+        _showRefreshToast(res.ok ? 'success' : 'warning', res.data.status || 'Done');
+      })
+      .catch(function() {
+        _showRefreshToast('danger', 'Failed to reach /api/refresh — please try again');
+      })
+      .finally(function() {
+        setTimeout(function() {
+          btn.disabled = false;
+          icon.classList.remove('spin-anim');
+        }, 1500);
+      });
+  }
+
+  function _showRefreshToast(type, message) {
+    var container = document.getElementById('toastContainer');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toastContainer';
+      container.style.cssText = 'position:fixed;bottom:1.25rem;right:1.25rem;z-index:9999;display:flex;flex-direction:column;gap:.5rem;';
+      document.body.appendChild(container);
+    }
+    var toast = document.createElement('div');
+    var icon  = type === 'success' ? 'bi-check-circle-fill' : type === 'warning' ? 'bi-exclamation-triangle-fill' : 'bi-x-circle-fill';
+    toast.className = 'alert alert-' + type + ' d-flex align-items-center gap-2 shadow rounded-3 border-0 py-2 px-3 mb-0';
+    toast.style.cssText = 'font-weight:700;font-size:.85rem;min-width:220px;opacity:1;transition:opacity .4s;';
+    toast.innerHTML = '<i class="bi ' + icon + '"></i><span>' + message + '</span>';
+    container.appendChild(toast);
+    setTimeout(function() {
+      toast.style.opacity = '0';
+      setTimeout(function() { toast.remove(); }, 420);
+    }, 3000);
+  }
 </script>
 
 <script>
