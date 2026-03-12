@@ -73,6 +73,11 @@ _discord_user_cache: dict[str, tuple[str, float]] = {}
 _discord_user_cache_lock = threading.Lock()
 _DISCORD_CACHE_TTL = 3600  # seconds — refresh names after 1 hour
 
+# User-Agent sent with every Discord API request.
+# Discord (via Cloudflare) blocks requests that use the default Python-urllib
+# User-Agent (error 1010).  The DiscordBot format is the accepted convention.
+_DISCORD_USER_AGENT = "DiscordBot (https://github.com/bitress/chobot, 1.0)"
+
 
 def _resolve_discord_username(user_id) -> str:
     """Return the display name for a Discord user ID.
@@ -94,7 +99,10 @@ def _resolve_discord_username(user_id) -> str:
     try:
         req = urllib.request.Request(
             f"https://discord.com/api/v10/users/{uid}",
-            headers={"Authorization": f"Bot {token}"},
+            headers={
+                "Authorization": f"Bot {token}",
+                "User-Agent":    _DISCORD_USER_AGENT,
+            },
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
@@ -508,7 +516,10 @@ def oauth2_callback():
         req = urllib.request.Request(
             "https://discord.com/api/oauth2/token",
             data=token_body,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent":   _DISCORD_USER_AGENT,
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -540,7 +551,10 @@ def oauth2_callback():
     try:
         mem_req = urllib.request.Request(
             f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "User-Agent":    _DISCORD_USER_AGENT,
+            },
         )
         with urllib.request.urlopen(mem_req, timeout=10) as resp:
             member_data = json.loads(resp.read().decode())
@@ -571,7 +585,10 @@ def oauth2_callback():
     try:
         user_req = urllib.request.Request(
             "https://discord.com/api/users/@me",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "User-Agent":    _DISCORD_USER_AGENT,
+            },
         )
         with urllib.request.urlopen(user_req, timeout=10) as resp:
             user_data = json.loads(resp.read().decode())
