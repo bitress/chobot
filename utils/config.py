@@ -112,22 +112,12 @@ class Config:
     DIR_FREE = TWITCH_VILLAGERS_DIR
     DIR_VIP = VILLAGERS_DIR
 
-    # Island Lists (fallback defaults; dynamically updated at runtime from Discord sub-category)
-    SUB_ISLANDS = [
-        "Adhika", "Alapaap", "Aruga", "Bahaghari", "Bituin", "Bonita", "Dakila",
-        "Dalisay", "Diwa", "Gabay", "Galak", "Giliw", "Hiraya", "Kalangitan",
-        "Lakan", "Likha", "Malaya", "Marahuyo", "Pangarap", "Tagumpay"
-    ]
+    # Island Lists (dynamically populated at runtime from Discord categories)
+    SUB_ISLANDS: list = []
 
-    TWITCH_SUB_ISLANDS = SUB_ISLANDS  
+    TWITCH_SUB_ISLANDS: list = []
 
-    FREE_ISLANDS = [
-        "Kakanggata", "Kalawakan", "Kundiman", "Kilig", "Bathala", "Dalangin",
-        "Gunita", "Kaulayaw", "Tala", "Sinagtala", "Tadhana", "Maharlika",
-        "Pagsamo", "Harana", "Pagsuyo", "Matahom", "Paraluman", "Babaylan",
-        "Amihan", "Silakbo", "Dangal", "Kariktan", "Tinig", "Banaag",
-        "Sinag", "Giting", "Marilag"
-    ]
+    FREE_ISLANDS: list = []
 
     ISLAND_BOT_ROLE_ID = _get_int('ISLAND_BOT_ROLE_ID')
 
