@@ -172,6 +172,26 @@
                     </p>
                     {% endif %}
 
+                    <!-- CDN link (visible when a map URL exists) -->
+                    <div id="cdnLinkSection" class="mb-3{% if not island.map_url %} d-none{% endif %}">
+                        <label class="db-label mb-1" style="font-size:.78rem;color:#aaa;">
+                            <i class="bi bi-link-45deg me-1"></i>CDN Link
+                        </label>
+                        <div class="input-group input-group-sm">
+                            <input type="text" id="cdnLinkInput"
+                                   value="{{ island.map_url or '' }}" readonly
+                                   class="form-control font-monospace"
+                                   style="background:var(--nook-cream);border:2px solid #e1e6d3;border-right:none;
+                                          border-radius:10px 0 0 10px;font-size:.78rem;color:#555;">
+                            <button type="button" onclick="copyCdnLink()" id="cdnCopyBtn"
+                                    class="btn btn-nook-primary fw-bold px-3"
+                                    style="border-radius:0 10px 10px 0;font-size:.82rem;"
+                                    title="Copy CDN link">
+                                <i class="bi bi-clipboard" id="cdnCopyIcon"></i>
+                            </button>
+                        </div>
+                    </div>
+
                     {% if r2_configured %}
                     <form id="mapForm" class="d-flex align-items-center gap-3">
                         <label class="flex-grow-1 cursor-pointer">
@@ -330,12 +350,12 @@
                 const current = document.getElementById('mapCurrent');
                 const preview = document.getElementById('mapPreview');
                 if (current) {
-                    current.src = preview.src;
+                    current.src = data.map_url || preview.src;
                 } else {
                     const img = document.createElement('img');
                     img.id = 'mapCurrent';
                     img.alt = 'Island map';
-                    img.src = preview.src;
+                    img.src = data.map_url || preview.src;
                     img.className = 'map-img rounded-3 w-100';
                     img.style.maxHeight = '260px';
                     document.getElementById('mapForm').before(img);
@@ -345,12 +365,33 @@
                 preview.classList.add('d-none');
                 preview.src = '';
                 document.getElementById('mapFile').value = '';
+                // Show / update CDN link
+                if (data.map_url) {
+                    document.getElementById('cdnLinkInput').value = data.map_url;
+                    document.getElementById('cdnLinkSection').classList.remove('d-none');
+                }
             } else {
                 status.textContent = 'Error: ' + (data.error || resp.statusText);
             }
         } catch (err) {
             status.textContent = 'Upload failed: ' + err.message;
         }
+    }
+
+    /* ---- Copy CDN link ---- */
+    function copyCdnLink() {
+        const input = document.getElementById('cdnLinkInput');
+        const icon  = document.getElementById('cdnCopyIcon');
+        if (!input.value) return;
+        navigator.clipboard.writeText(input.value).then(() => {
+            icon.className = 'bi bi-clipboard-check';
+            setTimeout(() => { icon.className = 'bi bi-clipboard'; }, 2000);
+        }).catch(() => {
+            input.select();
+            document.execCommand('copy');
+            icon.className = 'bi bi-clipboard-check';
+            setTimeout(() => { icon.className = 'bi bi-clipboard'; }, 2000);
+        });
     }
 
     /* ---- 7-day sparkline chart ---- */
