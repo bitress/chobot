@@ -116,17 +116,33 @@
       </div>
       <div class="d-flex align-items-center gap-2">
         {% if discord_username %}
-        <span class="x-small fw-bold" style="color:#aaa;">{{ discord_username }}</span>
-        {% endif %}
-        {% if current_role == 'admin' %}
+        <div class="d-flex align-items-center gap-2">
+          {% if discord_avatar_url %}
+          <img src="{{ discord_avatar_url }}"
+               alt="{{ discord_username }}"
+               style="width:32px;height:32px;border-radius:50%;object-fit:cover;
+                      border:2px solid var(--nook-accent);flex-shrink:0;">
+          {% else %}
+          <div style="width:32px;height:32px;border-radius:50%;background:var(--nook-accent);
+                      color:#1a4d1d;font-weight:800;font-size:.9rem;flex-shrink:0;
+                      display:flex;align-items:center;justify-content:center;
+                      border:2px solid var(--nook-dark);">
+            {{ discord_username[0]|upper }}
+          </div>
+          {% endif %}
+          <div class="d-flex flex-column" style="line-height:1.25;">
+            <span style="font-weight:800;font-size:.85rem;color:#3d3d3d;">{{ discord_username }}</span>
+            {% if current_role == 'admin' %}
+            <span style="font-size:.65rem;color:var(--nook-dark);font-weight:700;">
+              <i class="bi bi-shield-lock-fill me-1"></i>Admin
+            </span>
+            {% endif %}
+          </div>
+        </div>
+        {% elif current_role == 'admin' %}
         <span class="badge rounded-pill"
               style="background:var(--nook-accent);color:#1a4d1d;font-weight:800;font-size:.7rem;">
           <i class="bi bi-shield-lock-fill me-1"></i>Admin
-        </span>
-        {% else %}
-        <span class="badge rounded-pill"
-              style="background:#fff3cd;color:#856404;font-weight:800;font-size:.7rem;">
-          <i class="bi bi-shield-fill me-1"></i>Baby Mod
         </span>
         {% endif %}
       </div>
@@ -202,6 +218,27 @@
       _sidebar.classList.remove('sb-open');
       _overlay.classList.remove('active');
     }
+  });
+</script>
+
+<script>
+  /* Convert all [data-utc] timestamps to the visitor's local timezone */
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('[data-utc]').forEach(function (el) {
+      var raw = el.getAttribute('data-utc');
+      if (!raw || raw === '\u2014') return;          // em-dash fallback from _ts_to_str
+      /* "2024-01-15 12:34 UTC" → "2024-01-15T12:34Z" (ISO 8601) */
+      var iso = raw.trim().replace(' UTC', 'Z').replace(' ', 'T');
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return;
+      el.textContent = d.toLocaleString(undefined, {
+        year:   'numeric',
+        month:  'short',
+        day:    'numeric',
+        hour:   '2-digit',
+        minute: '2-digit'
+      });
+    });
   });
 </script>
 

@@ -32,7 +32,7 @@
                 <span style="color:#ccc;">No folder</span>
               {% endif %}
               {% if island.updated_at %}
-                &nbsp;·&nbsp; Saved {{ island.updated_at[:19] | replace("T"," ") }} UTC
+                &nbsp;·&nbsp; Saved <time data-utc="{{ island.updated_at[:19] | replace('T',' ') }} UTC">{{ island.updated_at[:19] | replace("T"," ") }} UTC</time>
               {% endif %}
             </span>
                     </div>

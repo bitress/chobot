@@ -131,7 +131,9 @@
                 <span class="badge badge-unkn rounded-pill">? Unknown</span>
               {% endif %}
             </td>
-            <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
+            <td class="x-small" style="color:#aaa;">
+              <time data-utc="{{ entry.timestamp }}">{{ entry.timestamp }}</time>
+            </td>
           </tr>
           {% endfor %}
         </tbody>

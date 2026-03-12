@@ -77,10 +77,11 @@ Chobot is a unified system to help manage Animal Crossing communities. It watche
     * `POST /api/refresh` — Trigger a manual cache refresh.
 
 * **Web Dashboard** *(mod-only)*
-    * Secure login with mod-only access.
+    * Secure login with mod-only access (secret key **or** Discord OAuth).
     * Island management interface.
     * Analytics and reporting overview.
     * Activity logs and visitor tracking.
+    * Role-based access: Admin/Senior Mod and Discord server administrators get full dashboard access.
 
 * **Patreon Integration**
     * Fetch and cache patron posts via the Patreon API.
@@ -149,6 +150,26 @@ IS_PRODUCTION=false
 # Leave blank to use the built-in keyword fallback.
 GEMINI_API_KEY=
 ```
+
+### Setting up Discord OAuth login for the Dashboard
+
+The dashboard supports two login methods:
+
+1. **Secret key** — set `DASHBOARD_SECRET` in your `.env` file and enter it on the login page.
+2. **Log in with Discord** *(recommended)* — lets mods authenticate with their Discord account. To enable it:
+   1. Go to [Discord Developer Portal](https://discord.com/developers/applications) and create (or select) an application.
+   2. Under **OAuth2 → Redirects**, add your callback URL:
+      - Production: `https://your-domain/dashboard/oauth2/callback`
+      - Local dev: `http://localhost:5000/dashboard/oauth2/callback`
+   3. Copy the **Client ID** and **Client Secret** from the OAuth2 page.
+   4. Add them to your `.env` file:
+      ```env
+      DISCORD_CLIENT_ID=your_client_id
+      DISCORD_CLIENT_SECRET=your_client_secret
+      ```
+   5. Set `ADMIN_ROLE_ID` to your server's Senior Mod role ID. Any member with the Discord Administrator permission is also granted access automatically.
+
+Once `DISCORD_CLIENT_ID` is set, the **Log in with Discord** button will appear on the login page automatically.
 
 ### Executing program
 

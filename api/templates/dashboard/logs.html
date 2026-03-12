@@ -158,7 +158,9 @@
             <td class="x-small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                 title="{{ entry.reason }}">{{ entry.reason or "—" }}</td>
             <td style="color:#888;">{{ entry.mod_name }}</td>
-            <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
+            <td class="x-small" style="color:#aaa;">
+              <time data-utc="{{ entry.timestamp }}">{{ entry.timestamp }}</time>
+            </td>
           {% else %}
             <td class="x-small" style="color:#bbb;">{{ entry.id }}</td>
             <td class="fw-bold" style="color:#444;">{{ entry.ign }}</td>
@@ -171,7 +173,9 @@
                 <span class="badge badge-unkn rounded-pill">? Unknown</span>
               {% endif %}
             </td>
-            <td class="x-small" style="color:#aaa;">{{ entry.timestamp }}</td>
+            <td class="x-small" style="color:#aaa;">
+              <time data-utc="{{ entry.timestamp }}">{{ entry.timestamp }}</time>
+            </td>
           {% endif %}
         </tr>
         {% endfor %}

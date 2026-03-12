@@ -53,9 +53,8 @@ ALLOWED_CATEGORIES = ("public", "member")
 ALLOWED_THEMES     = ("pink", "teal", "purple", "gold")
 ALLOWED_STATUSES   = ("ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE")
 
-# Moderator role IDs used during Discord OAuth login
-ADMIN_ROLE_ID    = Config.ADMIN_ROLE_ID
-BABY_MOD_ROLE_ID = Config.BABY_MOD_ROLE_ID
+# Senior Mod role ID used during Discord OAuth login
+ADMIN_ROLE_ID = Config.ADMIN_ROLE_ID
 
 # Day-of-week label order (SQLite strftime('%w'): 0=Sunday … 6=Saturday)
 _DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -72,6 +71,16 @@ ALLOWED_MAP_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 _discord_user_cache: dict[str, tuple[str, float]] = {}
 _discord_user_cache_lock = threading.Lock()
 _DISCORD_CACHE_TTL = 3600  # seconds — refresh names after 1 hour
+
+# User-Agent sent with every Discord API request.
+# Discord (via Cloudflare) blocks requests that use the default Python-urllib
+# User-Agent (error 1010).  The DiscordBot format is the accepted convention.
+_DISCORD_USER_AGENT = "DiscordBot (https://github.com/bitress/chobot, 1.0)"
+
+# Discord permission bit for the built-in Administrator privilege.
+# Guild members with this bit set bypass role-ID checks and always get
+# full admin access to the dashboard.
+_ADMINISTRATOR_PERM = 0x8
 
 
 def _resolve_discord_username(user_id) -> str:
@@ -94,7 +103,10 @@ def _resolve_discord_username(user_id) -> str:
     try:
         req = urllib.request.Request(
             f"https://discord.com/api/v10/users/{uid}",
-            headers={"Authorization": f"Bot {token}"},
+            headers={
+                "Authorization": f"Bot {token}",
+                "User-Agent":    _DISCORD_USER_AGENT,
+            },
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
@@ -244,7 +256,7 @@ def _check_session():
 
 
 def _get_session_role():
-    """Return the current session role ('admin' or 'baby_mod')."""
+    """Return the current session role (always 'admin' for authenticated sessions)."""
     return session.get("mod_role", "admin")
 
 
@@ -266,7 +278,8 @@ def login_required(f):
 
 
 def admin_required(f):
-    """Decorator for admin-only web routes — returns 403 for baby_mod role."""
+    """Decorator for admin-only web routes — redirects to login if not authenticated,
+    or returns 403 Forbidden if authenticated but lacking admin privileges."""
     @wraps(f)
     def _decorated(*args, **kwargs):
         if not _check_session():
@@ -293,10 +306,11 @@ def api_auth_required(f):
 @dashboard.context_processor
 def _inject_user():
     return {
-        "current_role":      session.get("mod_role", "admin"),
-        "discord_username":  session.get("discord_username", ""),
-        "discord_user_id":   session.get("discord_user_id", ""),
-        "oauth_configured":  bool(Config.DISCORD_CLIENT_ID),
+        "current_role":       session.get("mod_role", "admin"),
+        "discord_username":   session.get("discord_username", ""),
+        "discord_user_id":    session.get("discord_user_id", ""),
+        "discord_avatar_url": session.get("discord_avatar_url", ""),
+        "oauth_configured":   bool(Config.DISCORD_CLIENT_ID),
     }
 
 
@@ -441,11 +455,12 @@ def login():
 
 @dashboard.route("/logout")
 def logout():
-    session.pop("mod_logged_in",    None)
-    session.pop("mod_role",         None)
-    session.pop("discord_user_id",  None)
-    session.pop("discord_username", None)
-    session.pop("oauth_state",      None)
+    session.pop("mod_logged_in",       None)
+    session.pop("mod_role",            None)
+    session.pop("discord_user_id",     None)
+    session.pop("discord_username",    None)
+    session.pop("discord_avatar_url",  None)
+    session.pop("oauth_state",         None)
     return redirect(url_for("dashboard.login"))
 
 
@@ -458,6 +473,9 @@ def oauth2_redirect():
     """Redirect the user to Discord's authorization page."""
     if not Config.DISCORD_CLIENT_ID:
         flash("Discord OAuth is not configured on this server.", "error")
+        return redirect(url_for("dashboard.login"))
+    if not Config.GUILD_ID:
+        flash("Discord OAuth is not fully configured on this server (GUILD_ID missing).", "error")
         return redirect(url_for("dashboard.login"))
     state = secrets.token_hex(16)
     session["oauth_state"] = state
@@ -508,7 +526,10 @@ def oauth2_callback():
         req = urllib.request.Request(
             "https://discord.com/api/oauth2/token",
             data=token_body,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent":   _DISCORD_USER_AGENT,
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -535,20 +556,30 @@ def oauth2_callback():
         flash("No access token returned by Discord.", "error")
         return redirect(url_for("dashboard.login"))
 
-    # Fetch the user's guild-member record (includes roles)
+    # Fetch the user's guild-member record (includes roles and computed permissions)
     role = None
+    member_perms = 0
     try:
         mem_req = urllib.request.Request(
             f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "User-Agent":    _DISCORD_USER_AGENT,
+            },
         )
         with urllib.request.urlopen(mem_req, timeout=10) as resp:
             member_data = json.loads(resp.read().decode())
         member_roles = [str(r) for r in member_data.get("roles", [])]
-        if str(ADMIN_ROLE_ID) in member_roles:
+        try:
+            member_perms = int(member_data.get("permissions", "0") or 0)
+        except (ValueError, TypeError):
+            member_perms = 0
+        # Guild administrators (ADMINISTRATOR permission bit) always get admin access,
+        # regardless of whether ADMIN_ROLE_ID is configured.
+        if member_perms & _ADMINISTRATOR_PERM:
             role = "admin"
-        elif str(BABY_MOD_ROLE_ID) in member_roles:
-            role = "baby_mod"
+        elif ADMIN_ROLE_ID and str(ADMIN_ROLE_ID) in member_roles:
+            role = "admin"
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             flash("You are not a member of this server.", "error")
@@ -562,35 +593,53 @@ def oauth2_callback():
         return redirect(url_for("dashboard.login"))
 
     if role is None:
+        logger.warning(
+            "OAuth role check: no qualifying role — "
+            "member_roles=%s, admin_id=%s, permissions=%s",
+            member_roles, ADMIN_ROLE_ID, member_perms,
+        )
         flash("You do not have a moderator role on this server.", "error")
         return redirect(url_for("dashboard.login"))
 
     # Fetch basic user info for display
-    discord_username = ""
-    discord_user_id  = ""
+    discord_username   = ""
+    discord_user_id    = ""
+    discord_avatar_url = ""
     try:
         user_req = urllib.request.Request(
             "https://discord.com/api/users/@me",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "User-Agent":    _DISCORD_USER_AGENT,
+            },
         )
         with urllib.request.urlopen(user_req, timeout=10) as resp:
             user_data = json.loads(resp.read().decode())
         discord_user_id  = str(user_data.get("id", ""))
         discord_username = user_data.get("global_name") or user_data.get("username", "")
+        avatar_hash      = user_data.get("avatar") or ""
+        # Discord avatar hashes are lowercase hex strings (32 chars) or
+        # animated variants prefixed with 'a_'.  Validate before using.
+        if (discord_user_id and avatar_hash
+                and re.fullmatch(r"(?:a_)?[0-9a-f]{32}", avatar_hash)):
+            discord_avatar_url = (
+                f"https://cdn.discordapp.com/avatars/{discord_user_id}/{avatar_hash}.png?size=64"
+            )
     except (urllib.error.URLError, json.JSONDecodeError, OSError):
-        pass  # Non-critical — display name is optional
+        pass  # Non-critical — display info is optional
 
-    session["mod_logged_in"]   = True
-    session["mod_role"]        = role
-    session["discord_user_id"] = discord_user_id
-    session["discord_username"]= discord_username
+    session["mod_logged_in"]      = True
+    session["mod_role"]           = role
+    session["discord_user_id"]    = discord_user_id
+    session["discord_username"]   = discord_username
+    session["discord_avatar_url"] = discord_avatar_url
     session.permanent          = True
     logger.info("OAuth login: user=%s role=%s", discord_username, role)
     return redirect(url_for("dashboard.index"))
 
 
 @dashboard.route("/")
-@login_required
+@admin_required
 def index():
     db = get_db()
     try:
@@ -825,7 +874,7 @@ def island_detail(name):
 _ALLOWED_SORT_COLS = {"ign", "destination", "timestamp"}
 
 @dashboard.route("/logs")
-@login_required
+@admin_required
 def logs():
     page              = request.args.get("page", 1, type=int)
     per_page          = 25
@@ -968,7 +1017,7 @@ def logs():
 
 
 @dashboard.route("/status")
-@login_required
+@admin_required
 def island_status():
     """Dedicated Island Status Breakdown page."""
     db = get_db()
@@ -1016,7 +1065,7 @@ def island_status():
 
 
 @dashboard.route("/analytics")
-@login_required
+@admin_required
 def analytics():
     # ── Island-type filter (free / sub / all) ──────────────────────────────
     island_type_filter = request.args.get("island_type", "").lower()
