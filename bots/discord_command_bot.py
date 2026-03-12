@@ -627,7 +627,10 @@ class DiscordCommandCog(commands.Cog):
                 "🛫 Monitors island visitor arrivals in real time\n"
                 "🔍 Alerts staff when unknown travelers are detected\n"
                 "🛡️ Staff can Admit, Warn, Kick, or Ban via buttons\n"
-                "📋 Tracks warnings and moderation history per user"
+                "📋 Tracks warnings and moderation history per user\n"
+                "`/flight_status` - Diagnose flight logger connection and activity\n"
+                "`/recover_flights [hours] [dry/run]` - Recover missing flight records\n"
+                "`/unwarn <user>` - Remove all warnings from a user"
             ),
             inline=False
         )
