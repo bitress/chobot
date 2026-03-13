@@ -1537,6 +1537,9 @@ def api_island_create():
     if theme  not in ALLOWED_THEMES:     return jsonify({"error": f"theme must be one of {ALLOWED_THEMES}"}),    400
     if status not in ALLOWED_STATUSES:   return jsonify({"error": f"status must be one of {ALLOWED_STATUSES}"}), 400
 
+    if (dodo_code or "").strip().upper() == REFRESHING_DODO_CODE:
+        status = STATUS_REFRESHING
+
     db = get_db()
     try:
         db.execute(
@@ -1604,6 +1607,10 @@ def api_island_update(name):
         except ValueError:
             items_in = [i.strip() for i in items_in.split(",") if i.strip()]
 
+    dodo_code = data.get("dodoCode") or data.get("dodo_code") or existing.get("dodo_code")
+    if (dodo_code or "").strip().upper() == REFRESHING_DODO_CODE:
+        status = STATUS_REFRESHING
+
     db2 = get_db()
     try:
         db2.execute(
@@ -1627,7 +1634,7 @@ def api_island_update(name):
                 data.get("seasonal",    existing.get("seasonal",    "")),
                 status,
                 int(data.get("visitors", existing.get("visitors", 0))),
-                data.get("dodoCode") or data.get("dodo_code") or existing.get("dodo_code"),
+                dodo_code,
                 existing.get("map_url"),
                 datetime.now(timezone.utc).isoformat(),
             ),
