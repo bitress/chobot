@@ -108,7 +108,7 @@
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
-      <div class="stat-label"><i class="bi bi-clock-history me-1"></i>Peak Hour (UTC)</div>
+      <div class="stat-label"><i class="bi bi-clock-history me-1"></i>Peak Hour (UTC+8)</div>
       {% if peak_hour is not none %}
       <div class="stat-value" style="color:#f5a623;">{{ '%02d'|format(peak_hour) }}:00</div>
       <div class="x-small fw-bold mt-1" style="color:#aaa;">busiest hour all-time</div>
@@ -355,11 +355,11 @@
 <!-- Visits by Hour of Day chart -->
 <div class="section-card mb-4">
   <div class="section-card-header">
-    <span><i class="bi bi-clock-fill me-2" style="color:#f5a623;"></i>Visits by Hour of Day (UTC)</span>
+    <span><i class="bi bi-clock-fill me-2" style="color:#f5a623;"></i>Visits by Hour of Day (UTC+8)</span>
     {% if peak_hour is not none %}
     <span class="fw-bold x-small"
           style="color:#f5a623;background:#fff8ec;border-radius:8px;padding:3px 10px;">
-      <i class="bi bi-star-fill me-1"></i>Peak: {{ '%02d'|format(peak_hour) }}:00–{{ '%02d'|format((peak_hour + 1) % 24) }}:00 UTC
+      <i class="bi bi-star-fill me-1"></i>Peak: {{ '%02d'|format(peak_hour) }}:00–{{ '%02d'|format((peak_hour + 1) % 24) }}:00 UTC+8
     </span>
     {% endif %}
   </div>

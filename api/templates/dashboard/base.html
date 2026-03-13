@@ -289,16 +289,21 @@
 </script>
 
 <script>
-  /* Convert all [data-utc] timestamps to the visitor's local timezone */
+  /* Convert all [data-utc] timestamps to UTC+8 */
   document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('[data-utc]').forEach(function (el) {
       var raw = el.getAttribute('data-utc');
       if (!raw || raw === '\u2014') return;          // em-dash fallback from _ts_to_str
-      /* "2024-01-15 12:34 UTC" → "2024-01-15T12:34Z" (ISO 8601) */
-      var iso = raw.trim().replace(' UTC', 'Z').replace(' ', 'T');
+      /* "2024-01-15 12:34 UTC+8" → "2024-01-15T12:34+08:00" (ISO 8601) */
+      /* also handles legacy "2024-01-15 12:34 UTC" → "2024-01-15T12:34Z" */
+      var iso = raw.trim()
+                   .replace(' UTC+8', '+08:00')
+                   .replace(' UTC', 'Z')
+                   .replace(' ', 'T');
       var d = new Date(iso);
       if (isNaN(d.getTime())) return;
       el.textContent = d.toLocaleString(undefined, {
+        timeZone: 'Asia/Singapore',
         year:   'numeric',
         month:  'short',
         day:    'numeric',
