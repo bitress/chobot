@@ -7,8 +7,6 @@ import asyncio
 import os
 import sqlite3
 import subprocess
-import sys
-import threading
 import time
 import re
 import random
@@ -1415,16 +1413,11 @@ class DiscordCommandCog(commands.Cog):
 
         await ctx.reply("✅ Update pulled! Restarting bot now... 🔁")
         logger.info("[DISCORD] OTA update pulled new code. Restarting process...")
-        await asyncio.sleep(1)
 
-        # Schedule the restart in a separate thread so it survives the event-loop
-        # teardown that follows bot.close().  daemon=False ensures the thread is
-        # not killed before os.execv() replaces the process image.
-        def _restart():
-            time.sleep(1)
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-
-        threading.Thread(target=_restart, daemon=False, name="OTARestart").start()
+        # Signal main() to call os.execv() from the main thread once the event
+        # loop has fully shut down.  This prevents a race where the background
+        # thread and the process manager both restart the bot simultaneously.
+        self.bot.restart_requested = True
         await self.bot.close()
 
     @update.error
@@ -1447,6 +1440,7 @@ class DiscordCommandBot(commands.Bot):
         self.data_manager = data_manager
         self._load_command_cog = load_command_cog
         self.start_time = datetime.now()
+        self.restart_requested = False
 
         self.status_list = cycle([
             discord.Activity(type=discord.ActivityType.watching, name="flights arrive ✈️ | !find"),
