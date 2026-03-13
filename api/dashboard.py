@@ -672,7 +672,7 @@ def index():
         total_warnings = db.execute("SELECT COUNT(*) FROM warnings").fetchone()[0]
         visits_today   = db.execute(
             "SELECT COUNT(*) FROM island_visits "
-            "WHERE timestamp > strftime('%s','now','start of day')"
+            "WHERE timestamp > strftime('%s','now','+8 hours','start of day','-8 hours')"
         ).fetchone()[0]
         visits_week    = db.execute(
             "SELECT COUNT(*) FROM island_visits "
@@ -1220,7 +1220,7 @@ def analytics():
         # Quick summary stats
         visits_today = db.execute(
             "SELECT COUNT(*) FROM island_visits "
-            f"WHERE timestamp > strftime('%s','now','start of day'){it_clause}",
+            f"WHERE timestamp > strftime('%s','now','+8 hours','start of day','-8 hours'){it_clause}",
             it_params,
         ).fetchone()[0]
         visits_week = db.execute(
@@ -1301,14 +1301,14 @@ def analytics():
             warnings_today = db.execute(
                 "SELECT COUNT(*) FROM warnings w "
                 "JOIN island_visits iv ON w.visit_id = iv.id "
-                "WHERE w.timestamp > strftime('%s','now','start of day') "
+                "WHERE w.timestamp > strftime('%s','now','+8 hours','start of day','-8 hours') "
                 "AND iv.island_type = ?",
                 it_params,
             ).fetchone()[0]
         else:
             warnings_today = db.execute(
                 "SELECT COUNT(*) FROM warnings "
-                "WHERE timestamp > strftime('%s','now','start of day')"
+                "WHERE timestamp > strftime('%s','now','+8 hours','start of day','-8 hours')"
             ).fetchone()[0]
         # Peak hour (hour with the most visits all-time, in UTC+8)
         peak_hour_row = db.execute(
