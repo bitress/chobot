@@ -67,6 +67,31 @@ class Config:
     # Gemini AI (free tier — optional)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+    # -----------------------------------------------------------------------
+    # Database — two ways to configure (DATABASE_URL takes precedence):
+    #
+    # Option 1 – full connection URL (SQLAlchemy format):
+    #   DATABASE_URL=postgresql+psycopg2://user:pass@localhost:5432/chobot
+    #   DATABASE_URL=mysql+pymysql://user:pass@localhost:3306/chobot
+    #   DATABASE_URL=sqlite:///chobot.db
+    #
+    # Option 2 – individual parameters (ignored when DATABASE_URL is set):
+    #   DB_TYPE     = postgresql | mysql | sqlite  (default: sqlite)
+    #   DB_HOST     = database server hostname     (default: localhost)
+    #   DB_PORT     = database server port         (default: 5432 for PostgreSQL, 3306 for MySQL)
+    #   DB_NAME     = database / schema name       (default: chobot)
+    #   DB_USER     = login username
+    #   DB_PASSWORD = login password
+    # -----------------------------------------------------------------------
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+    DB_TYPE     = os.getenv("DB_TYPE", "sqlite").strip().lower()
+    DB_HOST     = os.getenv("DB_HOST", "localhost").strip()
+    DB_PORT     = os.getenv("DB_PORT", "").strip()
+    DB_NAME     = os.getenv("DB_NAME", "chobot").strip()
+    DB_USER     = os.getenv("DB_USER", "").strip()
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "").strip()
+
     # Web Dashboard (mod-only)
     DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
 

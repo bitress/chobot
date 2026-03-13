@@ -8,14 +8,16 @@ import logging
 import unicodedata
 import datetime
 import asyncio
-import aiosqlite
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, UserSelect, Select, button
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from utils.config import Config
 from utils.helpers import clean_text
+from utils.db import get_async_engine
 
 logger = logging.getLogger("FlightLogger")
 
@@ -29,55 +31,16 @@ COLOR_BAN = 0x992D22           # Red (for bans)
 COLOR_DISMISS = 0x95A5A6       # Grey (for dismissed/false positives)
 COLOR_ALERT = 0xED4245         # Discord red (for unknown traveler alerts)
 
-# --- DATABASE SETUP ---
-DB_NAME = "chobot.db"
 WARN_EXPIRY_DAYS = 3
 MAX_HISTORY_ENTRIES = 10  # Max entries shown per section in !flighthistory
 
 # --- DATABASE HELPERS ---
 async def init_db():
-    """Initializes the database schema."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS island_visits (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ign TEXT NOT NULL,
-                origin_island TEXT NOT NULL,
-                destination TEXT NOT NULL,
-                user_id INTEGER,
-                guild_id INTEGER,
-                authorized INTEGER NOT NULL DEFAULT 0,
-                timestamp INTEGER NOT NULL,
-                island_type TEXT NOT NULL DEFAULT 'sub'
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS warnings (
-                user_id INTEGER,
-                guild_id INTEGER,
-                reason TEXT,
-                mod_id INTEGER,
-                timestamp INTEGER,
-                visit_id INTEGER REFERENCES island_visits(id),
-                action_type TEXT NOT NULL DEFAULT 'WARN'
-            )
-        """)
-        # Migrate existing databases: add visit_id column if it doesn't exist
-        try:
-            await db.execute("ALTER TABLE warnings ADD COLUMN visit_id INTEGER REFERENCES island_visits(id)")
-        except aiosqlite.OperationalError:
-            pass  # Column already exists
-        # Migrate existing databases: add action_type column if it doesn't exist
-        try:
-            await db.execute("ALTER TABLE warnings ADD COLUMN action_type TEXT NOT NULL DEFAULT 'WARN'")
-        except aiosqlite.OperationalError:
-            pass  # Column already exists
-        # Migrate existing databases: add island_type column if it doesn't exist
-        try:
-            await db.execute("ALTER TABLE island_visits ADD COLUMN island_type TEXT NOT NULL DEFAULT 'sub'")
-        except aiosqlite.OperationalError:
-            pass  # Column already exists
-        await db.commit()
+    """Initializes the database schema via SQLAlchemy models."""
+    from utils.db import Base
+    engine = get_async_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 DEFAULT_REASON_TEXT = (
     "Breaking [Sub Rule #2](https://discord.com/channels/729590421478703135/"
@@ -639,7 +602,7 @@ class FlightLoggerCog(commands.Cog):
         self.bot = bot
         self.island_map = {}
         self.join_pattern = JOIN_PATTERN
-        self._db_conn = None
+        self._db_session = None
         self.last_processed = None
         self._pending_alerts: dict[str, int] = {}
         self._creating_alerts: set[str] = set()
@@ -647,59 +610,86 @@ class FlightLoggerCog(commands.Cog):
         self.cleanup_warnings_task.start()
 
     async def _get_db(self):
-        if self._db_conn is None:
-            self._db_conn = await aiosqlite.connect(DB_NAME)
-        return self._db_conn
+        """Return an async SQLAlchemy session (created lazily)."""
+        if self._db_session is None:
+            from sqlalchemy.ext.asyncio import AsyncSession
+            from sqlalchemy.orm import sessionmaker
+            engine = get_async_engine()
+            factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            self._db_session = factory()
+        return self._db_session
+
+    def _to_named(self, sql: str, params: tuple):
+        """Convert positional ? placeholders to :pN named params (delegates to utils.db)."""
+        from utils.db import _to_named_params
+        return _to_named_params(sql, params)
+
+    async def _execute(self, sql: str, params: tuple = ()):
+        """Execute a write statement on the async session."""
+        session = await self._get_db()
+        named_sql, named_params = self._to_named(sql, params)
+        result = await session.execute(text(named_sql), named_params)
+        return result
+
+    async def _fetchone(self, sql: str, params: tuple = ()):
+        """Fetch a single row as a tuple."""
+        session = await self._get_db()
+        named_sql, named_params = self._to_named(sql, params)
+        result = await session.execute(text(named_sql), named_params)
+        return result.fetchone()
+
+    async def _fetchall(self, sql: str, params: tuple = ()):
+        """Fetch all rows."""
+        session = await self._get_db()
+        named_sql, named_params = self._to_named(sql, params)
+        result = await session.execute(text(named_sql), named_params)
+        return result.fetchall()
 
     async def add_warning(self, user_id, guild_id, reason, mod_id, visit_id=None, action_type='WARN'):
-        db = await self._get_db()
-        await db.execute(
+        await self._execute(
             "INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp()), visit_id, action_type)
         )
-        await db.commit()
+        session = await self._get_db()
+        await session.commit()
 
     async def get_warn_count(self, user_id: int, guild_id: int, days: int = WARN_EXPIRY_DAYS):
-        db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
-        cursor = await db.execute(
+        row = await self._fetchone(
             "SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ? AND timestamp > ? AND action_type = 'WARN'",
             (user_id, guild_id, cutoff)
         )
-        row = await cursor.fetchone()
         return row[0] if row else 0
 
     async def remove_latest_warning(self, user_id: int, guild_id: int):
         """Remove the most recent warning for a user and return its details."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT rowid, reason, mod_id, timestamp FROM warnings WHERE user_id = ? AND guild_id = ? ORDER BY timestamp DESC LIMIT 1",
+        row = await self._fetchone(
+            "SELECT id, reason, mod_id, timestamp FROM warnings WHERE user_id = ? AND guild_id = ? ORDER BY timestamp DESC LIMIT 1",
             (user_id, guild_id)
         )
-        row = await cursor.fetchone()
         if row:
-            rowid, reason, mod_id, timestamp = row
-            await db.execute("DELETE FROM warnings WHERE rowid = ?", (rowid,))
-            await db.commit()
+            warning_id, reason, mod_id, timestamp = row
+            await self._execute("DELETE FROM warnings WHERE id = ?", (warning_id,))
+            session = await self._get_db()
+            await session.commit()
             return {"reason": reason, "mod_id": mod_id, "timestamp": timestamp}
         return None
 
     async def remove_all_warnings(self, user_id: int, guild_id: int):
         """Remove all warnings for a user and return the count removed."""
-        db = await self._get_db()
-        cursor = await db.execute(
+        result = await self._execute(
             "DELETE FROM warnings WHERE user_id = ? AND guild_id = ?",
             (user_id, guild_id)
         )
-        count = cursor.rowcount
-        await db.commit()
+        count = result.rowcount
+        session = await self._get_db()
+        await session.commit()
         return count
 
     async def get_warnings(self, user_id: int, guild_id: int, days: int = 30):
         """Get all warnings for a user within the specified number of days, including any linked island visit."""
-        db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
-        cursor = await db.execute(
+        rows = await self._fetchall(
             """SELECT w.reason, w.mod_id, w.timestamp, w.visit_id,
                       iv.ign, iv.origin_island, iv.destination, iv.timestamp
                FROM warnings w
@@ -708,7 +698,6 @@ class FlightLoggerCog(commands.Cog):
                ORDER BY w.timestamp DESC""",
             (user_id, guild_id, cutoff)
         )
-        rows = await cursor.fetchall()
         return [
             {
                 "reason": r[0], "mod_id": r[1], "timestamp": r[2], "visit_id": r[3],
@@ -719,27 +708,23 @@ class FlightLoggerCog(commands.Cog):
 
     async def _get_recent_visit_id_by_ign(self, ign: str, hours: int = 24) -> int | None:
         """Find the most recent island_visits.id for the given IGN within the last N hours."""
-        db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(hours=hours)).timestamp())
-        cursor = await db.execute(
+        row = await self._fetchone(
             "SELECT id FROM island_visits WHERE ign = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 1",
             (ign, cutoff)
         )
-        row = await cursor.fetchone()
         return row[0] if row else None
 
     async def get_island_visits(self, user_id: int, guild_id: int, days: int = 30):
         """Get all island visits for a user within the specified number of days."""
-        db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
-        cursor = await db.execute(
+        rows = await self._fetchall(
             """SELECT id, ign, origin_island, destination, authorized, timestamp
                FROM island_visits
                WHERE user_id = ? AND guild_id = ? AND timestamp > ?
                ORDER BY timestamp DESC""",
             (user_id, guild_id, cutoff)
         )
-        rows = await cursor.fetchall()
         return [
             {"id": r[0], "ign": r[1], "origin_island": r[2], "destination": r[3],
              "authorized": bool(r[4]), "timestamp": r[5]}
@@ -748,34 +733,34 @@ class FlightLoggerCog(commands.Cog):
 
     async def record_island_visit(self, ign: str, origin_island: str, destination: str, found_members: list[discord.Member], guild_id: int | None, timestamp: int, authorized: int | None = None, island_type: str = 'sub') -> int | None:
         """Record an island visit (authorized or unauthorized) in the database. Returns the visit ID."""
-        db = await self._get_db()
         visit_id = None
         if found_members:
             for member in found_members:
-                cursor = await db.execute(
+                result = await self._execute(
                     "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
                     (ign, origin_island, destination, member.id, guild_id, timestamp, island_type)
                 )
-                visit_id = cursor.lastrowid
+                visit_id = result.lastrowid
         else:
             auth_val = authorized if authorized is not None else 0
-            cursor = await db.execute(
+            result = await self._execute(
                 "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
                 (ign, origin_island, destination, guild_id, auth_val, timestamp, island_type)
             )
-            visit_id = cursor.lastrowid
-        await db.commit()
+            visit_id = result.lastrowid
+        session = await self._get_db()
+        await session.commit()
         return visit_id
 
     async def cleanup_expired_warnings(self):
         """Delete warnings older than WARN_EXPIRY_DAYS from the database."""
-        db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=WARN_EXPIRY_DAYS)).timestamp())
-        cursor = await db.execute(
+        result = await self._execute(
             "DELETE FROM warnings WHERE timestamp < ?", (cutoff,)
         )
-        count = cursor.rowcount
-        await db.commit()
+        count = result.rowcount
+        session = await self._get_db()
+        await session.commit()
         if count > 0:
             logger.info(f"[FLIGHT] Expired {count} warning(s) older than {WARN_EXPIRY_DAYS} days.")
         return count
@@ -860,12 +845,12 @@ class FlightLoggerCog(commands.Cog):
                     visit_id = await self._get_recent_visit_id_by_ign(ign)
             if visit_id is not None:
                 # Identify the visitor in the island_visits record now that we know who they are
-                db = await self._get_db()
-                await db.execute(
+                await self._execute(
                     "UPDATE island_visits SET user_id = ? WHERE id = ? AND user_id IS NULL",
                     (target.id, visit_id)
                 )
-                await db.commit()
+                session = await self._get_db()
+                await session.commit()
             await self.add_warning(target.id, guild.id, reason_text, mod.id, visit_id, action_type=action_type)
             # Use small delay to ensure DB consistency (though commit is awaited)
             new_count = await self.get_warn_count(target.id, guild.id, days=WARN_EXPIRY_DAYS)
@@ -903,8 +888,8 @@ class FlightLoggerCog(commands.Cog):
     def cog_unload(self):
         self.fetch_islands_task.cancel()
         self.cleanup_warnings_task.cancel()
-        if self._db_conn:
-            asyncio.create_task(self._db_conn.close())
+        if self._db_session:
+            asyncio.create_task(self._db_session.close())
 
     @tasks.loop(hours=1)
     async def fetch_islands_task(self):
@@ -1210,7 +1195,7 @@ class FlightLoggerCog(commands.Cog):
             lines.append(f"[ERR] Log Channel: Missing (ID: {Config.FLIGHT_LOG_CHANNEL_ID})")
 
         # Database Status
-        if self._db_conn:
+        if self._db_session:
             lines.append("[OK] Database: Connected")
         else:
             lines.append("[WARN] Database: Disconnected (Connects on write)")
@@ -1647,12 +1632,14 @@ class FreeFlightCog(commands.Cog, name="FreeFlightLogger"):
                 island_type='free',
             )
         else:
-            async with aiosqlite.connect(DB_NAME) as db:
-                await db.execute(
-                    "INSERT INTO island_visits "
-                    "(ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) "
-                    "VALUES (?, ?, ?, NULL, ?, 1, ?, 'free')",
-                    (ign_raw, island_raw, dest_raw, guild_id, visit_ts),
+            engine = get_async_engine()
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO island_visits "
+                        "(ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) "
+                        "VALUES (:p0, :p1, :p2, NULL, :p3, 1, :p4, 'free')"
+                    ),
+                    {"p0": ign_raw, "p1": island_raw, "p2": dest_raw, "p3": guild_id, "p4": visit_ts},
                 )
-                await db.commit()
         logger.info(f"[FREE-FLIGHT] Recorded visit: {ign_raw} → {dest_raw}")
