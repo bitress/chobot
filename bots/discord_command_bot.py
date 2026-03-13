@@ -43,6 +43,10 @@ AVAILABLE_SLOT_TEXT = "available slot"
 ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
 GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
 
+# How long (seconds) a command claim record is kept before being pruned.
+# Any message older than this window is no longer at risk of being replayed.
+COMMAND_CLAIM_EXPIRY_SECONDS = 300  # 5 minutes
+
 # Shared SQLite database path (project root)
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chobot.db")
 
@@ -70,6 +74,51 @@ def _upsert_bot_status(island_id: str, island_name: str, is_online: bool) -> Non
             conn.close()
     except Exception as exc:
         logger.error(f"[DISCORD] Failed to write island_bot_status for {island_name}: {exc}")
+
+
+def _init_command_claims_db() -> None:
+    """Create the command_claims table used for cross-instance deduplication."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS command_claims (
+                    message_id INTEGER PRIMARY KEY,
+                    claimed_at REAL NOT NULL
+                )"""
+            )
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to init command_claims table: {exc}")
+
+
+def _try_claim_command(message_id: int) -> bool:
+    """Attempt to claim a message ID for command processing.
+
+    Uses a SQLite unique constraint so that only one bot instance (or one
+    invocation within the same instance) can process a given Discord message.
+
+    Returns True if this call is the first to claim the message (caller should
+    proceed), False if it was already claimed (caller should skip).
+    On any database error, returns True so the command is never silently lost.
+    """
+    try:
+        now = time.time()
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            conn.execute(
+                "DELETE FROM command_claims WHERE claimed_at < ?",
+                (now - COMMAND_CLAIM_EXPIRY_SECONDS,),
+            )
+            # INSERT OR IGNORE silently does nothing when the PRIMARY KEY already
+            # exists (i.e. another instance already claimed this message_id).
+            # cursor.rowcount is 1 on a successful insert and 0 on a no-op, so
+            # it reliably distinguishes "first claim" from "duplicate".
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO command_claims (message_id, claimed_at) VALUES (?, ?)",
+                (message_id, now),
+            )
+            return cursor.rowcount > 0
+    except Exception as exc:
+        logger.error(f"[DISCORD] command_claims check failed for {message_id}: {exc}")
+        return True
 
 
 def _discord_conv_key(message: discord.Message) -> str:
@@ -1451,6 +1500,8 @@ class DiscordCommandBot(commands.Bot):
 
     async def setup_hook(self):
         """Setup bot cogs and sync commands"""
+        _init_command_claims_db()
+
         if self._load_command_cog:
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
 
@@ -1515,6 +1566,12 @@ class DiscordCommandBot(commands.Bot):
         """Handle messages"""
         if message.author == self.user:
             return
+
+        # Prevent duplicate responses when multiple bot instances share the same
+        # token, or when the Discord gateway replays events during reconnects.
+        if not _try_claim_command(message.id):
+            return
+
         if Config.LOG_CHANNEL_ID and message.channel.id == Config.LOG_CHANNEL_ID:
             guild = message.guild.name if message.guild else "DM"
             channel = message.channel.name if hasattr(message.channel, 'name') else "DM"
