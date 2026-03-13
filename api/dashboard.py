@@ -1444,6 +1444,53 @@ def analytics_export_csv():
 # JSON CRUD API  (Bearer token OR active browser session)
 # ===========================================================================
 
+@dashboard.route("/api/status-summary", methods=["GET"])
+@api_auth_required
+def api_status_summary():
+    """Return live island status counts and per-island effective statuses."""
+    db = get_db()
+    try:
+        rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        db_islands = [_row_to_island_dict(dict(r)) for r in rows]
+        bot_status = _load_bot_status_map(db)
+    except sqlite3.Error:
+        db_islands = []
+        bot_status = {}
+    finally:
+        db.close()
+
+    island_count     = len(db_islands)
+    online_count     = 0
+    refreshing_count = 0
+    offline_count    = 0
+    islands_out      = []
+
+    for isl in db_islands:
+        isl["discord_bot_online"] = bot_status.get(isl.get("id", ""))
+        s = _effective_status(isl)
+        islands_out.append({"id": isl.get("id", ""), "name": isl.get("name", ""), "status": s})
+        if s == STATUS_ONLINE:
+            online_count += 1
+        elif s == STATUS_REFRESHING:
+            refreshing_count += 1
+        else:
+            offline_count += 1
+
+    def _pct(count):
+        return round(count * 100 / island_count) if island_count else 0
+
+    return jsonify({
+        "island_count":     island_count,
+        "online_count":     online_count,
+        "refreshing_count": refreshing_count,
+        "offline_count":    offline_count,
+        "online_pct":       _pct(online_count),
+        "refreshing_pct":   _pct(refreshing_count),
+        "off_pct":          _pct(offline_count),
+        "islands":          islands_out,
+    })
+
+
 @dashboard.route("/api/islands", methods=["GET"])
 @api_auth_required
 def api_islands_list():

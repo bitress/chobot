@@ -77,7 +77,7 @@
             </span>
           </td>
           <!-- Status -->
-          <td><span class="status-pill {{ status_cls }}" style="position:static;display:inline-block;">{{ isl.status }}</span></td>
+          <td><span class="status-pill {{ status_cls }}" data-island-id="{{ isl.id }}" style="position:static;display:inline-block;">{{ isl.status }}</span></td>
           <!-- Visitors -->
           <td class="text-center" style="color:#888;font-weight:700;font-size:.85rem;">
             {{ isl.visitors if isl.visitors else "—" }}
@@ -158,5 +158,36 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 });
+</script>
+
+<script>
+/* ── Live status pill polling — updates every second ────────────────────── */
+(function () {
+  var STATUS_CLASS = { ONLINE: 'online', REFRESHING: 'refreshing', OFFLINE: 'offline' };
+
+  function pollIslandStatus() {
+    fetch('{{ url_for("dashboard.api_status_summary") }}')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.islands) return;
+        var statusMap = {};
+        d.islands.forEach(function (isl) { statusMap[isl.id] = isl.status; });
+        document.querySelectorAll('[data-island-id]').forEach(function (pill) {
+          var id     = pill.getAttribute('data-island-id');
+          var status = statusMap[id];
+          if (!status) return;
+          var newCls = STATUS_CLASS[status] || 'offline';
+          if (pill.textContent.trim() !== status || !pill.classList.contains(newCls)) {
+            pill.textContent = status;
+            pill.className   = 'status-pill ' + newCls;
+          }
+        });
+      })
+      .catch(function (err) { console.error('[island status poll]', err); });
+  }
+
+  pollIslandStatus();
+  setInterval(pollIslandStatus, 1000);
+})();
 </script>
 {% endblock %}

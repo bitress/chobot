@@ -1,7 +1,7 @@
 {% extends "dashboard/base.html" %}
 
 {% block title %}Island Status — ChoBot Dashboard{% endblock %}
-{% block header %}Island Status{% endblock %}
+{% block header %}Island Status <span id="live-badge" class="badge rounded-pill ms-2 fw-bold" style="background:#e8f5e9;color:#1a6b2a;font-size:.6rem;vertical-align:middle;letter-spacing:.05em;">● LIVE</span>{% endblock %}
 
 {% block head %}
   <script src="{{ url_for('dashboard.static', filename='js/chart.umd.js') }}"></script>
@@ -16,7 +16,7 @@
       <div class="stat-label">
         <span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>Online
       </div>
-      <div class="stat-value text-nook-green">{{ online_count }}</div>
+      <div class="stat-value text-nook-green" id="tile-online">{{ online_count }}</div>
     </div>
   </div>
   <div class="col">
@@ -24,7 +24,7 @@
       <div class="stat-label">
         <span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>Refreshing
       </div>
-      <div class="stat-value" style="color:#4f9ef8;">{{ refreshing_count }}</div>
+      <div class="stat-value" style="color:#4f9ef8;" id="tile-refreshing">{{ refreshing_count }}</div>
     </div>
   </div>
   <div class="col">
@@ -32,7 +32,7 @@
       <div class="stat-label">
         <span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>Offline
       </div>
-      <div class="stat-value" style="color:#aaa;">{{ offline_count }}</div>
+      <div class="stat-value" style="color:#aaa;" id="tile-offline">{{ offline_count }}</div>
     </div>
   </div>
 </div>
@@ -40,11 +40,11 @@
 <!-- Total islands summary strip -->
 <div class="section-card mb-4 px-4 py-3 d-flex align-items-center gap-2 flex-wrap">
   <i class="bi bi-geo-alt-fill text-nook-green"></i>
-  <span class="fw-bold" style="color:#444;">{{ island_count }} islands total</span>
+  <span class="fw-bold" id="strip-total" style="color:#444;">{{ island_count }} islands total</span>
   <span class="ms-auto x-small fw-bold" style="color:#aaa;">
-    {{ online_count }} of {{ island_count }} currently <strong style="color:var(--nook-green);">ONLINE</strong>
+    <span id="strip-online-summary">{{ online_count }} of {{ island_count }}</span> currently <strong style="color:var(--nook-green);">ONLINE</strong>
   </span>
-  <span class="fw-bold x-small" style="color:var(--nook-green);">{{ online_pct }}%</span>
+  <span class="fw-bold x-small" id="strip-online-pct" style="color:var(--nook-green);">{{ online_pct }}%</span>
 </div>
 
 <!-- Chart + progress -->
@@ -65,22 +65,22 @@
           <div class="d-flex align-items-center gap-2 mb-2">
             <span class="status-dot" style="background:#28a745;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Online</span>
-            <span class="ms-auto fw-black ac-font" style="color:var(--nook-green);font-size:1.2rem;">{{ online_count }}</span>
+            <span class="ms-auto fw-black ac-font" id="legend-online" style="color:var(--nook-green);font-size:1.2rem;">{{ online_count }}</span>
           </div>
           <div class="d-flex align-items-center gap-2 mb-2">
             <span class="status-dot" style="background:#4f9ef8;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Refreshing</span>
-            <span class="ms-auto fw-black ac-font" style="color:#4f9ef8;font-size:1.2rem;">{{ refreshing_count }}</span>
+            <span class="ms-auto fw-black ac-font" id="legend-refreshing" style="color:#4f9ef8;font-size:1.2rem;">{{ refreshing_count }}</span>
           </div>
           <div class="d-flex align-items-center gap-2 mb-3">
             <span class="status-dot" style="background:#ccc;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Offline</span>
-            <span class="ms-auto fw-black ac-font" style="color:#aaa;font-size:1.2rem;">{{ offline_count }}</span>
+            <span class="ms-auto fw-black ac-font" id="legend-offline" style="color:#aaa;font-size:1.2rem;">{{ offline_count }}</span>
           </div>
           <div class="divider-dashed mt-0 mb-2"></div>
           <div class="d-flex align-items-center justify-content-between">
             <span class="x-small fw-bold" style="color:#ccc;">Online rate</span>
-            <span class="fw-black ac-font" style="color:var(--nook-green);font-size:1.1rem;">{{ online_pct }}%</span>
+            <span class="fw-black ac-font" id="online-rate-pct" style="color:var(--nook-green);font-size:1.1rem;">{{ online_pct }}%</span>
           </div>
         </div>
       </div>
@@ -100,49 +100,47 @@
           <div class="mb-1 d-flex justify-content-between align-items-center">
             <span class="x-small fw-bold" style="color:#888;">
               <span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>
-              <strong style="color:var(--nook-green);">{{ online_count }}</strong>
-              of {{ island_count }} islands <strong style="color:var(--nook-green);">ONLINE</strong>
+              <strong id="prog-online-count" style="color:var(--nook-green);">{{ online_count }}</strong>
+              of <span id="prog-online-total">{{ island_count }}</span> islands <strong style="color:var(--nook-green);">ONLINE</strong>
             </span>
-            <span class="x-small fw-bold" style="color:#ccc;">{{ online_pct }}%</span>
+            <span class="x-small fw-bold" id="prog-online-pct" style="color:#ccc;">{{ online_pct }}%</span>
           </div>
           <div class="progress rounded-pill" style="height:10px;background:#e9f2e9;">
-            <div class="progress-bar rounded-pill" role="progressbar"
+            <div id="prog-online-bar" class="progress-bar rounded-pill" role="progressbar"
                  style="width:{{ online_pct }}%;background:var(--nook-green);"
                  aria-valuenow="{{ online_count }}" aria-valuemin="0" aria-valuemax="{{ island_count }}"></div>
           </div>
         </div>
 
         <!-- Refreshing -->
-        {% if refreshing_count > 0 %}
-        <div class="mb-4">
+        <div id="refreshing-progress-section" class="mb-4"{% if refreshing_count == 0 %} style="display:none;"{% endif %}>
           <div class="mb-1 d-flex justify-content-between align-items-center">
             <span class="x-small fw-bold" style="color:#888;">
               <span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>
-              <strong style="color:#4f9ef8;">{{ refreshing_count }}</strong>
-              of {{ island_count }} islands <strong style="color:#4f9ef8;">REFRESHING</strong>
+              <strong id="prog-refreshing-count" style="color:#4f9ef8;">{{ refreshing_count }}</strong>
+              of <span id="prog-refreshing-total">{{ island_count }}</span> islands <strong style="color:#4f9ef8;">REFRESHING</strong>
             </span>
-            <span class="x-small fw-bold" style="color:#ccc;">{{ refreshing_pct }}%</span>
+            <span class="x-small fw-bold" id="prog-refreshing-pct" style="color:#ccc;">{{ refreshing_pct }}%</span>
           </div>
           <div class="progress rounded-pill" style="height:10px;background:#deeeff;">
-            <div class="progress-bar rounded-pill" role="progressbar"
+            <div id="prog-refreshing-bar" class="progress-bar rounded-pill" role="progressbar"
                  style="width:{{ refreshing_pct }}%;background:#4f9ef8;"
                  aria-valuenow="{{ refreshing_count }}" aria-valuemin="0" aria-valuemax="{{ island_count }}"></div>
           </div>
         </div>
-        {% endif %}
 
         <!-- Offline -->
         <div>
           <div class="mb-1 d-flex justify-content-between align-items-center">
             <span class="x-small fw-bold" style="color:#888;">
               <span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>
-              <strong style="color:#aaa;">{{ offline_count }}</strong>
-              of {{ island_count }} islands <strong style="color:#aaa;">OFFLINE</strong>
+              <strong id="prog-offline-count" style="color:#aaa;">{{ offline_count }}</strong>
+              of <span id="prog-offline-total">{{ island_count }}</span> islands <strong style="color:#aaa;">OFFLINE</strong>
             </span>
-            <span class="x-small fw-bold" style="color:#ccc;">{{ off_pct }}%</span>
+            <span class="x-small fw-bold" id="prog-offline-pct" style="color:#ccc;">{{ off_pct }}%</span>
           </div>
           <div class="progress rounded-pill" style="height:10px;background:#f5f5f5;">
-            <div class="progress-bar rounded-pill" role="progressbar"
+            <div id="prog-offline-bar" class="progress-bar rounded-pill" role="progressbar"
                  style="width:{{ off_pct }}%;background:#ccc;"
                  aria-valuenow="{{ offline_count }}" aria-valuemin="0" aria-valuemax="{{ island_count }}"></div>
           </div>
@@ -187,7 +185,7 @@
       </thead>
       <tbody>
         {% for isl in bucket %}
-        <tr>
+        <tr data-island-id="{{ isl.id }}">
           <td>
             {% if isl.map_url %}
               <img src="{{ isl.map_url }}" alt="{{ isl.name }}"
@@ -240,11 +238,12 @@
 
 {% block scripts %}
 <script>
+var _statusChart = null;
 (function () {
   var ctx = document.getElementById('statusChart');
   if (!ctx) return;
 
-  new Chart(ctx, {
+  _statusChart = new Chart(ctx, {
     type: 'doughnut',
     data: {
       labels: ['Online', 'Refreshing', 'Offline'],
@@ -298,5 +297,96 @@ document.addEventListener('DOMContentLoaded', function () {
     new simpleDatatables.DataTable(el, dtOpts);
   });
 });
+</script>
+
+<script>
+/* ── Live status polling — updates every second ─────────────────────────── */
+(function () {
+  var STATUS_CLASS = { ONLINE: 'online', REFRESHING: 'refreshing', OFFLINE: 'offline' };
+
+  function setText(id, val) {
+    var el = document.getElementById(id);
+    if (el && el.textContent !== String(val)) el.textContent = val;
+  }
+
+  function setWidth(id, pct, valuenow, valuemax) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.style.width = pct + '%';
+    el.setAttribute('aria-valuenow', valuenow);
+    el.setAttribute('aria-valuemax', valuemax);
+  }
+
+  function pollStatus() {
+    fetch('{{ url_for("dashboard.api_status_summary") }}')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) return;
+
+        // Stat tiles
+        setText('tile-online',     d.online_count);
+        setText('tile-refreshing', d.refreshing_count);
+        setText('tile-offline',    d.offline_count);
+
+        // Summary strip
+        setText('strip-total', d.island_count + ' islands total');
+        setText('strip-online-summary', d.online_count + ' of ' + d.island_count);
+        setText('strip-online-pct', d.online_pct + '%');
+
+        // Chart legend
+        setText('legend-online',     d.online_count);
+        setText('legend-refreshing', d.refreshing_count);
+        setText('legend-offline',    d.offline_count);
+        setText('online-rate-pct',   d.online_pct + '%');
+
+        // Doughnut chart
+        if (_statusChart) {
+          _statusChart.data.datasets[0].data = [d.online_count, d.refreshing_count, d.offline_count];
+          _statusChart.update('none');
+        }
+
+        // Progress bars — online
+        setText('prog-online-count', d.online_count);
+        setText('prog-online-total', d.island_count);
+        setText('prog-online-pct',   d.online_pct + '%');
+        setWidth('prog-online-bar',  d.online_pct, d.online_count, d.island_count);
+
+        // Progress bars — refreshing (show/hide section)
+        var refSection = document.getElementById('refreshing-progress-section');
+        if (refSection) refSection.style.display = d.refreshing_count > 0 ? '' : 'none';
+        setText('prog-refreshing-count', d.refreshing_count);
+        setText('prog-refreshing-total', d.island_count);
+        setText('prog-refreshing-pct',   d.refreshing_pct + '%');
+        setWidth('prog-refreshing-bar',  d.refreshing_pct, d.refreshing_count, d.island_count);
+
+        // Progress bars — offline
+        setText('prog-offline-count', d.offline_count);
+        setText('prog-offline-total', d.island_count);
+        setText('prog-offline-pct',   d.off_pct + '%');
+        setWidth('prog-offline-bar',  d.off_pct, d.offline_count, d.island_count);
+
+        // Per-island status pills in the grouped tables
+        if (d.islands) {
+          var statusMap = {};
+          d.islands.forEach(function (isl) { statusMap[isl.id] = isl.status; });
+          document.querySelectorAll('tr[data-island-id]').forEach(function (row) {
+            var iid    = row.getAttribute('data-island-id');
+            var status = statusMap[iid];
+            if (!status) return;
+            var pill = row.querySelector('.status-pill');
+            if (pill) {
+              pill.textContent = status;
+              pill.className   = 'status-pill ' + (STATUS_CLASS[status] || 'offline');
+            }
+          });
+        }
+      })
+      .catch(function (err) { console.error('[status poll]', err); });
+  }
+
+  // Start polling immediately, then repeat every second
+  pollStatus();
+  setInterval(pollStatus, 1000);
+})();
 </script>
 {% endblock %}
