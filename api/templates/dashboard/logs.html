@@ -98,12 +98,22 @@
            class="db-input"
            style="border-left:none;border-radius:0 12px 12px 0;">
   </div>
+  <!-- Action type filter -->
+  <select name="action_type" class="db-input" style="width:160px;">
+    <option value="">All actions</option>
+    <option value="WARN"    {% if action_type_filter == 'WARN'    %}selected{% endif %}>⚠️ WARN</option>
+    <option value="KICK"    {% if action_type_filter == 'KICK'    %}selected{% endif %}>👢 KICK</option>
+    <option value="BAN"     {% if action_type_filter == 'BAN'     %}selected{% endif %}>🔨 BAN</option>
+    <option value="DISMISS" {% if action_type_filter == 'DISMISS' %}selected{% endif %}>🚫 DISMISS</option>
+    <option value="NOTE"    {% if action_type_filter == 'NOTE'    %}selected{% endif %}>📝 NOTE</option>
+    <option value="ADMIT"   {% if action_type_filter == 'ADMIT'   %}selected{% endif %}>✅ ADMIT</option>
+  </select>
   <button type="submit"
           class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
           style="font-size:.85rem;">
     <i class="bi bi-funnel-fill me-1"></i>Filter
   </button>
-  {% if ign_filter %}
+  {% if ign_filter or action_type_filter %}
   <a href="{{ url_for('dashboard.logs', type='warnings') }}"
      class="btn rounded-3 fw-bold px-4 py-2"
      style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
@@ -111,6 +121,17 @@
   </a>
   {% endif %}
 </form>
+<!-- Action type quick-filter pills -->
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a href="{{ url_for('dashboard.logs', type='warnings', ign=ign_filter) }}"
+     class="btn rounded-pill fw-bold px-3 py-1 {% if not action_type_filter %}btn-nook-primary{% else %}btn-sub{% endif %}"
+     style="font-size:.8rem;">All</a>
+  {% for at_val, at_label in [('WARN','⚠️ WARN'),('KICK','👢 KICK'),('BAN','🔨 BAN'),('DISMISS','🚫 DISMISS'),('NOTE','📝 NOTE'),('ADMIT','✅ ADMIT')] %}
+  <a href="{{ url_for('dashboard.logs', type='warnings', action_type=at_val, ign=ign_filter) }}"
+     class="btn rounded-pill fw-bold px-3 py-1 {% if action_type_filter == at_val %}btn-nook-primary{% else %}btn-sub{% endif %}"
+     style="font-size:.8rem;">{{ at_label }}</a>
+  {% endfor %}
+</div>
 {% endif %}
 
 <!-- Results info -->
@@ -120,6 +141,7 @@
     {% if log_type == 'flights' and island_filter %}&nbsp;· island: <strong>{{ island_filter }}</strong>{% endif %}
     {% if log_type == 'flights' and category_filter %}&nbsp;· tier: <strong>{{ category_filter }}</strong>{% endif %}
     {% if ign_filter %}&nbsp;· ign: <strong>{{ ign_filter }}</strong>{% endif %}
+    {% if action_type_filter %}&nbsp;· action: <strong>{{ action_type_filter }}</strong>{% endif %}
   </span>
   <span class="x-small fw-bold" style="color:#ccc;">Page {{ page }} / {{ total_pages }}</span>
 </div>
@@ -132,6 +154,7 @@
       <thead>
         <tr>
           {% if log_type == 'warnings' %}
+            <th>Action</th>
             <th>User</th>
             <th>IGN</th>
             <th>Island</th>
@@ -152,6 +175,24 @@
         {% for entry in entries %}
         <tr>
           {% if log_type == 'warnings' %}
+            <td>
+              {% set at = entry.action_type | upper %}
+              {% if at == 'WARN' %}
+                <span class="badge rounded-pill fw-bold" style="background:#E67E22;color:#fff;font-size:.75rem;">⚠️ WARN</span>
+              {% elif at == 'KICK' %}
+                <span class="badge rounded-pill fw-bold" style="background:#F1C40F;color:#444;font-size:.75rem;">👢 KICK</span>
+              {% elif at == 'BAN' %}
+                <span class="badge rounded-pill fw-bold" style="background:#992D22;color:#fff;font-size:.75rem;">🔨 BAN</span>
+              {% elif at == 'DISMISS' %}
+                <span class="badge rounded-pill fw-bold" style="background:#95A5A6;color:#fff;font-size:.75rem;">🚫 DISMISS</span>
+              {% elif at == 'NOTE' %}
+                <span class="badge rounded-pill fw-bold" style="background:#7F8C8D;color:#fff;font-size:.75rem;">📝 NOTE</span>
+              {% elif at == 'ADMIT' %}
+                <span class="badge rounded-pill fw-bold" style="background:#2ECC71;color:#fff;font-size:.75rem;">✅ ADMIT</span>
+              {% else %}
+                <span class="badge rounded-pill fw-bold" style="background:#ccc;color:#444;font-size:.75rem;">{{ at }}</span>
+              {% endif %}
+            </td>
             <td class="fw-bold" style="color:#444;">{{ entry.user_name }}</td>
             <td class="fw-bold" style="color:#444;">{{ entry.ign or "—" }}</td>
             <td>{{ entry.destination or "—" }}</td>
@@ -197,14 +238,14 @@
     {% if page > 1 %}
     <li class="page-item">
       <a class="page-link rounded-3 fw-bold"
-         href="{{ url_for('dashboard.logs', page=page-1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
+         href="{{ url_for('dashboard.logs', page=page-1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order, ign=ign_filter, action_type=action_type_filter) }}"
          style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">← Prev</a>
     </li>
     {% endif %}
     {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
     <li class="page-item {% if p == page %}active{% endif %}">
       <a class="page-link rounded-3 fw-bold"
-         href="{{ url_for('dashboard.logs', page=p, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
+         href="{{ url_for('dashboard.logs', page=p, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order, ign=ign_filter, action_type=action_type_filter) }}"
          style="{% if p == page %}background:var(--nook-green);border-color:var(--nook-green);{% else %}border:2px solid #e1e6d3;color:#888;{% endif %}font-size:.85rem;">
         {{ p }}
       </a>
@@ -213,7 +254,7 @@
     {% if page < total_pages %}
     <li class="page-item">
       <a class="page-link rounded-3 fw-bold"
-         href="{{ url_for('dashboard.logs', page=page+1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
+         href="{{ url_for('dashboard.logs', page=page+1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order, ign=ign_filter, action_type=action_type_filter) }}"
          style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">Next →</a>
     </li>
     {% endif %}

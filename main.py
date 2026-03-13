@@ -199,8 +199,12 @@ async def run_discord(
         data_manager: DataManager,
         flight_logger_only: bool = False,
         find_only: bool = False,
-):
-    """Run Discord bot on the main asyncio loop."""
+) -> bool:
+    """Run Discord bot on the main asyncio loop.
+
+    Returns True if the caller should restart the process (OTA update),
+    False otherwise.
+    """
     discord_bot: Optional[DiscordCommandBot] = None
     try:
         if flight_logger_only:
@@ -250,6 +254,8 @@ async def run_discord(
                 await discord_bot.close()
             except Exception:
                 pass
+
+    return bool(discord_bot and discord_bot.restart_requested)
 
 
 # ============================================================================
@@ -330,9 +336,10 @@ def main():
         logger.info(f"[MAIN] Twitch bot thread started ({mode}) ✓")
 
     # ---- Discord / Flight-Logger (runs on main asyncio loop) ---------------
+    restart_requested = False
     if needs_discord:
         try:
-            asyncio.run(
+            restart_requested = asyncio.run(
                 run_discord(
                     data_manager,
                     flight_logger_only=flags["flight_logger_only"],
@@ -368,6 +375,16 @@ def main():
     logger.info("=" * 70)
     logger.info("APPLICATION SHUTDOWN COMPLETE")
     logger.info("=" * 70)
+
+    # ---- Restart (OTA update) ----------------------------------------------
+    # Perform os.execv() from the main thread *after* the event loop and all
+    # helper threads have stopped.  Doing it here (rather than from a
+    # background thread while the loop is still running) avoids the race where
+    # the old process is still partially alive when the new one connects to
+    # Discord, which caused duplicate responses on every subsequent restart.
+    if restart_requested:
+        logger.info("[MAIN] Restarting process for OTA update...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 if __name__ == "__main__":
