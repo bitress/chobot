@@ -58,12 +58,18 @@ async def init_db():
                 reason TEXT,
                 mod_id INTEGER,
                 timestamp INTEGER,
-                visit_id INTEGER REFERENCES island_visits(id)
+                visit_id INTEGER REFERENCES island_visits(id),
+                action_type TEXT NOT NULL DEFAULT 'WARN'
             )
         """)
         # Migrate existing databases: add visit_id column if it doesn't exist
         try:
             await db.execute("ALTER TABLE warnings ADD COLUMN visit_id INTEGER REFERENCES island_visits(id)")
+        except aiosqlite.OperationalError:
+            pass  # Column already exists
+        # Migrate existing databases: add action_type column if it doesn't exist
+        try:
+            await db.execute("ALTER TABLE warnings ADD COLUMN action_type TEXT NOT NULL DEFAULT 'WARN'")
         except aiosqlite.OperationalError:
             pass  # Column already exists
         # Migrate existing databases: add island_type column if it doesn't exist
@@ -376,6 +382,13 @@ class AdmitConfirmView(discord.ui.View):
         await self.parent_view._resolve_alert(
             interaction, "AUTHORIZED", COLOR_SUCCESS, msg, log_message=self.original_alert_message
         )
+        cog = self.parent_view.bot.get_cog("FlightLoggerCog") if self.parent_view.bot else None
+        if cog:
+            ign = self.ign
+            visit_id = getattr(self.parent_view, 'visit_id', None)
+            if not visit_id and ign:
+                visit_id = await cog._get_recent_visit_id_by_ign(ign)
+            await cog.add_warning(None, interaction.guild.id, None, interaction.user.id, visit_id, action_type='ADMIT')
         # Update the confirmation message to show success
         await interaction.response.edit_message(content=msg, view=None)
         self.stop()
@@ -412,6 +425,13 @@ class NoteModal(discord.ui.Modal, title="Add Note"):
                 inline=False
             )
             await message_to_edit.edit(embed=embed)
+            cog = self.parent_view.bot.get_cog("FlightLoggerCog") if self.parent_view.bot else None
+            if cog:
+                ign = self.parent_view.ign
+                visit_id = self.parent_view.visit_id
+                if not visit_id and ign:
+                    visit_id = await cog._get_recent_visit_id_by_ign(ign)
+                await cog.add_warning(None, interaction.guild.id, self.note_input.value, interaction.user.id, visit_id, action_type='NOTE')
             await interaction.response.send_message("<:Cho_Notes:1474311464688029817> Note added to the alert.", ephemeral=True)
         except Exception as e:
             logger.error(f"Error adding note: {e}")
@@ -595,6 +615,12 @@ class TravelerActionView(discord.ui.View):
         await self._resolve_alert(
             interaction, "DISMISSED", COLOR_DISMISS, msg, log_message=interaction.message
         )
+        cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
+        if cog:
+            visit_id = self.visit_id
+            if not visit_id and ign:
+                visit_id = await cog._get_recent_visit_id_by_ign(ign)
+            await cog.add_warning(None, interaction.guild.id, None, interaction.user.id, visit_id, action_type='DISMISS')
         await interaction.followup.send(f"**{ign or 'Visitor'}** case has been dismissed.", ephemeral=True)
 
     @discord.ui.button(label="Note", style=discord.ButtonStyle.secondary, emoji="<:Cho_Notes:1474311464688029817>", custom_id="fl_note", row=2)
@@ -625,11 +651,11 @@ class FlightLoggerCog(commands.Cog):
             self._db_conn = await aiosqlite.connect(DB_NAME)
         return self._db_conn
 
-    async def add_warning(self, user_id, guild_id, reason, mod_id, visit_id=None):
+    async def add_warning(self, user_id, guild_id, reason, mod_id, visit_id=None, action_type='WARN'):
         db = await self._get_db()
         await db.execute(
-            "INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp()), visit_id)
+            "INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp()), visit_id, action_type)
         )
         await db.commit()
 
@@ -637,7 +663,7 @@ class FlightLoggerCog(commands.Cog):
         db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ? AND timestamp > ?",
+            "SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ? AND timestamp > ? AND action_type = 'WARN'",
             (user_id, guild_id, cutoff)
         )
         row = await cursor.fetchone()
@@ -678,7 +704,7 @@ class FlightLoggerCog(commands.Cog):
                       iv.ign, iv.origin_island, iv.destination, iv.timestamp
                FROM warnings w
                LEFT JOIN island_visits iv ON w.visit_id = iv.id
-               WHERE w.user_id = ? AND w.guild_id = ? AND w.timestamp > ?
+               WHERE w.user_id = ? AND w.guild_id = ? AND w.timestamp > ? AND w.action_type = 'WARN'
                ORDER BY w.timestamp DESC""",
             (user_id, guild_id, cutoff)
         )
@@ -840,7 +866,7 @@ class FlightLoggerCog(commands.Cog):
                     (target.id, visit_id)
                 )
                 await db.commit()
-            await self.add_warning(target.id, guild.id, reason_text, mod.id, visit_id)
+            await self.add_warning(target.id, guild.id, reason_text, mod.id, visit_id, action_type=action_type)
             # Use small delay to ensure DB consistency (though commit is awaited)
             new_count = await self.get_warn_count(target.id, guild.id, days=WARN_EXPIRY_DAYS)
 
