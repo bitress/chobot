@@ -175,20 +175,47 @@ Once `DISCORD_CLIENT_ID` is set, the **Log in with Discord** button will appear 
 
 Chobot supports **SQLite** (default), **PostgreSQL**, and **MySQL/MariaDB**.
 
+There are two ways to configure the database. `DATABASE_URL` takes priority when set; the individual `DB_*` variables are used as a fallback.
+
+#### Option 1 — Full connection URL
+
 **SQLite (default)** — zero configuration, data stored in `chobot.db`:
 ```env
-# Leave DATABASE_URL blank to use SQLite
+# Leave DATABASE_URL blank to keep SQLite
 DATABASE_URL=
 ```
 
 **PostgreSQL:**
 ```env
-DATABASE_URL=postgresql+psycopg2://user:password@localhost/chobot
+DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/chobot
 ```
 
 **MySQL/MariaDB:**
 ```env
-DATABASE_URL=mysql+pymysql://user:password@localhost/chobot
+DATABASE_URL=mysql+pymysql://user:password@localhost:3306/chobot
+```
+
+#### Option 2 — Individual parameters
+
+Use these when you'd rather not compose the full URL yourself. All fields have sensible defaults; only `DB_TYPE`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD` normally need to be set for network databases.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_TYPE` | `sqlite` | `sqlite`, `postgresql`, or `mysql` |
+| `DB_HOST` | `localhost` | Database server hostname or IP |
+| `DB_PORT` | `5432` / `3306` | Port (auto-defaulted per engine) |
+| `DB_NAME` | `chobot` | Database / schema name |
+| `DB_USER` | *(blank)* | Login username |
+| `DB_PASSWORD` | *(blank)* | Login password |
+
+Example `.env` for PostgreSQL using individual params:
+```env
+DB_TYPE=postgresql
+DB_HOST=db.example.com
+DB_PORT=5432
+DB_NAME=chobot
+DB_USER=chobot_user
+DB_PASSWORD=s3cur3p@ss
 ```
 
 ### Database Migrations

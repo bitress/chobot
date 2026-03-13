@@ -53,10 +53,65 @@ def _default_db_path() -> str:
     )
 
 
+def _build_url_from_parts() -> str:
+    """Construct a SQLAlchemy URL from the individual DB_* env-var parameters.
+
+    Called only when ``DATABASE_URL`` is not set.  Returns an empty string when
+    the configuration does not point to a network database (i.e. DB_TYPE is
+    sqlite or unrecognised), so the caller can fall back to the default SQLite
+    path.
+    """
+    from utils.config import Config
+
+    db_type = Config.DB_TYPE  # already lower-cased + stripped
+    if db_type not in ("postgresql", "mysql", "mariadb"):
+        return ""  # SQLite or unknown — use default path
+
+    user     = Config.DB_USER
+    password = Config.DB_PASSWORD
+    host     = Config.DB_HOST or "localhost"
+    name     = Config.DB_NAME or "chobot"
+
+    # Default ports
+    if Config.DB_PORT:
+        port = Config.DB_PORT
+    elif db_type == "postgresql":
+        port = "5432"
+    else:
+        port = "3306"
+
+    # Build credentials fragment
+    if user and password:
+        # URL-encode special characters in username and password
+        from urllib.parse import quote_plus
+        creds = f"{quote_plus(user)}:{quote_plus(password)}@"
+    elif user:
+        from urllib.parse import quote_plus
+        creds = f"{quote_plus(user)}@"
+    else:
+        creds = ""
+
+    if db_type == "postgresql":
+        driver = "postgresql+psycopg2"
+    else:
+        driver = "mysql+pymysql"
+
+    return f"{driver}://{creds}{host}:{port}/{name}"
+
+
 def get_db_url() -> str:
-    """Return the synchronous database URL from config (defaulting to SQLite)."""
+    """Return the synchronous database URL from config (defaulting to SQLite).
+
+    Resolution order:
+    1. ``DATABASE_URL`` env var (full connection string — takes precedence).
+    2. Individual ``DB_TYPE`` / ``DB_HOST`` / ``DB_PORT`` / ``DB_NAME`` /
+       ``DB_USER`` / ``DB_PASSWORD`` env vars (assembled into a URL).
+    3. SQLite default (``chobot.db`` in the project root).
+    """
     from utils.config import Config
     url = getattr(Config, "DATABASE_URL", None) or ""
+    if not url:
+        url = _build_url_from_parts()
     if not url:
         url = f"sqlite:///{_default_db_path()}"
     return url
