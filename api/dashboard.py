@@ -10,7 +10,6 @@ import re
 import csv
 import io
 import secrets
-import sqlite3
 import logging
 import mimetypes
 import threading
@@ -18,12 +17,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 
 import boto3
 from botocore.client import Config as BotocoreConfig
 from botocore.exceptions import ClientError, NoCredentialsError
+from sqlalchemy.exc import SQLAlchemyError
 
 from flask import (
     Blueprint, render_template, request, redirect,
@@ -31,6 +31,13 @@ from flask import (
 )
 
 from utils.config import Config
+from utils.db import (
+    get_db,
+    date_utc8_expr, hour_utc8_expr, dow_utc8_expr,
+    now_minus_days, today_start_utc8,
+    build_upsert_sql, build_insert_ignore_sql,
+    get_dialect_name,
+)
 
 logger = logging.getLogger("Dashboard")
 
@@ -43,12 +50,6 @@ dashboard = Blueprint(
     template_folder="templates",
     static_folder="static",
     static_url_path="/static",
-)
-
-# Absolute path to the shared SQLite database
-_DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "chobot.db",
 )
 
 ALLOWED_CATEGORIES = ("public", "member")
@@ -150,62 +151,14 @@ def _resolve_discord_usernames(user_ids) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
-def get_db():
-    """Return a synchronous SQLite connection to chobot.db."""
-    conn = sqlite3.connect(_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 
 def init_dashboard_db():
     """Create dashboard-specific tables if they do not already exist."""
+    from utils.db import Base, get_engine
     try:
-        conn = get_db()
-
-        # Full IslandData-compatible table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS islands (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                type        TEXT NOT NULL DEFAULT '',
-                items       TEXT NOT NULL DEFAULT '[]',
-                theme       TEXT NOT NULL DEFAULT 'teal',
-                cat         TEXT NOT NULL DEFAULT 'public',
-                description TEXT NOT NULL DEFAULT '',
-                seasonal    TEXT NOT NULL DEFAULT '',
-                status      TEXT NOT NULL DEFAULT 'OFFLINE',
-                visitors    INTEGER NOT NULL DEFAULT 0,
-                dodo_code   TEXT,
-                map_url     TEXT,
-                updated_at  TEXT
-            )
-        """)
-
-        # Live island bot presence, written by the Discord bot's monitor loop
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS island_bot_status (
-                island_id   TEXT PRIMARY KEY,
-                island_name TEXT NOT NULL,
-                is_online   INTEGER NOT NULL DEFAULT 0,
-                updated_at  TEXT
-            )
-        """)
-
-        # Legacy table kept for backward compatibility
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS island_metadata (
-                name       TEXT PRIMARY KEY,
-                category   TEXT NOT NULL DEFAULT 'public',
-                theme      TEXT NOT NULL DEFAULT 'teal',
-                notes      TEXT NOT NULL DEFAULT '',
-                updated_at TEXT
-            )
-        """)
-
-        conn.commit()
-        conn.close()
+        Base.metadata.create_all(get_engine())
         logger.info("Dashboard DB initialised")
-    except sqlite3.Error as exc:
+    except SQLAlchemyError as exc:
         logger.warning("Could not initialise dashboard DB: %s", exc)
 
 
@@ -411,7 +364,7 @@ def _load_bot_status_map(conn) -> dict:
     try:
         rows = conn.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
         return {r["island_id"]: bool(r["is_online"]) for r in rows}
-    except sqlite3.Error:
+    except SQLAlchemyError:
         return {}
 
 
@@ -671,18 +624,18 @@ def index():
         total_visits   = db.execute("SELECT COUNT(*) FROM island_visits").fetchone()[0]
         total_warnings = db.execute("SELECT COUNT(*) FROM warnings").fetchone()[0]
         visits_today   = db.execute(
-            "SELECT COUNT(*) FROM island_visits "
-            "WHERE timestamp > strftime('%s','now','+8 hours','start of day','-8 hours')"
+            "SELECT COUNT(*) FROM island_visits WHERE timestamp > ?",
+            (today_start_utc8(),),
         ).fetchone()[0]
         visits_week    = db.execute(
-            "SELECT COUNT(*) FROM island_visits "
-            "WHERE timestamp > strftime('%s','now','-7 days')"
+            "SELECT COUNT(*) FROM island_visits WHERE timestamp > ?",
+            (now_minus_days(7),),
         ).fetchone()[0]
         recent_raw     = db.execute(
             "SELECT ign, destination, authorized, timestamp "
             "FROM island_visits ORDER BY timestamp DESC LIMIT 10"
         ).fetchall()
-    except sqlite3.Error:
+    except SQLAlchemyError:
         total_visits = total_warnings = visits_today = visits_week = 0
         recent_raw = []
     finally:
@@ -703,7 +656,7 @@ def index():
         rows2        = db2.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands2  = [_row_to_island_dict(dict(r)) for r in rows2]
         bot_status2  = _load_bot_status_map(db2)
-    except sqlite3.Error:
+    except SQLAlchemyError:
         db_islands2 = []
         bot_status2 = {}
     finally:
@@ -740,7 +693,7 @@ def islands():
     try:
         rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
-    except sqlite3.Error:
+    except SQLAlchemyError:
         db_islands = []
     finally:
         db.close()
@@ -833,17 +786,13 @@ def island_detail(name):
 
             db2 = get_db()
             try:
+                _upsert_cols = [
+                    "id", "name", "type", "items", "theme", "cat",
+                    "description", "seasonal", "status", "visitors",
+                    "dodo_code", "map_url", "updated_at",
+                ]
                 db2.execute(
-                    """INSERT INTO islands
-                           (id, name, type, items, theme, cat, description, seasonal,
-                            status, visitors, dodo_code, map_url, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT(id) DO UPDATE SET
-                           name=excluded.name, type=excluded.type, items=excluded.items,
-                           theme=excluded.theme, cat=excluded.cat,
-                           description=excluded.description, seasonal=excluded.seasonal,
-                           status=excluded.status, visitors=excluded.visitors,
-                           dodo_code=excluded.dodo_code, updated_at=excluded.updated_at""",
+                    build_upsert_sql("islands", "id", _upsert_cols),
                     (
                         island_id, upper, isl_type, json.dumps(items_list),
                         isl_theme, isl_cat, isl_desc, isl_seasonal,
@@ -877,15 +826,15 @@ def island_detail(name):
     try:
         sparkline_7d = [
             dict(r) for r in db_sp.execute(
-                "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
+                f"SELECT {date_utc8_expr()} AS day, COUNT(*) AS count "
                 "FROM island_visits "
                 "WHERE LOWER(destination) = LOWER(?) "
-                "AND timestamp > strftime('%s','now','-7 days') "
+                "AND timestamp > ? "
                 "GROUP BY day ORDER BY day",
-                (upper,),
+                (upper, now_minus_days(7)),
             ).fetchall()
         ]
-    except sqlite3.Error:
+    except SQLAlchemyError:
         sparkline_7d = []
     finally:
         db_sp.close()
@@ -1033,7 +982,7 @@ def logs():
                 }
                 for r in rows
             ]
-    except sqlite3.Error:
+    except SQLAlchemyError:
         total, entries, island_names = 0, [], []
     finally:
         db.close()
@@ -1065,7 +1014,7 @@ def island_status():
     try:
         rows = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
-    except sqlite3.Error:
+    except SQLAlchemyError:
         db_islands = []
     finally:
         db.close()
@@ -1076,7 +1025,7 @@ def island_status():
     db2 = get_db()
     try:
         bot_status = _load_bot_status_map(db2)
-    except sqlite3.Error:
+    except SQLAlchemyError:
         bot_status = {}
     finally:
         db2.close()
@@ -1133,6 +1082,14 @@ def analytics():
 
     db = get_db()
     try:
+        ts_7d   = now_minus_days(7)
+        ts_30d  = now_minus_days(30)
+        ts_14d  = now_minus_days(14)
+        ts_today = today_start_utc8()
+        _date_e = date_utc8_expr()
+        _hour_e = hour_utc8_expr()
+        _dow_e  = dow_utc8_expr()
+
         top_islands = [
             dict(r) for r in db.execute(
                 "SELECT destination, COUNT(*) AS visit_count "
@@ -1153,25 +1110,25 @@ def analytics():
         ]
         visits_by_day = [
             dict(r) for r in db.execute(
-                "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
+                f"SELECT {_date_e} AS day, COUNT(*) AS count "
                 "FROM island_visits "
-                f"WHERE timestamp > strftime('%s','now','-7 days'){it_clause} "
+                f"WHERE timestamp > ?{it_clause} "
                 "GROUP BY day ORDER BY day",
-                it_params,
+                [ts_7d] + it_params,
             ).fetchall()
         ]
         visits_by_day_30 = [
             dict(r) for r in db.execute(
-                "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
+                f"SELECT {_date_e} AS day, COUNT(*) AS count "
                 "FROM island_visits "
-                f"WHERE timestamp > strftime('%s','now','-30 days'){it_clause} "
+                f"WHERE timestamp > ?{it_clause} "
                 "GROUP BY day ORDER BY day",
-                it_params,
+                [ts_30d] + it_params,
             ).fetchall()
         ]
         visits_by_hour = [
             dict(r) for r in db.execute(
-                "SELECT CAST(strftime('%H', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS hour, "
+                f"SELECT {_hour_e} AS hour, "
                 "COUNT(*) AS count "
                 f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
                 "GROUP BY hour ORDER BY hour",
@@ -1219,32 +1176,29 @@ def analytics():
             row["user_name"] = warned_name_map.get(str(row["user_id"]), str(row["user_id"]))
         # Quick summary stats
         visits_today = db.execute(
-            "SELECT COUNT(*) FROM island_visits "
-            f"WHERE timestamp > strftime('%s','now','+8 hours','start of day','-8 hours'){it_clause}",
-            it_params,
+            f"SELECT COUNT(*) FROM island_visits WHERE timestamp > ?{it_clause}",
+            [ts_today] + it_params,
         ).fetchone()[0]
         visits_week = db.execute(
-            "SELECT COUNT(*) FROM island_visits "
-            f"WHERE timestamp > strftime('%s','now','-7 days'){it_clause}",
-            it_params,
+            f"SELECT COUNT(*) FROM island_visits WHERE timestamp > ?{it_clause}",
+            [ts_7d] + it_params,
         ).fetchone()[0]
         if island_type_filter:
             warnings_week = db.execute(
                 "SELECT COUNT(*) FROM warnings w "
                 "JOIN island_visits iv ON w.visit_id = iv.id "
-                "WHERE w.timestamp > strftime('%s','now','-7 days') "
-                "AND iv.island_type = ?",
-                it_params,
+                "WHERE w.timestamp > ? AND iv.island_type = ?",
+                [ts_7d] + it_params,
             ).fetchone()[0]
         else:
             warnings_week = db.execute(
-                "SELECT COUNT(*) FROM warnings "
-                "WHERE timestamp > strftime('%s','now','-7 days')"
+                "SELECT COUNT(*) FROM warnings WHERE timestamp > ?",
+                [ts_7d],
             ).fetchone()[0]
         # Day-of-week breakdown (0=Sunday … 6=Saturday)
         dow_raw = [
             dict(r) for r in db.execute(
-                "SELECT CAST(strftime('%w', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS dow, "
+                f"SELECT {_dow_e} AS dow, "
                 "COUNT(*) AS count "
                 f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
                 "GROUP BY dow ORDER BY dow",
@@ -1257,26 +1211,24 @@ def analytics():
             "  SELECT ign, MIN(timestamp) AS first_visit "
             f"  FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
             "  GROUP BY ign"
-            f") WHERE first_visit > strftime('%s','now','-7 days')",
-            it_params,
+            ") AS first_visits WHERE first_visit > ?",
+            it_params + [ts_7d],
         ).fetchone()[0]
         total_unique_7d = db.execute(
-            "SELECT COUNT(DISTINCT ign) FROM island_visits "
-            f"WHERE timestamp > strftime('%s','now','-7 days'){it_clause}",
-            it_params,
+            f"SELECT COUNT(DISTINCT ign) FROM island_visits WHERE timestamp > ?{it_clause}",
+            [ts_7d] + it_params,
         ).fetchone()[0]
         new_30d = db.execute(
             "SELECT COUNT(DISTINCT ign) FROM ("
             "  SELECT ign, MIN(timestamp) AS first_visit "
             f"  FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
             "  GROUP BY ign"
-            f") WHERE first_visit > strftime('%s','now','-30 days')",
-            it_params,
+            ") AS first_visits WHERE first_visit > ?",
+            it_params + [ts_30d],
         ).fetchone()[0]
         total_unique_30d = db.execute(
-            "SELECT COUNT(DISTINCT ign) FROM island_visits "
-            f"WHERE timestamp > strftime('%s','now','-30 days'){it_clause}",
-            it_params,
+            f"SELECT COUNT(DISTINCT ign) FROM island_visits WHERE timestamp > ?{it_clause}",
+            [ts_30d] + it_params,
         ).fetchone()[0]
         # All-time unique travelers and islands
         total_unique_travelers = db.execute(
@@ -1291,28 +1243,25 @@ def analytics():
         ).fetchone()[0]
         # Visits in the previous week (7–14 days ago) for week-over-week delta
         visits_prev_week = db.execute(
-            "SELECT COUNT(*) FROM island_visits "
-            f"WHERE timestamp > strftime('%s','now','-14 days') "
-            f"AND timestamp <= strftime('%s','now','-7 days'){it_clause}",
-            it_params,
+            f"SELECT COUNT(*) FROM island_visits WHERE timestamp > ? AND timestamp <= ?{it_clause}",
+            [ts_14d, ts_7d] + it_params,
         ).fetchone()[0]
         # Warnings issued today
         if island_type_filter:
             warnings_today = db.execute(
                 "SELECT COUNT(*) FROM warnings w "
                 "JOIN island_visits iv ON w.visit_id = iv.id "
-                "WHERE w.timestamp > strftime('%s','now','+8 hours','start of day','-8 hours') "
-                "AND iv.island_type = ?",
-                it_params,
+                "WHERE w.timestamp > ? AND iv.island_type = ?",
+                [ts_today] + it_params,
             ).fetchone()[0]
         else:
             warnings_today = db.execute(
-                "SELECT COUNT(*) FROM warnings "
-                "WHERE timestamp > strftime('%s','now','+8 hours','start of day','-8 hours')"
+                "SELECT COUNT(*) FROM warnings WHERE timestamp > ?",
+                [ts_today],
             ).fetchone()[0]
         # Peak hour (hour with the most visits all-time, in UTC+8)
         peak_hour_row = db.execute(
-            "SELECT CAST(strftime('%H', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS hour, "
+            f"SELECT {_hour_e} AS hour, "
             "COUNT(*) AS cnt "
             f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
             "GROUP BY hour ORDER BY cnt DESC LIMIT 1",
@@ -1321,12 +1270,11 @@ def analytics():
         peak_hour = peak_hour_row["hour"] if peak_hour_row else None
         # Average visits per day over the last 30 days
         avg_visits_30d_row = db.execute(
-            "SELECT COUNT(*) * 1.0 / 30 AS avg FROM island_visits "
-            f"WHERE timestamp > strftime('%s','now','-30 days'){it_clause}",
-            it_params,
+            f"SELECT COUNT(*) * 1.0 / 30 AS avg FROM island_visits WHERE timestamp > ?{it_clause}",
+            [ts_30d] + it_params,
         ).fetchone()
         avg_visits_30d = round(avg_visits_30d_row["avg"] or 0, 1)
-    except sqlite3.Error:
+    except SQLAlchemyError:
         top_islands = top_travelers = visits_by_day = visits_by_day_30 = []
         visits_by_hour = []
         auth_raw = []
@@ -1408,28 +1356,32 @@ def analytics_export_csv():
     try:
         # Limit to 10 000 rows to keep response size and memory usage reasonable.
         rows = db.execute(
-            "SELECT ign, origin_island, destination, island_type, authorized, "
-            "datetime(timestamp, 'unixepoch', '+8 hours') AS visit_time "
+            "SELECT ign, origin_island, destination, island_type, authorized, timestamp "
             f"FROM island_visits WHERE 1=1{it_clause} "
             "ORDER BY timestamp DESC LIMIT 10000",
             it_params,
         ).fetchall()
-    except sqlite3.Error:
+    except SQLAlchemyError:
         rows = []
     finally:
         db.close()
 
+    utc8 = timezone(timedelta(hours=8))
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["IGN", "Origin Island", "Destination", "Island Type", "Authorized", "Visit Time (UTC+8)"])
     for r in rows:
+        try:
+            visit_time = datetime.fromtimestamp(int(r["timestamp"]), tz=utc8).strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError, OSError):
+            visit_time = str(r["timestamp"])
         writer.writerow([
             r["ign"],
             r["origin_island"],
             r["destination"],
             r["island_type"],
             "Yes" if r["authorized"] else "No",
-            r["visit_time"],
+            visit_time,
         ])
 
     filename = f"chobot_visits{'_' + island_type_filter if island_type_filter else ''}.csv"
@@ -1453,7 +1405,7 @@ def api_status_summary():
         rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
         bot_status = _load_bot_status_map(db)
-    except sqlite3.Error:
+    except SQLAlchemyError:
         db_islands = []
         bot_status = {}
     finally:
@@ -1500,7 +1452,7 @@ def api_islands_list():
         rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
         bot_status = _load_bot_status_map(db)
-    except sqlite3.Error:
+    except SQLAlchemyError:
         db_islands = []
         bot_status = {}
     finally:
@@ -1542,17 +1494,13 @@ def api_island_create():
 
     db = get_db()
     try:
+        _upsert_cols = [
+            "id", "name", "type", "items", "theme", "cat",
+            "description", "seasonal", "status", "visitors",
+            "dodo_code", "map_url", "updated_at",
+        ]
         db.execute(
-            """INSERT INTO islands
-                   (id, name, type, items, theme, cat, description, seasonal,
-                    status, visitors, dodo_code, map_url, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET
-                   name=excluded.name, type=excluded.type, items=excluded.items,
-                   theme=excluded.theme, cat=excluded.cat, description=excluded.description,
-                   seasonal=excluded.seasonal, status=excluded.status,
-                   visitors=excluded.visitors, dodo_code=excluded.dodo_code,
-                   updated_at=excluded.updated_at""",
+            build_upsert_sql("islands", "id", _upsert_cols),
             (island_id, name, isl_type, json.dumps(items),
              theme, cat, desc, seasonal, status, visitors, dodo_code, map_url,
              datetime.now(timezone.utc).isoformat()),
@@ -1613,17 +1561,13 @@ def api_island_update(name):
 
     db2 = get_db()
     try:
+        _upsert_cols = [
+            "id", "name", "type", "items", "theme", "cat",
+            "description", "seasonal", "status", "visitors",
+            "dodo_code", "map_url", "updated_at",
+        ]
         db2.execute(
-            """INSERT INTO islands
-                   (id, name, type, items, theme, cat, description, seasonal,
-                    status, visitors, dodo_code, map_url, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET
-                   name=excluded.name, type=excluded.type, items=excluded.items,
-                   theme=excluded.theme, cat=excluded.cat, description=excluded.description,
-                   seasonal=excluded.seasonal, status=excluded.status,
-                   visitors=excluded.visitors, dodo_code=excluded.dodo_code,
-                   updated_at=excluded.updated_at""",
+            build_upsert_sql("islands", "id", _upsert_cols),
             (
                 island_id,
                 data.get("name", existing.get("name", island_id.upper())).upper(),
@@ -1689,11 +1633,11 @@ def api_island_upload_map(name):
 
     db = get_db()
     try:
-        db.execute(
+        result = db.execute(
             "UPDATE islands SET map_url = ?, updated_at = ? WHERE id = ?",
             (map_url, datetime.now(timezone.utc).isoformat(), island_id),
         )
-        if db.execute("SELECT changes()").fetchone()[0] == 0:
+        if result.rowcount == 0:
             db.execute(
                 "INSERT INTO islands (id, name, map_url, updated_at) VALUES (?,?,?,?)",
                 (island_id, island_id.upper(), map_url, datetime.now(timezone.utc).isoformat()),
@@ -1764,19 +1708,20 @@ def api_sync_maps():
                 continue
             map_url = f"{base}/{key}"
             try:
-                db.execute(
+                result = db.execute(
                     "UPDATE islands SET map_url = ?, updated_at = ? WHERE id = ?",
                     (map_url, now, island_id),
                 )
-                if db.execute("SELECT changes()").fetchone()[0] == 0:
+                if result.rowcount == 0:
                     # Island row doesn't exist yet — create a minimal one
                     db.execute(
-                        "INSERT OR IGNORE INTO islands (id, name, map_url, updated_at) "
-                        "VALUES (?, ?, ?, ?)",
+                        build_insert_ignore_sql(
+                            "islands", ["id", "name", "map_url", "updated_at"]
+                        ),
                         (island_id, island_id.upper(), map_url, now),
                     )
                 synced += 1
-            except sqlite3.Error as exc:
+            except SQLAlchemyError as exc:
                 errors.append(f"{island_id}: {exc}")
         db.commit()
     finally:
@@ -1808,7 +1753,7 @@ def api_analytics():
         auth_raw = db.execute(
             "SELECT authorized, COUNT(*) AS count FROM island_visits GROUP BY authorized"
         ).fetchall()
-    except sqlite3.Error:
+    except SQLAlchemyError:
         top_islands = top_travelers = []
         auth_raw = []
     finally:
@@ -1850,7 +1795,7 @@ def api_logs():
             f"ORDER BY timestamp DESC LIMIT ? OFFSET ?",
             params + [per_page, (page - 1) * per_page],
         ).fetchall()
-    except sqlite3.Error:
+    except SQLAlchemyError:
         total, rows = 0, []
     finally:
         db.close()

@@ -67,6 +67,14 @@ class Config:
     # Gemini AI (free tier — optional)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+    # Database URL (SQLAlchemy connection string)
+    # Defaults to SQLite (chobot.db in the project root) when not set.
+    # Examples:
+    #   PostgreSQL: postgresql+psycopg2://user:pass@localhost/chobot
+    #   MySQL:      mysql+pymysql://user:pass@localhost/chobot
+    #   SQLite:     sqlite:///chobot.db  (relative) or sqlite:////abs/path/chobot.db
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
+
     # Web Dashboard (mod-only)
     DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
 

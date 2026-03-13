@@ -171,6 +171,42 @@ The dashboard supports two login methods:
 
 Once `DISCORD_CLIENT_ID` is set, the **Log in with Discord** button will appear on the login page automatically.
 
+### Database Configuration
+
+Chobot supports **SQLite** (default), **PostgreSQL**, and **MySQL/MariaDB**.
+
+**SQLite (default)** — zero configuration, data stored in `chobot.db`:
+```env
+# Leave DATABASE_URL blank to use SQLite
+DATABASE_URL=
+```
+
+**PostgreSQL:**
+```env
+DATABASE_URL=postgresql+psycopg2://user:password@localhost/chobot
+```
+
+**MySQL/MariaDB:**
+```env
+DATABASE_URL=mysql+pymysql://user:password@localhost/chobot
+```
+
+### Database Migrations
+
+Chobot uses [Flask-Migrate](https://flask-migrate.readthedocs.io/) (Alembic) for schema migrations.
+
+**First-time setup** (creates the `migrations/` folder):
+```bash
+flask --app api.flask_api:app db init
+flask --app api.flask_api:app db migrate -m "Initial migration"
+flask --app api.flask_api:app db upgrade
+```
+
+**Applying future migrations** after pulling new code:
+```bash
+flask --app api.flask_api:app db upgrade
+```
+
 ### Executing program
 
 * How to run the bot:

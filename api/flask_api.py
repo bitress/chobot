@@ -10,22 +10,25 @@ import os
 import re
 import time
 import logging
-import sqlite3
 import threading
 from datetime import datetime, timedelta
 
 import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_migrate import Migrate
 from thefuzz import process, fuzz
 
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import ThreadedWSGIServer
 
 from utils.config import Config
+from utils.db import db, get_db_url
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text
 from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value
 
+# Import models so Alembic / Flask-Migrate can discover them
+import utils.models  # noqa: F401
 
 logger = logging.getLogger("FlaskAPI")
 
@@ -38,9 +41,16 @@ app.secret_key = Config.FLASK_SECRET_KEY
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
+# Configure SQLAlchemy / Flask-Migrate
+app.config["SQLALCHEMY_DATABASE_URI"] = get_db_url()
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db.init_app(app)
+migrate = Migrate(app, db)
+
 # Register the mod-only web dashboard
 app.register_blueprint(dashboard, url_prefix="/dashboard")
-init_dashboard_db()
+with app.app_context():
+    init_dashboard_db()
 
 # Suppress Flask/Werkzeug standard logs
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -505,7 +515,7 @@ def get_islands():
         bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
         for r in bot_rows:
             discord_status[r["island_id"]] = bool(r["is_online"])
-    except sqlite3.Error:
+    except Exception:
         logger.exception("Failed to load island metadata from DB for /api/islands")
     finally:
         db.close()
