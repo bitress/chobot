@@ -616,6 +616,7 @@ class FlightLoggerCog(commands.Cog):
         self._db_conn = None
         self.last_processed = None
         self._pending_alerts: dict[str, int] = {}
+        self._creating_alerts: set[str] = set()
         self.fetch_islands_task.start()
         self.cleanup_warnings_task.start()
 
@@ -1063,28 +1064,37 @@ class FlightLoggerCog(commands.Cog):
                 await existing_msg.edit(embed=embed)
                 logger.info(f"[FLIGHT] Updated existing alert for {ign} (re-join attempt #{rejoin_count})")
             else:
-                embed = discord.Embed(
-                    description=(
-                        f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
-                        f"An unregistered visitor is attempting to join **{destination_link}**.\n"
-                        f"Use the buttons below to take action."
-                    ),
-                    color=COLOR_ALERT,
-                    timestamp=embed_timestamp
-                )
-                embed.add_field(name="👤 Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
-                embed.add_field(name="🏝️ Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
-                embed.add_field(name="✈️ Destination", value=f"```yaml\n{destination.title()}```", inline=True)
-                embed.add_field(name="🕐 Detected", value=f"<t:{alert_ts}:R>", inline=True)
-                embed.add_field(name="📌 Status", value="🔴 **PENDING REVIEW**", inline=True)
-                embed.set_image(url=Config.FOOTER_LINE)
-                guild      = self.bot.get_guild(Config.GUILD_ID)
-                guild_icon = guild.icon.url if guild and guild.icon else None
-                embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
+                # Guard against a concurrent log_result call for the same IGN
+                # creating a duplicate alert. We register the IGN synchronously
+                # (before any await) so a second coroutine sees it immediately.
+                if ign_clean in self._creating_alerts:
+                    return
+                self._creating_alerts.add(ign_clean)
+                try:
+                    embed = discord.Embed(
+                        description=(
+                            f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
+                            f"An unregistered visitor is attempting to join **{destination_link}**.\n"
+                            f"Use the buttons below to take action."
+                        ),
+                        color=COLOR_ALERT,
+                        timestamp=embed_timestamp
+                    )
+                    embed.add_field(name="👤 Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
+                    embed.add_field(name="🏝️ Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+                    embed.add_field(name="✈️ Destination", value=f"```yaml\n{destination.title()}```", inline=True)
+                    embed.add_field(name="🕐 Detected", value=f"<t:{alert_ts}:R>", inline=True)
+                    embed.add_field(name="📌 Status", value="🔴 **PENDING REVIEW**", inline=True)
+                    embed.set_image(url=Config.FOOTER_LINE)
+                    guild      = self.bot.get_guild(Config.GUILD_ID)
+                    guild_icon = guild.icon.url if guild and guild.icon else None
+                    embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
 
-                view = TravelerActionView(self.bot, ign, visit_id=visit_id)
-                sent_msg = await output_channel.send(embed=embed, view=view)
-                self._pending_alerts[ign_clean] = sent_msg.id
+                    view = TravelerActionView(self.bot, ign, visit_id=visit_id)
+                    sent_msg = await output_channel.send(embed=embed, view=view)
+                    self._pending_alerts[ign_clean] = sent_msg.id
+                finally:
+                    self._creating_alerts.discard(ign_clean)
 
     @commands.hybrid_command(name="recover_flights", aliases=["recoverflights"])
     @app_commands.describe(hours="How many hours to scan back (default: 48)", mode="Execution mode: 'dry' or 'run'")
