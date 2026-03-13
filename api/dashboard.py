@@ -952,18 +952,19 @@ def logs():
                 params + [per_page, (page - 1) * per_page],
             ).fetchall()
             name_map = _resolve_discord_usernames(
-                [r["user_id"] for r in rows] + [r["mod_id"] for r in rows if r["mod_id"]]
+                [r["user_id"] for r in rows if r["user_id"]] + [r["mod_id"] for r in rows if r["mod_id"]]
             )
             entries = [
                 {
                     "user_id":     r["user_id"],
-                    "user_name":   name_map.get(str(r["user_id"]), str(r["user_id"])),
+                    "user_name":   name_map.get(str(r["user_id"]), str(r["user_id"])) if r["user_id"] else "—",
                     "reason":      r["reason"],
                     "mod_id":      r["mod_id"],
                     "mod_name":    name_map.get(str(r["mod_id"]), str(r["mod_id"])) if r["mod_id"] else "—",
                     "timestamp":   _ts_to_str(r["timestamp"]),
                     "ign":         r["ign"],
                     "destination": r["destination"],
+                    "action_type": r["action_type"],
                 }
                 for r in rows
             ]

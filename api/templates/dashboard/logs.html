@@ -132,6 +132,7 @@
       <thead>
         <tr>
           {% if log_type == 'warnings' %}
+            <th>Action</th>
             <th>User</th>
             <th>IGN</th>
             <th>Island</th>
@@ -152,6 +153,24 @@
         {% for entry in entries %}
         <tr>
           {% if log_type == 'warnings' %}
+            <td>
+              {% set at = entry.action_type | upper %}
+              {% if at == 'WARN' %}
+                <span class="badge rounded-pill fw-bold" style="background:#E67E22;color:#fff;font-size:.75rem;">⚠️ WARN</span>
+              {% elif at == 'KICK' %}
+                <span class="badge rounded-pill fw-bold" style="background:#F1C40F;color:#444;font-size:.75rem;">👢 KICK</span>
+              {% elif at == 'BAN' %}
+                <span class="badge rounded-pill fw-bold" style="background:#992D22;color:#fff;font-size:.75rem;">🔨 BAN</span>
+              {% elif at == 'DISMISS' %}
+                <span class="badge rounded-pill fw-bold" style="background:#95A5A6;color:#fff;font-size:.75rem;">🚫 DISMISS</span>
+              {% elif at == 'NOTE' %}
+                <span class="badge rounded-pill fw-bold" style="background:#7F8C8D;color:#fff;font-size:.75rem;">📝 NOTE</span>
+              {% elif at == 'ADMIT' %}
+                <span class="badge rounded-pill fw-bold" style="background:#2ECC71;color:#fff;font-size:.75rem;">✅ ADMIT</span>
+              {% else %}
+                <span class="badge rounded-pill fw-bold" style="background:#ccc;color:#444;font-size:.75rem;">{{ at }}</span>
+              {% endif %}
+            </td>
             <td class="fw-bold" style="color:#444;">{{ entry.user_name }}</td>
             <td class="fw-bold" style="color:#444;">{{ entry.ign or "—" }}</td>
             <td>{{ entry.destination or "—" }}</td>
