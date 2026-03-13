@@ -55,6 +55,14 @@ ALLOWED_CATEGORIES = ("public", "member")
 ALLOWED_THEMES     = ("pink", "teal", "purple", "gold")
 ALLOWED_STATUSES   = ("ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE")
 
+# Dodo code value that signals a gate-refresh is in progress
+REFRESHING_DODO_CODE = "GETTIN'"
+
+# Display status keys (derived from live fields, not the stored status column)
+STATUS_ONLINE     = "ONLINE"
+STATUS_REFRESHING = "REFRESHING"
+STATUS_OFFLINE    = "OFFLINE"
+
 # Senior Mod role ID used during Discord OAuth login
 ADMIN_ROLE_ID = Config.ADMIN_ROLE_ID
 
@@ -407,6 +415,21 @@ def _load_bot_status_map(conn) -> dict:
         return {}
 
 
+def _effective_status(isl: dict) -> str:
+    """Derive display status from live fields, ignoring the stored status key.
+
+    Rules (in priority order):
+      1. dodo_code == REFRESHING_DODO_CODE  → STATUS_REFRESHING
+      2. discord_bot_online                  → STATUS_ONLINE
+      3. otherwise                           → STATUS_OFFLINE
+    """
+    if (isl.get("dodo_code") or "").strip().upper() == REFRESHING_DODO_CODE:
+        return STATUS_REFRESHING
+    if isl.get("discord_bot_online"):
+        return STATUS_ONLINE
+    return STATUS_OFFLINE
+
+
 # Backward-compatible alias for internal callers
 _row_to_island_dict = row_to_island_dict
 
@@ -677,18 +700,25 @@ def index():
 
     db2 = get_db()
     try:
-        island_count = db2.execute("SELECT COUNT(*) FROM islands").fetchone()[0]
-        status_rows  = db2.execute(
-            "SELECT status, COUNT(*) AS cnt FROM islands GROUP BY status"
-        ).fetchall()
+        rows2        = db2.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        db_islands2  = [_row_to_island_dict(dict(r)) for r in rows2]
+        bot_status2  = _load_bot_status_map(db2)
     except sqlite3.Error:
-        island_count = 0
-        status_rows  = []
+        db_islands2 = []
+        bot_status2 = {}
     finally:
         db2.close()
 
-    status_map = {r["status"]: r["cnt"] for r in status_rows}
-    online_count = status_map.get("ONLINE", 0)
+    for isl in db_islands2:
+        isl["discord_bot_online"] = bot_status2.get(isl.get("id", ""))
+
+    island_count = len(db_islands2)
+    status_map: dict[str, int] = {STATUS_ONLINE: 0, STATUS_REFRESHING: 0, STATUS_OFFLINE: 0}
+    for isl in db_islands2:
+        s = _effective_status(isl)
+        status_map[s] = status_map.get(s, 0) + 1
+
+    online_count = status_map[STATUS_ONLINE]
 
     return render_template(
         "dashboard/index.html",
@@ -1033,43 +1063,47 @@ def island_status():
 
     island_count = len(db_islands)
 
-    # Build status_map from islands.status — same source as the Overview panel
-    status_map: dict[str, int] = {}
-    for isl in db_islands:
-        s = (isl.get("status") or "OFFLINE").upper()
-        status_map[s] = status_map.get(s, 0) + 1
+    # Load live bot-presence data and annotate each island
+    db2 = get_db()
+    try:
+        bot_status = _load_bot_status_map(db2)
+    except sqlite3.Error:
+        bot_status = {}
+    finally:
+        db2.close()
 
-    online_count    = status_map.get("ONLINE", 0)
-    sub_only_count  = status_map.get("SUB ONLY", 0)
-    refreshing_count = status_map.get("REFRESHING", 0)
-    offline_count   = status_map.get("OFFLINE", 0)
+    for isl in db_islands:
+        isl["discord_bot_online"] = bot_status.get(isl.get("id", ""))
+
+    # Derive counts from live fields (discord_bot_online / dodo_code)
+    online_count    = 0
+    refreshing_count = 0
+    offline_count   = 0
+    grouped: dict[str, list] = {STATUS_ONLINE: [], STATUS_REFRESHING: [], STATUS_OFFLINE: []}
+    for isl in db_islands:
+        s = _effective_status(isl)
+        grouped[s].append(isl)
+        if s == STATUS_ONLINE:
+            online_count += 1
+        elif s == STATUS_REFRESHING:
+            refreshing_count += 1
+        else:
+            offline_count += 1
 
     def _pct(count):
         return round(count * 100 / island_count) if island_count else 0
 
     online_pct     = _pct(online_count)
-    sub_only_pct   = _pct(sub_only_count)
     refreshing_pct = _pct(refreshing_count)
     off_pct        = _pct(offline_count)
-
-    # Group islands by their status field for the per-section tables
-    grouped: dict[str, list] = {"ONLINE": [], "SUB ONLY": [], "REFRESHING": [], "OFFLINE": []}
-    for isl in db_islands:
-        s = (isl.get("status") or "OFFLINE").upper()
-        if s not in grouped:
-            grouped[s] = []
-        grouped[s].append(isl)
 
     return render_template(
         "dashboard/status.html",
         island_count=island_count,
-        status_map=status_map,
         online_count=online_count,
-        sub_only_count=sub_only_count,
         refreshing_count=refreshing_count,
         offline_count=offline_count,
         online_pct=online_pct,
-        sub_only_pct=sub_only_pct,
         refreshing_pct=refreshing_pct,
         off_pct=off_pct,
         grouped=grouped,

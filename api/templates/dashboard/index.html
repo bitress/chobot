@@ -44,25 +44,19 @@
   <div class="p-4">
     <!-- Status count strip -->
     <div class="row g-3 mb-4">
-      <div class="col-6 col-sm-3">
+      <div class="col-4">
         <div class="text-center p-3 rounded-3" style="background:#e8f5e9;border:2px solid #b8dfc0;">
           <div class="fw-black ac-font" style="color:var(--nook-green);font-size:1.6rem;">{{ status_map.get('ONLINE', 0) }}</div>
           <div class="x-small fw-bold" style="color:#888;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>Online</div>
         </div>
       </div>
-      <div class="col-6 col-sm-3">
-        <div class="text-center p-3 rounded-3" style="background:#fff8e1;border:2px solid #ffe082;">
-          <div class="fw-black ac-font" style="color:#f5a623;font-size:1.6rem;">{{ status_map.get('SUB ONLY', 0) }}</div>
-          <div class="x-small fw-bold" style="color:#888;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>Sub Only</div>
-        </div>
-      </div>
-      <div class="col-6 col-sm-3">
+      <div class="col-4">
         <div class="text-center p-3 rounded-3" style="background:#e3f2fd;border:2px solid #90caf9;">
           <div class="fw-black ac-font" style="color:#4f9ef8;font-size:1.6rem;">{{ status_map.get('REFRESHING', 0) }}</div>
           <div class="x-small fw-bold" style="color:#888;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>Refreshing</div>
         </div>
       </div>
-      <div class="col-6 col-sm-3">
+      <div class="col-4">
         <div class="text-center p-3 rounded-3" style="background:#f5f5f5;border:2px solid #e0e0e0;">
           <div class="fw-black ac-font" style="color:#aaa;font-size:1.6rem;">{{ status_map.get('OFFLINE', 0) }}</div>
           <div class="x-small fw-bold" style="color:#bbb;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>Offline</div>

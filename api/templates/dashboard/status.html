@@ -9,22 +9,14 @@
 
 {% block content %}
 
-<!-- Stat tiles — mirrors Overview "Island Status Breakdown" -->
-<div class="row row-cols-2 row-cols-md-4 g-4 mb-4">
+<!-- Stat tiles -->
+<div class="row row-cols-1 row-cols-md-3 g-4 mb-4">
   <div class="col">
     <div class="stat-card" style="border-left:4px solid #e8f5e9;">
       <div class="stat-label">
         <span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>Online
       </div>
       <div class="stat-value text-nook-green">{{ online_count }}</div>
-    </div>
-  </div>
-  <div class="col">
-    <div class="stat-card" style="border-left:4px solid #fff3cd;">
-      <div class="stat-label">
-        <span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>Sub Only
-      </div>
-      <div class="stat-value" style="color:#f5a623;">{{ sub_only_count }}</div>
     </div>
   </div>
   <div class="col">
@@ -76,11 +68,6 @@
             <span class="ms-auto fw-black ac-font" style="color:var(--nook-green);font-size:1.2rem;">{{ online_count }}</span>
           </div>
           <div class="d-flex align-items-center gap-2 mb-2">
-            <span class="status-dot" style="background:#f5a623;"></span>
-            <span class="fw-bold" style="color:#888;font-size:.88rem;">Sub Only</span>
-            <span class="ms-auto fw-black ac-font" style="color:#f5a623;font-size:1.2rem;">{{ sub_only_count }}</span>
-          </div>
-          <div class="d-flex align-items-center gap-2 mb-2">
             <span class="status-dot" style="background:#4f9ef8;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Refreshing</span>
             <span class="ms-auto fw-black ac-font" style="color:#4f9ef8;font-size:1.2rem;">{{ refreshing_count }}</span>
@@ -124,25 +111,6 @@
                  aria-valuenow="{{ online_count }}" aria-valuemin="0" aria-valuemax="{{ island_count }}"></div>
           </div>
         </div>
-
-        <!-- Sub Only -->
-        {% if sub_only_count > 0 %}
-        <div class="mb-4">
-          <div class="mb-1 d-flex justify-content-between align-items-center">
-            <span class="x-small fw-bold" style="color:#888;">
-              <span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>
-              <strong style="color:#f5a623;">{{ sub_only_count }}</strong>
-              of {{ island_count }} islands <strong style="color:#f5a623;">SUB ONLY</strong>
-            </span>
-            <span class="x-small fw-bold" style="color:#ccc;">{{ sub_only_pct }}%</span>
-          </div>
-          <div class="progress rounded-pill" style="height:10px;background:#fff8ec;">
-            <div class="progress-bar rounded-pill" role="progressbar"
-                 style="width:{{ sub_only_pct }}%;background:#f5a623;"
-                 aria-valuenow="{{ sub_only_count }}" aria-valuemin="0" aria-valuemax="{{ island_count }}"></div>
-          </div>
-        </div>
-        {% endif %}
 
         <!-- Refreshing -->
         {% if refreshing_count > 0 %}
@@ -189,7 +157,6 @@
 <!-- Per-status island tables -->
 {% for status_label, color, bg, border in [
     ('ONLINE',     '#28a745', '#e8f5e9', '#b8dfc0'),
-    ('SUB ONLY',   '#f5a623', '#fff8ec', '#f5d89a'),
     ('REFRESHING', '#4f9ef8', '#deeeff', '#a8c8f8'),
     ('OFFLINE',    '#aaa',    '#f5f5f5', '#e0e0e0'),
 ] %}
@@ -280,15 +247,14 @@
   new Chart(ctx, {
     type: 'doughnut',
     data: {
-      labels: ['Online', 'Sub Only', 'Refreshing', 'Offline'],
+      labels: ['Online', 'Refreshing', 'Offline'],
       datasets: [{
         data: [
           {{ online_count | tojson }},
-          {{ sub_only_count | tojson }},
           {{ refreshing_count | tojson }},
           {{ offline_count | tojson }}
         ],
-        backgroundColor: ['#28a745', '#f5a623', '#4f9ef8', '#d9d9d9'],
+        backgroundColor: ['#28a745', '#4f9ef8', '#d9d9d9'],
         borderWidth: 0,
         hoverOffset: 6,
       }]
