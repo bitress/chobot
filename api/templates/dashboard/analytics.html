@@ -72,10 +72,9 @@
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-exclamation-triangle-fill me-1"></i>Warnings (7d)</div>
       <div class="stat-value" style="color:var(--nook-yellow);">{{ warnings_week }}</div>
-      {% set total_visits = auth_stats.authorized + auth_stats.unauthorized %}
-      {% if total_visits > 0 %}
+      {% if visits_week > 0 %}
       <div class="x-small fw-bold mt-1" style="color:#aaa;">
-        {{ "%.1f"|format(warnings_week / visits_week * 100 if visits_week > 0 else 0) }}% warn rate (7d)
+        {{ warn_rate_week }}% warn rate (7d)
       </div>
       {% endif %}
     </div>
@@ -121,9 +120,8 @@
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-shield-check-fill me-1"></i>Auth Rate</div>
-      {% set total_visits = auth_stats.authorized + auth_stats.unauthorized %}
-      {% if total_visits > 0 %}
-      <div class="stat-value" style="color:#28a745;">{{ "%.0f"|format(auth_stats.authorized / total_visits * 100) }}%</div>
+      {% if auth_rate_pct is not none %}
+      <div class="stat-value" style="color:#28a745;">{{ auth_rate_pct }}%</div>
       {% else %}
       <div class="stat-value" style="color:#ccc;">—</div>
       {% endif %}

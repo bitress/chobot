@@ -207,7 +207,7 @@
     </span>
   </div>
   <div class="table-responsive">
-    <table class="db-table">
+    <table id="statusTable-{{ status_label | lower | replace(' ', '-') }}" class="db-table">
       <thead>
         <tr>
           <th style="width:56px;">Map</th>
@@ -308,5 +308,29 @@
     }
   });
 })();
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var dtOpts = {
+    searchable:    true,
+    sortable:      true,
+    paging:        true,
+    perPage:       10,
+    perPageSelect: [10, 25, 50],
+    columns: [
+      { select: 0, sortable: false },  // Map thumbnail — not sortable
+    ],
+    labels: {
+      placeholder: "Search…",
+      perPage:     "{select} per page",
+      noRows:      "No islands found.",
+      info:        "Showing {start}–{end} of {rows} islands"
+    }
+  };
+  document.querySelectorAll('[id^="statusTable-"]').forEach(function (el) {
+    new simpleDatatables.DataTable(el, dtOpts);
+  });
+});
 </script>
 {% endblock %}

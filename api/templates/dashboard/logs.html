@@ -128,7 +128,7 @@
 <div class="section-card mb-4">
   {% if entries %}
   <div class="table-responsive">
-    <table class="db-table">
+    <table id="logsTable" class="db-table">
       <thead>
         <tr>
           {% if log_type == 'warnings' %}
@@ -221,4 +221,21 @@
 </nav>
 {% endif %}
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var el = document.getElementById('logsTable');
+  if (!el) return;
+  // Server-side handles search, filtering and pagination.
+  // DataTable is applied only for client-side column sorting of the current page.
+  new simpleDatatables.DataTable(el, {
+    searchable: false,
+    paging:     false,
+    sortable:   true,
+    labels: { noRows: "No log entries found." }
+  });
+});
+</script>
 {% endblock %}

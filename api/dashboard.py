@@ -1319,6 +1319,10 @@ def analytics():
         "new_30d": new_30d, "returning_30d": returning_30d, "total_30d": total_unique_30d,
     }
 
+    total_visits = auth_stats["authorized"] + auth_stats["unauthorized"]
+    auth_rate_pct = round(auth_stats["authorized"] / total_visits * 100) if total_visits else None
+    warn_rate_week = round(warnings_week / visits_week * 100, 1) if visits_week else 0.0
+
     return render_template(
         "dashboard/analytics.html",
         top_islands=top_islands,
@@ -1341,6 +1345,8 @@ def analytics():
         visits_prev_week=visits_prev_week,
         peak_hour=peak_hour,
         avg_visits_30d=avg_visits_30d,
+        auth_rate_pct=auth_rate_pct,
+        warn_rate_week=warn_rate_week,
     )
 
 
@@ -1357,6 +1363,7 @@ def analytics_export_csv():
 
     db = get_db()
     try:
+        # Limit to 10 000 rows to keep response size and memory usage reasonable.
         rows = db.execute(
             "SELECT ign, origin_island, destination, island_type, authorized, "
             "datetime(timestamp, 'unixepoch') AS visit_time "

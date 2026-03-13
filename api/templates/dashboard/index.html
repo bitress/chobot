@@ -110,7 +110,7 @@
   </div>
   {% if recent %}
     <div class="table-responsive">
-      <table class="db-table">
+      <table id="recentTable" class="db-table">
         <thead>
           <tr>
             <th>IGN</th>
@@ -174,4 +174,23 @@
   </div>
 </div>
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var el = document.getElementById('recentTable');
+  if (el) {
+    new simpleDatatables.DataTable(el, {
+      searchable: true,
+      sortable:   true,
+      paging:     false,
+      labels: {
+        placeholder: "Search recent activity…",
+        noRows:      "No flight data recorded yet."
+      }
+    });
+  }
+});
+</script>
 {% endblock %}
