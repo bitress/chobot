@@ -1013,64 +1013,66 @@ class FlightLoggerCog(commands.Cog):
         else:
             destination_link = self.get_island_channel_link(destination)
             alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
-            visit_id = await self.record_island_visit(ign, island, destination, [], guild_id, alert_ts, island_type=island_type)
 
-            # Check if there is already a pending alert for this IGN to avoid flooding the channel
+            # Guard against a concurrent log_result call for the same IGN.
+            # Register the IGN synchronously (before any await) so a second
+            # coroutine sees it immediately and returns without inserting a
+            # duplicate DB row or sending a duplicate embed.
             ign_clean = clean_text(ign)
-            existing_msg = None
-            existing_msg_id = self._pending_alerts.get(ign_clean)
-            if existing_msg_id:
-                try:
-                    existing_msg = await output_channel.fetch_message(existing_msg_id)
-                    # Only reuse the message if the alert is still pending (not yet resolved)
-                    if existing_msg.embeds:
-                        status_field = next(
-                            (f for f in existing_msg.embeds[0].fields if f.name == "📌 Status"),
-                            None
-                        )
-                        if status_field is None or "PENDING REVIEW" not in status_field.value:
-                            existing_msg = None
-                except discord.NotFound:
-                    existing_msg = None
+            if ign_clean in self._creating_alerts:
+                return
+            self._creating_alerts.add(ign_clean)
+            try:
+                visit_id = await self.record_island_visit(ign, island, destination, [], guild_id, alert_ts, island_type=island_type)
 
-            if existing_msg:
-                # Update the existing alert with a re-join counter instead of spamming a new message
-                embed = existing_msg.embeds[0]
-                rejoin_count = 1
-                updated_fields = []
-                has_rejoin_field = False
-                for f in embed.fields:
-                    if f.name == "🔁 Re-join Attempts":
-                        has_rejoin_field = True
-                        m = re.search(r"\*\*(\d+)\*\*", f.value)
-                        if m:
-                            rejoin_count = int(m.group(1)) + 1
+                # Check if there is already a pending alert for this IGN to avoid flooding the channel
+                existing_msg = None
+                existing_msg_id = self._pending_alerts.get(ign_clean)
+                if existing_msg_id:
+                    try:
+                        existing_msg = await output_channel.fetch_message(existing_msg_id)
+                        # Only reuse the message if the alert is still pending (not yet resolved)
+                        if existing_msg.embeds:
+                            status_field = next(
+                                (f for f in existing_msg.embeds[0].fields if f.name == "📌 Status"),
+                                None
+                            )
+                            if status_field is None or "PENDING REVIEW" not in status_field.value:
+                                existing_msg = None
+                    except discord.NotFound:
+                        existing_msg = None
+
+                if existing_msg:
+                    # Update the existing alert with a re-join counter instead of spamming a new message
+                    embed = existing_msg.embeds[0]
+                    rejoin_count = 1
+                    updated_fields = []
+                    has_rejoin_field = False
+                    for f in embed.fields:
+                        if f.name == "🔁 Re-join Attempts":
+                            has_rejoin_field = True
+                            m = re.search(r"\*\*(\d+)\*\*", f.value)
+                            if m:
+                                rejoin_count = int(m.group(1)) + 1
+                        else:
+                            updated_fields.append((f.name, f.value, f.inline))
+                    rejoin_field = ("🔁 Re-join Attempts", f"**{rejoin_count}** attempt(s)\nLast seen <t:{alert_ts}:R>", True)
+                    if has_rejoin_field:
+                        updated_fields.append(rejoin_field)
                     else:
-                        updated_fields.append((f.name, f.value, f.inline))
-                rejoin_field = ("🔁 Re-join Attempts", f"**{rejoin_count}** attempt(s)\nLast seen <t:{alert_ts}:R>", True)
-                if has_rejoin_field:
-                    updated_fields.append(rejoin_field)
-                else:
-                    # Insert the re-join field after "🕐 Detected"
-                    new_fields = []
+                        # Insert the re-join field after "🕐 Detected"
+                        new_fields = []
+                        for name, value, inline in updated_fields:
+                            new_fields.append((name, value, inline))
+                            if name == "🕐 Detected":
+                                new_fields.append(rejoin_field)
+                        updated_fields = new_fields
+                    embed.clear_fields()
                     for name, value, inline in updated_fields:
-                        new_fields.append((name, value, inline))
-                        if name == "🕐 Detected":
-                            new_fields.append(rejoin_field)
-                    updated_fields = new_fields
-                embed.clear_fields()
-                for name, value, inline in updated_fields:
-                    embed.add_field(name=name, value=value, inline=inline)
-                await existing_msg.edit(embed=embed)
-                logger.info(f"[FLIGHT] Updated existing alert for {ign} (re-join attempt #{rejoin_count})")
-            else:
-                # Guard against a concurrent log_result call for the same IGN
-                # creating a duplicate alert. We register the IGN synchronously
-                # (before any await) so a second coroutine sees it immediately.
-                if ign_clean in self._creating_alerts:
-                    return
-                self._creating_alerts.add(ign_clean)
-                try:
+                        embed.add_field(name=name, value=value, inline=inline)
+                    await existing_msg.edit(embed=embed)
+                    logger.info(f"[FLIGHT] Updated existing alert for {ign} (re-join attempt #{rejoin_count})")
+                else:
                     embed = discord.Embed(
                         description=(
                             f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
@@ -1093,8 +1095,8 @@ class FlightLoggerCog(commands.Cog):
                     view = TravelerActionView(self.bot, ign, visit_id=visit_id)
                     sent_msg = await output_channel.send(embed=embed, view=view)
                     self._pending_alerts[ign_clean] = sent_msg.id
-                finally:
-                    self._creating_alerts.discard(ign_clean)
+            finally:
+                self._creating_alerts.discard(ign_clean)
 
     @commands.hybrid_command(name="recover_flights", aliases=["recoverflights"])
     @app_commands.describe(hours="How many hours to scan back (default: 48)", mode="Execution mode: 'dry' or 'run'")
