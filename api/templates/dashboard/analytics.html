@@ -9,7 +9,7 @@
 
 {% block content %}
 
-<!-- Island type filter -->
+<!-- Island type filter + export button -->
 <div class="d-flex align-items-center gap-2 mb-4 flex-wrap">
   <span class="fw-bold x-small" style="color:#aaa;">Filter by island type:</span>
   <a href="{{ url_for('dashboard.analytics') }}"
@@ -33,6 +33,12 @@
     Showing: {{ 'Free' if island_type_filter == 'free' else 'Sub' }} Islands only
   </span>
   {% endif %}
+  <a href="{{ url_for('dashboard.analytics_export_csv', island_type=island_type_filter) if island_type_filter else url_for('dashboard.analytics_export_csv') }}"
+     class="btn rounded-pill fw-bold px-4 py-2 ms-auto"
+     style="font-size:.82rem;background:#e9f2e9;color:var(--nook-green);border:none;"
+     title="Download visit log as CSV">
+    <i class="bi bi-download me-1"></i>Export CSV
+  </a>
 </div>
 
 <!-- Quick summary stats row -->
@@ -41,24 +47,85 @@
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-calendar-day-fill me-1"></i>Visits Today</div>
       <div class="stat-value text-nook-green">{{ visits_today }}</div>
+      {% if warnings_today > 0 %}
+      <div class="x-small fw-bold mt-1" style="color:var(--nook-yellow);">
+        <i class="bi bi-exclamation-triangle-fill me-1"></i>{{ warnings_today }} warning{{ 's' if warnings_today != 1 else '' }} today
+      </div>
+      {% endif %}
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-calendar-week-fill me-1"></i>Visits This Week</div>
       <div class="stat-value" style="color:var(--dal-blue);">{{ visits_week }}</div>
+      {% set week_delta = visits_week - visits_prev_week %}
+      {% if visits_prev_week > 0 %}
+      <div class="x-small fw-bold mt-1"
+           style="color:{% if week_delta >= 0 %}var(--nook-green){% else %}#e06c75{% endif %};">
+        <i class="bi bi-arrow-{% if week_delta >= 0 %}up{% else %}down{% endif %}-short"></i>
+        {% if week_delta >= 0 %}+{% endif %}{{ week_delta }} vs prev week
+      </div>
+      {% endif %}
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-exclamation-triangle-fill me-1"></i>Warnings (7d)</div>
       <div class="stat-value" style="color:var(--nook-yellow);">{{ warnings_week }}</div>
+      {% if visits_week > 0 %}
+      <div class="x-small fw-bold mt-1" style="color:#aaa;">
+        {{ warn_rate_week }}% warn rate (7d)
+      </div>
+      {% endif %}
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-airplane-fill me-1"></i>Total Visits</div>
       <div class="stat-value" style="color:#b07cdc;">{{ auth_stats.authorized + auth_stats.unauthorized }}</div>
+      <div class="x-small fw-bold mt-1" style="color:#aaa;">
+        avg {{ avg_visits_30d }}/day (30d)
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- All-time totals row -->
+<div class="row g-4 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-people-fill me-1"></i>Unique Travelers</div>
+      <div class="stat-value" style="color:var(--nook-green);">{{ total_unique_travelers }}</div>
+      <div class="x-small fw-bold mt-1" style="color:#aaa;">all-time distinct visitors</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-map-fill me-1"></i>Unique Islands</div>
+      <div class="stat-value" style="color:var(--dal-blue);">{{ total_unique_islands }}</div>
+      <div class="x-small fw-bold mt-1" style="color:#aaa;">all-time distinct destinations</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-clock-history me-1"></i>Peak Hour (UTC)</div>
+      {% if peak_hour is not none %}
+      <div class="stat-value" style="color:#f5a623;">{{ '%02d'|format(peak_hour) }}:00</div>
+      <div class="x-small fw-bold mt-1" style="color:#aaa;">busiest hour all-time</div>
+      {% else %}
+      <div class="stat-value" style="color:#ccc;">—</div>
+      {% endif %}
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="stat-card">
+      <div class="stat-label"><i class="bi bi-shield-check-fill me-1"></i>Auth Rate</div>
+      {% if auth_rate_pct is not none %}
+      <div class="stat-value" style="color:#28a745;">{{ auth_rate_pct }}%</div>
+      {% else %}
+      <div class="stat-value" style="color:#ccc;">—</div>
+      {% endif %}
+      <div class="x-small fw-bold mt-1" style="color:#aaa;">authorized visits all-time</div>
     </div>
   </div>
 </div>
@@ -289,6 +356,12 @@
 <div class="section-card mb-4">
   <div class="section-card-header">
     <span><i class="bi bi-clock-fill me-2" style="color:#f5a623;"></i>Visits by Hour of Day (UTC)</span>
+    {% if peak_hour is not none %}
+    <span class="fw-bold x-small"
+          style="color:#f5a623;background:#fff8ec;border-radius:8px;padding:3px 10px;">
+      <i class="bi bi-star-fill me-1"></i>Peak: {{ '%02d'|format(peak_hour) }}:00–{{ '%02d'|format((peak_hour + 1) % 24) }}:00 UTC
+    </span>
+    {% endif %}
   </div>
   <div class="p-4">
     <div class="chart-wrap" style="height:200px;">
@@ -416,6 +489,76 @@
   </div>
 </div>
 {% endif %}
+
+<!-- Week-over-Week Momentum -->
+<div class="section-card mb-4">
+  <div class="section-card-header">
+    <span><i class="bi bi-graph-up me-2" style="color:var(--dal-blue);"></i>Week-over-Week Momentum</span>
+  </div>
+  <div class="p-4">
+    <div class="row g-4">
+      <div class="col-12 col-md-4">
+        <div class="d-flex align-items-center gap-3">
+          <div style="width:52px;height:52px;border-radius:50%;
+                      background:{% if visits_week >= visits_prev_week %}#e8f5e9{% else %}#fce8e8{% endif %};
+                      display:flex;align-items:center;justify-content:center;">
+            <i class="bi bi-arrow-{% if visits_week >= visits_prev_week %}up{% else %}down{% endif %}-circle-fill"
+               style="font-size:1.6rem;color:{% if visits_week >= visits_prev_week %}var(--nook-green){% else %}#e06c75{% endif %};"></i>
+          </div>
+          <div>
+            <div class="fw-black ac-font" style="font-size:1.6rem;
+                 color:{% if visits_week >= visits_prev_week %}var(--nook-green){% else %}#e06c75{% endif %};">
+              {% set week_delta = visits_week - visits_prev_week %}
+              {% if week_delta >= 0 %}+{% endif %}{{ week_delta }}
+            </div>
+            <div class="x-small fw-bold" style="color:#aaa;">visits vs prior week</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4">
+        <div class="d-flex align-items-center gap-3">
+          <div style="width:52px;height:52px;border-radius:50%;background:#e9f2e9;
+                      display:flex;align-items:center;justify-content:center;">
+            <i class="bi bi-calendar-week-fill" style="font-size:1.3rem;color:var(--dal-blue);"></i>
+          </div>
+          <div>
+            <div class="fw-black ac-font" style="font-size:1.6rem;color:var(--dal-blue);">{{ visits_week }}</div>
+            <div class="x-small fw-bold" style="color:#aaa;">this week (last 7 days)</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4">
+        <div class="d-flex align-items-center gap-3">
+          <div style="width:52px;height:52px;border-radius:50%;background:#f0f4ec;
+                      display:flex;align-items:center;justify-content:center;">
+            <i class="bi bi-calendar2-week" style="font-size:1.3rem;color:#aaa;"></i>
+          </div>
+          <div>
+            <div class="fw-black ac-font" style="font-size:1.6rem;color:#aaa;">{{ visits_prev_week }}</div>
+            <div class="x-small fw-bold" style="color:#aaa;">prior week (7–14 days ago)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% if visits_week + visits_prev_week > 0 %}
+    <div class="mt-4">
+      <div class="d-flex justify-content-between x-small fw-bold mb-1" style="color:#aaa;">
+        <span>Prior week</span>
+        <span>This week</span>
+      </div>
+      <div style="height:10px;border-radius:5px;background:#f0f4ec;overflow:hidden;position:relative;">
+        {% set max_wk = [visits_week, visits_prev_week]|max %}
+        {% set pct_prev = (visits_prev_week / max_wk * 100)|int if max_wk > 0 else 0 %}
+        {% set pct_curr = (visits_week      / max_wk * 100)|int if max_wk > 0 else 0 %}
+        <div style="position:absolute;left:0;top:0;height:100%;width:{{ pct_prev }}%;
+                    background:#b0d4f7;border-radius:5px;opacity:.6;"></div>
+        <div style="position:absolute;left:0;top:0;height:100%;width:{{ pct_curr }}%;
+                    background:var(--dal-blue);border-radius:5px;opacity:.85;"></div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
 
 {% block scripts %}
 <script>

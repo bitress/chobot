@@ -19,15 +19,6 @@
     </span>
   </div>
   <div class="d-flex align-items-center gap-2 flex-wrap">
-    <!-- Search -->
-    <div class="d-flex align-items-center gap-2"
-         style="background:#fff;border:2px solid #e1e6d3;border-radius:50px;padding:6px 14px;">
-      <i class="bi bi-search" style="color:#ccc;"></i>
-      <input id="islandSearch" type="text" placeholder="Search islands…"
-             class="border-0 outline-0 shadow-none"
-             style="font-family:var(--font-main);font-weight:700;font-size:.9rem;color:#555;
-                    background:transparent;outline:none;min-width:180px;">
-    </div>
     <!-- Sync maps from bucket -->
     <button id="syncMapsBtn" type="button"
             class="btn btn-sm fw-bold d-flex align-items-center gap-1"
@@ -43,7 +34,7 @@
 <div class="section-card">
   {% if islands %}
   <div class="table-responsive">
-    <table class="db-table">
+    <table id="islandsTable" class="db-table">
       <thead>
         <tr>
           <th style="width:56px;">Map</th>
@@ -114,15 +105,6 @@
 </div>
 
 <script>
-const search = document.getElementById('islandSearch');
-search.addEventListener('input', () => {
-  const q = search.value.toLowerCase();
-  document.querySelectorAll('.island-row').forEach(row => {
-    const text = (row.dataset.name + ' ' + row.dataset.type).toLowerCase();
-    row.style.display = text.includes(q) ? '' : 'none';
-  });
-});
-
 // Sync Maps button — calls the back-fill endpoint then reloads
 document.getElementById('syncMapsBtn').addEventListener('click', async function () {
   const btn = this;
@@ -146,6 +128,34 @@ document.getElementById('syncMapsBtn').addEventListener('click', async function 
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-cloud-download"></i> Sync Maps';
+  }
+});
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var el = document.getElementById('islandsTable');
+  if (el) {
+    var colCount = el.querySelectorAll('thead th').length;
+    var cols = [{ select: 0, sortable: false }];
+    // Last column is the Edit button — disable sorting on it
+    if (colCount > 1) { cols.push({ select: colCount - 1, sortable: false }); }
+    new simpleDatatables.DataTable(el, {
+      searchable: true,
+      sortable:   true,
+      paging:     true,
+      perPage:    15,
+      perPageSelect: [10, 15, 25, 50],
+      columns: cols,
+      labels: {
+        placeholder:  "Search islands…",
+        perPage:      "{select} per page",
+        noRows:       "No islands found.",
+        info:         "Showing {start}–{end} of {rows} islands"
+      }
+    });
   }
 });
 </script>

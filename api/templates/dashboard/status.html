@@ -9,26 +9,50 @@
 
 {% block content %}
 
-<!-- Stat tiles -->
-<div class="row row-cols-2 row-cols-md-3 g-4 mb-4">
+<!-- Stat tiles — mirrors Overview "Island Status Breakdown" -->
+<div class="row row-cols-2 row-cols-md-4 g-4 mb-4">
   <div class="col">
-    <div class="stat-card">
-      <div class="stat-label"><i class="bi bi-geo-alt-fill me-1"></i>Total Islands</div>
-      <div class="stat-value" style="color:#444;">{{ island_count }}</div>
-    </div>
-  </div>
-  <div class="col">
-    <div class="stat-card">
-      <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>Online</div>
+    <div class="stat-card" style="border-left:4px solid #e8f5e9;">
+      <div class="stat-label">
+        <span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>Online
+      </div>
       <div class="stat-value text-nook-green">{{ online_count }}</div>
     </div>
   </div>
   <div class="col">
-    <div class="stat-card">
-      <div class="stat-label"><span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>Offline</div>
+    <div class="stat-card" style="border-left:4px solid #fff3cd;">
+      <div class="stat-label">
+        <span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>Sub Only
+      </div>
+      <div class="stat-value" style="color:#f5a623;">{{ sub_only_count }}</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="stat-card" style="border-left:4px solid #deeeff;">
+      <div class="stat-label">
+        <span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>Refreshing
+      </div>
+      <div class="stat-value" style="color:#4f9ef8;">{{ refreshing_count }}</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="stat-card" style="border-left:4px solid #f0f0f0;">
+      <div class="stat-label">
+        <span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>Offline
+      </div>
       <div class="stat-value" style="color:#aaa;">{{ offline_count }}</div>
     </div>
   </div>
+</div>
+
+<!-- Total islands summary strip -->
+<div class="section-card mb-4 px-4 py-3 d-flex align-items-center gap-2 flex-wrap">
+  <i class="bi bi-geo-alt-fill text-nook-green"></i>
+  <span class="fw-bold" style="color:#444;">{{ island_count }} islands total</span>
+  <span class="ms-auto x-small fw-bold" style="color:#aaa;">
+    {{ online_count }} of {{ island_count }} currently <strong style="color:var(--nook-green);">ONLINE</strong>
+  </span>
+  <span class="fw-bold x-small" style="color:var(--nook-green);">{{ online_pct }}%</span>
 </div>
 
 <!-- Chart + progress -->
@@ -49,16 +73,22 @@
           <div class="d-flex align-items-center gap-2 mb-2">
             <span class="status-dot" style="background:#28a745;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Online</span>
-            <span class="ms-auto fw-black ac-font" style="color:var(--nook-green);font-size:1.2rem;">
-              {{ online_count }}
-            </span>
+            <span class="ms-auto fw-black ac-font" style="color:var(--nook-green);font-size:1.2rem;">{{ online_count }}</span>
+          </div>
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="status-dot" style="background:#f5a623;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Sub Only</span>
+            <span class="ms-auto fw-black ac-font" style="color:#f5a623;font-size:1.2rem;">{{ sub_only_count }}</span>
+          </div>
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="status-dot" style="background:#4f9ef8;"></span>
+            <span class="fw-bold" style="color:#888;font-size:.88rem;">Refreshing</span>
+            <span class="ms-auto fw-black ac-font" style="color:#4f9ef8;font-size:1.2rem;">{{ refreshing_count }}</span>
           </div>
           <div class="d-flex align-items-center gap-2 mb-3">
             <span class="status-dot" style="background:#ccc;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Offline</span>
-            <span class="ms-auto fw-black ac-font" style="color:#aaa;font-size:1.2rem;">
-              {{ offline_count }}
-            </span>
+            <span class="ms-auto fw-black ac-font" style="color:#aaa;font-size:1.2rem;">{{ offline_count }}</span>
           </div>
           <div class="divider-dashed mt-0 mb-2"></div>
           <div class="d-flex align-items-center justify-content-between">
@@ -70,7 +100,7 @@
     </div>
   </div>
 
-  <!-- Online progress + refreshing breakdown -->
+  <!-- Capacity Overview — progress bars per status -->
   <div class="col-12 col-lg-7">
     <div class="section-card h-100">
       <div class="section-card-header">
@@ -89,14 +119,49 @@
             <span class="x-small fw-bold" style="color:#ccc;">{{ online_pct }}%</span>
           </div>
           <div class="progress rounded-pill" style="height:10px;background:#e9f2e9;">
-            <div class="progress-bar rounded-pill"
-                 role="progressbar"
+            <div class="progress-bar rounded-pill" role="progressbar"
                  style="width:{{ online_pct }}%;background:var(--nook-green);"
-                 aria-valuenow="{{ online_count }}"
-                 aria-valuemin="0"
-                 aria-valuemax="{{ island_count }}"></div>
+                 aria-valuenow="{{ online_count }}" aria-valuemin="0" aria-valuemax="{{ island_count }}"></div>
           </div>
         </div>
+
+        <!-- Sub Only -->
+        {% if sub_only_count > 0 %}
+        <div class="mb-4">
+          <div class="mb-1 d-flex justify-content-between align-items-center">
+            <span class="x-small fw-bold" style="color:#888;">
+              <span class="status-dot d-inline-block me-1" style="background:#f5a623;"></span>
+              <strong style="color:#f5a623;">{{ sub_only_count }}</strong>
+              of {{ island_count }} islands <strong style="color:#f5a623;">SUB ONLY</strong>
+            </span>
+            <span class="x-small fw-bold" style="color:#ccc;">{{ sub_only_pct }}%</span>
+          </div>
+          <div class="progress rounded-pill" style="height:10px;background:#fff8ec;">
+            <div class="progress-bar rounded-pill" role="progressbar"
+                 style="width:{{ sub_only_pct }}%;background:#f5a623;"
+                 aria-valuenow="{{ sub_only_count }}" aria-valuemin="0" aria-valuemax="{{ island_count }}"></div>
+          </div>
+        </div>
+        {% endif %}
+
+        <!-- Refreshing -->
+        {% if refreshing_count > 0 %}
+        <div class="mb-4">
+          <div class="mb-1 d-flex justify-content-between align-items-center">
+            <span class="x-small fw-bold" style="color:#888;">
+              <span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>
+              <strong style="color:#4f9ef8;">{{ refreshing_count }}</strong>
+              of {{ island_count }} islands <strong style="color:#4f9ef8;">REFRESHING</strong>
+            </span>
+            <span class="x-small fw-bold" style="color:#ccc;">{{ refreshing_pct }}%</span>
+          </div>
+          <div class="progress rounded-pill" style="height:10px;background:#deeeff;">
+            <div class="progress-bar rounded-pill" role="progressbar"
+                 style="width:{{ refreshing_pct }}%;background:#4f9ef8;"
+                 aria-valuenow="{{ refreshing_count }}" aria-valuemin="0" aria-valuemax="{{ island_count }}"></div>
+          </div>
+        </div>
+        {% endif %}
 
         <!-- Offline -->
         <div>
@@ -109,12 +174,9 @@
             <span class="x-small fw-bold" style="color:#ccc;">{{ off_pct }}%</span>
           </div>
           <div class="progress rounded-pill" style="height:10px;background:#f5f5f5;">
-            <div class="progress-bar rounded-pill"
-                 role="progressbar"
+            <div class="progress-bar rounded-pill" role="progressbar"
                  style="width:{{ off_pct }}%;background:#ccc;"
-                 aria-valuenow="{{ offline_count }}"
-                 aria-valuemin="0"
-                 aria-valuemax="{{ island_count }}"></div>
+                 aria-valuenow="{{ offline_count }}" aria-valuemin="0" aria-valuemax="{{ island_count }}"></div>
           </div>
         </div>
 
@@ -126,8 +188,10 @@
 
 <!-- Per-status island tables -->
 {% for status_label, color, bg, border in [
-    ('ONLINE',  '#28a745', '#e8f5e9', '#b8dfc0'),
-    ('OFFLINE', '#aaa',    '#f5f5f5', '#e0e0e0'),
+    ('ONLINE',     '#28a745', '#e8f5e9', '#b8dfc0'),
+    ('SUB ONLY',   '#f5a623', '#fff8ec', '#f5d89a'),
+    ('REFRESHING', '#4f9ef8', '#deeeff', '#a8c8f8'),
+    ('OFFLINE',    '#aaa',    '#f5f5f5', '#e0e0e0'),
 ] %}
 {% set bucket = grouped.get(status_label, []) %}
 {% if bucket %}
@@ -143,7 +207,7 @@
     </span>
   </div>
   <div class="table-responsive">
-    <table class="db-table">
+    <table id="statusTable-{{ status_label | lower | replace(' ', '-') }}" class="db-table">
       <thead>
         <tr>
           <th style="width:56px;">Map</th>
@@ -210,19 +274,21 @@
 {% block scripts %}
 <script>
 (function () {
-  var online  = {{ online_count | tojson }};
-  var offline = {{ offline_count | tojson }};
-
   var ctx = document.getElementById('statusChart');
   if (!ctx) return;
 
   new Chart(ctx, {
     type: 'doughnut',
     data: {
-      labels: ['Online', 'Offline'],
+      labels: ['Online', 'Sub Only', 'Refreshing', 'Offline'],
       datasets: [{
-        data: [online, offline],
-        backgroundColor: ['#28a745', '#d9d9d9'],
+        data: [
+          {{ online_count | tojson }},
+          {{ sub_only_count | tojson }},
+          {{ refreshing_count | tojson }},
+          {{ offline_count | tojson }}
+        ],
+        backgroundColor: ['#28a745', '#f5a623', '#4f9ef8', '#d9d9d9'],
         borderWidth: 0,
         hoverOffset: 6,
       }]
@@ -242,5 +308,29 @@
     }
   });
 })();
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var dtOpts = {
+    searchable:    true,
+    sortable:      true,
+    paging:        true,
+    perPage:       10,
+    perPageSelect: [10, 25, 50],
+    columns: [
+      { select: 0, sortable: false },  // Map thumbnail — not sortable
+    ],
+    labels: {
+      placeholder: "Search…",
+      perPage:     "{select} per page",
+      noRows:      "No islands found.",
+      info:        "Showing {start}–{end} of {rows} islands"
+    }
+  };
+  document.querySelectorAll('[id^="statusTable-"]').forEach(function (el) {
+    new simpleDatatables.DataTable(el, dtOpts);
+  });
+});
 </script>
 {% endblock %}

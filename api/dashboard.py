@@ -7,6 +7,8 @@ Access is protected by a secret key (DASHBOARD_SECRET env var).
 import json
 import os
 import re
+import csv
+import io
 import secrets
 import sqlite3
 import logging
@@ -25,7 +27,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 
 from flask import (
     Blueprint, render_template, request, redirect,
-    url_for, session, flash, jsonify, abort, g,
+    url_for, session, flash, jsonify, abort, g, Response,
 )
 
 from utils.config import Config
@@ -1024,41 +1026,51 @@ def island_status():
     try:
         rows = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
-        bot_status = _load_bot_status_map(db)
     except sqlite3.Error:
         db_islands = []
-        bot_status = {}
     finally:
         db.close()
 
-    # Attach discord_bot_online to each island record (default False if not in bot_status)
-    for isl in db_islands:
-        isl["discord_bot_online"] = bot_status.get(isl.get("id", ""), False)
-
     island_count = len(db_islands)
-    online_count = sum(1 for isl in db_islands if isl.get("discord_bot_online"))
-    offline_count = island_count - online_count
+
+    # Build status_map from islands.status — same source as the Overview panel
+    status_map: dict[str, int] = {}
+    for isl in db_islands:
+        s = (isl.get("status") or "OFFLINE").upper()
+        status_map[s] = status_map.get(s, 0) + 1
+
+    online_count    = status_map.get("ONLINE", 0)
+    sub_only_count  = status_map.get("SUB ONLY", 0)
+    refreshing_count = status_map.get("REFRESHING", 0)
+    offline_count   = status_map.get("OFFLINE", 0)
 
     def _pct(count):
         return round(count * 100 / island_count) if island_count else 0
 
-    online_pct = _pct(online_count)
-    off_pct = _pct(offline_count)
+    online_pct     = _pct(online_count)
+    sub_only_pct   = _pct(sub_only_count)
+    refreshing_pct = _pct(refreshing_count)
+    off_pct        = _pct(offline_count)
 
-    # Group islands by discord_bot_online for the per-section tables
-    grouped = {"ONLINE": [], "OFFLINE": []}
+    # Group islands by their status field for the per-section tables
+    grouped: dict[str, list] = {"ONLINE": [], "SUB ONLY": [], "REFRESHING": [], "OFFLINE": []}
     for isl in db_islands:
-        if isl.get("discord_bot_online"):
-            grouped["ONLINE"].append(isl)
-        else:
-            grouped["OFFLINE"].append(isl)
+        s = (isl.get("status") or "OFFLINE").upper()
+        if s not in grouped:
+            grouped[s] = []
+        grouped[s].append(isl)
 
     return render_template(
         "dashboard/status.html",
         island_count=island_count,
+        status_map=status_map,
         online_count=online_count,
+        sub_only_count=sub_only_count,
+        refreshing_count=refreshing_count,
         offline_count=offline_count,
         online_pct=online_pct,
+        sub_only_pct=sub_only_pct,
+        refreshing_pct=refreshing_pct,
         off_pct=off_pct,
         grouped=grouped,
     )
@@ -1223,6 +1235,54 @@ def analytics():
             f"WHERE timestamp > strftime('%s','now','-30 days'){it_clause}",
             it_params,
         ).fetchone()[0]
+        # All-time unique travelers and islands
+        total_unique_travelers = db.execute(
+            f"SELECT COUNT(DISTINCT ign) FROM island_visits"
+            f"{' WHERE island_type = ?' if island_type_filter else ''}",
+            it_params,
+        ).fetchone()[0]
+        total_unique_islands = db.execute(
+            f"SELECT COUNT(DISTINCT destination) FROM island_visits"
+            f"{' WHERE island_type = ?' if island_type_filter else ''}",
+            it_params,
+        ).fetchone()[0]
+        # Visits in the previous week (7–14 days ago) for week-over-week delta
+        visits_prev_week = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            f"WHERE timestamp > strftime('%s','now','-14 days') "
+            f"AND timestamp <= strftime('%s','now','-7 days'){it_clause}",
+            it_params,
+        ).fetchone()[0]
+        # Warnings issued today
+        if island_type_filter:
+            warnings_today = db.execute(
+                "SELECT COUNT(*) FROM warnings w "
+                "JOIN island_visits iv ON w.visit_id = iv.id "
+                "WHERE w.timestamp > strftime('%s','now','start of day') "
+                "AND iv.island_type = ?",
+                it_params,
+            ).fetchone()[0]
+        else:
+            warnings_today = db.execute(
+                "SELECT COUNT(*) FROM warnings "
+                "WHERE timestamp > strftime('%s','now','start of day')"
+            ).fetchone()[0]
+        # Peak hour (hour with the most visits all-time)
+        peak_hour_row = db.execute(
+            "SELECT CAST(strftime('%H', timestamp, 'unixepoch') AS INTEGER) AS hour, "
+            "COUNT(*) AS cnt "
+            f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+            "GROUP BY hour ORDER BY cnt DESC LIMIT 1",
+            it_params,
+        ).fetchone()
+        peak_hour = peak_hour_row["hour"] if peak_hour_row else None
+        # Average visits per day over the last 30 days
+        avg_visits_30d_row = db.execute(
+            "SELECT COUNT(*) * 1.0 / 30 AS avg FROM island_visits "
+            f"WHERE timestamp > strftime('%s','now','-30 days'){it_clause}",
+            it_params,
+        ).fetchone()
+        avg_visits_30d = round(avg_visits_30d_row["avg"] or 0, 1)
     except sqlite3.Error:
         top_islands = top_travelers = visits_by_day = visits_by_day_30 = []
         visits_by_hour = []
@@ -1232,6 +1292,10 @@ def analytics():
         visits_today = visits_week = warnings_week = 0
         dow_raw = []
         new_7d = total_unique_7d = new_30d = total_unique_30d = 0
+        total_unique_travelers = total_unique_islands = 0
+        visits_prev_week = warnings_today = 0
+        peak_hour = None
+        avg_visits_30d = 0.0
     finally:
         db.close()
 
@@ -1255,6 +1319,10 @@ def analytics():
         "new_30d": new_30d, "returning_30d": returning_30d, "total_30d": total_unique_30d,
     }
 
+    total_visits = auth_stats["authorized"] + auth_stats["unauthorized"]
+    auth_rate_pct = round(auth_stats["authorized"] / total_visits * 100) if total_visits else None
+    warn_rate_week = round(warnings_week / visits_week * 100, 1) if visits_week else 0.0
+
     return render_template(
         "dashboard/analytics.html",
         top_islands=top_islands,
@@ -1269,8 +1337,63 @@ def analytics():
         visits_today=visits_today,
         visits_week=visits_week,
         warnings_week=warnings_week,
+        warnings_today=warnings_today,
         new_returning=new_returning,
         island_type_filter=island_type_filter,
+        total_unique_travelers=total_unique_travelers,
+        total_unique_islands=total_unique_islands,
+        visits_prev_week=visits_prev_week,
+        peak_hour=peak_hour,
+        avg_visits_30d=avg_visits_30d,
+        auth_rate_pct=auth_rate_pct,
+        warn_rate_week=warn_rate_week,
+    )
+
+
+@dashboard.route("/analytics/export.csv")
+@admin_required
+def analytics_export_csv():
+    """Export visit log data as a CSV download."""
+    island_type_filter = request.args.get("island_type", "").lower()
+    if island_type_filter not in ("free", "sub"):
+        island_type_filter = ""
+
+    it_clause = " AND island_type = ?" if island_type_filter else ""
+    it_params = [island_type_filter] if island_type_filter else []
+
+    db = get_db()
+    try:
+        # Limit to 10 000 rows to keep response size and memory usage reasonable.
+        rows = db.execute(
+            "SELECT ign, origin_island, destination, island_type, authorized, "
+            "datetime(timestamp, 'unixepoch') AS visit_time "
+            f"FROM island_visits WHERE 1=1{it_clause} "
+            "ORDER BY timestamp DESC LIMIT 10000",
+            it_params,
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        db.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["IGN", "Origin Island", "Destination", "Island Type", "Authorized", "Visit Time (UTC)"])
+    for r in rows:
+        writer.writerow([
+            r["ign"],
+            r["origin_island"],
+            r["destination"],
+            r["island_type"],
+            "Yes" if r["authorized"] else "No",
+            r["visit_time"],
+        ])
+
+    filename = f"chobot_visits{'_' + island_type_filter if island_type_filter else ''}.csv"
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
