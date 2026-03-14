@@ -366,21 +366,51 @@ class PunishmentBuilderView(discord.ui.View):
         self.stop()
 
 
+class AdmitUserSelect(discord.ui.UserSelect):
+    """Optional user selector for linking a Discord member to an admit action."""
+
+    def __init__(self, parent_view):
+        super().__init__(
+            placeholder="(Optional) Link to a Discord user...",
+            min_values=0,
+            max_values=1,
+            row=0,
+        )
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.selected_member = self.values[0] if self.values else None
+        await interaction.response.edit_message(content=self.parent_view._build_content())
+
+
 class AdmitConfirmView(discord.ui.View):
     """Confirmation dialog for admitting a traveler."""
+
     def __init__(self, parent_view: "TravelerActionView", ign: str, original_alert_message: discord.Message):
         super().__init__(timeout=300)
         self.parent_view = parent_view
         self.ign = ign
         self.original_alert_message = original_alert_message
+        self.selected_member: discord.Member | discord.User | None = None
+        self.add_item(AdmitUserSelect(self))
 
-    @discord.ui.button(label="Yes, Admit", style=discord.ButtonStyle.success)
+    def _build_content(self) -> str:
+        base = f"Are you sure you want to admit **{self.ign or 'Visitor'}**?"
+        if self.selected_member:
+            return f"{base}\n👤 Linked to: {self.selected_member.mention}"
+        return base
+
+    @discord.ui.button(label="Yes, Admit", style=discord.ButtonStyle.success, row=1)
     async def confirm_admit(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Proceed with admission."""
         msg = f"**{self.ign or 'Visitor'}** is cleared for entry."
+        if self.selected_member:
+            msg += f" Linked to {self.selected_member.mention}."
         # Update the original alert message (the flight log alert)
         await self.parent_view._resolve_alert(
-            interaction, "AUTHORIZED", COLOR_SUCCESS, msg, log_message=self.original_alert_message
+            interaction, "AUTHORIZED", COLOR_SUCCESS, msg,
+            target_user=self.selected_member,
+            log_message=self.original_alert_message,
         )
         cog = self.parent_view.bot.get_cog("FlightLoggerCog") if self.parent_view.bot else None
         if cog:
@@ -388,12 +418,27 @@ class AdmitConfirmView(discord.ui.View):
             visit_id = getattr(self.parent_view, 'visit_id', None)
             if not visit_id and ign:
                 visit_id = await cog._get_recent_visit_id_by_ign(ign)
-            await cog.add_warning(None, interaction.guild.id, None, interaction.user.id, visit_id, action_type='ADMIT')
+            if visit_id is not None:
+                db = await cog._get_db()
+                # Mark the visit as authorized now that a mod has manually admitted the traveler
+                await db.execute(
+                    "UPDATE island_visits SET authorized = 1 WHERE id = ?",
+                    (visit_id,),
+                )
+                # Link the selected Discord member to the visit record if provided
+                if self.selected_member:
+                    await db.execute(
+                        "UPDATE island_visits SET user_id = ? WHERE id = ? AND user_id IS NULL",
+                        (self.selected_member.id, visit_id),
+                    )
+                await db.commit()
+            target_id = self.selected_member.id if self.selected_member else None
+            await cog.add_warning(target_id, interaction.guild.id, None, interaction.user.id, visit_id, action_type='ADMIT')
         # Update the confirmation message to show success
         await interaction.response.edit_message(content=msg, view=None)
         self.stop()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
     async def cancel_admit(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Cancel admission."""
         await interaction.response.edit_message(content="Admission cancelled.", view=None)
