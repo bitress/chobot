@@ -147,7 +147,7 @@
         <div class="mb-3">
           <div class="d-flex justify-content-between align-items-center mb-1">
             <span class="fw-bold x-small" style="color:#444;">
-              {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}#{{ loop.index }}{% endif %}
+              {% if loop.index == 1 %}<i class="fa-solid fa-medal me-1" style="color:#FFD700;"></i>{% elif loop.index == 2 %}<i class="fa-solid fa-medal me-1" style="color:#C0C0C0;"></i>{% elif loop.index == 3 %}<i class="fa-solid fa-medal me-1" style="color:#CD7F32;"></i>{% else %}#{{ loop.index }} {% endif %}
               {{ isl.name }}
             </span>
             <span class="fw-black x-small" style="color:var(--nook-green);">{{ isl.count | intcomma }} visits</span>
@@ -185,7 +185,7 @@
         <div class="mb-3">
           <div class="d-flex justify-content-between align-items-center mb-1">
             <span class="fw-bold x-small" style="color:#444;">
-              {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}#{{ loop.index }}{% endif %}
+              {% if loop.index == 1 %}<i class="fa-solid fa-medal me-1" style="color:#FFD700;"></i>{% elif loop.index == 2 %}<i class="fa-solid fa-medal me-1" style="color:#C0C0C0;"></i>{% elif loop.index == 3 %}<i class="fa-solid fa-medal me-1" style="color:#CD7F32;"></i>{% else %}#{{ loop.index }} {% endif %}
               {{ t.ign }}
             </span>
             <span class="fw-black x-small" style="color:var(--dal-blue);">{{ t.count | intcomma }} flights</span>
@@ -241,9 +241,9 @@
             </td>
             <td>
               {% if entry.authorized %}
-                <span class="badge badge-auth rounded-pill">✔ Authorized</span>
+                <span class="badge badge-auth rounded-pill"><i class="fa-solid fa-check me-1"></i>Authorized</span>
               {% else %}
-                <span class="badge badge-unkn rounded-pill">? Unknown</span>
+                <span class="badge badge-unkn rounded-pill"><i class="fa-solid fa-question me-1"></i>Unknown</span>
               {% endif %}
             </td>
             <td class="x-small" style="color:#aaa;">
@@ -267,7 +267,7 @@
   {% if current_role == 'admin' %}
   <div class="col-12 col-sm-4">
     <a href="{{ url_for('dashboard.islands') }}" class="quick-card">
-      <div class="fs-2 mb-2">🏝️</div>
+      <div class="fs-2 mb-2"><i class="fa-solid fa-umbrella-beach"></i></div>
       <div class="fw-black" style="color:#444;">Manage Islands</div>
       <div class="x-small mt-1" style="color:#aaa;font-weight:700;">View, edit, and update island data</div>
     </a>
@@ -275,14 +275,14 @@
   {% endif %}
   <div class="col-12 col-sm-4">
     <a href="{{ url_for('dashboard.logs') }}" class="quick-card">
-      <div class="fs-2 mb-2">📋</div>
+      <div class="fs-2 mb-2"><i class="fa-solid fa-clipboard-list"></i></div>
       <div class="fw-black" style="color:#444;">XLog Reports</div>
       <div class="x-small mt-1" style="color:#aaa;font-weight:700;">Flight logs &amp; moderation warnings</div>
     </a>
   </div>
   <div class="col-12 col-sm-4">
     <a href="{{ url_for('dashboard.analytics') }}" class="quick-card">
-      <div class="fs-2 mb-2">📊</div>
+      <div class="fs-2 mb-2"><i class="fa-solid fa-chart-bar"></i></div>
       <div class="fw-black" style="color:#444;">Analytics</div>
       <div class="x-small mt-1" style="color:#aaa;font-weight:700;">Most visited islands &amp; top travelers</div>
     </a>

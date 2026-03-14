@@ -15,17 +15,17 @@
   <a href="{{ url_for('dashboard.analytics') }}"
      class="btn rounded-pill fw-bold px-4 py-2 {% if not island_type_filter %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.82rem;">
-    🏝️ All Islands
+    <i class="fa-solid fa-umbrella-beach me-1"></i>All Islands
   </a>
   <a href="{{ url_for('dashboard.analytics', island_type='free') }}"
      class="btn rounded-pill fw-bold px-4 py-2 {% if island_type_filter == 'free' %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.82rem;">
-    🌴 Free Islands
+    <i class="fa-solid fa-tree me-1"></i>Free Islands
   </a>
   <a href="{{ url_for('dashboard.analytics', island_type='sub') }}"
      class="btn rounded-pill fw-bold px-4 py-2 {% if island_type_filter == 'sub' %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.82rem;">
-    ⭐ Sub Islands
+    <i class="fa-solid fa-star me-1"></i>Sub Islands
   </a>
   {% if island_type_filter %}
   <span class="ms-1 fw-bold x-small"
@@ -218,7 +218,7 @@
   <div class="col-12 col-lg-6">
     <div class="section-card h-100">
       <div class="section-card-header">
-        <span>🏝️ Most Visited Islands</span>
+        <span><i class="fa-solid fa-umbrella-beach me-2" style="color:var(--nook-green);"></i>Most Visited Islands</span>
       </div>
       {% if top_islands %}
       <div>
@@ -248,7 +248,7 @@
   <div class="col-12 col-lg-6">
     <div class="section-card h-100">
       <div class="section-card-header">
-        <span>✈️ Most Active Travelers</span>
+        <span><i class="fa-solid fa-plane me-2" style="color:#b07cdc;"></i>Most Active Travelers</span>
       </div>
       {% if top_travelers %}
       <div>
