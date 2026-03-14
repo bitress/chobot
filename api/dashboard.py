@@ -468,6 +468,20 @@ def _merge_island(db_row: dict, fs: dict | None) -> dict:
 # WEB ROUTES
 # ===========================================================================
 
+# ---------------------------------------------------------------------------
+# Domain restriction — dashboard is only served from console.chopaeng.com
+# ---------------------------------------------------------------------------
+_ALLOWED_DASHBOARD_HOST = "console.chopaeng.com"
+
+
+@dashboard.before_request
+def _restrict_to_console_domain():
+    """Return 404 for any request that did not arrive via console.chopaeng.com."""
+    host = request.host.split(":")[0]  # strip optional port
+    if host != _ALLOWED_DASHBOARD_HOST:
+        abort(404)
+
+
 @dashboard.errorhandler(403)
 def _forbidden(_e):
     return render_template("dashboard/403.html"), 403
