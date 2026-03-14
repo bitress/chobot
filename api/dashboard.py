@@ -472,6 +472,11 @@ def _merge_island(db_row: dict, fs: dict | None) -> dict:
 def _forbidden(_e):
     return render_template("dashboard/403.html"), 403
 
+@dashboard.errorhandler(500)
+def _internal_server_error(e):
+    logger.exception("Internal server error: %s", e)
+    return render_template("dashboard/500.html"), 500
+
 @dashboard.route("/login", methods=["GET", "POST"])
 def login():
     if _check_session():

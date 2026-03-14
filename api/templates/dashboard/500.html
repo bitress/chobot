@@ -1,0 +1,19 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Server Error — ChoBot Dashboard{% endblock %}
+{% block header %}Server Error{% endblock %}
+
+{% block content %}
+<div class="text-center py-5" role="alert">
+  <div class="fs-1 mb-3"><i class="bi bi-exclamation-triangle-fill" style="color:var(--nook-green);" aria-hidden="true"></i></div>
+  <h2 class="fw-black ac-font mb-2" style="color:var(--nook-green);">500 — Internal Server Error</h2>
+  <p class="fw-bold mb-4" style="color:#888;">
+    The server encountered an unexpected error.<br>
+    Please try again later or contact an administrator if the problem persists.
+  </p>
+  <a href="{{ url_for('dashboard.index') }}"
+     class="btn btn-nook-primary px-5 py-2 rounded-3 fw-bold">
+    <i class="bi bi-house-door-fill me-2"></i>Back to Overview
+  </a>
+</div>
+{% endblock %}
