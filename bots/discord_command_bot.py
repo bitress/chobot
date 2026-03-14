@@ -11,7 +11,7 @@ import time
 import re
 import random
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from itertools import cycle
 
 import discord
@@ -665,6 +665,19 @@ class DiscordCommandCog(commands.Cog):
                 "`!random` - Get a random item suggestion\n"
                 "`!ask <question>` - Ask the Chopaeng AI anything\n"
                 "`!help` - Show this help message"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name=f"{Config.STAR_PINK} Leaderboard Commands",
+            value=(
+                "`!topislands [sub|free] [today|week|month|alltime]`\n"
+                "↳ Most visited islands. Filter by type and/or time period.\n"
+                "*Aliases: !mostvisited*\n"
+                "`!toptravellers [sub|free] [today|week|month|alltime]`\n"
+                "↳ Top travellers by visit count. Filter by type and/or time period.\n"
+                "*Aliases: !toptravelers, !topvisitors*"
             ),
             inline=False
         )
@@ -1356,6 +1369,232 @@ class DiscordCommandCog(commands.Cog):
         await self.bot.wait_until_ready()
         await self.fetch_islands()
         await self.fetch_free_islands()
+
+    # ── Period choices shared by both leaderboard commands ──────────────────
+    _PERIOD_LABELS = {
+        "today":   "Today",
+        "week":    "Last 7 Days",
+        "month":   "This Month",
+        "alltime": "All Time",
+        "":        "All Time",
+    }
+
+    @staticmethod
+    def _period_cutoff(period: str) -> int | None:
+        """Return a Unix-timestamp lower-bound for the given period, or None for all-time.
+
+        Timestamps in island_visits are stored as UTC Unix seconds.  The server
+        is treated as UTC+8 for day/month boundaries (matching the dashboard).
+        """
+        TZ8 = timezone(timedelta(hours=8))
+        now8 = datetime.now(TZ8)
+        period = period.lower().strip()
+        if period == "today":
+            midnight = now8.replace(hour=0, minute=0, second=0, microsecond=0)
+            return int(midnight.astimezone(timezone.utc).timestamp())
+        if period == "week":
+            delta = now8 - timedelta(days=7)
+            return int(delta.astimezone(timezone.utc).timestamp())
+        if period == "month":
+            first = now8.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            return int(first.astimezone(timezone.utc).timestamp())
+        return None  # alltime / ""
+
+    @commands.hybrid_command(name="topislands", aliases=["mostvisited"])
+    @app_commands.describe(
+        kind="Filter by island type: 'sub', 'free', or leave blank for both.",
+        period="Time period: today, week, month, or alltime (default).",
+    )
+    @app_commands.choices(
+        kind=[
+            app_commands.Choice(name="sub — Sub Islands",   value="sub"),
+            app_commands.Choice(name="free — Free Islands", value="free"),
+        ],
+        period=[
+            app_commands.Choice(name="Today",        value="today"),
+            app_commands.Choice(name="Last 7 Days",  value="week"),
+            app_commands.Choice(name="This Month",   value="month"),
+            app_commands.Choice(name="All Time",     value="alltime"),
+        ],
+    )
+    async def top_islands(self, ctx, kind: str = "", period: str = "alltime"):
+        """Show the most visited islands. Filter by island type and/or time period."""
+        kind   = kind.lower().strip()
+        period = period.lower().strip()
+        if kind not in ("sub", "free", ""):
+            await ctx.reply("Please use `sub`, `free`, or leave blank for both.", ephemeral=True)
+            return
+        if period not in ("today", "week", "month", "alltime", ""):
+            await ctx.reply("Please use `today`, `week`, `month`, or `alltime`.", ephemeral=True)
+            return
+
+        cutoff = self._period_cutoff(period)
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _query():
+                with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+                    conn.row_factory = sqlite3.Row
+                    clauses, params = [], []
+                    if kind:
+                        clauses.append("island_type = ?")
+                        params.append(kind)
+                    if cutoff is not None:
+                        clauses.append("timestamp >= ?")
+                        params.append(cutoff)
+                    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+                    rows = conn.execute(
+                        f"SELECT destination, COUNT(*) AS visit_count "
+                        f"FROM island_visits {where} "
+                        f"GROUP BY destination ORDER BY visit_count DESC LIMIT 10",
+                        params,
+                    ).fetchall()
+                    return [dict(r) for r in rows]
+
+            rows = await loop.run_in_executor(None, _query)
+        except Exception as exc:
+            logger.error(f"[DISCORD] topislands DB error: {exc}")
+            await ctx.reply("Could not retrieve island data right now. Please try again later.", ephemeral=True)
+            return
+
+        kind_label   = {"sub": "💎 Sub Islands", "free": "🌴 Free Islands", "": "🏝️ All Islands"}[kind]
+        period_label = self._PERIOD_LABELS.get(period, "All Time")
+        title = f"🏆 Most Visited Islands — {kind_label} · {period_label}"
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+
+        if not rows:
+            embed = discord.Embed(
+                title=title,
+                description="No visit data found for this period.",
+                color=discord.Color.blurple(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+            embed.set_image(url=Config.FOOTER_LINE)
+            await ctx.reply(embed=embed)
+            return
+
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        max_visits = max(rows[0]["visit_count"], 1)
+        for i, row in enumerate(rows):
+            rank    = medals[i] if i < 3 else f"`#{i + 1}`"
+            bar_len = max(1, int(row["visit_count"] / max_visits * 10))
+            bar     = "█" * bar_len + "░" * (10 - bar_len)
+            lines.append(
+                f"{rank} **{row['destination']}** — `{row['visit_count']:,}` visits\n"
+                f"┗ `{bar}`"
+            )
+
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(lines),
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+        await ctx.reply(embed=embed)
+        logger.info(f"[DISCORD] topislands called by {ctx.author.name} (kind={kind!r}, period={period!r})")
+
+    @commands.hybrid_command(name="toptravellers", aliases=["toptravelers", "topvisitors"])
+    @app_commands.describe(
+        kind="Filter by island type: 'sub', 'free', or leave blank for both.",
+        period="Time period: today, week, month, or alltime (default).",
+    )
+    @app_commands.choices(
+        kind=[
+            app_commands.Choice(name="sub — Sub Islands",   value="sub"),
+            app_commands.Choice(name="free — Free Islands", value="free"),
+        ],
+        period=[
+            app_commands.Choice(name="Today",        value="today"),
+            app_commands.Choice(name="Last 7 Days",  value="week"),
+            app_commands.Choice(name="This Month",   value="month"),
+            app_commands.Choice(name="All Time",     value="alltime"),
+        ],
+    )
+    async def top_travellers(self, ctx, kind: str = "", period: str = "alltime"):
+        """Show the top travellers by visit count. Filter by island type and/or time period."""
+        kind   = kind.lower().strip()
+        period = period.lower().strip()
+        if kind not in ("sub", "free", ""):
+            await ctx.reply("Please use `sub`, `free`, or leave blank for both.", ephemeral=True)
+            return
+        if period not in ("today", "week", "month", "alltime", ""):
+            await ctx.reply("Please use `today`, `week`, `month`, or `alltime`.", ephemeral=True)
+            return
+
+        cutoff = self._period_cutoff(period)
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _query():
+                with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+                    conn.row_factory = sqlite3.Row
+                    clauses, params = [], []
+                    if kind:
+                        clauses.append("island_type = ?")
+                        params.append(kind)
+                    if cutoff is not None:
+                        clauses.append("timestamp >= ?")
+                        params.append(cutoff)
+                    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+                    rows = conn.execute(
+                        f"SELECT ign, COUNT(*) AS visit_count "
+                        f"FROM island_visits {where} "
+                        f"GROUP BY ign ORDER BY visit_count DESC LIMIT 10",
+                        params,
+                    ).fetchall()
+                    return [dict(r) for r in rows]
+
+            rows = await loop.run_in_executor(None, _query)
+        except Exception as exc:
+            logger.error(f"[DISCORD] toptravellers DB error: {exc}")
+            await ctx.reply("Could not retrieve traveller data right now. Please try again later.", ephemeral=True)
+            return
+
+        kind_label   = {"sub": "💎 Sub Islands", "free": "🌴 Free Islands", "": "🏝️ All Islands"}[kind]
+        period_label = self._PERIOD_LABELS.get(period, "All Time")
+        title = f"✈️ Top Travellers — {kind_label} · {period_label}"
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+
+        if not rows:
+            embed = discord.Embed(
+                title=title,
+                description="No traveller data found for this period.",
+                color=discord.Color.blurple(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+            embed.set_image(url=Config.FOOTER_LINE)
+            await ctx.reply(embed=embed)
+            return
+
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        max_visits = max(rows[0]["visit_count"], 1)
+        for i, row in enumerate(rows):
+            rank    = medals[i] if i < 3 else f"`#{i + 1}`"
+            bar_len = max(1, int(row["visit_count"] / max_visits * 10))
+            bar     = "█" * bar_len + "░" * (10 - bar_len)
+            lines.append(
+                f"{rank} **{row['ign']}** — `{row['visit_count']:,}` visits\n"
+                f"┗ `{bar}`"
+            )
+
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(lines),
+            color=discord.Color.purple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+        await ctx.reply(embed=embed)
+        logger.info(f"[DISCORD] toptravellers called by {ctx.author.name} (kind={kind!r}, period={period!r})")
 
     @commands.hybrid_command(name="refresh")
     @commands.has_permissions(administrator=True)
