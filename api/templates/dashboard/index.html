@@ -14,46 +14,46 @@
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-airplane-fill me-1"></i>Total Visits</div>
-      <div class="stat-value text-nook-green">{{ total_visits | intcomma }}</div>
+      <div class="stat-value text-nook-green" id="ov-total-visits">{{ total_visits | intcomma }}</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-calendar-day-fill me-1"></i>Visits Today</div>
-      <div class="stat-value" style="color:var(--dal-blue);">{{ visits_today | intcomma }}</div>
+      <div class="stat-value" style="color:var(--dal-blue);" id="ov-visits-today">{{ visits_today | intcomma }}</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-calendar-week-fill me-1"></i>This Week</div>
-      <div class="stat-value" style="color:#b07cdc;">{{ visits_week | intcomma }}</div>
+      <div class="stat-value" style="color:#b07cdc;" id="ov-visits-week">{{ visits_week | intcomma }}</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-exclamation-triangle-fill me-1"></i>Warnings</div>
-      <div class="stat-value" style="color:var(--nook-yellow);">{{ total_warnings | intcomma }}</div>
+      <div class="stat-value" style="color:var(--nook-yellow);" id="ov-total-warnings">{{ total_warnings | intcomma }}</div>
     </div>
   </div>
   <!-- New stat cards -->
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-geo-alt-fill me-1"></i>Total Islands</div>
-      <div class="stat-value" style="color:var(--nook-green);">{{ island_count | intcomma }}</div>
+      <div class="stat-value" style="color:var(--nook-green);" id="ov-island-count">{{ island_count | intcomma }}</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-wifi me-1"></i>Bots Online</div>
-      <div class="stat-value" style="color:var(--nook-green);">{{ online_count | intcomma }}</div>
-      <div class="x-small fw-bold mt-1" style="color:#aaa;">of {{ island_count | intcomma }} total</div>
+      <div class="stat-value" style="color:var(--nook-green);" id="ov-online-count">{{ online_count | intcomma }}</div>
+      <div class="x-small fw-bold mt-1" style="color:#aaa;">of <span id="ov-online-of">{{ island_count | intcomma }}</span> total</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-shield-exclamation me-1"></i>Warn Rate (7d)</div>
-      <div class="stat-value" style="color:{% if warn_rate_7d >= 10 %}#e06c75{% elif warn_rate_7d >= 5 %}var(--nook-yellow){% else %}var(--nook-green){% endif %};">{{ warn_rate_7d }}%</div>
-      <div class="x-small fw-bold mt-1" style="color:#aaa;">{{ warnings_week | intcomma }} warnings this week</div>
+      <div class="stat-value" id="ov-warn-rate" style="color:{% if warn_rate_7d >= 10 %}#e06c75{% elif warn_rate_7d >= 5 %}var(--nook-yellow){% else %}var(--nook-green){% endif %};">{{ warn_rate_7d }}%</div>
+      <div class="x-small fw-bold mt-1" style="color:#aaa;"><span id="ov-warnings-week">{{ warnings_week | intcomma }}</span> warnings this week</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
@@ -77,19 +77,19 @@
     <div class="row g-3 mb-4">
       <div class="col-4">
         <div class="text-center p-3 rounded-3" style="background:#e8f5e9;border:2px solid #b8dfc0;">
-          <div class="fw-black ac-font" style="color:var(--nook-green);font-size:1.6rem;">{{ status_map.get('ONLINE', 0) | intcomma }}</div>
+          <div class="fw-black ac-font" id="ov-status-online" style="color:var(--nook-green);font-size:1.6rem;">{{ status_map.get('ONLINE', 0) | intcomma }}</div>
           <div class="x-small fw-bold" style="color:#888;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#28a745;"></span>Online</div>
         </div>
       </div>
       <div class="col-4">
         <div class="text-center p-3 rounded-3" style="background:#e3f2fd;border:2px solid #90caf9;">
-          <div class="fw-black ac-font" style="color:#4f9ef8;font-size:1.6rem;">{{ status_map.get('REFRESHING', 0) | intcomma }}</div>
+          <div class="fw-black ac-font" id="ov-status-refreshing" style="color:#4f9ef8;font-size:1.6rem;">{{ status_map.get('REFRESHING', 0) | intcomma }}</div>
           <div class="x-small fw-bold" style="color:#888;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#4f9ef8;"></span>Refreshing</div>
         </div>
       </div>
       <div class="col-4">
         <div class="text-center p-3 rounded-3" style="background:#f5f5f5;border:2px solid #e0e0e0;">
-          <div class="fw-black ac-font" style="color:#aaa;font-size:1.6rem;">{{ status_map.get('OFFLINE', 0) | intcomma }}</div>
+          <div class="fw-black ac-font" id="ov-status-offline" style="color:#aaa;font-size:1.6rem;">{{ status_map.get('OFFLINE', 0) | intcomma }}</div>
           <div class="x-small fw-bold" style="color:#bbb;margin-top:2px;"><span class="status-dot d-inline-block me-1" style="background:#ccc;"></span>Offline</div>
         </div>
       </div>
@@ -100,12 +100,12 @@
     <div class="mb-1 d-flex justify-content-between align-items-center">
       <span class="x-small fw-bold" style="color:#888;">
         <i class="bi bi-reception-4 me-1 text-nook-green"></i>
-        <strong style="color:var(--nook-green);">{{ online_count | intcomma }}</strong> of {{ island_count | intcomma }} islands currently <strong style="color:var(--nook-green);">ONLINE</strong>
+        <strong style="color:var(--nook-green);" id="ov-prog-online">{{ online_count | intcomma }}</strong> of <span id="ov-prog-total">{{ island_count | intcomma }}</span> islands currently <strong style="color:var(--nook-green);">ONLINE</strong>
       </span>
-      <span class="x-small fw-bold" style="color:#ccc;">{{ online_pct }}%</span>
+      <span class="x-small fw-bold" id="ov-prog-pct" style="color:#ccc;">{{ online_pct }}%</span>
     </div>
     <div class="progress rounded-pill" style="height:10px;background:#e9f2e9;">
-      <div class="progress-bar rounded-pill"
+      <div id="ov-prog-bar" class="progress-bar rounded-pill"
            role="progressbar"
            style="width:{{ online_pct }}%;background:var(--nook-green);"
            aria-valuenow="{{ online_count }}"
@@ -139,32 +139,32 @@
            class="text-decoration-none fw-bold x-small"
            style="color:var(--nook-green);">View all →</a>
       </div>
-      {% if top_islands %}
-      <div class="p-3">
-        {% set max_count = top_islands[0].count if top_islands else 1 %}
-        {% for isl in top_islands %}
-        {% set pct = ((isl.count / max_count * 100) | int) if max_count > 0 else 0 %}
-        <div class="mb-3">
-          <div class="d-flex justify-content-between align-items-center mb-1">
-            <span class="fw-bold x-small" style="color:#444;">
-              {% if loop.index == 1 %}<i class="fa-solid fa-medal me-1" style="color:#FFD700;"></i>{% elif loop.index == 2 %}<i class="fa-solid fa-medal me-1" style="color:#C0C0C0;"></i>{% elif loop.index == 3 %}<i class="fa-solid fa-medal me-1" style="color:#CD7F32;"></i>{% else %}#{{ loop.index }} {% endif %}
-              {{ isl.name }}
-            </span>
-            <span class="fw-black x-small" style="color:var(--nook-green);">{{ isl.count | intcomma }} visits</span>
+      <div id="ov-top-islands-wrap" class="p-3">
+        {% if top_islands %}
+          {% set max_count = top_islands[0].count if top_islands else 1 %}
+          {% for isl in top_islands %}
+          {% set pct = ((isl.count / max_count * 100) | int) if max_count > 0 else 0 %}
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <span class="fw-bold x-small" style="color:#444;">
+                {% if loop.index == 1 %}<i class="fa-solid fa-medal me-1" style="color:#FFD700;"></i>{% elif loop.index == 2 %}<i class="fa-solid fa-medal me-1" style="color:#C0C0C0;"></i>{% elif loop.index == 3 %}<i class="fa-solid fa-medal me-1" style="color:#CD7F32;"></i>{% else %}#{{ loop.index }} {% endif %}
+                {{ isl.name }}
+              </span>
+              <span class="fw-black x-small" style="color:var(--nook-green);">{{ isl.count | intcomma }} visits</span>
+            </div>
+            <div class="progress rounded-pill" style="height:7px;background:#e9f2e9;">
+              <div class="progress-bar rounded-pill"
+                   style="width:{{ pct }}%;background:var(--nook-green);"></div>
+            </div>
           </div>
-          <div class="progress rounded-pill" style="height:7px;background:#e9f2e9;">
-            <div class="progress-bar rounded-pill"
-                 style="width:{{ pct }}%;background:var(--nook-green);"></div>
-          </div>
+          {% endfor %}
+        {% else %}
+        <div class="py-4 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+          <i class="bi bi-geo-alt fs-3 d-block mb-2" style="opacity:.3;"></i>
+          No visit data yet.
         </div>
-        {% endfor %}
+        {% endif %}
       </div>
-      {% else %}
-      <div class="py-4 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
-        <i class="bi bi-geo-alt fs-3 d-block mb-2" style="opacity:.3;"></i>
-        No visit data yet.
-      </div>
-      {% endif %}
     </div>
   </div>
 
@@ -177,32 +177,32 @@
            class="text-decoration-none fw-bold x-small"
            style="color:var(--nook-green);">View all →</a>
       </div>
-      {% if top_travelers %}
-      <div class="p-3">
-        {% set max_t = top_travelers[0].count if top_travelers else 1 %}
-        {% for t in top_travelers %}
-        {% set pct = ((t.count / max_t * 100) | int) if max_t > 0 else 0 %}
-        <div class="mb-3">
-          <div class="d-flex justify-content-between align-items-center mb-1">
-            <span class="fw-bold x-small" style="color:#444;">
-              {% if loop.index == 1 %}<i class="fa-solid fa-medal me-1" style="color:#FFD700;"></i>{% elif loop.index == 2 %}<i class="fa-solid fa-medal me-1" style="color:#C0C0C0;"></i>{% elif loop.index == 3 %}<i class="fa-solid fa-medal me-1" style="color:#CD7F32;"></i>{% else %}#{{ loop.index }} {% endif %}
-              {{ t.ign }}
-            </span>
-            <span class="fw-black x-small" style="color:var(--dal-blue);">{{ t.count | intcomma }} flights</span>
+      <div id="ov-top-travelers-wrap" class="p-3">
+        {% if top_travelers %}
+          {% set max_t = top_travelers[0].count if top_travelers else 1 %}
+          {% for t in top_travelers %}
+          {% set pct = ((t.count / max_t * 100) | int) if max_t > 0 else 0 %}
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <span class="fw-bold x-small" style="color:#444;">
+                {% if loop.index == 1 %}<i class="fa-solid fa-medal me-1" style="color:#FFD700;"></i>{% elif loop.index == 2 %}<i class="fa-solid fa-medal me-1" style="color:#C0C0C0;"></i>{% elif loop.index == 3 %}<i class="fa-solid fa-medal me-1" style="color:#CD7F32;"></i>{% else %}#{{ loop.index }} {% endif %}
+                {{ t.ign }}
+              </span>
+              <span class="fw-black x-small" style="color:var(--dal-blue);">{{ t.count | intcomma }} flights</span>
+            </div>
+            <div class="progress rounded-pill" style="height:7px;background:#e3f2fd;">
+              <div class="progress-bar rounded-pill"
+                   style="width:{{ pct }}%;background:var(--dal-blue);"></div>
+            </div>
           </div>
-          <div class="progress rounded-pill" style="height:7px;background:#e3f2fd;">
-            <div class="progress-bar rounded-pill"
-                 style="width:{{ pct }}%;background:var(--dal-blue);"></div>
-          </div>
+          {% endfor %}
+        {% else %}
+        <div class="py-4 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+          <i class="bi bi-person fs-3 d-block mb-2" style="opacity:.3;"></i>
+          No traveler data yet.
         </div>
-        {% endfor %}
+        {% endif %}
       </div>
-      {% else %}
-      <div class="py-4 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
-        <i class="bi bi-person fs-3 d-block mb-2" style="opacity:.3;"></i>
-        No traveler data yet.
-      </div>
-      {% endif %}
     </div>
   </div>
 </div>
@@ -215,51 +215,53 @@
        class="text-decoration-none fw-bold x-small"
        style="color:var(--nook-green);">View all →</a>
   </div>
-  {% if recent %}
-    <div class="table-responsive">
-      <table id="recentTable" class="db-table">
-        <thead>
-          <tr>
-            <th>IGN</th>
-            <th>Destination</th>
-            <th>Linked User</th>
-            <th>Status</th>
-            <th>Time</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for entry in recent %}
-          <tr>
-            <td class="fw-bold" style="color:#444;">{{ entry.ign }}</td>
-            <td>{{ entry.destination }}</td>
-            <td style="color:#7c6fcd;">
-              {% if entry.user_name %}
-                <i class="bi bi-discord me-1" style="opacity:.7;"></i>{{ entry.user_name }}
-              {% else %}
-                <span style="color:#ccc;">—</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if entry.authorized %}
-                <span class="badge badge-auth rounded-pill"><i class="fa-solid fa-check me-1"></i>Authorized</span>
-              {% else %}
-                <span class="badge badge-unkn rounded-pill"><i class="fa-solid fa-question me-1"></i>Unknown</span>
-              {% endif %}
-            </td>
-            <td class="x-small" style="color:#aaa;">
-              <time data-utc="{{ entry.timestamp }}">{{ entry.timestamp }}</time>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
-      <i class="bi bi-airplane fs-3 d-block mb-2" style="opacity:.3;"></i>
-      No flight data recorded yet.
-    </div>
-  {% endif %}
+  <div id="ov-recent-wrap">
+    {% if recent %}
+      <div class="table-responsive">
+        <table id="recentTable" class="db-table">
+          <thead>
+            <tr>
+              <th>IGN</th>
+              <th>Destination</th>
+              <th>Linked User</th>
+              <th>Status</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="recentTableBody">
+            {% for entry in recent %}
+            <tr>
+              <td class="fw-bold" style="color:#444;">{{ entry.ign }}</td>
+              <td>{{ entry.destination }}</td>
+              <td style="color:#7c6fcd;">
+                {% if entry.user_name %}
+                  <i class="bi bi-discord me-1" style="opacity:.7;"></i>{{ entry.user_name }}
+                {% else %}
+                  <span style="color:#ccc;">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if entry.authorized %}
+                  <span class="badge badge-auth rounded-pill"><i class="fa-solid fa-check me-1"></i>Authorized</span>
+                {% else %}
+                  <span class="badge badge-unkn rounded-pill"><i class="fa-solid fa-question me-1"></i>Unknown</span>
+                {% endif %}
+              </td>
+              <td class="x-small" style="color:#aaa;">
+                <time data-utc="{{ entry.timestamp }}">{{ entry.timestamp }}</time>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
+        <i class="bi bi-airplane fs-3 d-block mb-2" style="opacity:.3;"></i>
+        No flight data recorded yet.
+      </div>
+    {% endif %}
+  </div>
 </div>
 
 <!-- Quick links -->
@@ -293,59 +295,240 @@
 
 {% block scripts %}
 <script>
-document.addEventListener('DOMContentLoaded', function () {
-  var el = document.getElementById('recentTable');
-  if (el) {
-    new simpleDatatables.DataTable(el, {
-      searchable: true,
-      sortable:   true,
-      paging:     false,
-      labels: {
-        placeholder: "Search recent activity…",
-        noRows:      "No flight data recorded yet."
-      }
-    });
+/* ─── Overview AJAX polling ─────────────────────────────────────────────── */
+(function () {
+  'use strict';
+
+  var MEDAL_ICONS = [
+    '<i class="fa-solid fa-medal me-1" style="color:#FFD700;"></i>',
+    '<i class="fa-solid fa-medal me-1" style="color:#C0C0C0;"></i>',
+    '<i class="fa-solid fa-medal me-1" style="color:#CD7F32;"></i>'
+  ];
+
+  function intcomma(n) {
+    return Number(n).toLocaleString();
   }
 
-  /* 7-day sparkline using ApexCharts */
-  var trendEl = document.getElementById('overviewTrendChart');
-  if (trendEl && typeof ApexCharts !== 'undefined') {
-    new ApexCharts(trendEl, {
+  function setText(id, val) {
+    var el = document.getElementById(id);
+    if (el && el.textContent !== String(val)) el.textContent = val;
+  }
+
+  // Trend chart instance
+  var _trendChart = null;
+
+  function initTrendChart(labels, counts) {
+    var trendEl = document.getElementById('overviewTrendChart');
+    if (!trendEl || typeof ApexCharts === 'undefined') return;
+    _trendChart = new ApexCharts(trendEl, {
       chart: {
-        type: 'area',
-        height: 150,
+        type: 'area', height: 150,
         sparkline: { enabled: false },
-        toolbar: { show: false },
-        zoom: { enabled: false },
+        toolbar: { show: false }, zoom: { enabled: false },
         fontFamily: 'Quicksand, system-ui, sans-serif',
         animations: { enabled: true, speed: 500 }
       },
-      series: [{ name: 'Visits', data: {{ trend_counts | tojson }} }],
+      series: [{ name: 'Visits', data: counts }],
       xaxis: {
-        categories: {{ trend_labels | tojson }},
+        categories: labels,
         labels: { style: { colors: '#aaa', fontSize: '10px', fontWeight: '700' } },
-        axisBorder: { show: false },
-        axisTicks: { show: false }
+        axisBorder: { show: false }, axisTicks: { show: false }
       },
       yaxis: {
         labels: { style: { colors: '#aaa', fontSize: '10px', fontWeight: '700' } },
         min: 0
       },
-      fill: {
-        type: 'gradient',
-        gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05, stops: [0, 100] }
-      },
+      fill: { type: 'gradient',
+        gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05, stops: [0, 100] } },
       colors: ['#28a745'],
       stroke: { curve: 'smooth', width: 2.5 },
       markers: { size: 4, colors: ['#28a745'], strokeWidth: 0 },
       grid: { borderColor: '#f0f4ec', strokeDashArray: 3 },
-      tooltip: {
-        theme: 'light',
-        y: { formatter: function(v) { return v + ' visit' + (v !== 1 ? 's' : ''); } }
-      },
+      tooltip: { theme: 'light',
+        y: { formatter: function(v) { return v + ' visit' + (v !== 1 ? 's' : ''); } } },
       dataLabels: { enabled: false }
-    }).render();
+    });
+    _trendChart.render();
   }
-});
+
+  function renderTopIslands(list) {
+    var wrap = document.getElementById('ov-top-islands-wrap');
+    if (!wrap) return;
+    if (!list || list.length === 0) {
+      wrap.innerHTML = '<div class="py-4 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">'
+        + '<i class="bi bi-geo-alt fs-3 d-block mb-2" style="opacity:.3;"></i>No visit data yet.</div>';
+      return;
+    }
+    var maxCount = list[0].count || 1;
+    var html = '';
+    list.forEach(function (isl, i) {
+      var pct = maxCount > 0 ? Math.round(isl.count / maxCount * 100) : 0;
+      var medal = i < 3 ? MEDAL_ICONS[i] : ('#' + (i + 1) + ' ');
+      html += '<div class="mb-3">'
+        + '<div class="d-flex justify-content-between align-items-center mb-1">'
+        + '<span class="fw-bold x-small" style="color:#444;">' + medal + _esc(isl.name) + '</span>'
+        + '<span class="fw-black x-small" style="color:var(--nook-green);">' + intcomma(isl.count) + ' visits</span>'
+        + '</div>'
+        + '<div class="progress rounded-pill" style="height:7px;background:#e9f2e9;">'
+        + '<div class="progress-bar rounded-pill" style="width:' + pct + '%;background:var(--nook-green);"></div>'
+        + '</div></div>';
+    });
+    wrap.innerHTML = html;
+  }
+
+  function renderTopTravelers(list) {
+    var wrap = document.getElementById('ov-top-travelers-wrap');
+    if (!wrap) return;
+    if (!list || list.length === 0) {
+      wrap.innerHTML = '<div class="py-4 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">'
+        + '<i class="bi bi-person fs-3 d-block mb-2" style="opacity:.3;"></i>No traveler data yet.</div>';
+      return;
+    }
+    var maxCount = list[0].count || 1;
+    var html = '';
+    list.forEach(function (t, i) {
+      var pct = maxCount > 0 ? Math.round(t.count / maxCount * 100) : 0;
+      var medal = i < 3 ? MEDAL_ICONS[i] : ('#' + (i + 1) + ' ');
+      html += '<div class="mb-3">'
+        + '<div class="d-flex justify-content-between align-items-center mb-1">'
+        + '<span class="fw-bold x-small" style="color:#444;">' + medal + _esc(t.ign) + '</span>'
+        + '<span class="fw-black x-small" style="color:var(--dal-blue);">' + intcomma(t.count) + ' flights</span>'
+        + '</div>'
+        + '<div class="progress rounded-pill" style="height:7px;background:#e3f2fd;">'
+        + '<div class="progress-bar rounded-pill" style="width:' + pct + '%;background:var(--dal-blue);"></div>'
+        + '</div></div>';
+    });
+    wrap.innerHTML = html;
+  }
+
+  function renderRecentTable(entries) {
+    var wrap = document.getElementById('ov-recent-wrap');
+    if (!wrap) return;
+    if (!entries || entries.length === 0) {
+      wrap.innerHTML = '<div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">'
+        + '<i class="bi bi-airplane fs-3 d-block mb-2" style="opacity:.3;"></i>'
+        + 'No flight data recorded yet.</div>';
+      return;
+    }
+    var rows = entries.map(function (e) {
+      var userCell = e.user_name
+        ? '<i class="bi bi-discord me-1" style="opacity:.7;"></i>' + _esc(e.user_name)
+        : '<span style="color:#ccc;">—</span>';
+      var badge = e.authorized
+        ? '<span class="badge badge-auth rounded-pill"><i class="fa-solid fa-check me-1"></i>Authorized</span>'
+        : '<span class="badge badge-unkn rounded-pill"><i class="fa-solid fa-question me-1"></i>Unknown</span>';
+      return '<tr>'
+        + '<td class="fw-bold" style="color:#444;">' + _esc(e.ign) + '</td>'
+        + '<td>' + _esc(e.destination) + '</td>'
+        + '<td style="color:#7c6fcd;">' + userCell + '</td>'
+        + '<td>' + badge + '</td>'
+        + '<td class="x-small" style="color:#aaa;"><time data-utc="' + _esc(e.timestamp) + '">' + _esc(e.timestamp) + '</time></td>'
+        + '</tr>';
+    }).join('');
+    wrap.innerHTML = '<div class="table-responsive"><table id="recentTable" class="db-table">'
+      + '<thead><tr><th>IGN</th><th>Destination</th><th>Linked User</th><th>Status</th><th>Time</th></tr></thead>'
+      + '<tbody id="recentTableBody">' + rows + '</tbody></table></div>';
+    // Localise timestamps
+    wrap.querySelectorAll('[data-utc]').forEach(function (el) {
+      var raw = el.getAttribute('data-utc');
+      if (!raw || raw === '\u2014') return;
+      var iso = raw.trim().replace(' UTC', 'Z').replace(' ', 'T');
+      var d = new Date(iso);
+      if (!isNaN(d.getTime())) {
+        el.textContent = d.toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit'
+        });
+      }
+    });
+    // Re-init DataTable on refreshed table
+    var el = document.getElementById('recentTable');
+    if (el && typeof simpleDatatables !== 'undefined') {
+      new simpleDatatables.DataTable(el, {
+        searchable: true, sortable: true, paging: false,
+        labels: { placeholder: 'Search recent activity…', noRows: 'No flight data recorded yet.' }
+      });
+    }
+  }
+
+  /* HTML-escape helper */
+  function _esc(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function pollOverview() {
+    fetch('{{ url_for("dashboard.api_overview") }}')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) return;
+
+        // Stat cards
+        setText('ov-total-visits',   intcomma(d.total_visits));
+        setText('ov-visits-today',   intcomma(d.visits_today));
+        setText('ov-visits-week',    intcomma(d.visits_week));
+        setText('ov-total-warnings', intcomma(d.total_warnings));
+        setText('ov-island-count',   intcomma(d.island_count));
+        setText('ov-online-count',   intcomma(d.online_count));
+        setText('ov-online-of',      intcomma(d.island_count));
+        var wr = d.warn_rate_7d;
+        var wrEl = document.getElementById('ov-warn-rate');
+        if (wrEl) {
+          wrEl.textContent = wr + '%';
+          wrEl.style.color = wr >= 10 ? '#e06c75' : (wr >= 5 ? 'var(--nook-yellow)' : 'var(--nook-green)');
+        }
+        setText('ov-warnings-week', intcomma(d.warnings_week));
+
+        // Status strip
+        setText('ov-status-online',     intcomma(d.status_map.ONLINE     || 0));
+        setText('ov-status-refreshing', intcomma(d.status_map.REFRESHING || 0));
+        setText('ov-status-offline',    intcomma(d.status_map.OFFLINE    || 0));
+
+        // Progress bar
+        var onlinePct = d.online_pct || 0;
+        setText('ov-prog-online', intcomma(d.online_count));
+        setText('ov-prog-total',  intcomma(d.island_count));
+        setText('ov-prog-pct',    onlinePct + '%');
+        var bar = document.getElementById('ov-prog-bar');
+        if (bar) {
+          bar.style.width = onlinePct + '%';
+          bar.setAttribute('aria-valuenow', d.online_count);
+          bar.setAttribute('aria-valuemax', d.island_count);
+        }
+
+        // Trend chart
+        if (_trendChart) {
+          _trendChart.updateSeries([{ name: 'Visits', data: d.trend_counts }]);
+          _trendChart.updateOptions({ xaxis: { categories: d.trend_labels } });
+        }
+
+        // Top lists & recent table
+        renderTopIslands(d.top_islands);
+        renderTopTravelers(d.top_travelers);
+        renderRecentTable(d.recent);
+      })
+      .catch(function (err) { console.error('[overview poll]', err); });
+  }
+
+  // Initial render from SSR data, then start polling
+  document.addEventListener('DOMContentLoaded', function () {
+    // Init chart with server-rendered data on first load
+    initTrendChart({{ trend_labels | tojson }}, {{ trend_counts | tojson }});
+
+    // Init DataTable on server-rendered table
+    var el = document.getElementById('recentTable');
+    if (el && typeof simpleDatatables !== 'undefined') {
+      new simpleDatatables.DataTable(el, {
+        searchable: true, sortable: true, paging: false,
+        labels: { placeholder: 'Search recent activity…', noRows: 'No flight data recorded yet.' }
+      });
+    }
+
+    // Poll every 30 seconds
+    setInterval(pollOverview, 30000);
+  });
+})();
 </script>
 {% endblock %}

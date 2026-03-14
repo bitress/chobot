@@ -7,231 +7,170 @@
 
 <!-- Tab switcher -->
 <div class="d-flex gap-2 mb-4">
-  <a href="{{ url_for('dashboard.logs', type='flights', island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
-     class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'flights' %}btn-nook-primary{% else %}btn-sub{% endif %}"
-     style="font-size:.85rem;">
+  <button id="tab-flights"
+          onclick="switchTab('flights')"
+          class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'flights' %}btn-nook-primary{% else %}btn-sub{% endif %}"
+          style="font-size:.85rem;">
     <i class="fa-solid fa-plane me-1"></i>Flight Logs
-  </a>
-  <a href="{{ url_for('dashboard.logs', type='warnings') }}"
-     class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'warnings' %}btn-nook-primary{% else %}btn-sub{% endif %}"
-     style="font-size:.85rem;">
+  </button>
+  <button id="tab-warnings"
+          onclick="switchTab('warnings')"
+          class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'warnings' %}btn-nook-primary{% else %}btn-sub{% endif %}"
+          style="font-size:.85rem;">
     <i class="fa-solid fa-triangle-exclamation me-1"></i>Warning Logs
-  </a>
+  </button>
 </div>
 
-<!-- Filters (flights only) -->
-{% if log_type == 'flights' %}
-<form method="GET" action="{{ url_for('dashboard.logs') }}"
-      class="d-flex flex-wrap align-items-center gap-2 mb-4">
-  <input type="hidden" name="type" value="flights">
-
-  <!-- IGN search -->
-  <div class="input-group" style="width:190px;">
-    <span class="input-group-text border-0"
-          style="background:var(--nook-cream);border:2px solid #e1e6d3;border-right:none;border-radius:12px 0 0 12px;color:#aaa;">
-      <i class="bi bi-search"></i>
-    </span>
-    <input type="text" name="ign" value="{{ ign_filter }}"
-           placeholder="Search IGN…"
-           class="db-input"
-           style="border-left:none;border-radius:0 12px 12px 0;">
+<!-- Filters (flights) -->
+<div id="filter-flights" {% if log_type != 'flights' %}style="display:none;"{% endif %}>
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+    <div class="input-group" style="width:190px;">
+      <span class="input-group-text border-0"
+            style="background:var(--nook-cream);border:2px solid #e1e6d3;border-right:none;border-radius:12px 0 0 12px;color:#aaa;">
+        <i class="bi bi-search"></i>
+      </span>
+      <input id="fl-ign" type="text" value="{{ ign_filter }}" placeholder="Search IGN…"
+             class="db-input" style="border-left:none;border-radius:0 12px 12px 0;">
+    </div>
+    <select id="fl-island" class="db-input" style="width:180px;">
+      <option value="">All islands</option>
+      {% for iname in island_names %}
+      <option value="{{ iname }}" {% if island_filter == iname %}selected{% endif %}>{{ iname }}</option>
+      {% endfor %}
+    </select>
+    <select id="fl-category" class="db-input" style="width:165px;">
+      <option value="">All tiers</option>
+      <option value="public" {% if category_filter == 'public' %}selected{% endif %}>Public</option>
+      <option value="member" {% if category_filter == 'member' %}selected{% endif %}>Member / VIP</option>
+    </select>
+    <select id="fl-authorized" class="db-input" style="width:165px;">
+      <option value="">All travelers</option>
+      <option value="1" {% if authorized_filter == '1' %}selected{% endif %}>Authorized only</option>
+      <option value="0" {% if authorized_filter == '0' %}selected{% endif %}>Unknown only</option>
+    </select>
+    <select id="fl-sort-by" class="db-input" style="width:145px;">
+      <option value="timestamp" {% if sort_by == 'timestamp' %}selected{% endif %}>Sort: Time</option>
+      <option value="ign"       {% if sort_by == 'ign'       %}selected{% endif %}>Sort: IGN</option>
+      <option value="destination" {% if sort_by == 'destination' %}selected{% endif %}>Sort: Island</option>
+    </select>
+    <select id="fl-sort-order" class="db-input" style="width:110px;">
+      <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>↓ Desc</option>
+      <option value="asc"  {% if sort_order == 'asc'  %}selected{% endif %}>↑ Asc</option>
+    </select>
+    <button onclick="applyFlightFilters()" class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold" style="font-size:.85rem;">
+      <i class="bi bi-funnel-fill me-1"></i>Filter
+    </button>
+    <button onclick="clearFlightFilters()" class="btn rounded-3 fw-bold px-4 py-2"
+            style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
+      <i class="bi bi-x-circle me-1"></i>Clear
+    </button>
   </div>
+</div>
 
-  <!-- Island dropdown -->
-  <select name="island" class="db-input" style="width:180px;">
-    <option value="">All islands</option>
-    {% for iname in island_names %}
-    <option value="{{ iname }}" {% if island_filter == iname %}selected{% endif %}>{{ iname }}</option>
+<!-- Filters (warnings) -->
+<div id="filter-warnings" {% if log_type != 'warnings' %}style="display:none;"{% endif %}>
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+    <div class="input-group" style="width:220px;">
+      <span class="input-group-text border-0"
+            style="background:var(--nook-cream);border:2px solid #e1e6d3;border-right:none;border-radius:12px 0 0 12px;color:#aaa;">
+        <i class="bi bi-search"></i>
+      </span>
+      <input id="wn-ign" type="text" value="{{ ign_filter }}" placeholder="Search IGN…"
+             class="db-input" style="border-left:none;border-radius:0 12px 12px 0;">
+    </div>
+    <select id="wn-action-type" class="db-input" style="width:160px;">
+      <option value="">All actions</option>
+      <option value="WARN"    {% if action_type_filter == 'WARN'    %}selected{% endif %}>WARN</option>
+      <option value="KICK"    {% if action_type_filter == 'KICK'    %}selected{% endif %}>KICK</option>
+      <option value="BAN"     {% if action_type_filter == 'BAN'     %}selected{% endif %}>BAN</option>
+      <option value="DISMISS" {% if action_type_filter == 'DISMISS' %}selected{% endif %}>DISMISS</option>
+      <option value="NOTE"    {% if action_type_filter == 'NOTE'    %}selected{% endif %}>NOTE</option>
+      <option value="ADMIT"   {% if action_type_filter == 'ADMIT'   %}selected{% endif %}>ADMIT</option>
+    </select>
+    <button onclick="applyWarningFilters()" class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold" style="font-size:.85rem;">
+      <i class="bi bi-funnel-fill me-1"></i>Filter
+    </button>
+    <button onclick="clearWarningFilters()" class="btn rounded-3 fw-bold px-4 py-2"
+            style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
+      <i class="bi bi-x-circle me-1"></i>Clear
+    </button>
+  </div>
+  <!-- Action type quick-filter pills -->
+  <div class="d-flex flex-wrap gap-2 mb-3" id="wn-action-pills">
+    <button onclick="setWarnAction('')"
+            class="btn rounded-pill fw-bold px-3 py-1 {% if not action_type_filter %}btn-nook-primary{% else %}btn-sub{% endif %}"
+            style="font-size:.8rem;">All</button>
+    {% for at_val, at_icon, at_label in [
+        ('WARN',    'fa-triangle-exclamation', 'WARN'),
+        ('KICK',    'fa-boot',                 'KICK'),
+        ('BAN',     'fa-hammer',               'BAN'),
+        ('DISMISS', 'fa-ban',                  'DISMISS'),
+        ('NOTE',    'fa-note-sticky',          'NOTE'),
+        ('ADMIT',   'fa-circle-check',         'ADMIT')
+    ] %}
+    <button onclick="setWarnAction('{{ at_val }}')"
+            class="btn rounded-pill fw-bold px-3 py-1 {% if action_type_filter == at_val %}btn-nook-primary{% else %}btn-sub{% endif %}"
+            style="font-size:.8rem;"><i class="fa-solid {{ at_icon }} me-1"></i>{{ at_label }}</button>
     {% endfor %}
-  </select>
-
-  <!-- Category / tier filter -->
-  <select name="category" class="db-input" style="width:165px;">
-    <option value="">All tiers</option>
-    <option value="public" {% if category_filter == 'public' %}selected{% endif %}>Public</option>
-    <option value="member" {% if category_filter == 'member' %}selected{% endif %}>Member / VIP</option>
-  </select>
-
-  <!-- Authorization filter -->
-  <select name="authorized" class="db-input" style="width:165px;">
-    <option value="">All travelers</option>
-    <option value="1" {% if authorized_filter == '1' %}selected{% endif %}>Authorized only</option>
-    <option value="0" {% if authorized_filter == '0' %}selected{% endif %}>Unknown only</option>
-  </select>
-
-  <!-- Sort controls -->
-  <select name="sort_by" class="db-input" style="width:145px;">
-    <option value="timestamp" {% if sort_by == 'timestamp' %}selected{% endif %}>Sort: Time</option>
-    <option value="ign"       {% if sort_by == 'ign'       %}selected{% endif %}>Sort: IGN</option>
-    <option value="destination" {% if sort_by == 'destination' %}selected{% endif %}>Sort: Island</option>
-  </select>
-  <select name="sort_order" class="db-input" style="width:110px;">
-    <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>↓ Desc</option>
-    <option value="asc"  {% if sort_order == 'asc'  %}selected{% endif %}>↑ Asc</option>
-  </select>
-
-  <button type="submit"
-          class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
-          style="font-size:.85rem;">
-    <i class="bi bi-funnel-fill me-1"></i>Filter
-  </button>
-  {% if island_filter or authorized_filter or category_filter or ign_filter %}
-  <a href="{{ url_for('dashboard.logs', type='flights') }}"
-     class="btn rounded-3 fw-bold px-4 py-2"
-     style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
-    <i class="bi bi-x-circle me-1"></i>Clear
-  </a>
-  {% endif %}
-</form>
-{% elif log_type == 'warnings' %}
-<form method="GET" action="{{ url_for('dashboard.logs') }}"
-      class="d-flex flex-wrap align-items-center gap-2 mb-4">
-  <input type="hidden" name="type" value="warnings">
-  <!-- IGN search for warnings too -->
-  <div class="input-group" style="width:220px;">
-    <span class="input-group-text border-0"
-          style="background:var(--nook-cream);border:2px solid #e1e6d3;border-right:none;border-radius:12px 0 0 12px;color:#aaa;">
-      <i class="bi bi-search"></i>
-    </span>
-    <input type="text" name="ign" value="{{ ign_filter }}"
-           placeholder="Search IGN…"
-           class="db-input"
-           style="border-left:none;border-radius:0 12px 12px 0;">
   </div>
-  <!-- Action type filter -->
-  <select name="action_type" class="db-input" style="width:160px;">
-    <option value="">All actions</option>
-    <option value="WARN"    {% if action_type_filter == 'WARN'    %}selected{% endif %}>WARN</option>
-    <option value="KICK"    {% if action_type_filter == 'KICK'    %}selected{% endif %}>KICK</option>
-    <option value="BAN"     {% if action_type_filter == 'BAN'     %}selected{% endif %}>BAN</option>
-    <option value="DISMISS" {% if action_type_filter == 'DISMISS' %}selected{% endif %}>DISMISS</option>
-    <option value="NOTE"    {% if action_type_filter == 'NOTE'    %}selected{% endif %}>NOTE</option>
-    <option value="ADMIT"   {% if action_type_filter == 'ADMIT'   %}selected{% endif %}>ADMIT</option>
-  </select>
-  <button type="submit"
-          class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
-          style="font-size:.85rem;">
-    <i class="bi bi-funnel-fill me-1"></i>Filter
-  </button>
-  {% if ign_filter or action_type_filter %}
-  <a href="{{ url_for('dashboard.logs', type='warnings') }}"
-     class="btn rounded-3 fw-bold px-4 py-2"
-     style="background:var(--nook-cream);border:2px solid #e1e6d3;color:#888;font-size:.85rem;">
-    <i class="bi bi-x-circle me-1"></i>Clear
-  </a>
-  {% endif %}
-</form>
-<!-- Action type quick-filter pills -->
-<div class="d-flex flex-wrap gap-2 mb-3">
-  <a href="{{ url_for('dashboard.logs', type='warnings', ign=ign_filter) }}"
-     class="btn rounded-pill fw-bold px-3 py-1 {% if not action_type_filter %}btn-nook-primary{% else %}btn-sub{% endif %}"
-     style="font-size:.8rem;">All</a>
-  {% for at_val, at_icon, at_label in [
-      ('WARN',    'fa-triangle-exclamation', 'WARN'),
-      ('KICK',    'fa-boot',                 'KICK'),
-      ('BAN',     'fa-hammer',               'BAN'),
-      ('DISMISS', 'fa-ban',                  'DISMISS'),
-      ('NOTE',    'fa-note-sticky',          'NOTE'),
-      ('ADMIT',   'fa-circle-check',         'ADMIT')
-  ] %}
-  <a href="{{ url_for('dashboard.logs', type='warnings', action_type=at_val, ign=ign_filter) }}"
-     class="btn rounded-pill fw-bold px-3 py-1 {% if action_type_filter == at_val %}btn-nook-primary{% else %}btn-sub{% endif %}"
-     style="font-size:.8rem;"><i class="fa-solid {{ at_icon }} me-1"></i>{{ at_label }}</a>
-  {% endfor %}
 </div>
-{% endif %}
 
 <!-- Results info -->
 <div class="d-flex align-items-center justify-content-between mb-3">
-  <span class="x-small fw-bold" style="color:#aaa;">
+  <span class="x-small fw-bold" id="logs-info" style="color:#aaa;">
     Showing {{ entries|length }} of {{ total | intcomma }} entries
-    {% if log_type == 'flights' and island_filter %}&nbsp;· island: <strong>{{ island_filter }}</strong>{% endif %}
-    {% if log_type == 'flights' and category_filter %}&nbsp;· tier: <strong>{{ category_filter }}</strong>{% endif %}
-    {% if ign_filter %}&nbsp;· ign: <strong>{{ ign_filter }}</strong>{% endif %}
-    {% if action_type_filter %}&nbsp;· action: <strong>{{ action_type_filter }}</strong>{% endif %}
   </span>
-  <span class="x-small fw-bold" style="color:#ccc;">Page {{ page }} / {{ total_pages }}</span>
+  <span class="x-small fw-bold" id="logs-page-info" style="color:#ccc;">Page {{ page }} / {{ total_pages }}</span>
 </div>
 
-<!-- Table -->
-<div class="section-card mb-4">
+<!-- Table area -->
+<div class="section-card mb-4" id="logs-table-wrap">
   {% if entries %}
   <div class="table-responsive">
     <table id="logsTable" class="db-table">
-      <thead>
+      <thead id="logs-thead">
         <tr>
           {% if log_type == 'warnings' %}
-            <th>Action</th>
-            <th>User</th>
-            <th>IGN</th>
-            <th>Island</th>
-            <th>Reason</th>
-            <th>Mod</th>
-            <th>Time</th>
+            <th>Action</th><th>User</th><th>IGN</th><th>Island</th><th>Reason</th><th>Mod</th><th>Time</th>
           {% else %}
-            <th>#</th>
-            <th>IGN</th>
-            <th>Origin</th>
-            <th>Destination</th>
-            <th>Linked User</th>
-            <th>Status</th>
-            <th>Time</th>
+            <th>#</th><th>IGN</th><th>Origin</th><th>Destination</th><th>Linked User</th><th>Status</th><th>Time</th>
           {% endif %}
         </tr>
       </thead>
-      <tbody>
+      <tbody id="logsTableBody">
         {% for entry in entries %}
         <tr>
           {% if log_type == 'warnings' %}
             <td>
               {% set at = entry.action_type | upper %}
-              {% if at == 'WARN' %}
-                <span class="badge rounded-pill fw-bold" style="background:#E67E22;color:#fff;font-size:.75rem;"><i class="fa-solid fa-triangle-exclamation me-1"></i>WARN</span>
-              {% elif at == 'KICK' %}
-                <span class="badge rounded-pill fw-bold" style="background:#F1C40F;color:#444;font-size:.75rem;"><i class="fa-solid fa-boot me-1"></i>KICK</span>
-              {% elif at == 'BAN' %}
-                <span class="badge rounded-pill fw-bold" style="background:#992D22;color:#fff;font-size:.75rem;"><i class="fa-solid fa-hammer me-1"></i>BAN</span>
-              {% elif at == 'DISMISS' %}
-                <span class="badge rounded-pill fw-bold" style="background:#95A5A6;color:#fff;font-size:.75rem;"><i class="fa-solid fa-ban me-1"></i>DISMISS</span>
-              {% elif at == 'NOTE' %}
-                <span class="badge rounded-pill fw-bold" style="background:#7F8C8D;color:#fff;font-size:.75rem;"><i class="fa-solid fa-note-sticky me-1"></i>NOTE</span>
-              {% elif at == 'ADMIT' %}
-                <span class="badge rounded-pill fw-bold" style="background:#2ECC71;color:#fff;font-size:.75rem;"><i class="fa-solid fa-circle-check me-1"></i>ADMIT</span>
-              {% else %}
-                <span class="badge rounded-pill fw-bold" style="background:#ccc;color:#444;font-size:.75rem;">{{ at }}</span>
-              {% endif %}
+              {% if at == 'WARN' %}<span class="badge rounded-pill fw-bold" style="background:#E67E22;color:#fff;font-size:.75rem;"><i class="fa-solid fa-triangle-exclamation me-1"></i>WARN</span>
+              {% elif at == 'KICK' %}<span class="badge rounded-pill fw-bold" style="background:#F1C40F;color:#444;font-size:.75rem;"><i class="fa-solid fa-boot me-1"></i>KICK</span>
+              {% elif at == 'BAN' %}<span class="badge rounded-pill fw-bold" style="background:#992D22;color:#fff;font-size:.75rem;"><i class="fa-solid fa-hammer me-1"></i>BAN</span>
+              {% elif at == 'DISMISS' %}<span class="badge rounded-pill fw-bold" style="background:#95A5A6;color:#fff;font-size:.75rem;"><i class="fa-solid fa-ban me-1"></i>DISMISS</span>
+              {% elif at == 'NOTE' %}<span class="badge rounded-pill fw-bold" style="background:#7F8C8D;color:#fff;font-size:.75rem;"><i class="fa-solid fa-note-sticky me-1"></i>NOTE</span>
+              {% elif at == 'ADMIT' %}<span class="badge rounded-pill fw-bold" style="background:#2ECC71;color:#fff;font-size:.75rem;"><i class="fa-solid fa-circle-check me-1"></i>ADMIT</span>
+              {% else %}<span class="badge rounded-pill fw-bold" style="background:#ccc;color:#444;font-size:.75rem;">{{ at }}</span>{% endif %}
             </td>
             <td class="fw-bold" style="color:#444;">{{ entry.user_name }}</td>
             <td class="fw-bold" style="color:#444;">{{ entry.ign or "—" }}</td>
             <td>{{ entry.destination or "—" }}</td>
-            <td class="x-small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                title="{{ entry.reason }}">{{ entry.reason or "—" }}</td>
+            <td class="x-small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ entry.reason }}">{{ entry.reason or "—" }}</td>
             <td style="color:#888;">{{ entry.mod_name }}</td>
-            <td class="x-small" style="color:#aaa;">
-              <time data-utc="{{ entry.timestamp }}">{{ entry.timestamp }}</time>
-            </td>
+            <td class="x-small" style="color:#aaa;"><time data-utc="{{ entry.timestamp }}">{{ entry.timestamp }}</time></td>
           {% else %}
             <td class="x-small" style="color:#bbb;">{{ entry.id }}</td>
             <td class="fw-bold" style="color:#444;">{{ entry.ign }}</td>
             <td style="color:#888;">{{ entry.origin_island or "—" }}</td>
             <td>{{ entry.destination }}</td>
             <td style="color:#7c6fcd;">
-              {% if entry.user_name %}
-                <i class="bi bi-discord me-1" style="opacity:.7;"></i>{{ entry.user_name }}
-              {% else %}
-                <span style="color:#ccc;">—</span>
-              {% endif %}
+              {% if entry.user_name %}<i class="bi bi-discord me-1" style="opacity:.7;"></i>{{ entry.user_name }}
+              {% else %}<span style="color:#ccc;">—</span>{% endif %}
             </td>
             <td>
-              {% if entry.authorized %}
-                <span class="badge badge-auth rounded-pill"><i class="fa-solid fa-check me-1"></i>Auth</span>
-              {% else %}
-                <span class="badge badge-unkn rounded-pill"><i class="fa-solid fa-question me-1"></i>Unknown</span>
-              {% endif %}
+              {% if entry.authorized %}<span class="badge badge-auth rounded-pill"><i class="fa-solid fa-check me-1"></i>Auth</span>
+              {% else %}<span class="badge badge-unkn rounded-pill"><i class="fa-solid fa-question me-1"></i>Unknown</span>{% endif %}
             </td>
-            <td class="x-small" style="color:#aaa;">
-              <time data-utc="{{ entry.timestamp }}">{{ entry.timestamp }}</time>
-            </td>
+            <td class="x-small" style="color:#aaa;"><time data-utc="{{ entry.timestamp }}">{{ entry.timestamp }}</time></td>
           {% endif %}
         </tr>
         {% endfor %}
@@ -240,58 +179,328 @@
   </div>
   {% else %}
   <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
-    <i class="bi bi-journal-x fs-3 d-block mb-2" style="opacity:.3;"></i>
-    No log entries found.
+    <i class="bi bi-journal-x fs-3 d-block mb-2" style="opacity:.3;"></i>No log entries found.
   </div>
   {% endif %}
 </div>
 
 <!-- Pagination -->
+<div id="logs-pagination">
 {% if total_pages > 1 %}
 <nav>
   <ul class="pagination justify-content-center gap-1" style="flex-wrap:wrap;">
     {% if page > 1 %}
     <li class="page-item">
-      <a class="page-link rounded-3 fw-bold"
-         href="{{ url_for('dashboard.logs', page=page-1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order, ign=ign_filter, action_type=action_type_filter) }}"
-         style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">← Prev</a>
+      <button onclick="goToPage({{ page - 1 }})" class="page-link rounded-3 fw-bold"
+         style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">← Prev</button>
     </li>
     {% endif %}
     {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
     <li class="page-item {% if p == page %}active{% endif %}">
-      <a class="page-link rounded-3 fw-bold"
-         href="{{ url_for('dashboard.logs', page=p, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order, ign=ign_filter, action_type=action_type_filter) }}"
+      <button onclick="goToPage({{ p }})" class="page-link rounded-3 fw-bold"
          style="{% if p == page %}background:var(--nook-green);border-color:var(--nook-green);{% else %}border:2px solid #e1e6d3;color:#888;{% endif %}font-size:.85rem;">
         {{ p }}
-      </a>
+      </button>
     </li>
     {% endfor %}
     {% if page < total_pages %}
     <li class="page-item">
-      <a class="page-link rounded-3 fw-bold"
-         href="{{ url_for('dashboard.logs', page=page+1, type=log_type, island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order, ign=ign_filter, action_type=action_type_filter) }}"
-         style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">Next →</a>
+      <button onclick="goToPage({{ page + 1 }})" class="page-link rounded-3 fw-bold"
+         style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">Next →</button>
     </li>
     {% endif %}
   </ul>
 </nav>
 {% endif %}
+</div>
 
 {% endblock %}
 
 {% block scripts %}
 <script>
-document.addEventListener('DOMContentLoaded', function () {
-  var el = document.getElementById('logsTable');
-  if (!el) return;
-  // Server-side handles search, filtering and pagination.
-  // DataTable is applied only for client-side column sorting of the current page.
-  new simpleDatatables.DataTable(el, {
-    searchable: false,
-    paging:     false,
-    sortable:   true,
-    labels: { noRows: "No log entries found." }
+(function () {
+  'use strict';
+
+  // ---- State ----
+  var _state = {
+    logType:        '{{ log_type }}',
+    page:           {{ page }},
+    perPage:        25,
+    ignFilter:      '{{ ign_filter | e }}',
+    islandFilter:   '{{ island_filter | e }}',
+    authorizedFilter: '{{ authorized_filter | e }}',
+    categoryFilter: '{{ category_filter | e }}',
+    sortBy:         '{{ sort_by }}',
+    sortOrder:      '{{ sort_order }}',
+    actionType:     '{{ action_type_filter | e }}',
+    totalPages:     {{ total_pages }},
+    total:          {{ total }},
+  };
+
+  var _refreshTimer = null;
+
+  function _startRefreshTimer() {
+    if (!_refreshTimer) {
+      _refreshTimer = setInterval(fetchLogs, 30000);
+    }
+  }
+
+  function _esc(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function _actionBadge(at) {
+    var badges = {
+      'WARN':    '<span class="badge rounded-pill fw-bold" style="background:#E67E22;color:#fff;font-size:.75rem;"><i class="fa-solid fa-triangle-exclamation me-1"></i>WARN</span>',
+      'KICK':    '<span class="badge rounded-pill fw-bold" style="background:#F1C40F;color:#444;font-size:.75rem;"><i class="fa-solid fa-boot me-1"></i>KICK</span>',
+      'BAN':     '<span class="badge rounded-pill fw-bold" style="background:#992D22;color:#fff;font-size:.75rem;"><i class="fa-solid fa-hammer me-1"></i>BAN</span>',
+      'DISMISS': '<span class="badge rounded-pill fw-bold" style="background:#95A5A6;color:#fff;font-size:.75rem;"><i class="fa-solid fa-ban me-1"></i>DISMISS</span>',
+      'NOTE':    '<span class="badge rounded-pill fw-bold" style="background:#7F8C8D;color:#fff;font-size:.75rem;"><i class="fa-solid fa-note-sticky me-1"></i>NOTE</span>',
+      'ADMIT':   '<span class="badge rounded-pill fw-bold" style="background:#2ECC71;color:#fff;font-size:.75rem;"><i class="fa-solid fa-circle-check me-1"></i>ADMIT</span>',
+    };
+    return badges[at] || '<span class="badge rounded-pill fw-bold" style="background:#ccc;color:#444;font-size:.75rem;">' + _esc(at) + '</span>';
+  }
+
+  function _localizeTime(raw) {
+    if (!raw || raw === '\u2014') return raw;
+    var iso = raw.trim().replace(' UTC','Z').replace(' ','T');
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return raw;
+    return d.toLocaleString(undefined, { year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+  }
+
+  function _buildApiUrl() {
+    var p = new URLSearchParams();
+    p.set('type',       _state.logType);
+    p.set('page',       _state.page);
+    p.set('per_page',   _state.perPage);
+    if (_state.ignFilter)          p.set('ign',        _state.ignFilter);
+    if (_state.islandFilter)       p.set('island',     _state.islandFilter);
+    if (_state.authorizedFilter)   p.set('authorized', _state.authorizedFilter);
+    if (_state.categoryFilter)     p.set('category',   _state.categoryFilter);
+    if (_state.sortBy !== 'timestamp') p.set('sort_by', _state.sortBy);
+    if (_state.sortOrder !== 'desc')   p.set('sort_order', _state.sortOrder);
+    if (_state.actionType)         p.set('action_type', _state.actionType);
+    return '{{ url_for("dashboard.api_logs") }}?' + p.toString();
+  }
+
+  function _renderFlightRows(entries) {
+    return entries.map(function (e) {
+      var userCell = e.user_name
+        ? '<i class="bi bi-discord me-1" style="opacity:.7;"></i>' + _esc(e.user_name)
+        : '<span style="color:#ccc;">—</span>';
+      var badge = e.authorized
+        ? '<span class="badge badge-auth rounded-pill"><i class="fa-solid fa-check me-1"></i>Auth</span>'
+        : '<span class="badge badge-unkn rounded-pill"><i class="fa-solid fa-question me-1"></i>Unknown</span>';
+      return '<tr>'
+        + '<td class="x-small" style="color:#bbb;">' + _esc(e.id) + '</td>'
+        + '<td class="fw-bold" style="color:#444;">' + _esc(e.ign) + '</td>'
+        + '<td style="color:#888;">' + _esc(e.origin_island || '—') + '</td>'
+        + '<td>' + _esc(e.destination) + '</td>'
+        + '<td style="color:#7c6fcd;">' + userCell + '</td>'
+        + '<td>' + badge + '</td>'
+        + '<td class="x-small" style="color:#aaa;">' + _localizeTime(e.timestamp) + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  function _renderWarningRows(entries) {
+    return entries.map(function (e) {
+      return '<tr>'
+        + '<td>' + _actionBadge((e.action_type || '').toUpperCase()) + '</td>'
+        + '<td class="fw-bold" style="color:#444;">' + _esc(e.user_name) + '</td>'
+        + '<td class="fw-bold" style="color:#444;">' + _esc(e.ign || '—') + '</td>'
+        + '<td>' + _esc(e.destination || '—') + '</td>'
+        + '<td class="x-small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + _esc(e.reason) + '">' + _esc(e.reason || '—') + '</td>'
+        + '<td style="color:#888;">' + _esc(e.mod_name) + '</td>'
+        + '<td class="x-small" style="color:#aaa;">' + _localizeTime(e.timestamp) + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  function _renderPagination(page, totalPages) {
+    if (totalPages <= 1) { document.getElementById('logs-pagination').innerHTML = ''; return; }
+    var items = '';
+    if (page > 1) {
+      items += '<li class="page-item"><button onclick="goToPage(' + (page-1) + ')" class="page-link rounded-3 fw-bold" style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">← Prev</button></li>';
+    }
+    var start = Math.max(1, page - 2);
+    var end   = Math.min(totalPages + 1, page + 3);
+    for (var p = start; p < end; p++) {
+      var active = p === page;
+      items += '<li class="page-item' + (active ? ' active' : '') + '">'
+        + '<button onclick="goToPage(' + p + ')" class="page-link rounded-3 fw-bold" style="'
+        + (active ? 'background:var(--nook-green);border-color:var(--nook-green);' : 'border:2px solid #e1e6d3;color:#888;')
+        + 'font-size:.85rem;">' + p + '</button></li>';
+    }
+    if (page < totalPages) {
+      items += '<li class="page-item"><button onclick="goToPage(' + (page+1) + ')" class="page-link rounded-3 fw-bold" style="border:2px solid #e1e6d3;color:#888;font-size:.85rem;">Next →</button></li>';
+    }
+    document.getElementById('logs-pagination').innerHTML = '<nav><ul class="pagination justify-content-center gap-1" style="flex-wrap:wrap;">' + items + '</ul></nav>';
+  }
+
+  function fetchLogs() {
+    fetch(_buildApiUrl())
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) return;
+        _state.totalPages = d.total_pages;
+        _state.total      = d.total;
+
+        // Info bar
+        var infoEl = document.getElementById('logs-info');
+        if (infoEl) infoEl.textContent = 'Showing ' + d.entries.length + ' of ' + d.total.toLocaleString() + ' entries';
+        var pageInfoEl = document.getElementById('logs-page-info');
+        if (pageInfoEl) pageInfoEl.textContent = 'Page ' + d.page + ' / ' + d.total_pages;
+
+        // Table
+        var wrap = document.getElementById('logs-table-wrap');
+        if (!wrap) return;
+
+        if (!d.entries || d.entries.length === 0) {
+          wrap.innerHTML = '<div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">'
+            + '<i class="bi bi-journal-x fs-3 d-block mb-2" style="opacity:.3;"></i>No log entries found.</div>';
+        } else {
+          var isWarnings = (_state.logType === 'warnings');
+          var theadHtml = isWarnings
+            ? '<tr><th>Action</th><th>User</th><th>IGN</th><th>Island</th><th>Reason</th><th>Mod</th><th>Time</th></tr>'
+            : '<tr><th>#</th><th>IGN</th><th>Origin</th><th>Destination</th><th>Linked User</th><th>Status</th><th>Time</th></tr>';
+          var tbodyHtml = isWarnings ? _renderWarningRows(d.entries) : _renderFlightRows(d.entries);
+          wrap.innerHTML = '<div class="table-responsive"><table id="logsTable" class="db-table">'
+            + '<thead>' + theadHtml + '</thead>'
+            + '<tbody>' + tbodyHtml + '</tbody>'
+            + '</table></div>';
+          // Re-init DataTable
+          var el = document.getElementById('logsTable');
+          if (el && typeof simpleDatatables !== 'undefined') {
+            new simpleDatatables.DataTable(el, {
+              searchable: false, paging: false, sortable: true,
+              labels: { noRows: 'No log entries found.' }
+            });
+          }
+        }
+
+        _renderPagination(d.page, d.total_pages);
+      })
+      .catch(function (err) {
+        console.error('[logs fetch]', err);
+        var infoEl = document.getElementById('logs-info');
+        if (infoEl) infoEl.innerHTML = '<span style="color:#e06c75;"><i class="bi bi-exclamation-circle me-1"></i>Failed to load data — retrying soon…</span>';
+      });
+  }
+
+  // ---- Public functions ----
+  window.goToPage = function (p) {
+    _state.page = p;
+    fetchLogs();
+    _startRefreshTimer();
+  };
+
+  window.switchTab = function (type) {
+    _state.logType = type;
+    _state.page = 1;
+    // Update tab button styles
+    var fBtn = document.getElementById('tab-flights');
+    var wBtn = document.getElementById('tab-warnings');
+    var fFilt = document.getElementById('filter-flights');
+    var wFilt = document.getElementById('filter-warnings');
+    if (type === 'flights') {
+      fBtn.classList.add('btn-nook-primary'); fBtn.classList.remove('btn-sub');
+      wBtn.classList.remove('btn-nook-primary'); wBtn.classList.add('btn-sub');
+      fFilt.style.display = ''; wFilt.style.display = 'none';
+    } else {
+      wBtn.classList.add('btn-nook-primary'); wBtn.classList.remove('btn-sub');
+      fBtn.classList.remove('btn-nook-primary'); fBtn.classList.add('btn-sub');
+      fFilt.style.display = 'none'; wFilt.style.display = '';
+    }
+    fetchLogs();
+    _startRefreshTimer();
+  };
+
+  window.applyFlightFilters = function () {
+    _state.ignFilter        = document.getElementById('fl-ign').value.trim();
+    _state.islandFilter     = document.getElementById('fl-island').value;
+    _state.categoryFilter   = document.getElementById('fl-category').value;
+    _state.authorizedFilter = document.getElementById('fl-authorized').value;
+    _state.sortBy           = document.getElementById('fl-sort-by').value;
+    _state.sortOrder        = document.getElementById('fl-sort-order').value;
+    _state.page = 1;
+    fetchLogs();
+    _startRefreshTimer();
+  };
+
+  window.clearFlightFilters = function () {
+    document.getElementById('fl-ign').value = '';
+    document.getElementById('fl-island').value = '';
+    document.getElementById('fl-category').value = '';
+    document.getElementById('fl-authorized').value = '';
+    document.getElementById('fl-sort-by').value = 'timestamp';
+    document.getElementById('fl-sort-order').value = 'desc';
+    _state.ignFilter = _state.islandFilter = _state.categoryFilter = _state.authorizedFilter = '';
+    _state.sortBy = 'timestamp'; _state.sortOrder = 'desc';
+    _state.page = 1;
+    fetchLogs();
+    _startRefreshTimer();
+  };
+
+  window.applyWarningFilters = function () {
+    _state.ignFilter    = document.getElementById('wn-ign').value.trim();
+    _state.actionType   = document.getElementById('wn-action-type').value;
+    _state.page = 1;
+    _updateActionPills();
+    fetchLogs();
+    _startRefreshTimer();
+  };
+
+  window.clearWarningFilters = function () {
+    document.getElementById('wn-ign').value = '';
+    document.getElementById('wn-action-type').value = '';
+    _state.ignFilter = ''; _state.actionType = '';
+    _state.page = 1;
+    _updateActionPills();
+    fetchLogs();
+    _startRefreshTimer();
+  };
+
+  window.setWarnAction = function (at) {
+    document.getElementById('wn-action-type').value = at;
+    _state.actionType = at;
+    _state.page = 1;
+    _updateActionPills();
+    fetchLogs();
+    _startRefreshTimer();
+  };
+
+  function _updateActionPills() {
+    var wrap = document.getElementById('wn-action-pills');
+    if (!wrap) return;
+    wrap.querySelectorAll('button').forEach(function (btn) {
+      var onclickVal = btn.getAttribute('onclick') || '';
+      var match = onclickVal.match(/setWarnAction\('([^']*)'\)/);
+      var btnAt = match ? match[1] : '';
+      if (btnAt === _state.actionType) {
+        btn.classList.add('btn-nook-primary'); btn.classList.remove('btn-sub');
+      } else {
+        btn.classList.remove('btn-nook-primary'); btn.classList.add('btn-sub');
+      }
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    // Init DataTable on server-rendered table
+    var el = document.getElementById('logsTable');
+    if (el && typeof simpleDatatables !== 'undefined') {
+      new simpleDatatables.DataTable(el, {
+        searchable: false, paging: false, sortable: true,
+        labels: { noRows: 'No log entries found.' }
+      });
+    }
+    // Start auto-refresh
+    _startRefreshTimer();
   });
-});
+})();
 </script>
 {% endblock %}

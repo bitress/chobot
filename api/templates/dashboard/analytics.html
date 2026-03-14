@@ -46,44 +46,39 @@
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-calendar-day-fill me-1"></i>Visits Today</div>
-      <div class="stat-value text-nook-green">{{ visits_today | intcomma }}</div>
-      {% if warnings_today > 0 %}
-      <div class="x-small fw-bold mt-1" style="color:var(--nook-yellow);">
+      <div class="stat-value text-nook-green" id="an-visits-today">{{ visits_today | intcomma }}</div>
+      <div class="x-small fw-bold mt-1" id="an-warnings-today-badge"
+           style="color:var(--nook-yellow);{% if warnings_today == 0 %}display:none;{% endif %}">
         <i class="bi bi-exclamation-triangle-fill me-1"></i>{{ warnings_today | intcomma }} warning{{ 's' if warnings_today != 1 else '' }} today
       </div>
-      {% endif %}
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-calendar-week-fill me-1"></i>Visits This Week</div>
-      <div class="stat-value" style="color:var(--dal-blue);">{{ visits_week | intcomma }}</div>
+      <div class="stat-value" style="color:var(--dal-blue);" id="an-visits-week">{{ visits_week | intcomma }}</div>
       {% set week_delta = visits_week - visits_prev_week %}
-      {% if visits_prev_week > 0 %}
-      <div class="x-small fw-bold mt-1"
-           style="color:{% if week_delta >= 0 %}var(--nook-green){% else %}#e06c75{% endif %};">
+      <div class="x-small fw-bold mt-1" id="an-week-delta"
+           style="color:{% if week_delta >= 0 %}var(--nook-green){% else %}#e06c75{% endif %};{% if visits_prev_week == 0 %}display:none;{% endif %}">
         <i class="bi bi-arrow-{% if week_delta >= 0 %}up{% else %}down{% endif %}-short"></i>
         {% if week_delta >= 0 %}+{% endif %}{{ week_delta | intcomma }} vs prev week
       </div>
-      {% endif %}
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-exclamation-triangle-fill me-1"></i>Warnings (7d)</div>
-      <div class="stat-value" style="color:var(--nook-yellow);">{{ warnings_week | intcomma }}</div>
-      {% if visits_week > 0 %}
-      <div class="x-small fw-bold mt-1" style="color:#aaa;">
+      <div class="stat-value" style="color:var(--nook-yellow);" id="an-warnings-week">{{ warnings_week | intcomma }}</div>
+      <div class="x-small fw-bold mt-1" style="color:#aaa;" id="an-warn-rate-week">
         {{ warn_rate_week }}% warn rate (7d)
       </div>
-      {% endif %}
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-airplane-fill me-1"></i>Total Visits</div>
-      <div class="stat-value" style="color:#b07cdc;">{{ (auth_stats.authorized + auth_stats.unauthorized) | intcomma }}</div>
-      <div class="x-small fw-bold mt-1" style="color:#aaa;">
+      <div class="stat-value" style="color:#b07cdc;" id="an-total-visits">{{ (auth_stats.authorized + auth_stats.unauthorized) | intcomma }}</div>
+      <div class="x-small fw-bold mt-1" style="color:#aaa;" id="an-avg-30d">
         avg {{ avg_visits_30d }}/day (30d)
       </div>
     </div>
@@ -95,36 +90,28 @@
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-people-fill me-1"></i>Unique Travelers</div>
-      <div class="stat-value" style="color:var(--nook-green);">{{ total_unique_travelers | intcomma }}</div>
+      <div class="stat-value" style="color:var(--nook-green);" id="an-unique-travelers">{{ total_unique_travelers | intcomma }}</div>
       <div class="x-small fw-bold mt-1" style="color:#aaa;">all-time distinct visitors</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-map-fill me-1"></i>Unique Islands</div>
-      <div class="stat-value" style="color:var(--dal-blue);">{{ total_unique_islands | intcomma }}</div>
+      <div class="stat-value" style="color:var(--dal-blue);" id="an-unique-islands">{{ total_unique_islands | intcomma }}</div>
       <div class="x-small fw-bold mt-1" style="color:#aaa;">all-time distinct destinations</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-clock-history me-1"></i>Peak Hour (UTC+8)</div>
-      {% if peak_hour is not none %}
-      <div class="stat-value" style="color:#f5a623;">{{ '%02d'|format(peak_hour) }}:00</div>
+      <div class="stat-value" id="an-peak-hour-val" style="color:{% if peak_hour is not none %}#f5a623{% else %}#ccc{% endif %};">{% if peak_hour is not none %}{{ '%02d'|format(peak_hour) }}:00{% else %}—{% endif %}</div>
       <div class="x-small fw-bold mt-1" style="color:#aaa;">busiest hour all-time</div>
-      {% else %}
-      <div class="stat-value" style="color:#ccc;">—</div>
-      {% endif %}
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-shield-check-fill me-1"></i>Auth Rate</div>
-      {% if auth_rate_pct is not none %}
-      <div class="stat-value" style="color:#28a745;">{{ auth_rate_pct }}%</div>
-      {% else %}
-      <div class="stat-value" style="color:#ccc;">—</div>
-      {% endif %}
+      <div class="stat-value" id="an-auth-rate-val" style="color:{% if auth_rate_pct is not none %}#28a745{% else %}#ccc{% endif %};">{% if auth_rate_pct is not none %}{{ auth_rate_pct }}%{% else %}—{% endif %}</div>
       <div class="x-small fw-bold mt-1" style="color:#aaa;">authorized visits all-time</div>
     </div>
   </div>
@@ -140,35 +127,28 @@
         <span><i class="bi bi-pie-chart-fill me-2" style="color:var(--nook-green);"></i>Traveler Authorization</span>
       </div>
       <div class="p-4 d-flex align-items-center gap-4">
-        {% if auth_stats.authorized + auth_stats.unauthorized > 0 %}
         <div class="chart-wrap flex-shrink-0" style="width:140px;height:140px;">
           <canvas id="authChart"></canvas>
         </div>
-        {% else %}
-        <div class="flex-shrink-0 d-flex align-items-center justify-content-center"
-             style="width:140px;height:140px;border-radius:50%;border:10px solid #f0f4ec;">
-          <i class="bi bi-pie-chart" style="font-size:2rem;color:#ccc;"></i>
-        </div>
-        {% endif %}
         <div>
           <div class="d-flex align-items-center gap-2 mb-2">
             <span class="status-dot" style="background:#28a745;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Authorized</span>
-            <span class="ms-auto fw-black ac-font" style="color:var(--nook-green);font-size:1.3rem;">
+            <span class="ms-auto fw-black ac-font" id="an-auth-authorized" style="color:var(--nook-green);font-size:1.3rem;">
               {{ auth_stats.authorized }}
             </span>
           </div>
           <div class="d-flex align-items-center gap-2 mb-3">
             <span class="status-dot" style="background:#e06c75;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Unknown</span>
-            <span class="ms-auto fw-black ac-font" style="color:#e06c75;font-size:1.3rem;">
+            <span class="ms-auto fw-black ac-font" id="an-auth-unauthorized" style="color:#e06c75;font-size:1.3rem;">
               {{ auth_stats.unauthorized }}
             </span>
           </div>
           <div class="divider-dashed mt-0 mb-2"></div>
           <div class="d-flex align-items-center justify-content-between">
             <span class="x-small fw-bold" style="color:#ccc;">Total</span>
-            <span class="fw-black ac-font" style="color:#444;font-size:1.2rem;">
+            <span class="fw-black ac-font" id="an-auth-total" style="color:#444;font-size:1.2rem;">
               {{ auth_stats.authorized + auth_stats.unauthorized }}
             </span>
           </div>
@@ -196,16 +176,9 @@
         </div>
       </div>
       <div class="p-4">
-        {% if visits_by_day or visits_by_day_30 %}
         <div class="chart-wrap" style="height:140px;">
           <canvas id="visitChart"></canvas>
         </div>
-        {% else %}
-        <div class="py-4 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">
-          <i class="bi bi-graph-up fs-3 d-block mb-2" style="opacity:.3;"></i>
-          No visit data in the selected period.
-        </div>
-        {% endif %}
       </div>
     </div>
   </div>
@@ -220,8 +193,8 @@
       <div class="section-card-header">
         <span><i class="fa-solid fa-umbrella-beach me-2" style="color:var(--nook-green);"></i>Most Visited Islands</span>
       </div>
-      {% if top_islands %}
-      <div>
+      <div id="an-top-islands-list">
+        {% if top_islands %}
         {% for row in top_islands %}
         <div class="d-flex align-items-center gap-3 px-4 py-3"
              style="border-bottom:1px solid #f0f4ec;">
@@ -237,10 +210,10 @@
           </div>
         </div>
         {% endfor %}
+        {% else %}
+        <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">No visit data yet.</div>
+        {% endif %}
       </div>
-      {% else %}
-      <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">No visit data yet.</div>
-      {% endif %}
     </div>
   </div>
 
@@ -250,8 +223,8 @@
       <div class="section-card-header">
         <span><i class="fa-solid fa-plane me-2" style="color:#b07cdc;"></i>Most Active Travelers</span>
       </div>
-      {% if top_travelers %}
-      <div>
+      <div id="an-top-travelers-list">
+        {% if top_travelers %}
         {% for row in top_travelers %}
         <div class="d-flex align-items-center gap-3 px-4 py-3"
              style="border-bottom:1px solid #f0f4ec;">
@@ -267,16 +240,15 @@
           </div>
         </div>
         {% endfor %}
+        {% else %}
+        <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">No traveler data yet.</div>
+        {% endif %}
       </div>
-      {% else %}
-      <div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">No traveler data yet.</div>
-      {% endif %}
     </div>
   </div>
 </div>
 
 <!-- Island visit bar chart -->
-{% if top_islands %}
 <div class="section-card mb-4">
   <div class="section-card-header">
     <span><i class="bi bi-bar-chart-fill me-2" style="color:var(--dal-blue);"></i>Island Visit Breakdown</span>
@@ -287,12 +259,10 @@
     </div>
   </div>
 </div>
-{% endif %}
 
 <!-- Traveler activity bar chart + Category breakdown row -->
 <div class="row g-4 mb-4">
   <!-- Top travelers bar chart -->
-  {% if top_travelers %}
   <div class="col-12 col-lg-8">
     <div class="section-card h-100">
       <div class="section-card-header">
@@ -305,7 +275,6 @@
       </div>
     </div>
   </div>
-  {% endif %}
 
   <!-- Public vs Member/VIP visits doughnut -->
   <div class="col-12 col-lg-4">
@@ -314,35 +283,28 @@
         <span><i class="bi bi-pie-chart-fill me-2" style="color:var(--dal-blue);"></i>Visits by Tier</span>
       </div>
       <div class="p-4 d-flex align-items-center gap-4">
-        {% if cat_stats.public + cat_stats.member > 0 %}
         <div class="chart-wrap flex-shrink-0" style="width:120px;height:120px;">
           <canvas id="catChart"></canvas>
         </div>
-        {% else %}
-        <div class="flex-shrink-0 d-flex align-items-center justify-content-center"
-             style="width:120px;height:120px;border-radius:50%;border:8px solid #f0f4ec;">
-          <i class="bi bi-pie-chart" style="font-size:1.6rem;color:#ccc;"></i>
-        </div>
-        {% endif %}
         <div>
           <div class="d-flex align-items-center gap-2 mb-2">
             <span class="status-dot" style="background:#4f9ef8;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Public</span>
-            <span class="ms-auto fw-black ac-font" style="color:#4f9ef8;font-size:1.2rem;">
+            <span class="ms-auto fw-black ac-font" id="an-cat-public" style="color:#4f9ef8;font-size:1.2rem;">
               {{ cat_stats.public }}
             </span>
           </div>
           <div class="d-flex align-items-center gap-2 mb-3">
             <span class="status-dot" style="background:#f5a623;"></span>
             <span class="fw-bold" style="color:#888;font-size:.88rem;">Member / VIP</span>
-            <span class="ms-auto fw-black ac-font" style="color:#f5a623;font-size:1.2rem;">
+            <span class="ms-auto fw-black ac-font" id="an-cat-member" style="color:#f5a623;font-size:1.2rem;">
               {{ cat_stats.member }}
             </span>
           </div>
           <div class="divider-dashed mt-0 mb-2"></div>
           <div class="d-flex align-items-center justify-content-between">
             <span class="x-small fw-bold" style="color:#ccc;">Total matched</span>
-            <span class="fw-black ac-font" style="color:#444;font-size:1.1rem;">
+            <span class="fw-black ac-font" id="an-cat-total" style="color:#444;font-size:1.1rem;">
               {{ cat_stats.public + cat_stats.member }}
             </span>
           </div>
@@ -356,12 +318,10 @@
 <div class="section-card mb-4">
   <div class="section-card-header">
     <span><i class="bi bi-clock-fill me-2" style="color:#f5a623;"></i>Visits by Hour of Day (UTC+8)</span>
-    {% if peak_hour is not none %}
-    <span class="fw-bold x-small"
-          style="color:#f5a623;background:#fff8ec;border-radius:8px;padding:3px 10px;">
-      <i class="bi bi-star-fill me-1"></i>Peak: {{ '%02d'|format(peak_hour) }}:00–{{ '%02d'|format((peak_hour + 1) % 24) }}:00 UTC+8
+    <span id="an-peak-hour-badge" class="fw-bold x-small"
+          style="color:#f5a623;background:#fff8ec;border-radius:8px;padding:3px 10px;{% if peak_hour is none %}display:none;{% endif %}">
+      <i class="bi bi-star-fill me-1"></i>{% if peak_hour is not none %}Peak: {{ '%02d'|format(peak_hour) }}:00–{{ '%02d'|format((peak_hour + 1) % 24) }}:00 UTC+8{% endif %}
     </span>
-    {% endif %}
   </div>
   <div class="p-4">
     <div class="chart-wrap" style="height:200px;">
@@ -412,7 +372,7 @@
               <i class="bi bi-person-plus-fill" style="color:var(--nook-green);font-size:1.2rem;"></i>
             </div>
             <div>
-              <div class="fw-black ac-font" style="color:var(--nook-green);font-size:1.6rem;">{{ new_returning.new_7d }}</div>
+              <div class="fw-black ac-font" id="an-nr-new-7d" style="color:var(--nook-green);font-size:1.6rem;">{{ new_returning.new_7d }}</div>
               <div class="x-small fw-bold" style="color:#aaa;">First-time visitors (7d)</div>
             </div>
           </div>
@@ -421,14 +381,14 @@
               <i class="bi bi-arrow-repeat" style="color:#b07cdc;font-size:1.2rem;"></i>
             </div>
             <div>
-              <div class="fw-black ac-font" style="color:#b07cdc;font-size:1.6rem;">{{ new_returning.returning_7d }}</div>
+              <div class="fw-black ac-font" id="an-nr-returning-7d" style="color:#b07cdc;font-size:1.6rem;">{{ new_returning.returning_7d }}</div>
               <div class="x-small fw-bold" style="color:#aaa;">Returning visitors (7d)</div>
             </div>
           </div>
           <div class="divider-dashed mt-0 mb-2"></div>
           <div class="d-flex justify-content-between">
             <span class="x-small fw-bold" style="color:#ccc;">Unique travelers (7d)</span>
-            <span class="fw-black ac-font" style="color:#444;">{{ new_returning.total_7d }}</span>
+            <span class="fw-black ac-font" id="an-nr-total-7d" style="color:#444;">{{ new_returning.total_7d }}</span>
           </div>
         </div>
         <div id="nrStats30d" style="display:none;">
@@ -437,7 +397,7 @@
               <i class="bi bi-person-plus-fill" style="color:var(--nook-green);font-size:1.2rem;"></i>
             </div>
             <div>
-              <div class="fw-black ac-font" style="color:var(--nook-green);font-size:1.6rem;">{{ new_returning.new_30d }}</div>
+              <div class="fw-black ac-font" id="an-nr-new-30d" style="color:var(--nook-green);font-size:1.6rem;">{{ new_returning.new_30d }}</div>
               <div class="x-small fw-bold" style="color:#aaa;">First-time visitors (30d)</div>
             </div>
           </div>
@@ -446,14 +406,14 @@
               <i class="bi bi-arrow-repeat" style="color:#b07cdc;font-size:1.2rem;"></i>
             </div>
             <div>
-              <div class="fw-black ac-font" style="color:#b07cdc;font-size:1.6rem;">{{ new_returning.returning_30d }}</div>
+              <div class="fw-black ac-font" id="an-nr-returning-30d" style="color:#b07cdc;font-size:1.6rem;">{{ new_returning.returning_30d }}</div>
               <div class="x-small fw-bold" style="color:#aaa;">Returning visitors (30d)</div>
             </div>
           </div>
           <div class="divider-dashed mt-0 mb-2"></div>
           <div class="d-flex justify-content-between">
             <span class="x-small fw-bold" style="color:#ccc;">Unique travelers (30d)</span>
-            <span class="fw-black ac-font" style="color:#444;">{{ new_returning.total_30d }}</span>
+            <span class="fw-black ac-font" id="an-nr-total-30d" style="color:#444;">{{ new_returning.total_30d }}</span>
           </div>
         </div>
       </div>
@@ -465,7 +425,6 @@
 <div class="row g-4 mb-4">
 
   <!-- Top Warned -->
-  {% if top_warned %}
   <div class="col-12 col-lg-6">
     <div class="section-card h-100">
       <div class="section-card-header">
@@ -474,29 +433,23 @@
            class="text-decoration-none fw-bold x-small"
            style="color:var(--nook-yellow);">View all →</a>
       </div>
-      <div>
+      <div id="an-top-warned-list">
         {% for row in top_warned %}
-        <div class="d-flex align-items-center gap-3 px-4 py-3"
-             style="border-bottom:1px solid #f0f4ec;">
+        <div class="d-flex align-items-center gap-3 px-4 py-3" style="border-bottom:1px solid #f0f4ec;">
           <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
           <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
           <div class="d-flex align-items-center gap-2 flex-shrink-0">
             <div style="height:6px;border-radius:3px;background:var(--nook-yellow);
-                        width:{{ [(row.warn_count / [top_warned[0].warn_count, 1]|max * 80)|int, 4]|max }}px;
-                        max-width:80px;"></div>
-            <span class="fw-black x-small" style="color:var(--nook-yellow);width:24px;text-align:right;">
-              {{ row.warn_count | intcomma }}
-            </span>
+                        width:{{ [(row.warn_count / [top_warned[0].warn_count, 1]|max * 80)|int, 4]|max }}px;max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:var(--nook-yellow);width:24px;text-align:right;">{{ row.warn_count | intcomma }}</span>
           </div>
         </div>
         {% endfor %}
       </div>
     </div>
   </div>
-  {% endif %}
 
   <!-- Top Kicked -->
-  {% if top_kicked %}
   <div class="col-12 col-lg-6">
     <div class="section-card h-100">
       <div class="section-card-header">
@@ -505,29 +458,23 @@
            class="text-decoration-none fw-bold x-small"
            style="color:#F1C40F;">View all →</a>
       </div>
-      <div>
+      <div id="an-top-kicked-list">
         {% for row in top_kicked %}
-        <div class="d-flex align-items-center gap-3 px-4 py-3"
-             style="border-bottom:1px solid #f0f4ec;">
+        <div class="d-flex align-items-center gap-3 px-4 py-3" style="border-bottom:1px solid #f0f4ec;">
           <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
           <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
           <div class="d-flex align-items-center gap-2 flex-shrink-0">
             <div style="height:6px;border-radius:3px;background:#F1C40F;
-                        width:{{ [(row.kick_count / [top_kicked[0].kick_count, 1]|max * 80)|int, 4]|max }}px;
-                        max-width:80px;"></div>
-            <span class="fw-black x-small" style="color:#F1C40F;width:24px;text-align:right;">
-              {{ row.kick_count | intcomma }}
-            </span>
+                        width:{{ [(row.kick_count / [top_kicked[0].kick_count, 1]|max * 80)|int, 4]|max }}px;max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:#F1C40F;width:24px;text-align:right;">{{ row.kick_count | intcomma }}</span>
           </div>
         </div>
         {% endfor %}
       </div>
     </div>
   </div>
-  {% endif %}
 
   <!-- Top Banned -->
-  {% if top_banned %}
   <div class="col-12 col-lg-6">
     <div class="section-card h-100">
       <div class="section-card-header">
@@ -536,29 +483,23 @@
            class="text-decoration-none fw-bold x-small"
            style="color:#992D22;">View all →</a>
       </div>
-      <div>
+      <div id="an-top-banned-list">
         {% for row in top_banned %}
-        <div class="d-flex align-items-center gap-3 px-4 py-3"
-             style="border-bottom:1px solid #f0f4ec;">
+        <div class="d-flex align-items-center gap-3 px-4 py-3" style="border-bottom:1px solid #f0f4ec;">
           <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
           <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
           <div class="d-flex align-items-center gap-2 flex-shrink-0">
             <div style="height:6px;border-radius:3px;background:#992D22;
-                        width:{{ [(row.ban_count / [top_banned[0].ban_count, 1]|max * 80)|int, 4]|max }}px;
-                        max-width:80px;"></div>
-            <span class="fw-black x-small" style="color:#992D22;width:24px;text-align:right;">
-              {{ row.ban_count | intcomma }}
-            </span>
+                        width:{{ [(row.ban_count / [top_banned[0].ban_count, 1]|max * 80)|int, 4]|max }}px;max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:#992D22;width:24px;text-align:right;">{{ row.ban_count | intcomma }}</span>
           </div>
         </div>
         {% endfor %}
       </div>
     </div>
   </div>
-  {% endif %}
 
   <!-- Top Noted -->
-  {% if top_noted %}
   <div class="col-12 col-lg-6">
     <div class="section-card h-100">
       <div class="section-card-header">
@@ -567,26 +508,21 @@
            class="text-decoration-none fw-bold x-small"
            style="color:#5DADE2;">View all →</a>
       </div>
-      <div>
+      <div id="an-top-noted-list">
         {% for row in top_noted %}
-        <div class="d-flex align-items-center gap-3 px-4 py-3"
-             style="border-bottom:1px solid #f0f4ec;">
+        <div class="d-flex align-items-center gap-3 px-4 py-3" style="border-bottom:1px solid #f0f4ec;">
           <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
           <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
           <div class="d-flex align-items-center gap-2 flex-shrink-0">
             <div style="height:6px;border-radius:3px;background:#5DADE2;
-                        width:{{ [(row.note_count / [top_noted[0].note_count, 1]|max * 80)|int, 4]|max }}px;
-                        max-width:80px;"></div>
-            <span class="fw-black x-small" style="color:#5DADE2;width:24px;text-align:right;">
-              {{ row.note_count | intcomma }}
-            </span>
+                        width:{{ [(row.note_count / [top_noted[0].note_count, 1]|max * 80)|int, 4]|max }}px;max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:#5DADE2;width:24px;text-align:right;">{{ row.note_count | intcomma }}</span>
           </div>
         </div>
         {% endfor %}
       </div>
     </div>
   </div>
-  {% endif %}
 
 </div>
 
@@ -599,14 +535,14 @@
     <div class="row g-4">
       <div class="col-12 col-md-4">
         <div class="d-flex align-items-center gap-3">
-          <div style="width:52px;height:52px;border-radius:50%;
+          <div id="an-wow-delta-icon-wrap" style="width:52px;height:52px;border-radius:50%;
                       background:{% if visits_week >= visits_prev_week %}#e8f5e9{% else %}#fce8e8{% endif %};
                       display:flex;align-items:center;justify-content:center;">
-            <i class="bi bi-arrow-{% if visits_week >= visits_prev_week %}up{% else %}down{% endif %}-circle-fill"
-               style="font-size:1.6rem;color:{% if visits_week >= visits_prev_week %}var(--nook-green){% else %}#e06c75{% endif %};"></i>
+            <span id="an-wow-delta-icon"><i class="bi bi-arrow-{% if visits_week >= visits_prev_week %}up{% else %}down{% endif %}-circle-fill"
+               style="font-size:1.6rem;color:{% if visits_week >= visits_prev_week %}var(--nook-green){% else %}#e06c75{% endif %};"></i></span>
           </div>
           <div>
-            <div class="fw-black ac-font" style="font-size:1.6rem;
+            <div id="an-wow-delta" class="fw-black ac-font" style="font-size:1.6rem;
                  color:{% if visits_week >= visits_prev_week %}var(--nook-green){% else %}#e06c75{% endif %};">
               {% set week_delta = visits_week - visits_prev_week %}
               {% if week_delta >= 0 %}+{% endif %}{{ week_delta | intcomma }}
@@ -622,7 +558,7 @@
             <i class="bi bi-calendar-week-fill" style="font-size:1.3rem;color:var(--dal-blue);"></i>
           </div>
           <div>
-            <div class="fw-black ac-font" style="font-size:1.6rem;color:var(--dal-blue);">{{ visits_week | intcomma }}</div>
+            <div class="fw-black ac-font" id="an-wow-this-week" style="font-size:1.6rem;color:var(--dal-blue);">{{ visits_week | intcomma }}</div>
             <div class="x-small fw-bold" style="color:#aaa;">this week (last 7 days)</div>
           </div>
         </div>
@@ -634,13 +570,12 @@
             <i class="bi bi-calendar2-week" style="font-size:1.3rem;color:#aaa;"></i>
           </div>
           <div>
-            <div class="fw-black ac-font" style="font-size:1.6rem;color:#aaa;">{{ visits_prev_week | intcomma }}</div>
+            <div class="fw-black ac-font" id="an-wow-prev-week" style="font-size:1.6rem;color:#aaa;">{{ visits_prev_week | intcomma }}</div>
             <div class="x-small fw-bold" style="color:#aaa;">prior week (7–14 days ago)</div>
           </div>
         </div>
       </div>
     </div>
-    {% if visits_week + visits_prev_week > 0 %}
     <div class="mt-4">
       <div class="d-flex justify-content-between x-small fw-bold mb-1" style="color:#aaa;">
         <span>Prior week</span>
@@ -650,233 +585,390 @@
         {% set max_wk = [visits_week, visits_prev_week]|max %}
         {% set pct_prev = (visits_prev_week / max_wk * 100)|int if max_wk > 0 else 0 %}
         {% set pct_curr = (visits_week      / max_wk * 100)|int if max_wk > 0 else 0 %}
-        <div style="position:absolute;left:0;top:0;height:100%;width:{{ pct_prev }}%;
+        <div id="an-wow-bar-prev" style="position:absolute;left:0;top:0;height:100%;width:{{ pct_prev }}%;
                     background:#b0d4f7;border-radius:5px;opacity:.6;"></div>
-        <div style="position:absolute;left:0;top:0;height:100%;width:{{ pct_curr }}%;
+        <div id="an-wow-bar-curr" style="position:absolute;left:0;top:0;height:100%;width:{{ pct_curr }}%;
                     background:var(--dal-blue);border-radius:5px;opacity:.85;"></div>
       </div>
     </div>
-    {% endif %}
   </div>
 </div>
 
 {% block scripts %}
 <script>
-  // ---------- Data from server ----------
-  const data7d = {
-    labels:  [{% for r in visits_by_day %}"{{ r.day }}"{% if not loop.last %},{% endif %}{% endfor %}],
-    counts:  [{% for r in visits_by_day %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}]
-  };
-  const data30d = {
-    labels:  [{% for r in visits_by_day_30 %}"{{ r.day }}"{% if not loop.last %},{% endif %}{% endfor %}],
-    counts:  [{% for r in visits_by_day_30 %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}]
-  };
-  const dataHour = {
-    labels: [{% for r in visits_by_hour %}"{{ '%02d'|format(r.hour) }}:00"{% if not loop.last %},{% endif %}{% endfor %}],
-    counts: [{% for r in visits_by_hour %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}]
+  // ---------- Data from server (initial render) ----------
+  var _analyticsData = {
+    data7d:        { labels: [{% for r in visits_by_day %}"{{ r.day }}"{% if not loop.last %},{% endif %}{% endfor %}], counts: [{% for r in visits_by_day %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}] },
+    data30d:       { labels: [{% for r in visits_by_day_30 %}"{{ r.day }}"{% if not loop.last %},{% endif %}{% endfor %}], counts: [{% for r in visits_by_day_30 %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}] },
+    dataHour:      { labels: [{% for r in visits_by_hour %}"{{ '%02d'|format(r.hour) }}:00"{% if not loop.last %},{% endif %}{% endfor %}], counts: [{% for r in visits_by_hour %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}] },
+    dataDow:       { labels: [{% for r in visits_by_dow %}"{{ r.label }}"{% if not loop.last %},{% endif %}{% endfor %}], counts: [{% for r in visits_by_dow %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}] },
+    topIslands:    {{ top_islands | tojson }},
+    topTravelers:  {{ top_travelers | tojson }},
+    authStats:     {{ auth_stats | tojson }},
+    catStats:      {{ cat_stats | tojson }},
+    topWarned:     {{ top_warned | tojson }},
+    topKicked:     {{ top_kicked | tojson }},
+    topBanned:     {{ top_banned | tojson }},
+    topNoted:      {{ top_noted | tojson }},
+    visitsToday:   {{ visits_today }},
+    visitsWeek:    {{ visits_week }},
+    warningsWeek:  {{ warnings_week }},
+    warningsToday: {{ warnings_today }},
+    visitsPrevWeek:{{ visits_prev_week }},
+    peakHour:      {{ peak_hour | tojson }},
+    avgVisits30d:  {{ avg_visits_30d }},
+    totalUniqueTravelers: {{ total_unique_travelers }},
+    totalUniqueIslands:   {{ total_unique_islands }},
+    authRatePct:   {{ auth_rate_pct | tojson }},
+    warnRateWeek:  {{ warn_rate_week }},
+    newReturning:  {{ new_returning | tojson }},
+    islandTypeFilter: {{ island_type_filter | tojson }}
   };
 
   // ---------- Shared chart defaults ----------
   const tickFont = { size: 11, family: 'Quicksand', weight: '700' };
   const gridColor = '#f0f4ec';
 
-  // ---------- Auth doughnut ----------
-  {% if auth_stats.authorized + auth_stats.unauthorized > 0 %}
-  new Chart(document.getElementById('authChart'), {
-    type: 'doughnut',
-    data: {
-      labels: ['Authorized', 'Unknown'],
-      datasets: [{
-        data: [{{ auth_stats.authorized }}, {{ auth_stats.unauthorized }}],
-        backgroundColor: ['#28a745', '#e06c75'],
-        borderWidth: 0,
-        hoverOffset: 4,
-      }]
-    },
-    options: {
-      cutout: '70%',
-      plugins: { legend: { display: false } },
-      responsive: true,
-      maintainAspectRatio: true,
-    }
-  });
-  {% endif %}
+  // ---- Chart instances (kept for update) ----
+  var _authChart      = null;
+  var _visitChart     = null;
+  var _islandBarChart = null;
+  var _travelerChart  = null;
+  var _catChart       = null;
+  var _hourChart      = null;
+  var _dowChart       = null;
+  var _activeTrendDays = 7;
+  var _activeNRDays    = 7;
 
-  // ---------- Visit trend line (7d / 30d toggle) ----------
-  {% if visits_by_day or visits_by_day_30 %}
-  let visitChart = null;
+  function intcomma(n) { return Number(n).toLocaleString(); }
 
-  function buildVisitChart(days) {
-    const d = days === 30 ? data30d : data7d;
-    if (visitChart) visitChart.destroy();
-    visitChart = new Chart(document.getElementById('visitChart'), {
-      type: 'line',
-      data: {
-        labels: d.labels,
-        datasets: [{
-          label: 'Visits',
-          data: d.counts,
-          borderColor: '#28a745',
-          backgroundColor: 'rgba(40,167,69,0.12)',
-          fill: true,
-          tension: 0.4,
-          pointRadius: 4,
-          pointBackgroundColor: '#28a745',
-          borderWidth: 2.5,
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor } },
-          y: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor }, beginAtZero: true }
-        }
-      }
-    });
+  function _esc(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  // ---- Stat card helpers ----
+  function setText(id, val) {
+    var el = document.getElementById(id);
+    if (el && el.textContent !== String(val)) el.textContent = val;
+  }
+  function setHTML(id, val) {
+    var el = document.getElementById(id);
+    if (el) el.innerHTML = val;
+  }
+
+  // ---- Build / refresh charts ----
+  function buildAuthChart(authStats) {
+    var ctx = document.getElementById('authChart');
+    if (!ctx) return;
+    var total = (authStats.authorized || 0) + (authStats.unauthorized || 0);
+    if (!total) return;
+    var data = { labels: ['Authorized','Unknown'],
+      datasets: [{ data: [authStats.authorized, authStats.unauthorized],
+        backgroundColor: ['#28a745','#e06c75'], borderWidth: 0, hoverOffset: 4 }] };
+    var opts = { cutout:'70%', plugins:{ legend:{ display:false } }, responsive:true, maintainAspectRatio:true };
+    if (_authChart) { _authChart.data = data; _authChart.update('none'); }
+    else { _authChart = new Chart(ctx, { type:'doughnut', data:data, options:opts }); }
+  }
+
+  function buildVisitChart(days, d7, d30) {
+    var ctx = document.getElementById('visitChart');
+    if (!ctx) return;
+    var d = days === 30 ? d30 : d7;
+    var chartData = { labels: d.labels,
+      datasets: [{ label:'Visits', data: d.counts,
+        borderColor:'#28a745', backgroundColor:'rgba(40,167,69,0.12)',
+        fill:true, tension:0.4, pointRadius:4, pointBackgroundColor:'#28a745', borderWidth:2.5 }] };
+    var opts = { responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false } },
+      scales: { x:{ ticks:{ color:'#aaa', font:tickFont }, grid:{ color:gridColor } },
+                y:{ ticks:{ color:'#aaa', font:tickFont }, grid:{ color:gridColor }, beginAtZero:true } } };
+    if (_visitChart) { _visitChart.data = chartData; _visitChart.update('none'); }
+    else { _visitChart = new Chart(ctx, { type:'line', data:chartData, options:opts }); }
+  }
+
+  function buildIslandBarChart(topIslands) {
+    var ctx = document.getElementById('islandBarChart');
+    if (!ctx || !topIslands || !topIslands.length) return;
+    var chartData = { labels: topIslands.map(function(r){ return r.destination; }),
+      datasets: [{ label:'Visits', data: topIslands.map(function(r){ return r.visit_count; }),
+        backgroundColor:'rgba(40,167,69,0.65)', borderRadius:8, borderSkipped:false }] };
+    var opts = { responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false } },
+      scales: { x:{ ticks:{ color:'#aaa', font:tickFont }, grid:{ color:gridColor } },
+                y:{ ticks:{ color:'#aaa', font:tickFont }, grid:{ color:gridColor }, beginAtZero:true } } };
+    if (_islandBarChart) { _islandBarChart.data = chartData; _islandBarChart.update('none'); }
+    else { _islandBarChart = new Chart(ctx, { type:'bar', data:chartData, options:opts }); }
+  }
+
+  function buildTravelerBarChart(topTravelers) {
+    var ctx = document.getElementById('travelerBarChart');
+    if (!ctx || !topTravelers || !topTravelers.length) return;
+    var chartData = { labels: topTravelers.map(function(r){ return r.ign; }),
+      datasets: [{ label:'Visits', data: topTravelers.map(function(r){ return r.visit_count; }),
+        backgroundColor:'rgba(176,124,220,0.65)', borderRadius:8, borderSkipped:false }] };
+    var opts = { responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false } },
+      scales: { x:{ ticks:{ color:'#aaa', font:tickFont, maxRotation:35, minRotation:0 }, grid:{ color:gridColor } },
+                y:{ ticks:{ color:'#aaa', font:tickFont }, grid:{ color:gridColor }, beginAtZero:true } } };
+    if (_travelerChart) { _travelerChart.data = chartData; _travelerChart.update('none'); }
+    else { _travelerChart = new Chart(ctx, { type:'bar', data:chartData, options:opts }); }
+  }
+
+  function buildCatChart(catStats) {
+    var ctx = document.getElementById('catChart');
+    if (!ctx) return;
+    var total = (catStats.public || 0) + (catStats.member || 0);
+    if (!total) return;
+    var chartData = { labels: ['Public','Member / VIP'],
+      datasets: [{ data: [catStats.public, catStats.member],
+        backgroundColor: ['#4f9ef8','#f5a623'], borderWidth: 0, hoverOffset: 4 }] };
+    var opts = { cutout:'65%', plugins:{ legend:{ display:false } }, responsive:true, maintainAspectRatio:true };
+    if (_catChart) { _catChart.data = chartData; _catChart.update('none'); }
+    else { _catChart = new Chart(ctx, { type:'doughnut', data:chartData, options:opts }); }
+  }
+
+  function buildHourChart(dataHour) {
+    var ctx = document.getElementById('hourChart');
+    if (!ctx) return;
+    var chartData = { labels: dataHour.labels,
+      datasets: [{ label:'Visits', data: dataHour.counts,
+        backgroundColor:'rgba(245,166,35,0.65)', borderRadius:4, borderSkipped:false }] };
+    var opts = { responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false } },
+      scales: { x:{ ticks:{ color:'#aaa', font:{ size:10, family:'Quicksand', weight:'700' }, maxRotation:45 }, grid:{ color:gridColor } },
+                y:{ ticks:{ color:'#aaa', font:tickFont }, grid:{ color:gridColor }, beginAtZero:true } } };
+    if (_hourChart) { _hourChart.data = chartData; _hourChart.update('none'); }
+    else { _hourChart = new Chart(ctx, { type:'bar', data:chartData, options:opts }); }
+  }
+
+  function buildDowChart(dataDow) {
+    var ctx = document.getElementById('dowChart');
+    if (!ctx) return;
+    var chartData = { labels: dataDow.labels,
+      datasets: [{ label:'Visits', data: dataDow.counts,
+        backgroundColor:'rgba(176,124,220,0.65)', borderRadius:6, borderSkipped:false }] };
+    var opts = { responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false } },
+      scales: { x:{ ticks:{ color:'#aaa', font:tickFont }, grid:{ color:gridColor } },
+                y:{ ticks:{ color:'#aaa', font:tickFont }, grid:{ color:gridColor }, beginAtZero:true } } };
+    if (_dowChart) { _dowChart.data = chartData; _dowChart.update('none'); }
+    else { _dowChart = new Chart(ctx, { type:'bar', data:chartData, options:opts }); }
+  }
+
+  // ---- Leaderboard list helpers ----
+  function renderLeaderboard(containerId, list, countKey, color) {
+    var wrap = document.getElementById(containerId);
+    if (!wrap || !list) return;
+    if (list.length === 0) { wrap.innerHTML = ''; return; }
+    var maxCount = list[0][countKey] || 1;
+    var html = list.map(function (row, i) {
+      var pct = Math.max(Math.round(row[countKey] / maxCount * 80), 4);
+      return '<div class="d-flex align-items-center gap-3 px-4 py-3" style="border-bottom:1px solid #f0f4ec;">'
+        + '<span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">' + (i+1) + '</span>'
+        + '<span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">' + _esc(row.user_name) + '</span>'
+        + '<div class="d-flex align-items-center gap-2 flex-shrink-0">'
+        + '<div style="height:6px;border-radius:3px;background:' + color + ';width:' + pct + 'px;max-width:80px;"></div>'
+        + '<span class="fw-black x-small" style="color:' + color + ';width:24px;text-align:right;">' + intcomma(row[countKey]) + '</span>'
+        + '</div></div>';
+    }).join('');
+    wrap.innerHTML = html;
+  }
+
+  // ---- Render top islands / travelers leaderboard lists ----
+  function renderTopIslandsList(list) {
+    var wrap = document.getElementById('an-top-islands-list');
+    if (!wrap || !list) return;
+    if (list.length === 0) { wrap.innerHTML = '<div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">No visit data yet.</div>'; return; }
+    var html = list.map(function (row, i) {
+      var maxCount = list[0].visit_count || 1;
+      var barW = Math.max(Math.round(row.visit_count / maxCount * 80), 4);
+      return '<div class="d-flex align-items-center gap-3 px-4 py-3" style="border-bottom:1px solid #f0f4ec;">'
+        + '<span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">' + (i+1) + '</span>'
+        + '<span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">' + _esc(row.destination) + '</span>'
+        + '<div class="d-flex align-items-center gap-2 flex-shrink-0">'
+        + '<div style="height:6px;border-radius:3px;background:var(--nook-green);width:' + barW + 'px;max-width:80px;"></div>'
+        + '<span class="fw-black x-small" style="color:var(--nook-green);width:24px;text-align:right;">' + intcomma(row.visit_count) + '</span>'
+        + '</div></div>';
+    }).join('');
+    wrap.innerHTML = html;
+  }
+
+  function renderTopTravelersList(list) {
+    var wrap = document.getElementById('an-top-travelers-list');
+    if (!wrap || !list) return;
+    if (list.length === 0) { wrap.innerHTML = '<div class="py-5 text-center" style="color:#ccc;font-weight:700;font-size:.9rem;">No traveler data yet.</div>'; return; }
+    var html = list.map(function (row, i) {
+      var maxCount = list[0].visit_count || 1;
+      var barW = Math.max(Math.round(row.visit_count / maxCount * 80), 4);
+      return '<div class="d-flex align-items-center gap-3 px-4 py-3" style="border-bottom:1px solid #f0f4ec;">'
+        + '<span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">' + (i+1) + '</span>'
+        + '<span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">' + _esc(row.ign) + '</span>'
+        + '<div class="d-flex align-items-center gap-2 flex-shrink-0">'
+        + '<div style="height:6px;border-radius:3px;background:#b07cdc;width:' + barW + 'px;max-width:80px;"></div>'
+        + '<span class="fw-black x-small" style="color:#b07cdc;width:24px;text-align:right;">' + intcomma(row.visit_count) + '</span>'
+        + '</div></div>';
+    }).join('');
+    wrap.innerHTML = html;
+  }
+
+  // ---- Week-over-week section ----
+  function renderWoW(d) {
+    var weekDelta = d.visitsWeek - d.visitsPrevWeek;
+    var isUp = weekDelta >= 0;
+    var color = isUp ? 'var(--nook-green)' : '#e06c75';
+    var arrowIcon = isUp ? 'bi-arrow-up-circle-fill' : 'bi-arrow-down-circle-fill';
+    var bg = isUp ? '#e8f5e9' : '#fce8e8';
+    var sign = weekDelta >= 0 ? '+' : '';
+
+    setHTML('an-wow-delta-icon', '<i class="bi ' + arrowIcon + '" style="font-size:1.6rem;color:' + color + ';"></i>');
+    var deltaWrap = document.getElementById('an-wow-delta-icon');
+    if (deltaWrap && deltaWrap.parentElement) deltaWrap.parentElement.style.background = bg;
+    setText('an-wow-delta', sign + intcomma(weekDelta));
+    var deltaValEl = document.getElementById('an-wow-delta');
+    if (deltaValEl) deltaValEl.style.color = color;
+    setText('an-wow-this-week', intcomma(d.visitsWeek));
+    setText('an-wow-prev-week', intcomma(d.visitsPrevWeek));
+
+    // WoW progress bar
+    var maxWk = Math.max(d.visitsWeek, d.visitsPrevWeek);
+    var pctPrev = maxWk > 0 ? Math.round(d.visitsPrevWeek / maxWk * 100) : 0;
+    var pctCurr = maxWk > 0 ? Math.round(d.visitsWeek / maxWk * 100) : 0;
+    var barPrev = document.getElementById('an-wow-bar-prev');
+    var barCurr = document.getElementById('an-wow-bar-curr');
+    if (barPrev) barPrev.style.width = pctPrev + '%';
+    if (barCurr) barCurr.style.width = pctCurr + '%';
+  }
+
+  // ---- New vs returning ----
+  function renderNRStats(nr, days) {
+    var suffix = days === 30 ? '30d' : '7d';
+    setText('an-nr-new-' + suffix,       nr['new_' + suffix]);
+    setText('an-nr-returning-' + suffix, nr['returning_' + suffix]);
+    setText('an-nr-total-' + suffix,     nr['total_' + suffix]);
+  }
+
+  // ---- Auth / Cat stat displays ----
+  function renderAuthStats(authStats) {
+    setText('an-auth-authorized',   intcomma(authStats.authorized   || 0));
+    setText('an-auth-unauthorized', intcomma(authStats.unauthorized || 0));
+    setText('an-auth-total',        intcomma((authStats.authorized || 0) + (authStats.unauthorized || 0)));
+  }
+
+  function renderCatStats(catStats) {
+    setText('an-cat-public',  intcomma(catStats.public  || 0));
+    setText('an-cat-member',  intcomma(catStats.member  || 0));
+    setText('an-cat-total',   intcomma((catStats.public || 0) + (catStats.member || 0)));
+  }
+
+  // ---- Stat card updates ----
+  function updateStatCards(d) {
+    setText('an-visits-today',   intcomma(d.visitsToday));
+    setText('an-visits-week',    intcomma(d.visitsWeek));
+    setText('an-warnings-week',  intcomma(d.warningsWeek));
+    setText('an-total-visits',   intcomma((d.authStats.authorized || 0) + (d.authStats.unauthorized || 0)));
+    setText('an-avg-30d',        d.avgVisits30d + '/day (30d)');
+    setText('an-unique-travelers', intcomma(d.totalUniqueTravelers));
+    setText('an-unique-islands',   intcomma(d.totalUniqueIslands));
+    setText('an-warn-rate-week', d.warnRateWeek + '% warn rate (7d)');
+    // warnings today badge
+    var todayBadgeEl = document.getElementById('an-warnings-today-badge');
+    if (todayBadgeEl) {
+      if (d.warningsToday > 0) {
+        todayBadgeEl.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>'
+          + intcomma(d.warningsToday) + ' warning' + (d.warningsToday !== 1 ? 's' : '') + ' today';
+        todayBadgeEl.style.display = '';
+      } else {
+        todayBadgeEl.style.display = 'none';
+      }
+    }
+    // week-over-week delta on visits-week card
+    var wkDelta = d.visitsWeek - d.visitsPrevWeek;
+    var wkDeltaEl = document.getElementById('an-week-delta');
+    if (wkDeltaEl) {
+      if (d.visitsPrevWeek > 0) {
+        var isUp = wkDelta >= 0;
+        wkDeltaEl.innerHTML = '<i class="bi bi-arrow-' + (isUp ? 'up' : 'down') + '-short"></i>'
+          + (isUp ? '+' : '') + intcomma(wkDelta) + ' vs prev week';
+        wkDeltaEl.style.color = isUp ? 'var(--nook-green)' : '#e06c75';
+        wkDeltaEl.style.display = '';
+      } else {
+        wkDeltaEl.style.display = 'none';
+      }
+    }
+    // peak hour
+    var peakEl = document.getElementById('an-peak-hour-val');
+    if (peakEl) {
+      if (d.peakHour != null) {
+        peakEl.textContent = ('0' + d.peakHour).slice(-2) + ':00';
+        peakEl.style.color = '#f5a623';
+      } else {
+        peakEl.textContent = '—';
+        peakEl.style.color = '#ccc';
+      }
+    }
+    // peak hour header badge
+    var peakBadgeEl = document.getElementById('an-peak-hour-badge');
+    if (peakBadgeEl) {
+      if (d.peakHour != null) {
+        var h = d.peakHour;
+        var hStr = ('0' + h).slice(-2);
+        var h2 = ('0' + ((h + 1) % 24)).slice(-2);
+        peakBadgeEl.innerHTML = '<i class="bi bi-star-fill me-1"></i>Peak: ' + hStr + ':00–' + h2 + ':00 UTC+8';
+        peakBadgeEl.style.display = '';
+      } else {
+        peakBadgeEl.style.display = 'none';
+      }
+    }
+    // auth rate
+    var authRateEl = document.getElementById('an-auth-rate-val');
+    if (authRateEl) {
+      if (d.authRatePct != null) {
+        authRateEl.textContent = d.authRatePct + '%';
+        authRateEl.style.color = '#28a745';
+      } else {
+        authRateEl.textContent = '—';
+        authRateEl.style.color = '#ccc';
+      }
+    }
+  }
+
+  // ---- Master render from data object ----
+  function renderAnalytics(d) {
+    updateStatCards(d);
+    buildAuthChart(d.authStats);
+    buildVisitChart(_activeTrendDays, d.data7d, d.data30d);
+    buildIslandBarChart(d.topIslands);
+    buildTravelerBarChart(d.topTravelers);
+    buildCatChart(d.catStats);
+    buildHourChart(d.dataHour);
+    buildDowChart(d.dataDow);
+    renderTopIslandsList(d.topIslands);
+    renderTopTravelersList(d.topTravelers);
+    renderLeaderboard('an-top-warned-list',  d.topWarned,  'warn_count', 'var(--nook-yellow)');
+    renderLeaderboard('an-top-kicked-list',  d.topKicked,  'kick_count', '#F1C40F');
+    renderLeaderboard('an-top-banned-list',  d.topBanned,  'ban_count',  '#992D22');
+    renderLeaderboard('an-top-noted-list',   d.topNoted,   'note_count', '#5DADE2');
+    renderAuthStats(d.authStats);
+    renderCatStats(d.catStats);
+    renderNRStats(d.newReturning, _activeNRDays);
+    renderWoW(d);
+  }
+
+  // ---- Toggle functions ----
   function switchTrend(days) {
-    buildVisitChart(days);
+    _activeTrendDays = days;
+    buildVisitChart(days, _analyticsData.data7d, _analyticsData.data30d);
     document.getElementById('btn7d').style.background  = days === 7  ? 'var(--nook-green)' : '#e9f2e9';
     document.getElementById('btn7d').style.color       = days === 7  ? '#fff' : 'var(--nook-green)';
     document.getElementById('btn30d').style.background = days === 30 ? 'var(--nook-green)' : '#e9f2e9';
     document.getElementById('btn30d').style.color      = days === 30 ? '#fff' : 'var(--nook-green)';
   }
 
-  buildVisitChart(7);
-  {% endif %}
-
-  // ---------- Island bar chart ----------
-  {% if top_islands %}
-  new Chart(document.getElementById('islandBarChart'), {
-    type: 'bar',
-    data: {
-      labels: [{% for r in top_islands %}"{{ r.destination }}"{% if not loop.last %},{% endif %}{% endfor %}],
-      datasets: [{
-        label: 'Visits',
-        data: [{% for r in top_islands %}{{ r.visit_count }}{% if not loop.last %},{% endif %}{% endfor %}],
-        backgroundColor: 'rgba(40,167,69,0.65)',
-        borderRadius: 8,
-        borderSkipped: false,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor } },
-        y: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor }, beginAtZero: true }
-      }
-    }
-  });
-  {% endif %}
-
-  // ---------- Traveler bar chart ----------
-  {% if top_travelers %}
-  new Chart(document.getElementById('travelerBarChart'), {
-    type: 'bar',
-    data: {
-      labels: [{% for r in top_travelers %}"{{ r.ign }}"{% if not loop.last %},{% endif %}{% endfor %}],
-      datasets: [{
-        label: 'Visits',
-        data: [{% for r in top_travelers %}{{ r.visit_count }}{% if not loop.last %},{% endif %}{% endfor %}],
-        backgroundColor: 'rgba(176,124,220,0.65)',
-        borderRadius: 8,
-        borderSkipped: false,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: '#aaa', font: tickFont, maxRotation: 35, minRotation: 0 }, grid: { color: gridColor } },
-        y: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor }, beginAtZero: true }
-      }
-    }
-  });
-  {% endif %}
-
-  // ---------- Tier doughnut ----------
-  {% if cat_stats.public + cat_stats.member > 0 %}
-  new Chart(document.getElementById('catChart'), {
-    type: 'doughnut',
-    data: {
-      labels: ['Public', 'Member / VIP'],
-      datasets: [{
-        data: [{{ cat_stats.public }}, {{ cat_stats.member }}],
-        backgroundColor: ['#4f9ef8', '#f5a623'],
-        borderWidth: 0,
-        hoverOffset: 4,
-      }]
-    },
-    options: {
-      cutout: '65%',
-      plugins: { legend: { display: false } },
-      responsive: true,
-      maintainAspectRatio: true,
-    }
-  });
-  {% endif %}
-
-  // ---------- Visits by Hour bar chart ----------
-  new Chart(document.getElementById('hourChart'), {
-    type: 'bar',
-    data: {
-      labels: dataHour.labels,
-      datasets: [{
-        label: 'Visits',
-        data: dataHour.counts,
-        backgroundColor: 'rgba(245,166,35,0.65)',
-        borderRadius: 4,
-        borderSkipped: false,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: '#aaa', font: { size: 10, family: 'Quicksand', weight: '700' }, maxRotation: 45 },
-             grid: { color: gridColor } },
-        y: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor }, beginAtZero: true }
-      }
-    }
-  });
-
-  // ---------- Day-of-week bar chart ----------
-  const dataDow = {
-    labels: [{% for r in visits_by_dow %}"{{ r.label }}"{% if not loop.last %},{% endif %}{% endfor %}],
-    counts: [{% for r in visits_by_dow %}{{ r.count }}{% if not loop.last %},{% endif %}{% endfor %}],
-  };
-  new Chart(document.getElementById('dowChart'), {
-    type: 'bar',
-    data: {
-      labels: dataDow.labels,
-      datasets: [{
-        label: 'Visits',
-        data: dataDow.counts,
-        backgroundColor: 'rgba(176,124,220,0.65)',
-        borderRadius: 6,
-        borderSkipped: false,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor } },
-        y: { ticks: { color: '#aaa', font: tickFont }, grid: { color: gridColor }, beginAtZero: true }
-      }
-    }
-  });
-
-  // ---------- New vs Returning toggle ----------
   function switchNR(days) {
+    _activeNRDays = days;
     document.getElementById('nrStats7d').style.display  = days === 7  ? '' : 'none';
     document.getElementById('nrStats30d').style.display = days === 30 ? '' : 'none';
     document.getElementById('btnNR7d').style.background  = days === 7  ? 'var(--nook-green)' : '#e9f2e9';
@@ -884,6 +976,57 @@
     document.getElementById('btnNR30d').style.background = days === 30 ? 'var(--nook-green)' : '#e9f2e9';
     document.getElementById('btnNR30d').style.color      = days === 30 ? '#fff' : 'var(--nook-green)';
   }
+
+  // ---- Helper to convert server response to local data shape ----
+  function _serverToLocal(r) {
+    return {
+      data7d:        { labels: (r.visits_by_day    || []).map(function(x){return x.day;}),   counts: (r.visits_by_day    || []).map(function(x){return x.count;}) },
+      data30d:       { labels: (r.visits_by_day_30 || []).map(function(x){return x.day;}),   counts: (r.visits_by_day_30 || []).map(function(x){return x.count;}) },
+      dataHour:      { labels: (r.visits_by_hour   || []).map(function(x){return ('0'+x.hour).slice(-2)+':00';}), counts: (r.visits_by_hour || []).map(function(x){return x.count;}) },
+      dataDow:       { labels: (r.visits_by_dow    || []).map(function(x){return x.label;}), counts: (r.visits_by_dow    || []).map(function(x){return x.count;}) },
+      topIslands:    r.top_islands    || [],
+      topTravelers:  r.top_travelers  || [],
+      authStats:     r.auth_stats     || { authorized: 0, unauthorized: 0 },
+      catStats:      r.cat_stats      || { public: 0, member: 0 },
+      topWarned:     r.top_warned     || [],
+      topKicked:     r.top_kicked     || [],
+      topBanned:     r.top_banned     || [],
+      topNoted:      r.top_noted      || [],
+      visitsToday:   r.visits_today   || 0,
+      visitsWeek:    r.visits_week    || 0,
+      warningsWeek:  r.warnings_week  || 0,
+      warningsToday: r.warnings_today || 0,
+      visitsPrevWeek:r.visits_prev_week || 0,
+      peakHour:      r.peak_hour,
+      avgVisits30d:  r.avg_visits_30d  || 0,
+      totalUniqueTravelers: r.total_unique_travelers || 0,
+      totalUniqueIslands:   r.total_unique_islands   || 0,
+      authRatePct:   r.auth_rate_pct,
+      warnRateWeek:  r.warn_rate_week  || 0,
+      newReturning:  r.new_returning   || {},
+    };
+  }
+
+  // ---- AJAX polling ----
+  function pollAnalytics() {
+    var itFilter = _analyticsData.islandTypeFilter || '';
+    var url = '{{ url_for("dashboard.api_analytics") }}' + (itFilter ? '?island_type=' + encodeURIComponent(itFilter) : '');
+    fetch(url)
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (r) {
+        if (!r) return;
+        _analyticsData = Object.assign(_analyticsData, _serverToLocal(r));
+        renderAnalytics(_analyticsData);
+      })
+      .catch(function (err) { console.error('[analytics poll]', err); });
+  }
+
+  // ---- Initial render ----
+  document.addEventListener('DOMContentLoaded', function () {
+    renderAnalytics(_analyticsData);
+    // Poll every 60 seconds
+    setInterval(pollAnalytics, 60000);
+  });
 </script>
 {% endblock %}
 {% endblock %}

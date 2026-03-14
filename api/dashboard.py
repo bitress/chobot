@@ -1872,77 +1872,557 @@ def api_sync_maps():
 @dashboard.route("/api/analytics", methods=["GET"])
 @api_auth_required
 def api_analytics():
-    """Return analytics summary as JSON."""
+    """Return full analytics dataset as JSON.
+
+    Accepts an optional ``island_type`` query parameter (``free`` or ``sub``)
+    to filter results to a specific island type.
+    """
+    island_type_filter = request.args.get("island_type", "").lower()
+    if island_type_filter not in ("free", "sub"):
+        island_type_filter = ""
+
+    it_clause = " AND island_type = ?" if island_type_filter else ""
+    it_params = [island_type_filter] if island_type_filter else []
+
     db = get_db()
     try:
         top_islands = [
             dict(r) for r in db.execute(
                 "SELECT destination, COUNT(*) AS visit_count "
-                "FROM island_visits GROUP BY destination "
-                "ORDER BY visit_count DESC LIMIT 10"
+                f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+                "GROUP BY destination ORDER BY visit_count DESC LIMIT 10",
+                it_params,
             ).fetchall()
         ]
         top_travelers = [
             dict(r) for r in db.execute(
                 "SELECT ign, COUNT(*) AS visit_count "
-                "FROM island_visits GROUP BY ign "
-                "ORDER BY visit_count DESC LIMIT 10"
+                f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+                "GROUP BY ign ORDER BY visit_count DESC LIMIT 10",
+                it_params,
+            ).fetchall()
+        ]
+        visits_by_day = [
+            dict(r) for r in db.execute(
+                "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
+                "FROM island_visits "
+                f"WHERE timestamp > strftime('%s','now','-7 days'){it_clause} "
+                "GROUP BY day ORDER BY day",
+                it_params,
+            ).fetchall()
+        ]
+        visits_by_day_30 = [
+            dict(r) for r in db.execute(
+                "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
+                "FROM island_visits "
+                f"WHERE timestamp > strftime('%s','now','-30 days'){it_clause} "
+                "GROUP BY day ORDER BY day",
+                it_params,
+            ).fetchall()
+        ]
+        visits_by_hour = [
+            dict(r) for r in db.execute(
+                "SELECT CAST(strftime('%H', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS hour, "
+                "COUNT(*) AS count "
+                f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+                "GROUP BY hour ORDER BY hour",
+                it_params,
             ).fetchall()
         ]
         auth_raw = db.execute(
-            "SELECT authorized, COUNT(*) AS count FROM island_visits GROUP BY authorized"
+            "SELECT authorized, COUNT(*) AS count "
+            f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+            "GROUP BY authorized",
+            it_params,
         ).fetchall()
+        cat_raw = db.execute(
+            "SELECT isl.cat, COUNT(*) AS visit_count "
+            "FROM island_visits iv "
+            "JOIN islands isl ON LOWER(iv.destination) = isl.id "
+            f"{'WHERE iv.island_type = ?' if island_type_filter else ''} "
+            "GROUP BY isl.cat",
+            it_params,
+        ).fetchall()
+        dow_raw = [
+            dict(r) for r in db.execute(
+                "SELECT CAST(strftime('%w', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS dow, "
+                "COUNT(*) AS count "
+                f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+                "GROUP BY dow ORDER BY dow",
+                it_params,
+            ).fetchall()
+        ]
+        _VALID_COUNT_KEYS = {"warn_count", "kick_count", "ban_count", "note_count"}
+        _VALID_ACTIONS    = {"WARN", "KICK", "BAN", "NOTE", "ADMIT", "DISMISS"}
+
+        def _top_by_action(action: str, count_key: str):
+            if count_key not in _VALID_COUNT_KEYS:
+                raise ValueError(f"Invalid count_key: {count_key!r}")
+            if action not in _VALID_ACTIONS:
+                raise ValueError(f"Invalid action: {action!r}")
+            if island_type_filter:
+                rows = db.execute(
+                    f"SELECT w.user_id, COUNT(*) AS {count_key} "
+                    "FROM warnings w "
+                    "JOIN island_visits iv ON w.visit_id = iv.id "
+                    "WHERE w.user_id IS NOT NULL AND iv.island_type = ? AND UPPER(w.action_type) = ? "
+                    f"GROUP BY w.user_id ORDER BY {count_key} DESC LIMIT 10",
+                    (island_type_filter, action),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    f"SELECT user_id, COUNT(*) AS {count_key} "
+                    "FROM warnings WHERE user_id IS NOT NULL AND UPPER(action_type) = ? "
+                    f"GROUP BY user_id ORDER BY {count_key} DESC LIMIT 10",
+                    (action,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+        top_warned = _top_by_action("WARN", "warn_count")
+        top_kicked = _top_by_action("KICK", "kick_count")
+        top_banned = _top_by_action("BAN",  "ban_count")
+        top_noted  = _top_by_action("NOTE", "note_count")
+
+        all_action_user_ids = (
+            [r["user_id"] for r in top_warned]
+            + [r["user_id"] for r in top_kicked]
+            + [r["user_id"] for r in top_banned]
+            + [r["user_id"] for r in top_noted]
+        )
+        action_name_map = _resolve_discord_usernames(all_action_user_ids)
+        for collection in (top_warned, top_kicked, top_banned, top_noted):
+            for row in collection:
+                row["user_name"] = action_name_map.get(str(row["user_id"]), str(row["user_id"]))
+
+        visits_today = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            f"WHERE timestamp > strftime('%s','now','+8 hours','start of day','-8 hours'){it_clause}",
+            it_params,
+        ).fetchone()[0]
+        visits_week = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            f"WHERE timestamp > strftime('%s','now','-7 days'){it_clause}",
+            it_params,
+        ).fetchone()[0]
+        if island_type_filter:
+            warnings_week = db.execute(
+                "SELECT COUNT(*) FROM warnings w "
+                "JOIN island_visits iv ON w.visit_id = iv.id "
+                "WHERE w.timestamp > strftime('%s','now','-7 days') AND iv.island_type = ?",
+                it_params,
+            ).fetchone()[0]
+            warnings_today = db.execute(
+                "SELECT COUNT(*) FROM warnings w "
+                "JOIN island_visits iv ON w.visit_id = iv.id "
+                "WHERE w.timestamp > strftime('%s','now','+8 hours','start of day','-8 hours') "
+                "AND iv.island_type = ?",
+                it_params,
+            ).fetchone()[0]
+        else:
+            warnings_week = db.execute(
+                "SELECT COUNT(*) FROM warnings WHERE timestamp > strftime('%s','now','-7 days')"
+            ).fetchone()[0]
+            warnings_today = db.execute(
+                "SELECT COUNT(*) FROM warnings "
+                "WHERE timestamp > strftime('%s','now','+8 hours','start of day','-8 hours')"
+            ).fetchone()[0]
+        visits_prev_week = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            f"WHERE timestamp > strftime('%s','now','-14 days') "
+            f"AND timestamp <= strftime('%s','now','-7 days'){it_clause}",
+            it_params,
+        ).fetchone()[0]
+        peak_hour_row = db.execute(
+            "SELECT CAST(strftime('%H', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS hour, "
+            "COUNT(*) AS cnt "
+            f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+            "GROUP BY hour ORDER BY cnt DESC LIMIT 1",
+            it_params,
+        ).fetchone()
+        peak_hour = peak_hour_row["hour"] if peak_hour_row else None
+        avg_visits_30d_row = db.execute(
+            "SELECT COUNT(*) * 1.0 / 30 AS avg FROM island_visits "
+            f"WHERE timestamp > strftime('%s','now','-30 days'){it_clause}",
+            it_params,
+        ).fetchone()
+        avg_visits_30d = round(avg_visits_30d_row["avg"] or 0, 1)
+        new_7d = db.execute(
+            "SELECT COUNT(DISTINCT ign) FROM ("
+            "  SELECT ign, MIN(timestamp) AS first_visit "
+            f"  FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+            "  GROUP BY ign"
+            f") WHERE first_visit > strftime('%s','now','-7 days')",
+            it_params,
+        ).fetchone()[0]
+        total_unique_7d = db.execute(
+            "SELECT COUNT(DISTINCT ign) FROM island_visits "
+            f"WHERE timestamp > strftime('%s','now','-7 days'){it_clause}",
+            it_params,
+        ).fetchone()[0]
+        new_30d = db.execute(
+            "SELECT COUNT(DISTINCT ign) FROM ("
+            "  SELECT ign, MIN(timestamp) AS first_visit "
+            f"  FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+            "  GROUP BY ign"
+            f") WHERE first_visit > strftime('%s','now','-30 days')",
+            it_params,
+        ).fetchone()[0]
+        total_unique_30d = db.execute(
+            "SELECT COUNT(DISTINCT ign) FROM island_visits "
+            f"WHERE timestamp > strftime('%s','now','-30 days'){it_clause}",
+            it_params,
+        ).fetchone()[0]
+        total_unique_travelers = db.execute(
+            f"SELECT COUNT(DISTINCT ign) FROM island_visits"
+            f"{' WHERE island_type = ?' if island_type_filter else ''}",
+            it_params,
+        ).fetchone()[0]
+        total_unique_islands = db.execute(
+            f"SELECT COUNT(DISTINCT destination) FROM island_visits"
+            f"{' WHERE island_type = ?' if island_type_filter else ''}",
+            it_params,
+        ).fetchone()[0]
     except sqlite3.Error:
-        top_islands = top_travelers = []
+        top_islands = top_travelers = visits_by_day = visits_by_day_30 = []
+        visits_by_hour = dow_raw = []
         auth_raw = []
+        cat_raw = []
+        top_warned = top_kicked = top_banned = top_noted = []
+        visits_today = visits_week = warnings_week = warnings_today = 0
+        visits_prev_week = 0
+        peak_hour = None
+        avg_visits_30d = 0.0
+        new_7d = total_unique_7d = new_30d = total_unique_30d = 0
+        total_unique_travelers = total_unique_islands = 0
     finally:
         db.close()
 
-    auth_map = {r["authorized"]: r["count"] for r in auth_raw}
+    auth_map  = {r["authorized"]: r["count"] for r in auth_raw}
+    cat_map   = {r["cat"]: r["visit_count"] for r in cat_raw}
+    hour_map  = {r["hour"]: r["count"] for r in visits_by_hour}
+    dow_map   = {r["dow"]: r["count"] for r in dow_raw}
+
+    auth_stats = {"authorized": auth_map.get(1, 0), "unauthorized": auth_map.get(0, 0)}
+    cat_stats  = {"public": cat_map.get("public", 0), "member": cat_map.get("member", 0)}
+    visits_by_hour_full = [{"hour": h, "count": hour_map.get(h, 0)} for h in range(24)]
+    visits_by_dow = [{"dow": d, "label": _DOW_LABELS[d], "count": dow_map.get(d, 0)} for d in range(7)]
+
+    total_visits  = auth_stats["authorized"] + auth_stats["unauthorized"]
+    auth_rate_pct = round(auth_stats["authorized"] / total_visits * 100) if total_visits else None
+    warn_rate_week = round(warnings_week / visits_week * 100, 1) if visits_week else 0.0
+
+    returning_7d  = max(total_unique_7d  - new_7d,  0)
+    returning_30d = max(total_unique_30d - new_30d, 0)
+
     return jsonify({
+        # Basic summary (backward-compatible)
         "top_islands":         top_islands,
         "top_travelers":       top_travelers,
-        "authorized_visits":   auth_map.get(1, 0),
-        "unauthorized_visits": auth_map.get(0, 0),
+        "authorized_visits":   auth_stats["authorized"],
+        "unauthorized_visits": auth_stats["unauthorized"],
+        # Extended analytics
+        "visits_by_day":       visits_by_day,
+        "visits_by_day_30":    visits_by_day_30,
+        "visits_by_hour":      visits_by_hour_full,
+        "visits_by_dow":       visits_by_dow,
+        "auth_stats":          auth_stats,
+        "cat_stats":           cat_stats,
+        "top_warned":          top_warned,
+        "top_kicked":          top_kicked,
+        "top_banned":          top_banned,
+        "top_noted":           top_noted,
+        "visits_today":        visits_today,
+        "visits_week":         visits_week,
+        "warnings_week":       warnings_week,
+        "warnings_today":      warnings_today,
+        "visits_prev_week":    visits_prev_week,
+        "peak_hour":           peak_hour,
+        "avg_visits_30d":      avg_visits_30d,
+        "total_unique_travelers": total_unique_travelers,
+        "total_unique_islands":   total_unique_islands,
+        "auth_rate_pct":       auth_rate_pct,
+        "warn_rate_week":      warn_rate_week,
+        "new_returning": {
+            "new_7d":        new_7d,
+            "returning_7d":  returning_7d,
+            "total_7d":      total_unique_7d,
+            "new_30d":       new_30d,
+            "returning_30d": returning_30d,
+            "total_30d":     total_unique_30d,
+        },
+        "island_type_filter": island_type_filter,
     })
 
 
 @dashboard.route("/api/logs", methods=["GET"])
 @api_auth_required
 def api_logs():
-    """Return paginated flight-log entries as JSON."""
-    page          = request.args.get("page", 1, type=int)
-    per_page      = min(request.args.get("per_page", 25, type=int), 100)
-    island_filter = request.args.get("island", "").strip()
-    ign_filter    = request.args.get("ign", "").strip()
+    """Return paginated flight-log or warning entries as JSON.
+
+    Query parameters
+    ----------------
+    type            : ``flights`` (default) or ``warnings``
+    page            : page number (default 1)
+    per_page        : rows per page, capped at 100 (default 25)
+    ign             : IGN substring filter
+    island          : island name filter (flights only)
+    authorized      : ``0`` or ``1`` (flights only)
+    category        : ``public`` or ``member`` (flights only)
+    sort_by         : ``timestamp`` (default), ``ign``, or ``destination`` (flights only)
+    sort_order      : ``desc`` (default) or ``asc`` (flights only)
+    action_type     : ``WARN``, ``KICK``, ``BAN``, ``DISMISS``, ``NOTE``, ``ADMIT`` (warnings only)
+    """
+    log_type          = request.args.get("type", "flights")
+    page              = request.args.get("page", 1, type=int)
+    per_page          = min(request.args.get("per_page", 25, type=int), 100)
+    ign_filter        = request.args.get("ign", "").strip()
+    island_filter     = request.args.get("island", "").strip()
+    authorized_filter = request.args.get("authorized", "")
+    category_filter   = request.args.get("category", "")
+    sort_by           = request.args.get("sort_by", "timestamp")
+    sort_order        = request.args.get("sort_order", "desc")
+    _ALLOWED_ACTION_TYPES = {"WARN", "KICK", "BAN", "DISMISS", "NOTE", "ADMIT"}
+    action_type_filter = request.args.get("action_type", "").strip().upper()
+    if action_type_filter not in _ALLOWED_ACTION_TYPES:
+        action_type_filter = ""
+    if sort_by not in _ALLOWED_SORT_COLS:
+        sort_by = "timestamp"
+    sort_order = "asc" if sort_order == "asc" else "desc"
 
     db = get_db()
     try:
-        conditions, params = [], []
-        if island_filter:
-            conditions.append("destination LIKE ?")
-            params.append(f"%{island_filter}%")
-        if ign_filter:
-            conditions.append("LOWER(ign) LIKE LOWER(?)")
-            params.append(f"%{ign_filter}%")
-        where = _where_clause(conditions)
-        total = db.execute(
-            f"SELECT COUNT(*) FROM island_visits {where}", params
-        ).fetchone()[0]
-        rows = db.execute(
-            f"SELECT * FROM island_visits {where} "
-            f"ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            params + [per_page, (page - 1) * per_page],
-        ).fetchall()
+        island_names = [
+            r[0] for r in db.execute("SELECT name FROM islands ORDER BY name").fetchall()
+        ]
+        if log_type == "warnings":
+            conditions, params = [], []
+            if ign_filter:
+                conditions.append("LOWER(iv.ign) LIKE LOWER(?)")
+                params.append(f"%{ign_filter}%")
+            if action_type_filter:
+                conditions.append("UPPER(w.action_type) = ?")
+                params.append(action_type_filter)
+            where = _where_clause(conditions)
+            total = db.execute(
+                f"SELECT COUNT(*) FROM warnings w "
+                f"LEFT JOIN island_visits iv ON w.visit_id = iv.id {where}",
+                params,
+            ).fetchone()[0]
+            rows = db.execute(
+                f"SELECT w.*, iv.ign, iv.destination "
+                f"FROM warnings w "
+                f"LEFT JOIN island_visits iv ON w.visit_id = iv.id "
+                f"{where} ORDER BY w.timestamp DESC LIMIT ? OFFSET ?",
+                params + [per_page, (page - 1) * per_page],
+            ).fetchall()
+            name_map = _resolve_discord_usernames(
+                [r["user_id"] for r in rows if r["user_id"]]
+                + [r["mod_id"] for r in rows if r["mod_id"]]
+            )
+            entries = [
+                {
+                    "user_id":     r["user_id"],
+                    "user_name":   name_map.get(str(r["user_id"]), str(r["user_id"])) if r["user_id"] else "—",
+                    "reason":      r["reason"],
+                    "mod_id":      r["mod_id"],
+                    "mod_name":    name_map.get(str(r["mod_id"]), str(r["mod_id"])) if r["mod_id"] else "—",
+                    "timestamp":   _ts_to_str(r["timestamp"]),
+                    "ign":         r["ign"],
+                    "destination": r["destination"],
+                    "action_type": r["action_type"],
+                }
+                for r in rows
+            ]
+        else:
+            conditions, params = [], []
+            use_island_join = bool(category_filter in ("public", "member"))
+
+            if island_filter:
+                col = "iv.destination" if use_island_join else "destination"
+                conditions.append(f"LOWER({col}) = LOWER(?)")
+                params.append(island_filter)
+            if ign_filter:
+                col = "iv.ign" if use_island_join else "ign"
+                conditions.append(f"LOWER({col}) LIKE LOWER(?)")
+                params.append(f"%{ign_filter}%")
+            if authorized_filter in ("0", "1"):
+                col = "iv.authorized" if use_island_join else "authorized"
+                conditions.append(f"{col} = ?")
+                params.append(int(authorized_filter))
+            if use_island_join:
+                conditions.append("isl.cat = ?")
+                params.append(category_filter)
+
+            if use_island_join:
+                join_sql   = ("FROM island_visits iv "
+                              "JOIN islands isl ON LOWER(iv.destination) = isl.id")
+                order_sql  = f"iv.{sort_by} {sort_order.upper()}"
+                where      = _where_clause(conditions)
+                total      = db.execute(
+                    f"SELECT COUNT(*) {join_sql} {where}", params
+                ).fetchone()[0]
+                rows = db.execute(
+                    f"SELECT iv.* {join_sql} {where} "
+                    f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                    params + [per_page, (page - 1) * per_page],
+                ).fetchall()
+            else:
+                where      = _where_clause(conditions)
+                order_sql  = f"{sort_by} {sort_order.upper()}"
+                total      = db.execute(
+                    f"SELECT COUNT(*) FROM island_visits {where}", params
+                ).fetchone()[0]
+                rows = db.execute(
+                    f"SELECT * FROM island_visits {where} "
+                    f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                    params + [per_page, (page - 1) * per_page],
+                ).fetchall()
+
+            entries = [
+                {
+                    "id":            r["id"],
+                    "ign":           r["ign"],
+                    "origin_island": r["origin_island"],
+                    "destination":   r["destination"],
+                    "authorized":    bool(r["authorized"]),
+                    "timestamp":     _ts_to_str(r["timestamp"]),
+                    "user_id":       r["user_id"],
+                }
+                for r in rows
+            ]
+            flight_name_map = _resolve_discord_usernames([r["user_id"] for r in rows if r["user_id"]])
+            for e in entries:
+                e["user_name"] = flight_name_map.get(str(e["user_id"])) if e["user_id"] else None
     except sqlite3.Error:
-        total, rows = 0, []
+        total, entries, island_names = 0, [], []
     finally:
         db.close()
 
     return jsonify({
-        "page":     page,
-        "per_page": per_page,
-        "total":    total,
-        "entries":  [dict(r) for r in rows],
+        "page":        page,
+        "per_page":    per_page,
+        "total":       total,
+        "total_pages": max(1, (total + per_page - 1) // per_page),
+        "log_type":    log_type,
+        "entries":     entries,
+        "island_names": island_names,
+    })
+
+
+@dashboard.route("/api/overview", methods=["GET"])
+@api_auth_required
+def api_overview():
+    """Return the data powering the Overview dashboard page as JSON."""
+    db = get_db()
+    try:
+        total_visits   = db.execute("SELECT COUNT(*) FROM island_visits").fetchone()[0]
+        total_warnings = db.execute("SELECT COUNT(*) FROM warnings").fetchone()[0]
+        visits_today   = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            "WHERE timestamp > strftime('%s','now','+8 hours','start of day','-8 hours')"
+        ).fetchone()[0]
+        visits_week = db.execute(
+            "SELECT COUNT(*) FROM island_visits "
+            "WHERE timestamp > strftime('%s','now','-7 days')"
+        ).fetchone()[0]
+        warnings_week = db.execute(
+            "SELECT COUNT(*) FROM warnings "
+            "WHERE timestamp > strftime('%s','now','-7 days')"
+        ).fetchone()[0]
+        recent_raw = db.execute(
+            "SELECT ign, destination, authorized, timestamp, user_id "
+            "FROM island_visits ORDER BY timestamp DESC LIMIT 10"
+        ).fetchall()
+        top_islands_raw = db.execute(
+            "SELECT destination, COUNT(*) AS visit_count "
+            "FROM island_visits GROUP BY destination "
+            "ORDER BY visit_count DESC LIMIT 5"
+        ).fetchall()
+        top_travelers_raw = db.execute(
+            "SELECT ign, COUNT(*) AS visit_count "
+            "FROM island_visits GROUP BY ign "
+            "ORDER BY visit_count DESC LIMIT 5"
+        ).fetchall()
+        trend_raw = db.execute(
+            "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
+            "FROM island_visits "
+            "WHERE timestamp > strftime('%s','now','-7 days') "
+            "GROUP BY day ORDER BY day"
+        ).fetchall()
+    except sqlite3.Error:
+        total_visits = total_warnings = visits_today = visits_week = warnings_week = 0
+        recent_raw = []
+        top_islands_raw = []
+        top_travelers_raw = []
+        trend_raw = []
+    finally:
+        db.close()
+
+    recent_user_ids = [r["user_id"] for r in recent_raw if r["user_id"]]
+    recent_name_map = _resolve_discord_usernames(recent_user_ids) if recent_user_ids else {}
+
+    recent = [
+        {
+            "ign":         r["ign"],
+            "destination": r["destination"],
+            "authorized":  bool(r["authorized"]),
+            "timestamp":   _ts_to_str(r["timestamp"]),
+            "user_name":   recent_name_map.get(str(r["user_id"])) if r["user_id"] else None,
+        }
+        for r in recent_raw
+    ]
+
+    top_islands  = [{"name": r["destination"], "count": r["visit_count"]} for r in top_islands_raw]
+    top_travelers = [{"ign": r["ign"], "count": r["visit_count"]} for r in top_travelers_raw]
+
+    trend_map = {r["day"]: r["count"] for r in trend_raw}
+    today_dt  = datetime.now(timezone.utc)
+    trend_labels, trend_counts = [], []
+    for offset in range(6, -1, -1):
+        d = (today_dt - timedelta(days=offset)).strftime("%Y-%m-%d")
+        trend_labels.append(d[-5:])
+        trend_counts.append(trend_map.get(d, 0))
+
+    warn_rate_7d = round(warnings_week / visits_week * 100, 1) if visits_week > 0 else 0
+
+    db2 = get_db()
+    try:
+        rows2       = db2.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        db_islands2 = [_row_to_island_dict(dict(r)) for r in rows2]
+        bot_status2 = _load_bot_status_map(db2)
+    except sqlite3.Error:
+        db_islands2 = []
+        bot_status2 = {}
+    finally:
+        db2.close()
+
+    for isl in db_islands2:
+        isl["discord_bot_online"] = bot_status2.get(isl.get("id", ""))
+
+    island_count = len(db_islands2)
+    status_map: dict[str, int] = {STATUS_ONLINE: 0, STATUS_REFRESHING: 0, STATUS_OFFLINE: 0}
+    for isl in db_islands2:
+        s = _effective_status(isl)
+        status_map[s] = status_map.get(s, 0) + 1
+
+    online_count = status_map[STATUS_ONLINE]
+    online_pct   = round(online_count / island_count * 100) if island_count else 0
+
+    return jsonify({
+        "total_visits":   total_visits,
+        "total_warnings": total_warnings,
+        "visits_today":   visits_today,
+        "visits_week":    visits_week,
+        "warnings_week":  warnings_week,
+        "warn_rate_7d":   warn_rate_7d,
+        "island_count":   island_count,
+        "online_count":   online_count,
+        "online_pct":     online_pct,
+        "status_map":     status_map,
+        "top_islands":    top_islands,
+        "top_travelers":  top_travelers,
+        "trend_labels":   trend_labels,
+        "trend_counts":   trend_counts,
+        "recent":         recent,
     })
 
