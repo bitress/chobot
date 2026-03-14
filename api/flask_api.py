@@ -24,7 +24,7 @@ from werkzeug.serving import ThreadedWSGIServer
 
 from utils.config import Config
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text
-from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value
+from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value, _parse_visitor_list
 
 
 logger = logging.getLogger("FlaskAPI")
@@ -201,12 +201,7 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
     name = entry.name.upper()
 
     raw_dodo = get_file_content(entry.path, "Dodo.txt")
-    raw_visitors = _parse_visitor_value(get_file_content(entry.path, "Visitors.txt"))
-
-    # Parse visitors as integer
-    visitors = 0
-    if raw_visitors and raw_visitors.isdigit():
-        visitors = int(raw_visitors)
+    visitors, visitor_list = _parse_visitor_list(get_file_content(entry.path, "Visitors.txt"))
 
     # Determine live status and dodo_code from filesystem
     if island_type == "VIP":
@@ -225,6 +220,7 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
     # When the Discord bot is not confirmed online, hide live data to avoid stale values
     if not discord_bot_online:
         visitors = 0
+        visitor_list = []
         dodo_code = None
 
     return {
@@ -234,6 +230,7 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
         "description":       db_island.get("description", ""),
         "dodo_code":         dodo_code,
         "visitors":          visitors,
+        "visitor_list":      visitor_list,
         "items":             db_island.get("items", []),
         "map_url":           db_island.get("map_url"),
         "seasonal":          db_island.get("seasonal", ""),
@@ -265,7 +262,7 @@ def home():
         "endpoints": {
             "items": "/find, /api/find",
             "villagers": "/villager, /api/villager, /api/villagers/list",
-            "islands": "/api/islands",
+            "islands": "/api/islands, /api/islands/<name>/visitors",
             "patreon": "/api/patreon/posts, /api/patreon/posts/<id>",
             "status": "/status",
             "refresh": "/api/refresh (POST)",
@@ -566,6 +563,59 @@ def get_islands():
 
 
 # --- PATREON ROUTES ---
+
+
+@app.route('/api/islands/<name>/visitors', methods=['GET'])
+def get_island_visitors(name):
+    """Get the current visitor list for a single island by name.
+
+    Reads the live Visitors.txt file written by the C# island bot and returns
+    the parsed list of in-game names currently on the island.
+
+    Returns 404 if no island directory with that name is found.
+    """
+    target = name.upper()
+
+    # Load bot online status for all islands (same pattern as get_islands)
+    discord_status = {}
+    db = get_db()
+    try:
+        bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
+        for r in bot_rows:
+            discord_status[r["island_id"]] = bool(r["is_online"])
+    except sqlite3.Error:
+        pass
+    finally:
+        db.close()
+
+    # Search Free and VIP directories for a matching island folder
+    for base_dir, island_type in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP")]:
+        if not base_dir or not os.path.exists(base_dir):
+            continue
+        with os.scandir(base_dir) as entries:
+            for entry in entries:
+                if entry.is_dir() and entry.name.upper() == target:
+                    discord_bot_online = discord_status.get(target.lower())
+
+                    raw_content = get_file_content(entry.path, "Visitors.txt")
+                    visitor_count, visitor_list = _parse_visitor_list(raw_content)
+
+                    # Hide live data when the Discord bot is offline
+                    if not discord_bot_online:
+                        visitor_count = 0
+                        visitor_list = []
+
+                    return jsonify({
+                        "island":        target,
+                        "type":          island_type,
+                        "visitor_count": visitor_count,
+                        "visitor_list":  visitor_list,
+                        "bot_online":    discord_bot_online,
+                        "timestamp":     datetime.now().isoformat(),
+                    })
+
+    return jsonify({"error": f"Island '{name}' not found"}), 404
+
 
 @app.route("/api/patreon/posts", methods=["GET"])
 def get_patreon_posts():

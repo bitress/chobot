@@ -362,6 +362,48 @@ def _parse_visitor_value(raw):
     return cleaned if cleaned else None
 
 
+def _parse_visitor_list(raw):
+    """Parse Visitors.txt content into a (count, names) tuple.
+
+    Handles the multi-line format produced by the C# SysBot::
+
+        The following visitors are on {TownName}:
+        #1: PlayerName
+        #2: Available slot
+        ...
+
+    Also handles the legacy single-value format ("3", "Visitors: 3", "FULL").
+
+    Returns:
+        (visitor_count: int, visitor_names: list[str])
+    """
+    if not raw:
+        return 0, []
+
+    lines = [l.strip() for l in raw.strip().splitlines() if l.strip()]
+
+    # New multi-line format from C# bot
+    if lines and lines[0].lower().startswith("the following visitors are on"):
+        names = []
+        for line in lines[1:]:
+            m = re.match(r'^#\d+:\s*(.+)$', line)
+            if m:
+                name = m.group(1).strip()
+                if name.lower() != "available slot":
+                    names.append(name)
+        return len(names), names
+
+    # Legacy single-value format
+    cleaned = _parse_visitor_value(raw)
+    if not cleaned:
+        return 0, []
+    if cleaned.isdigit():
+        return int(cleaned), []
+    if cleaned.upper() == "FULL":
+        return 7, []
+    return 0, []
+
+
 def _collect_fs_islands():
     """Return a dict keyed by uppercase island name with live filesystem data."""
     result = {}
