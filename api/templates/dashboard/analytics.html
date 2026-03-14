@@ -15,17 +15,17 @@
   <a href="{{ url_for('dashboard.analytics') }}"
      class="btn rounded-pill fw-bold px-4 py-2 {% if not island_type_filter %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.82rem;">
-    🏝️ All Islands
+    <i class="fa-solid fa-umbrella-beach me-1"></i>All Islands
   </a>
   <a href="{{ url_for('dashboard.analytics', island_type='free') }}"
      class="btn rounded-pill fw-bold px-4 py-2 {% if island_type_filter == 'free' %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.82rem;">
-    🌴 Free Islands
+    <i class="fa-solid fa-tree me-1"></i>Free Islands
   </a>
   <a href="{{ url_for('dashboard.analytics', island_type='sub') }}"
      class="btn rounded-pill fw-bold px-4 py-2 {% if island_type_filter == 'sub' %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.82rem;">
-    ⭐ Sub Islands
+    <i class="fa-solid fa-star me-1"></i>Sub Islands
   </a>
   {% if island_type_filter %}
   <span class="ms-1 fw-bold x-small"
@@ -46,10 +46,10 @@
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-calendar-day-fill me-1"></i>Visits Today</div>
-      <div class="stat-value text-nook-green">{{ visits_today }}</div>
+      <div class="stat-value text-nook-green">{{ visits_today | intcomma }}</div>
       {% if warnings_today > 0 %}
       <div class="x-small fw-bold mt-1" style="color:var(--nook-yellow);">
-        <i class="bi bi-exclamation-triangle-fill me-1"></i>{{ warnings_today }} warning{{ 's' if warnings_today != 1 else '' }} today
+        <i class="bi bi-exclamation-triangle-fill me-1"></i>{{ warnings_today | intcomma }} warning{{ 's' if warnings_today != 1 else '' }} today
       </div>
       {% endif %}
     </div>
@@ -57,13 +57,13 @@
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-calendar-week-fill me-1"></i>Visits This Week</div>
-      <div class="stat-value" style="color:var(--dal-blue);">{{ visits_week }}</div>
+      <div class="stat-value" style="color:var(--dal-blue);">{{ visits_week | intcomma }}</div>
       {% set week_delta = visits_week - visits_prev_week %}
       {% if visits_prev_week > 0 %}
       <div class="x-small fw-bold mt-1"
            style="color:{% if week_delta >= 0 %}var(--nook-green){% else %}#e06c75{% endif %};">
         <i class="bi bi-arrow-{% if week_delta >= 0 %}up{% else %}down{% endif %}-short"></i>
-        {% if week_delta >= 0 %}+{% endif %}{{ week_delta }} vs prev week
+        {% if week_delta >= 0 %}+{% endif %}{{ week_delta | intcomma }} vs prev week
       </div>
       {% endif %}
     </div>
@@ -71,7 +71,7 @@
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-exclamation-triangle-fill me-1"></i>Warnings (7d)</div>
-      <div class="stat-value" style="color:var(--nook-yellow);">{{ warnings_week }}</div>
+      <div class="stat-value" style="color:var(--nook-yellow);">{{ warnings_week | intcomma }}</div>
       {% if visits_week > 0 %}
       <div class="x-small fw-bold mt-1" style="color:#aaa;">
         {{ warn_rate_week }}% warn rate (7d)
@@ -82,7 +82,7 @@
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-airplane-fill me-1"></i>Total Visits</div>
-      <div class="stat-value" style="color:#b07cdc;">{{ auth_stats.authorized + auth_stats.unauthorized }}</div>
+      <div class="stat-value" style="color:#b07cdc;">{{ (auth_stats.authorized + auth_stats.unauthorized) | intcomma }}</div>
       <div class="x-small fw-bold mt-1" style="color:#aaa;">
         avg {{ avg_visits_30d }}/day (30d)
       </div>
@@ -95,14 +95,14 @@
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-people-fill me-1"></i>Unique Travelers</div>
-      <div class="stat-value" style="color:var(--nook-green);">{{ total_unique_travelers }}</div>
+      <div class="stat-value" style="color:var(--nook-green);">{{ total_unique_travelers | intcomma }}</div>
       <div class="x-small fw-bold mt-1" style="color:#aaa;">all-time distinct visitors</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
     <div class="stat-card">
       <div class="stat-label"><i class="bi bi-map-fill me-1"></i>Unique Islands</div>
-      <div class="stat-value" style="color:var(--dal-blue);">{{ total_unique_islands }}</div>
+      <div class="stat-value" style="color:var(--dal-blue);">{{ total_unique_islands | intcomma }}</div>
       <div class="x-small fw-bold mt-1" style="color:#aaa;">all-time distinct destinations</div>
     </div>
   </div>
@@ -218,7 +218,7 @@
   <div class="col-12 col-lg-6">
     <div class="section-card h-100">
       <div class="section-card-header">
-        <span>🏝️ Most Visited Islands</span>
+        <span><i class="fa-solid fa-umbrella-beach me-2" style="color:var(--nook-green);"></i>Most Visited Islands</span>
       </div>
       {% if top_islands %}
       <div>
@@ -232,7 +232,7 @@
                         width:{{ [(row.visit_count / top_islands[0].visit_count * 80)|int, 4]|max }}px;
                         max-width:80px;"></div>
             <span class="fw-black x-small" style="color:var(--nook-green);width:24px;text-align:right;">
-              {{ row.visit_count }}
+              {{ row.visit_count | intcomma }}
             </span>
           </div>
         </div>
@@ -248,7 +248,7 @@
   <div class="col-12 col-lg-6">
     <div class="section-card h-100">
       <div class="section-card-header">
-        <span>✈️ Most Active Travelers</span>
+        <span><i class="fa-solid fa-plane me-2" style="color:#b07cdc;"></i>Most Active Travelers</span>
       </div>
       {% if top_travelers %}
       <div>
@@ -262,7 +262,7 @@
                         width:{{ [(row.visit_count / top_travelers[0].visit_count * 80)|int, 4]|max }}px;
                         max-width:80px;"></div>
             <span class="fw-black x-small" style="color:#b07cdc;width:24px;text-align:right;">
-              {{ row.visit_count }}
+              {{ row.visit_count | intcomma }}
             </span>
           </div>
         </div>
@@ -485,7 +485,7 @@
                         width:{{ [(row.warn_count / [top_warned[0].warn_count, 1]|max * 80)|int, 4]|max }}px;
                         max-width:80px;"></div>
             <span class="fw-black x-small" style="color:var(--nook-yellow);width:24px;text-align:right;">
-              {{ row.warn_count }}
+              {{ row.warn_count | intcomma }}
             </span>
           </div>
         </div>
@@ -516,7 +516,7 @@
                         width:{{ [(row.kick_count / [top_kicked[0].kick_count, 1]|max * 80)|int, 4]|max }}px;
                         max-width:80px;"></div>
             <span class="fw-black x-small" style="color:#F1C40F;width:24px;text-align:right;">
-              {{ row.kick_count }}
+              {{ row.kick_count | intcomma }}
             </span>
           </div>
         </div>
@@ -547,7 +547,7 @@
                         width:{{ [(row.ban_count / [top_banned[0].ban_count, 1]|max * 80)|int, 4]|max }}px;
                         max-width:80px;"></div>
             <span class="fw-black x-small" style="color:#992D22;width:24px;text-align:right;">
-              {{ row.ban_count }}
+              {{ row.ban_count | intcomma }}
             </span>
           </div>
         </div>
@@ -578,7 +578,7 @@
                         width:{{ [(row.note_count / [top_noted[0].note_count, 1]|max * 80)|int, 4]|max }}px;
                         max-width:80px;"></div>
             <span class="fw-black x-small" style="color:#5DADE2;width:24px;text-align:right;">
-              {{ row.note_count }}
+              {{ row.note_count | intcomma }}
             </span>
           </div>
         </div>
@@ -609,7 +609,7 @@
             <div class="fw-black ac-font" style="font-size:1.6rem;
                  color:{% if visits_week >= visits_prev_week %}var(--nook-green){% else %}#e06c75{% endif %};">
               {% set week_delta = visits_week - visits_prev_week %}
-              {% if week_delta >= 0 %}+{% endif %}{{ week_delta }}
+              {% if week_delta >= 0 %}+{% endif %}{{ week_delta | intcomma }}
             </div>
             <div class="x-small fw-bold" style="color:#aaa;">visits vs prior week</div>
           </div>
@@ -622,7 +622,7 @@
             <i class="bi bi-calendar-week-fill" style="font-size:1.3rem;color:var(--dal-blue);"></i>
           </div>
           <div>
-            <div class="fw-black ac-font" style="font-size:1.6rem;color:var(--dal-blue);">{{ visits_week }}</div>
+            <div class="fw-black ac-font" style="font-size:1.6rem;color:var(--dal-blue);">{{ visits_week | intcomma }}</div>
             <div class="x-small fw-bold" style="color:#aaa;">this week (last 7 days)</div>
           </div>
         </div>
@@ -634,7 +634,7 @@
             <i class="bi bi-calendar2-week" style="font-size:1.3rem;color:#aaa;"></i>
           </div>
           <div>
-            <div class="fw-black ac-font" style="font-size:1.6rem;color:#aaa;">{{ visits_prev_week }}</div>
+            <div class="fw-black ac-font" style="font-size:1.6rem;color:#aaa;">{{ visits_prev_week | intcomma }}</div>
             <div class="x-small fw-bold" style="color:#aaa;">prior week (7–14 days ago)</div>
           </div>
         </div>

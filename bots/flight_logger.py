@@ -366,34 +366,85 @@ class PunishmentBuilderView(discord.ui.View):
         self.stop()
 
 
+class AdmitUserSelect(discord.ui.UserSelect):
+    """Optional user selector for linking a Discord member to an admit action."""
+
+    def __init__(self, parent_view: "AdmitConfirmView"):
+        super().__init__(
+            placeholder="(Optional) Link to a Discord user...",
+            min_values=0,
+            max_values=1,
+            row=0,
+        )
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.selected_member = self.values[0] if self.values else None
+        try:
+            await interaction.response.edit_message(content=self.parent_view._build_content())
+        except discord.NotFound:
+            pass
+
+
 class AdmitConfirmView(discord.ui.View):
     """Confirmation dialog for admitting a traveler."""
+
     def __init__(self, parent_view: "TravelerActionView", ign: str, original_alert_message: discord.Message):
         super().__init__(timeout=300)
         self.parent_view = parent_view
         self.ign = ign
         self.original_alert_message = original_alert_message
+        self.selected_member: discord.Member | discord.User | None = None
+        self.add_item(AdmitUserSelect(self))
 
-    @discord.ui.button(label="Yes, Admit", style=discord.ButtonStyle.success)
+    def _build_content(self) -> str:
+        base = f"Are you sure you want to admit **{self.ign or 'Visitor'}**?"
+        if self.selected_member:
+            return f"{base}\n👤 Linked to: {self.selected_member.mention}"
+        return base
+
+    @discord.ui.button(label="Yes, Admit", style=discord.ButtonStyle.success, row=1)
     async def confirm_admit(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Proceed with admission."""
         msg = f"**{self.ign or 'Visitor'}** is cleared for entry."
+        if self.selected_member:
+            msg += f" Linked to {self.selected_member.mention}."
         # Update the original alert message (the flight log alert)
         await self.parent_view._resolve_alert(
-            interaction, "AUTHORIZED", COLOR_SUCCESS, msg, log_message=self.original_alert_message
+            interaction, "AUTHORIZED", COLOR_SUCCESS, msg,
+            target_user=self.selected_member,
+            log_message=self.original_alert_message,
         )
         cog = self.parent_view.bot.get_cog("FlightLoggerCog") if self.parent_view.bot else None
         if cog:
             ign = self.ign
             visit_id = getattr(self.parent_view, 'visit_id', None)
+            # Prefer embed-embedded ID (survives bot restarts), then IGN lookup
+            if not visit_id and self.original_alert_message and self.original_alert_message.embeds:
+                visit_id = self.parent_view._get_visit_id_from_embed(self.original_alert_message.embeds[0])
             if not visit_id and ign:
                 visit_id = await cog._get_recent_visit_id_by_ign(ign)
-            await cog.add_warning(None, interaction.guild.id, None, interaction.user.id, visit_id, action_type='ADMIT')
+            if visit_id is not None:
+                db = await cog._get_db()
+                # Mark the visit as authorized now that a mod has manually admitted the traveler
+                await db.execute(
+                    "UPDATE island_visits SET authorized = 1 WHERE id = ?",
+                    (visit_id,),
+                )
+                # Link the selected Discord member to the visit record if provided
+                if self.selected_member:
+                    await db.execute(
+                        "UPDATE island_visits SET user_id = ? WHERE id = ? AND user_id IS NULL",
+                        (self.selected_member.id, visit_id),
+                    )
+                await db.commit()
+            target_id = self.selected_member.id if self.selected_member else None
+            await cog.add_warning(target_id, interaction.guild.id, None, interaction.user.id, visit_id, action_type='ADMIT')
         # Update the confirmation message to show success
         await interaction.response.edit_message(content=msg, view=None)
         self.stop()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
     async def cancel_admit(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Cancel admission."""
         await interaction.response.edit_message(content="Admission cancelled.", view=None)
@@ -410,18 +461,24 @@ class NoteModal(discord.ui.Modal, title="Add Note"):
         max_length=500
     )
 
-    def __init__(self, parent_view: "TravelerActionView"):
+    def __init__(self, parent_view: "TravelerActionView", alert_message: discord.Message, linked_user: discord.Member | discord.User | None = None):
         super().__init__()
         self.parent_view = parent_view
+        self.alert_message = alert_message
+        self.linked_user = linked_user
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            message_to_edit = interaction.message
+            message_to_edit = self.alert_message
             embed = message_to_edit.embeds[0]
             timestamp = int(discord.utils.utcnow().timestamp())
+            note_value = self.note_input.value
+            if self.linked_user:
+                note_value += f"\n-# Linked: {self.linked_user.mention}"
+            note_value += f"\n-# Added <t:{timestamp}:R>"
             embed.add_field(
                 name=f"<:Cho_Notes:1474311464688029817> Note by {interaction.user.display_name}",
-                value=f"{self.note_input.value}\n-# Added <t:{timestamp}:R>",
+                value=note_value,
                 inline=False
             )
             await message_to_edit.edit(embed=embed)
@@ -429,15 +486,65 @@ class NoteModal(discord.ui.Modal, title="Add Note"):
             if cog:
                 ign = self.parent_view.ign
                 visit_id = self.parent_view.visit_id
+                # Prefer embed-embedded ID (survives bot restarts), then IGN lookup
+                if not visit_id and message_to_edit.embeds:
+                    visit_id = self.parent_view._get_visit_id_from_embed(message_to_edit.embeds[0])
                 if not visit_id and ign:
                     visit_id = await cog._get_recent_visit_id_by_ign(ign)
-                await cog.add_warning(None, interaction.guild.id, self.note_input.value, interaction.user.id, visit_id, action_type='NOTE')
+                target_id = self.linked_user.id if self.linked_user else None
+                await cog.add_warning(target_id, interaction.guild.id, self.note_input.value, interaction.user.id, visit_id, action_type='NOTE')
             await interaction.response.send_message("<:Cho_Notes:1474311464688029817> Note added to the alert.", ephemeral=True)
         except Exception as e:
             logger.error(f"Error adding note: {e}")
             await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
-        
+
+class NoteUserSelect(discord.ui.UserSelect):
+    """Optional user selector for linking a Discord member to a note."""
+
+    def __init__(self, parent_view: "NoteBuilderView"):
+        super().__init__(
+            placeholder="(Optional) Link to a Discord user...",
+            min_values=0,
+            max_values=1,
+            row=0,
+        )
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.selected_member = self.values[0] if self.values else None
+        content = "<:Cho_Notes:1474311464688029817> **Add Note:**\nOptionally link a Discord user, then click **Write Note...**"
+        if self.parent_view.selected_member:
+            content += f"\n👤 Linked to: {self.parent_view.selected_member.mention}"
+        try:
+            await interaction.response.edit_message(content=content)
+        except discord.NotFound:
+            pass
+
+
+class NoteBuilderView(discord.ui.View):
+    """Ephemeral view shown before the note modal to optionally link a Discord user."""
+
+    def __init__(self, parent_view: "TravelerActionView", alert_message: discord.Message):
+        super().__init__(timeout=300)
+        self.parent_view = parent_view
+        self.alert_message = alert_message
+        self.selected_member: discord.Member | discord.User | None = None
+        self.add_item(NoteUserSelect(self))
+
+    @discord.ui.button(label="Write Note...", style=discord.ButtonStyle.primary, row=1)
+    async def write_note(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(
+            NoteModal(self.parent_view, self.alert_message, linked_user=self.selected_member)
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
+    async def cancel_note(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Cancelled.", view=None)
+        self.stop()
+
+
 class TravelerActionView(discord.ui.View):
     def __init__(self, bot=None, ign=None, visit_id=None):
         super().__init__(timeout=None)
@@ -455,6 +562,17 @@ class TravelerActionView(discord.ui.View):
                 match = re.search(r"```(?:yaml)?\n(.*?)\n?```", field.value)
                 if match:
                     return match.group(1).strip()
+        return None
+
+    def _get_visit_id_from_embed(self, embed: discord.Embed) -> int | None:
+        """Extracts the visit ID from the '🆔 Visit ID' field in the alert embed."""
+        if not embed or not embed.fields:
+            return None
+        for field in embed.fields:
+            if field.name == "🆔 Visit ID":
+                match = re.search(r"#(\d+)", field.value)
+                if match:
+                    return int(match.group(1))
         return None
 
     async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None, reason=None, mod_log_url=None):
@@ -618,6 +736,8 @@ class TravelerActionView(discord.ui.View):
         cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
         if cog:
             visit_id = self.visit_id
+            if not visit_id and interaction.message and interaction.message.embeds:
+                visit_id = self._get_visit_id_from_embed(interaction.message.embeds[0])
             if not visit_id and ign:
                 visit_id = await cog._get_recent_visit_id_by_ign(ign)
             await cog.add_warning(None, interaction.guild.id, None, interaction.user.id, visit_id, action_type='DISMISS')
@@ -626,7 +746,16 @@ class TravelerActionView(discord.ui.View):
     @discord.ui.button(label="Note", style=discord.ButtonStyle.secondary, emoji="<:Cho_Notes:1474311464688029817>", custom_id="fl_note", row=2)
     async def note_action(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Add a note to the alert without taking action."""
-        await interaction.response.send_modal(NoteModal(self))
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+        view = NoteBuilderView(self, interaction.message)
+        await interaction.followup.send(
+            "<:Cho_Notes:1474311464688029817> **Add Note:**\nOptionally link a Discord user, then click **Write Note...**",
+            view=view,
+            ephemeral=True,
+        )
 
 # Compiled once at module level; shared by all flight-monitoring cogs.
 JOIN_PATTERN = re.compile(
@@ -1113,6 +1242,8 @@ class FlightLoggerCog(commands.Cog):
                     embed.add_field(name="✈️ Destination", value=f"```yaml\n{destination.title()}```", inline=True)
                     embed.add_field(name="🕐 Detected", value=f"<t:{alert_ts}:R>", inline=True)
                     embed.add_field(name="📌 Status", value="🔴 **PENDING REVIEW**", inline=True)
+                    if visit_id is not None:
+                        embed.add_field(name="🆔 Visit ID", value=f"`#{visit_id}`", inline=True)
                     embed.set_image(url=Config.FOOTER_LINE)
                     guild      = self.bot.get_guild(Config.GUILD_ID)
                     guild_icon = guild.icon.url if guild and guild.icon else None

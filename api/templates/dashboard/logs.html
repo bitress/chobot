@@ -10,12 +10,12 @@
   <a href="{{ url_for('dashboard.logs', type='flights', island=island_filter, authorized=authorized_filter, category=category_filter, sort_by=sort_by, sort_order=sort_order) }}"
      class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'flights' %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.85rem;">
-    ✈️ Flight Logs
+    <i class="fa-solid fa-plane me-1"></i>Flight Logs
   </a>
   <a href="{{ url_for('dashboard.logs', type='warnings') }}"
      class="btn rounded-pill fw-bold px-4 py-2 {% if log_type == 'warnings' %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.85rem;">
-    ⚠️ Warning Logs
+    <i class="fa-solid fa-triangle-exclamation me-1"></i>Warning Logs
   </a>
 </div>
 
@@ -48,15 +48,15 @@
   <!-- Category / tier filter -->
   <select name="category" class="db-input" style="width:165px;">
     <option value="">All tiers</option>
-    <option value="public" {% if category_filter == 'public' %}selected{% endif %}>🌍 Public</option>
-    <option value="member" {% if category_filter == 'member' %}selected{% endif %}>⭐ Member / VIP</option>
+    <option value="public" {% if category_filter == 'public' %}selected{% endif %}>Public</option>
+    <option value="member" {% if category_filter == 'member' %}selected{% endif %}>Member / VIP</option>
   </select>
 
   <!-- Authorization filter -->
   <select name="authorized" class="db-input" style="width:165px;">
     <option value="">All travelers</option>
-    <option value="1" {% if authorized_filter == '1' %}selected{% endif %}>✔ Authorized only</option>
-    <option value="0" {% if authorized_filter == '0' %}selected{% endif %}>? Unknown only</option>
+    <option value="1" {% if authorized_filter == '1' %}selected{% endif %}>Authorized only</option>
+    <option value="0" {% if authorized_filter == '0' %}selected{% endif %}>Unknown only</option>
   </select>
 
   <!-- Sort controls -->
@@ -101,12 +101,12 @@
   <!-- Action type filter -->
   <select name="action_type" class="db-input" style="width:160px;">
     <option value="">All actions</option>
-    <option value="WARN"    {% if action_type_filter == 'WARN'    %}selected{% endif %}>⚠️ WARN</option>
-    <option value="KICK"    {% if action_type_filter == 'KICK'    %}selected{% endif %}>👢 KICK</option>
-    <option value="BAN"     {% if action_type_filter == 'BAN'     %}selected{% endif %}>🔨 BAN</option>
-    <option value="DISMISS" {% if action_type_filter == 'DISMISS' %}selected{% endif %}>🚫 DISMISS</option>
-    <option value="NOTE"    {% if action_type_filter == 'NOTE'    %}selected{% endif %}>📝 NOTE</option>
-    <option value="ADMIT"   {% if action_type_filter == 'ADMIT'   %}selected{% endif %}>✅ ADMIT</option>
+    <option value="WARN"    {% if action_type_filter == 'WARN'    %}selected{% endif %}>WARN</option>
+    <option value="KICK"    {% if action_type_filter == 'KICK'    %}selected{% endif %}>KICK</option>
+    <option value="BAN"     {% if action_type_filter == 'BAN'     %}selected{% endif %}>BAN</option>
+    <option value="DISMISS" {% if action_type_filter == 'DISMISS' %}selected{% endif %}>DISMISS</option>
+    <option value="NOTE"    {% if action_type_filter == 'NOTE'    %}selected{% endif %}>NOTE</option>
+    <option value="ADMIT"   {% if action_type_filter == 'ADMIT'   %}selected{% endif %}>ADMIT</option>
   </select>
   <button type="submit"
           class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold"
@@ -126,10 +126,17 @@
   <a href="{{ url_for('dashboard.logs', type='warnings', ign=ign_filter) }}"
      class="btn rounded-pill fw-bold px-3 py-1 {% if not action_type_filter %}btn-nook-primary{% else %}btn-sub{% endif %}"
      style="font-size:.8rem;">All</a>
-  {% for at_val, at_label in [('WARN','⚠️ WARN'),('KICK','👢 KICK'),('BAN','🔨 BAN'),('DISMISS','🚫 DISMISS'),('NOTE','📝 NOTE'),('ADMIT','✅ ADMIT')] %}
+  {% for at_val, at_icon, at_label in [
+      ('WARN',    'fa-triangle-exclamation', 'WARN'),
+      ('KICK',    'fa-boot',                 'KICK'),
+      ('BAN',     'fa-hammer',               'BAN'),
+      ('DISMISS', 'fa-ban',                  'DISMISS'),
+      ('NOTE',    'fa-note-sticky',          'NOTE'),
+      ('ADMIT',   'fa-circle-check',         'ADMIT')
+  ] %}
   <a href="{{ url_for('dashboard.logs', type='warnings', action_type=at_val, ign=ign_filter) }}"
      class="btn rounded-pill fw-bold px-3 py-1 {% if action_type_filter == at_val %}btn-nook-primary{% else %}btn-sub{% endif %}"
-     style="font-size:.8rem;">{{ at_label }}</a>
+     style="font-size:.8rem;"><i class="fa-solid {{ at_icon }} me-1"></i>{{ at_label }}</a>
   {% endfor %}
 </div>
 {% endif %}
@@ -137,7 +144,7 @@
 <!-- Results info -->
 <div class="d-flex align-items-center justify-content-between mb-3">
   <span class="x-small fw-bold" style="color:#aaa;">
-    Showing {{ entries|length }} of {{ total }} entries
+    Showing {{ entries|length }} of {{ total | intcomma }} entries
     {% if log_type == 'flights' and island_filter %}&nbsp;· island: <strong>{{ island_filter }}</strong>{% endif %}
     {% if log_type == 'flights' and category_filter %}&nbsp;· tier: <strong>{{ category_filter }}</strong>{% endif %}
     {% if ign_filter %}&nbsp;· ign: <strong>{{ ign_filter }}</strong>{% endif %}
@@ -166,6 +173,7 @@
             <th>IGN</th>
             <th>Origin</th>
             <th>Destination</th>
+            <th>Linked User</th>
             <th>Status</th>
             <th>Time</th>
           {% endif %}
@@ -178,17 +186,17 @@
             <td>
               {% set at = entry.action_type | upper %}
               {% if at == 'WARN' %}
-                <span class="badge rounded-pill fw-bold" style="background:#E67E22;color:#fff;font-size:.75rem;">⚠️ WARN</span>
+                <span class="badge rounded-pill fw-bold" style="background:#E67E22;color:#fff;font-size:.75rem;"><i class="fa-solid fa-triangle-exclamation me-1"></i>WARN</span>
               {% elif at == 'KICK' %}
-                <span class="badge rounded-pill fw-bold" style="background:#F1C40F;color:#444;font-size:.75rem;">👢 KICK</span>
+                <span class="badge rounded-pill fw-bold" style="background:#F1C40F;color:#444;font-size:.75rem;"><i class="fa-solid fa-boot me-1"></i>KICK</span>
               {% elif at == 'BAN' %}
-                <span class="badge rounded-pill fw-bold" style="background:#992D22;color:#fff;font-size:.75rem;">🔨 BAN</span>
+                <span class="badge rounded-pill fw-bold" style="background:#992D22;color:#fff;font-size:.75rem;"><i class="fa-solid fa-hammer me-1"></i>BAN</span>
               {% elif at == 'DISMISS' %}
-                <span class="badge rounded-pill fw-bold" style="background:#95A5A6;color:#fff;font-size:.75rem;">🚫 DISMISS</span>
+                <span class="badge rounded-pill fw-bold" style="background:#95A5A6;color:#fff;font-size:.75rem;"><i class="fa-solid fa-ban me-1"></i>DISMISS</span>
               {% elif at == 'NOTE' %}
-                <span class="badge rounded-pill fw-bold" style="background:#7F8C8D;color:#fff;font-size:.75rem;">📝 NOTE</span>
+                <span class="badge rounded-pill fw-bold" style="background:#7F8C8D;color:#fff;font-size:.75rem;"><i class="fa-solid fa-note-sticky me-1"></i>NOTE</span>
               {% elif at == 'ADMIT' %}
-                <span class="badge rounded-pill fw-bold" style="background:#2ECC71;color:#fff;font-size:.75rem;">✅ ADMIT</span>
+                <span class="badge rounded-pill fw-bold" style="background:#2ECC71;color:#fff;font-size:.75rem;"><i class="fa-solid fa-circle-check me-1"></i>ADMIT</span>
               {% else %}
                 <span class="badge rounded-pill fw-bold" style="background:#ccc;color:#444;font-size:.75rem;">{{ at }}</span>
               {% endif %}
@@ -207,11 +215,18 @@
             <td class="fw-bold" style="color:#444;">{{ entry.ign }}</td>
             <td style="color:#888;">{{ entry.origin_island or "—" }}</td>
             <td>{{ entry.destination }}</td>
+            <td style="color:#7c6fcd;">
+              {% if entry.user_name %}
+                <i class="bi bi-discord me-1" style="opacity:.7;"></i>{{ entry.user_name }}
+              {% else %}
+                <span style="color:#ccc;">—</span>
+              {% endif %}
+            </td>
             <td>
               {% if entry.authorized %}
-                <span class="badge badge-auth rounded-pill">✔ Auth</span>
+                <span class="badge badge-auth rounded-pill"><i class="fa-solid fa-check me-1"></i>Auth</span>
               {% else %}
-                <span class="badge badge-unkn rounded-pill">? Unknown</span>
+                <span class="badge badge-unkn rounded-pill"><i class="fa-solid fa-question me-1"></i>Unknown</span>
               {% endif %}
             </td>
             <td class="x-small" style="color:#aaa;">

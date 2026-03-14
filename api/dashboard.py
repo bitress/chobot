@@ -45,6 +45,15 @@ dashboard = Blueprint(
     static_url_path="/static",
 )
 
+
+@dashboard.app_template_filter("intcomma")
+def _intcomma(value):
+    """Format a number with thousands comma separators (e.g. 2000 → 2,000)."""
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return value
+
 # Absolute path to the shared SQLite database
 _DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -683,7 +692,7 @@ def index():
             "WHERE timestamp > strftime('%s','now','-7 days')"
         ).fetchone()[0]
         recent_raw     = db.execute(
-            "SELECT ign, destination, authorized, timestamp "
+            "SELECT ign, destination, authorized, timestamp, user_id "
             "FROM island_visits ORDER BY timestamp DESC LIMIT 10"
         ).fetchall()
         top_islands_raw = db.execute(
@@ -713,12 +722,16 @@ def index():
     finally:
         db.close()
 
+    recent_user_ids = [r["user_id"] for r in recent_raw if r["user_id"]]
+    recent_name_map = _resolve_discord_usernames(recent_user_ids) if recent_user_ids else {}
+
     recent = [
         {
             "ign":         r["ign"],
             "destination": r["destination"],
             "authorized":  bool(r["authorized"]),
             "timestamp":   _ts_to_str(r["timestamp"]),
+            "user_name":   recent_name_map.get(str(r["user_id"])) if r["user_id"] else None,
         }
         for r in recent_raw
     ]
@@ -1076,9 +1089,13 @@ def logs():
                     "destination":   r["destination"],
                     "authorized":    bool(r["authorized"]),
                     "timestamp":     _ts_to_str(r["timestamp"]),
+                    "user_id":       r["user_id"],
                 }
                 for r in rows
             ]
+            flight_name_map = _resolve_discord_usernames([r["user_id"] for r in rows if r["user_id"]])
+            for e in entries:
+                e["user_name"] = flight_name_map.get(str(e["user_id"])) if e["user_id"] else None
     except sqlite3.Error:
         total, entries, island_names = 0, [], []
     finally:
