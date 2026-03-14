@@ -1458,9 +1458,9 @@ class DiscordCommandCog(commands.Cog):
             await ctx.reply("Could not retrieve island data right now. Please try again later.", ephemeral=True)
             return
 
-        kind_label   = {"sub": "💎 Sub Islands", "free": "🌴 Free Islands", "": "🏝️ All Islands"}[kind]
+        kind_label   = {"sub": "Sub Islands", "free": "Free Islands", "": "All Islands"}[kind]
         period_label = self._PERIOD_LABELS.get(period, "All Time")
-        title = f"🏆 Most Visited Islands — {kind_label} · {period_label}"
+        title = f"Most Visited Islands — {kind_label} · {period_label}"
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
 
         if not rows:
@@ -1475,16 +1475,10 @@ class DiscordCommandCog(commands.Cog):
             await ctx.reply(embed=embed)
             return
 
-        medals = ["🥇", "🥈", "🥉"]
         lines = []
-        max_visits = max(rows[0]["visit_count"], 1)
         for i, row in enumerate(rows):
-            rank    = medals[i] if i < 3 else f"`#{i + 1}`"
-            bar_len = max(1, int(row["visit_count"] / max_visits * 10))
-            bar     = "█" * bar_len + "░" * (10 - bar_len)
             lines.append(
-                f"{rank} **{row['destination']}** — `{row['visit_count']:,}` visits\n"
-                f"┗ `{bar}`"
+                f"{Config.STAR_PINK} `#{i + 1}` **{row['destination']}** — `{row['visit_count']:,}` visits"
             )
 
         embed = discord.Embed(
@@ -1556,9 +1550,9 @@ class DiscordCommandCog(commands.Cog):
             await ctx.reply("Could not retrieve traveller data right now. Please try again later.", ephemeral=True)
             return
 
-        kind_label   = {"sub": "💎 Sub Islands", "free": "🌴 Free Islands", "": "🏝️ All Islands"}[kind]
+        kind_label   = {"sub": "Sub Islands", "free": "Free Islands", "": "All Islands"}[kind]
         period_label = self._PERIOD_LABELS.get(period, "All Time")
-        title = f"✈️ Top Travellers — {kind_label} · {period_label}"
+        title = f"Top Travellers — {kind_label} · {period_label}"
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
 
         if not rows:
@@ -1573,16 +1567,10 @@ class DiscordCommandCog(commands.Cog):
             await ctx.reply(embed=embed)
             return
 
-        medals = ["🥇", "🥈", "🥉"]
         lines = []
-        max_visits = max(rows[0]["visit_count"], 1)
         for i, row in enumerate(rows):
-            rank    = medals[i] if i < 3 else f"`#{i + 1}`"
-            bar_len = max(1, int(row["visit_count"] / max_visits * 10))
-            bar     = "█" * bar_len + "░" * (10 - bar_len)
             lines.append(
-                f"{rank} **{row['ign']}** — `{row['visit_count']:,}` visits\n"
-                f"┗ `{bar}`"
+                f"{Config.STAR_PINK} `#{i + 1}` **{row['ign']}** — `{row['visit_count']:,}` visits"
             )
 
         embed = discord.Embed(
