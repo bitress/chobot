@@ -203,8 +203,12 @@
         crossorigin="anonymous"></script>
 <!-- simple-datatables -->
 <script src="https://cdn.jsdelivr.net/npm/simple-datatables@9/dist/umd/simple-datatables.js"></script>
+<!-- ApexCharts (area / sparkline charts — used by Overview) -->
+<script src="https://cdn.jsdelivr.net/npm/apexcharts@3/dist/apexcharts.min.js"></script>
+<!-- Chart.js (analytics charts — used by Analytics) -->
+<script src="{{ url_for('dashboard.static', filename='js/chart.umd.js') }}"></script>
 
-<script>
+<script data-base-script="1">
   var _sidebar  = document.getElementById('dbSidebar');
   var _overlay  = document.getElementById('sidebarOverlay');
   var _isMobile = function() { return window.innerWidth <= 767; };
@@ -247,7 +251,7 @@
   });
 </script>
 
-<script>
+<script data-base-script="1">
   /* Initialize Bootstrap tooltips */
   document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
@@ -299,7 +303,7 @@
   }
 </script>
 
-<script>
+<script data-base-script="1">
   /* Convert all [data-utc] timestamps to the visitor's local timezone */
   document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('[data-utc]').forEach(function (el) {
@@ -318,6 +322,159 @@
       });
     });
   });
+</script>
+
+<script data-base-script="1">
+/* ─── PJAX Navigation ─────────────────────────────────────────────────── */
+(function () {
+  'use strict';
+
+  /* Track all setInterval IDs so we can cancel polling when navigating away */
+  var _polls = [];
+  var _siOrig = window.setInterval;
+  var _ciOrig = window.clearInterval;
+  window.setInterval = function (fn, ms) {
+    var id = _siOrig.apply(window, arguments);
+    _polls.push(id);
+    return id;
+  };
+  window.clearInterval = function (id) {
+    var i = _polls.indexOf(id);
+    if (i !== -1) _polls.splice(i, 1);
+    _ciOrig.call(window, id);
+  };
+  function _stopPolls() {
+    _polls.slice().forEach(function (id) { _ciOrig.call(window, id); });
+    _polls = [];
+  }
+
+  /* Re-localize [data-utc] timestamps inside a given root element */
+  function _localizeTimestamps(root) {
+    root.querySelectorAll('[data-utc]').forEach(function (el) {
+      var raw = el.getAttribute('data-utc');
+      if (!raw || raw === '\u2014') return;
+      var iso = raw.trim().replace(' UTC', 'Z').replace(' ', 'T');
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return;
+      el.textContent = d.toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+    });
+  }
+
+  /* Execute page-specific inline scripts from a parsed document.
+     Skips external scripts (src=) and base-template scripts (data-base-script). */
+  function _execPageScripts(doc) {
+    doc.querySelectorAll('script:not([src]):not([data-base-script])').forEach(function (s) {
+      var el = document.createElement('script');
+      el.textContent = s.textContent;
+      document.body.appendChild(el);
+      document.body.removeChild(el);
+    });
+  }
+
+  /* In-flight request counter — lets a newer navigation supersede an older one */
+  var _inflightReq = 0;
+
+  function pjaxNavigate(url, push) {
+    var $main = document.querySelector('main.db-body');
+    if (!$main) { window.location.href = url; return; }
+
+    $main.style.opacity = '0.5';
+    $main.style.pointerEvents = 'none';
+
+    var thisReq = ++_inflightReq;
+
+    fetch(url, { headers: { 'X-Pjax': '1' }, credentials: 'same-origin' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var ct = r.headers.get('Content-Type') || '';
+        if (ct.indexOf('text/html') === -1) throw new Error('Unexpected content type: ' + ct);
+        return r.text();
+      })
+      .then(function (html) {
+        if (thisReq !== _inflightReq) return; /* superseded by a newer request */
+
+        var doc = (new DOMParser()).parseFromString(html, 'text/html');
+
+        /* Update page <title> */
+        var titleEl = doc.querySelector('title');
+        if (titleEl) document.title = titleEl.textContent;
+
+        /* Update topbar header label (supports HTML content like the live badge) */
+        var nh = doc.querySelector('.db-topbar .ac-font.fw-black');
+        var ch = document.querySelector('.db-topbar .ac-font.fw-black');
+        if (nh && ch) ch.innerHTML = nh.innerHTML;
+
+        /* Cancel all running polling intervals */
+        _stopPolls();
+
+        /* Update the active nav pill */
+        var stripped = url.split('?')[0].replace(/\/$/, '');
+        document.querySelectorAll('.nav-pill-link').forEach(function (a) {
+          var h = (a.getAttribute('href') || '').replace(/\/$/, '');
+          a.classList.toggle('active', h === stripped);
+        });
+
+        /* Swap the main content area */
+        var nm = doc.querySelector('main.db-body');
+        if (nm) $main.innerHTML = nm.innerHTML;
+
+        $main.style.opacity = '';
+        $main.style.pointerEvents = '';
+
+        /* Localize UTC timestamps in new content */
+        _localizeTimestamps($main);
+
+        /* Re-initialize Bootstrap tooltips on new content */
+        $main.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
+          bootstrap.Tooltip.getOrCreateInstance(el);
+        });
+
+        /* Execute the new page's scripts */
+        _execPageScripts(doc);
+
+        /* Push a new browser history entry */
+        if (push !== false) {
+          history.pushState({ pjax: true, url: url }, document.title, url);
+        }
+      })
+      .catch(function () {
+        /* Fall back to a normal navigation on any error */
+        window.location.href = url;
+      })
+      .finally(function () {
+        /* Ensure content is always restored even if the request was superseded */
+        if (thisReq === _inflightReq) {
+          $main.style.opacity = '';
+          $main.style.pointerEvents = '';
+        }
+      });
+  }
+
+  /* Intercept clicks on sidebar navigation links */
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest('.nav-pill-link');
+    if (!a) return;
+    var href = a.getAttribute('href');
+    if (!href || href === '#' || href.startsWith('http') ||
+        href.startsWith('/api/') || href.endsWith('/logout') ||
+        e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    pjaxNavigate(href, true);
+  });
+
+  /* Handle browser back / forward buttons */
+  window.addEventListener('popstate', function (e) {
+    if (e.state && e.state.pjax) {
+      pjaxNavigate(location.href, false);
+    }
+  });
+
+  /* Seed the initial history entry so popstate works from the first page */
+  history.replaceState({ pjax: true, url: location.href }, document.title, location.href);
+}());
 </script>
 
 {% block scripts %}{% endblock %}
