@@ -461,34 +461,134 @@
   </div>
 </div>
 
-<!-- Top Warned Users -->
-{% if top_warned %}
-<div class="section-card mb-4">
-  <div class="section-card-header">
-    <span><i class="bi bi-exclamation-triangle-fill me-2" style="color:var(--nook-yellow);"></i>Top Warned Users</span>
-    <a href="{{ url_for('dashboard.logs') }}?type=warnings"
-       class="text-decoration-none fw-bold x-small"
-       style="color:var(--nook-yellow);">View all →</a>
-  </div>
-  <div>
-    {% for row in top_warned %}
-    <div class="d-flex align-items-center gap-3 px-4 py-3"
-         style="border-bottom:1px solid #f0f4ec;">
-      <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
-      <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
-      <div class="d-flex align-items-center gap-2 flex-shrink-0">
-        <div style="height:6px;border-radius:3px;background:var(--nook-yellow);
-                    width:{{ [(row.warn_count / [top_warned[0].warn_count, 1]|max * 80)|int, 4]|max }}px;
-                    max-width:80px;"></div>
-        <span class="fw-black x-small" style="color:var(--nook-yellow);width:24px;text-align:right;">
-          {{ row.warn_count }}
-        </span>
+<!-- Top Action Leaderboards -->
+<div class="row g-4 mb-4">
+
+  <!-- Top Warned -->
+  {% if top_warned %}
+  <div class="col-12 col-lg-6">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-exclamation-triangle-fill me-2" style="color:var(--nook-yellow);"></i>Top Warned Users</span>
+        <a href="{{ url_for('dashboard.logs') }}?type=warnings&action_type=WARN"
+           class="text-decoration-none fw-bold x-small"
+           style="color:var(--nook-yellow);">View all →</a>
+      </div>
+      <div>
+        {% for row in top_warned %}
+        <div class="d-flex align-items-center gap-3 px-4 py-3"
+             style="border-bottom:1px solid #f0f4ec;">
+          <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
+          <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            <div style="height:6px;border-radius:3px;background:var(--nook-yellow);
+                        width:{{ [(row.warn_count / [top_warned[0].warn_count, 1]|max * 80)|int, 4]|max }}px;
+                        max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:var(--nook-yellow);width:24px;text-align:right;">
+              {{ row.warn_count }}
+            </span>
+          </div>
+        </div>
+        {% endfor %}
       </div>
     </div>
-    {% endfor %}
   </div>
+  {% endif %}
+
+  <!-- Top Kicked -->
+  {% if top_kicked %}
+  <div class="col-12 col-lg-6">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-person-x-fill me-2" style="color:#F1C40F;"></i>Top Kicked Users</span>
+        <a href="{{ url_for('dashboard.logs') }}?type=warnings&action_type=KICK"
+           class="text-decoration-none fw-bold x-small"
+           style="color:#F1C40F;">View all →</a>
+      </div>
+      <div>
+        {% for row in top_kicked %}
+        <div class="d-flex align-items-center gap-3 px-4 py-3"
+             style="border-bottom:1px solid #f0f4ec;">
+          <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
+          <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            <div style="height:6px;border-radius:3px;background:#F1C40F;
+                        width:{{ [(row.kick_count / [top_kicked[0].kick_count, 1]|max * 80)|int, 4]|max }}px;
+                        max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:#F1C40F;width:24px;text-align:right;">
+              {{ row.kick_count }}
+            </span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Top Banned -->
+  {% if top_banned %}
+  <div class="col-12 col-lg-6">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-slash-circle-fill me-2" style="color:#992D22;"></i>Top Banned Users</span>
+        <a href="{{ url_for('dashboard.logs') }}?type=warnings&action_type=BAN"
+           class="text-decoration-none fw-bold x-small"
+           style="color:#992D22;">View all →</a>
+      </div>
+      <div>
+        {% for row in top_banned %}
+        <div class="d-flex align-items-center gap-3 px-4 py-3"
+             style="border-bottom:1px solid #f0f4ec;">
+          <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
+          <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            <div style="height:6px;border-radius:3px;background:#992D22;
+                        width:{{ [(row.ban_count / [top_banned[0].ban_count, 1]|max * 80)|int, 4]|max }}px;
+                        max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:#992D22;width:24px;text-align:right;">
+              {{ row.ban_count }}
+            </span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Top Noted -->
+  {% if top_noted %}
+  <div class="col-12 col-lg-6">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-sticky-fill me-2" style="color:#5DADE2;"></i>Top Noted Users</span>
+        <a href="{{ url_for('dashboard.logs') }}?type=warnings&action_type=NOTE"
+           class="text-decoration-none fw-bold x-small"
+           style="color:#5DADE2;">View all →</a>
+      </div>
+      <div>
+        {% for row in top_noted %}
+        <div class="d-flex align-items-center gap-3 px-4 py-3"
+             style="border-bottom:1px solid #f0f4ec;">
+          <span class="x-small fw-bold" style="color:#ccc;width:18px;text-align:right;">{{ loop.index }}</span>
+          <span class="flex-grow-1 fw-bold" style="color:#444;font-size:.9rem;">{{ row.user_name }}</span>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            <div style="height:6px;border-radius:3px;background:#5DADE2;
+                        width:{{ [(row.note_count / [top_noted[0].note_count, 1]|max * 80)|int, 4]|max }}px;
+                        max-width:80px;"></div>
+            <span class="fw-black x-small" style="color:#5DADE2;width:24px;text-align:right;">
+              {{ row.note_count }}
+            </span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
 </div>
-{% endif %}
 
 <!-- Week-over-Week Momentum -->
 <div class="section-card mb-4">

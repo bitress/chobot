@@ -1193,30 +1193,45 @@ def analytics():
             "GROUP BY isl.cat",
             it_params,
         ).fetchall()
-        # Top warned users
-        if island_type_filter:
-            top_warned = [
-                dict(r) for r in db.execute(
-                    "SELECT w.user_id, COUNT(*) AS warn_count "
+        # Top users per action type (WARN, KICK, BAN, NOTE)
+        _VALID_COUNT_KEYS = {"warn_count", "kick_count", "ban_count", "note_count"}
+
+        def _top_by_action(action: str, count_key: str):
+            if count_key not in _VALID_COUNT_KEYS:
+                raise ValueError(f"Invalid count_key: {count_key!r}")
+            if island_type_filter:
+                rows = db.execute(
+                    f"SELECT w.user_id, COUNT(*) AS {count_key} "
                     "FROM warnings w "
                     "JOIN island_visits iv ON w.visit_id = iv.id "
-                    "WHERE iv.island_type = ? "
-                    "GROUP BY w.user_id "
-                    "ORDER BY warn_count DESC LIMIT 10",
-                    it_params,
+                    "WHERE w.user_id IS NOT NULL AND iv.island_type = ? AND UPPER(w.action_type) = ? "
+                    f"GROUP BY w.user_id ORDER BY {count_key} DESC LIMIT 10",
+                    (island_type_filter, action),
                 ).fetchall()
-            ]
-        else:
-            top_warned = [
-                dict(r) for r in db.execute(
-                    "SELECT user_id, COUNT(*) AS warn_count "
-                    "FROM warnings GROUP BY user_id "
-                    "ORDER BY warn_count DESC LIMIT 10"
+            else:
+                rows = db.execute(
+                    f"SELECT user_id, COUNT(*) AS {count_key} "
+                    "FROM warnings WHERE user_id IS NOT NULL AND UPPER(action_type) = ? "
+                    f"GROUP BY user_id ORDER BY {count_key} DESC LIMIT 10",
+                    (action,),
                 ).fetchall()
-            ]
-        warned_name_map = _resolve_discord_usernames(r["user_id"] for r in top_warned)
-        for row in top_warned:
-            row["user_name"] = warned_name_map.get(str(row["user_id"]), str(row["user_id"]))
+            return [dict(r) for r in rows]
+
+        top_warned  = _top_by_action("WARN",    "warn_count")
+        top_kicked  = _top_by_action("KICK",    "kick_count")
+        top_banned  = _top_by_action("BAN",     "ban_count")
+        top_noted   = _top_by_action("NOTE",    "note_count")
+
+        all_action_user_ids = (
+            [r["user_id"] for r in top_warned]
+            + [r["user_id"] for r in top_kicked]
+            + [r["user_id"] for r in top_banned]
+            + [r["user_id"] for r in top_noted]
+        )
+        action_name_map = _resolve_discord_usernames(all_action_user_ids)
+        for collection in (top_warned, top_kicked, top_banned, top_noted):
+            for row in collection:
+                row["user_name"] = action_name_map.get(str(row["user_id"]), str(row["user_id"]))
         # Quick summary stats
         visits_today = db.execute(
             "SELECT COUNT(*) FROM island_visits "
@@ -1332,6 +1347,9 @@ def analytics():
         auth_raw = []
         cat_raw = []
         top_warned = []
+        top_kicked = []
+        top_banned = []
+        top_noted = []
         visits_today = visits_week = warnings_week = 0
         dow_raw = []
         new_7d = total_unique_7d = new_30d = total_unique_30d = 0
@@ -1377,6 +1395,9 @@ def analytics():
         auth_stats=auth_stats,
         cat_stats=cat_stats,
         top_warned=top_warned,
+        top_kicked=top_kicked,
+        top_banned=top_banned,
+        top_noted=top_noted,
         visits_today=visits_today,
         visits_week=visits_week,
         warnings_week=warnings_week,
