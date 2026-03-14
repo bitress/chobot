@@ -287,6 +287,9 @@ def home():
 @app.route('/api/health')
 def health():
     """Health check endpoint for monitoring"""
+    if data_manager is None:
+        return jsonify({"status": "unavailable", "error": "Data manager not initialised"}), 503
+
     with data_manager.lock:
         cache_count = len(data_manager.cache)
         last_update = data_manager.last_update
@@ -327,6 +330,9 @@ def find_item():
     if not query:
         return f"Hey {user}, type !find <item name> to search."
 
+    if data_manager is None:
+        return f"Hey {user}, the search service is not available right now. Please try again later."
+
     with data_manager.lock:
         cache = data_manager.cache
 
@@ -354,6 +360,9 @@ def api_find_item():
 
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !find <item name> to search."})
+
+    if data_manager is None:
+        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
 
     with data_manager.lock:
         cache = data_manager.cache
@@ -401,6 +410,9 @@ def find_villager():
     if not query:
         return f"Hey {user}, type !villager <n> to search."
 
+    if data_manager is None:
+        return f"Hey {user}, the search service is not available right now. Please try again later."
+
     villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
     found_locs = villager_map.get(query)
 
@@ -426,6 +438,9 @@ def api_find_villager():
 
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !villager <n> to search."})
+
+    if data_manager is None:
+        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
 
     villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
     found_locs = villager_map.get(query)
@@ -463,6 +478,9 @@ def api_find_villager():
 @app.route('/api/villagers/list')
 def api_list_villagers_by_island():
     """List all villagers grouped by island"""
+    if data_manager is None:
+        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
+
     villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
     island_manifest = {}
 
@@ -615,6 +633,8 @@ def get_single_post(post_id):
 @app.route('/status')
 def status():
     """Get bot status"""
+    if data_manager is None:
+        return "Service unavailable — data manager not initialised.", 503
     with data_manager.lock:
         count = len(data_manager.cache)
         last_up = data_manager.last_update.strftime("%H:%M:%S") if data_manager.last_update else "Loading..."
@@ -624,6 +644,9 @@ def status():
 @app.route('/api/refresh', methods=['POST'])
 def api_refresh():
     """Manually trigger a cache refresh from Google Sheets"""
+    if data_manager is None:
+        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
+
     if not _refresh_lock.acquire(blocking=False):
         return jsonify({"status": "refresh already in progress"}), 429
 

@@ -713,7 +713,7 @@ def index():
     finally:
         db.close()
 
-        recent = [
+    recent = [
         {
             "ign":         r["ign"],
             "destination": r["destination"],
