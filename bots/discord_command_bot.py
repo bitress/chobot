@@ -4,6 +4,7 @@ Handles Discord commands for item and villager search with rich embeds
 """
 
 import asyncio
+import json
 import os
 import sqlite3
 import subprocess
@@ -72,6 +73,30 @@ def _upsert_bot_status(island_id: str, island_name: str, is_online: bool) -> Non
             conn.close()
     except Exception as exc:
         logger.error(f"[DISCORD] Failed to write island_bot_status for {island_name}: {exc}")
+
+
+def _upsert_visitor_snapshot(island_name: str, visitor_names: list) -> None:
+    """Persist the latest visitor list for an island to the DB.
+
+    Writes to the ``island_visitor_snapshot`` table so that the REST API can
+    serve visitor names even when Visitors.txt only contains a plain count.
+    """
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        try:
+            conn.execute(
+                """INSERT INTO island_visitor_snapshot (island_id, visitor_list, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(island_id) DO UPDATE SET
+                       visitor_list=excluded.visitor_list,
+                       updated_at=excluded.updated_at""",
+                (island_name.lower(), json.dumps(visitor_names), datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to write island_visitor_snapshot for {island_name}: {exc}")
 
 
 def _init_command_claims_db() -> None:
@@ -1132,6 +1157,8 @@ class DiscordCommandCog(commands.Cog):
                     visitor_lines.append(m.group(1).strip())
 
             await island_msg.delete()
+            filled_visitors = [v for v in visitor_lines if v.lower() != AVAILABLE_SLOT_TEXT]
+            _upsert_visitor_snapshot(island_name, filled_visitors)
             await ctx.reply(embed=self._build_visitors_embed(ctx, island_name, visitor_lines))
             logger.info(f"[DISCORD] Intercepted and redesigned !visitors response for {ctx.channel.name}")
         except asyncio.TimeoutError:

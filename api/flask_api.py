@@ -8,6 +8,7 @@ Combines all API endpoints:
 
 import os
 import re
+import json
 import time
 import logging
 import sqlite3
@@ -196,12 +197,28 @@ def process_island(entry, island_type):
     }
 
 
-def _build_island_response(entry, island_type, db_island, discord_bot_online=None):
+def _apply_visitor_snapshot_fallback(visitor_count, visitor_list, island_name, visitor_snapshots):
+    """Return visitor_list, falling back to the DB snapshot when the file only has a count.
+
+    When ``visitor_count > 0`` but the file-parsed list is empty (i.e. the C#
+    bot wrote just a plain number to Visitors.txt), use the most recent visitor
+    names saved by the Discord bot's ``!visitors`` intercept.
+    """
+    if visitor_count > 0 and not visitor_list and visitor_snapshots:
+        return visitor_snapshots.get(island_name.lower(), [])
+    return visitor_list
+
+
+def _build_island_response(entry, island_type, db_island, discord_bot_online=None, visitor_snapshots=None):
     """Build the enriched island response merging live filesystem data with DB metadata."""
     name = entry.name.upper()
 
     raw_dodo = get_file_content(entry.path, "Dodo.txt")
     visitors, visitor_list = _parse_visitor_list(get_file_content(entry.path, "Visitors.txt"))
+
+    # When the file only has a plain count, fall back to the most recent
+    # snapshot saved by the Discord bot's !visitors intercept.
+    visitor_list = _apply_visitor_snapshot_fallback(visitors, visitor_list, name, visitor_snapshots)
 
     # Determine live status and dodo_code from filesystem
     if island_type == "VIP":
@@ -506,6 +523,7 @@ def get_islands():
     # Load island metadata from DB, keyed by uppercase name
     db_map = {}
     discord_status = {}
+    visitor_snapshots = {}
     db = get_db()
     try:
         rows = db.execute(
@@ -520,6 +538,13 @@ def get_islands():
         bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
         for r in bot_rows:
             discord_status[r["island_id"]] = bool(r["is_online"])
+        # Load visitor snapshots saved by the Discord bot's !visitors intercept
+        snap_rows = db.execute("SELECT island_id, visitor_list FROM island_visitor_snapshot").fetchall()
+        for r in snap_rows:
+            try:
+                visitor_snapshots[r["island_id"]] = json.loads(r["visitor_list"])
+            except (ValueError, TypeError):
+                visitor_snapshots[r["island_id"]] = []
     except sqlite3.Error:
         logger.exception("Failed to load island metadata from DB for /api/islands")
     finally:
@@ -535,6 +560,7 @@ def get_islands():
                     results.append(_build_island_response(
                         entry, "Free", db_map.get(name, {}),
                         discord_status.get(name.lower()),
+                        visitor_snapshots,
                     ))
 
     if os.path.exists(Config.DIR_VIP):
@@ -545,6 +571,7 @@ def get_islands():
                     results.append(_build_island_response(
                         entry, "VIP", db_map.get(name, {}),
                         discord_status.get(name.lower()),
+                        visitor_snapshots,
                     ))
 
     results.sort(key=lambda x: x['name'])
@@ -570,19 +597,28 @@ def get_island_visitors(name):
     """Get the current visitor list for a single island by name.
 
     Reads the live Visitors.txt file written by the C# island bot and returns
-    the parsed list of in-game names currently on the island.
+    the parsed list of in-game names currently on the island.  When the file
+    only contains a plain visitor count (no names), falls back to the most
+    recent snapshot persisted by the Discord bot's !visitors intercept.
 
     Returns 404 if no island directory with that name is found.
     """
     target = name.upper()
 
-    # Load bot online status for all islands (same pattern as get_islands)
+    # Load bot online status and visitor snapshots in one DB pass
     discord_status = {}
+    visitor_snapshots = {}
     db = get_db()
     try:
         bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
         for r in bot_rows:
             discord_status[r["island_id"]] = bool(r["is_online"])
+        snap_rows = db.execute("SELECT island_id, visitor_list FROM island_visitor_snapshot").fetchall()
+        for r in snap_rows:
+            try:
+                visitor_snapshots[r["island_id"]] = json.loads(r["visitor_list"])
+            except (ValueError, TypeError):
+                visitor_snapshots[r["island_id"]] = []
     except sqlite3.Error:
         pass
     finally:
@@ -599,6 +635,12 @@ def get_island_visitors(name):
 
                     raw_content = get_file_content(entry.path, "Visitors.txt")
                     visitor_count, visitor_list = _parse_visitor_list(raw_content)
+
+                    # When the file only has a plain count, fall back to the
+                    # most recent snapshot saved by the Discord bot intercept.
+                    visitor_list = _apply_visitor_snapshot_fallback(
+                        visitor_count, visitor_list, target, visitor_snapshots
+                    )
 
                     # Hide live data when the Discord bot is offline
                     if not discord_bot_online:
