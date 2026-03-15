@@ -200,6 +200,15 @@ def init_dashboard_db():
             )
         """)
 
+        # Live visitor list snapshot, written by the Discord bot's !visitors intercept
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS island_visitor_snapshot (
+                island_id   TEXT PRIMARY KEY,
+                visitor_list TEXT NOT NULL DEFAULT '[]',
+                updated_at  TEXT NOT NULL
+            )
+        """)
+
         # Legacy table kept for backward compatibility
         conn.execute("""
             CREATE TABLE IF NOT EXISTS island_metadata (
