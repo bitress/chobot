@@ -189,12 +189,14 @@ def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str
 # --- REFACTORED UI COMPONENTS ---
 
 class TargetSelect(discord.ui.UserSelect):
-    def __init__(self, parent_view):
+    def __init__(self, parent_view, default_member=None):
+        defaults = [default_member] if default_member is not None else []
         super().__init__(
             placeholder="1. Select the Target User...",
             min_values=1,
             max_values=1,
-            row=0
+            row=0,
+            default_values=defaults
         )
         self.parent_view = parent_view
 
@@ -302,7 +304,7 @@ class PunishmentBuilderView(discord.ui.View):
         """Clear and re-add components based on current state."""
         self.clear_items()
 
-        self.add_item(TargetSelect(self))
+        self.add_item(TargetSelect(self, default_member=self.selected_member))
 
         if self.action_type == "WARN":
             self.add_item(DurationSelect(self, self.selected_duration))
