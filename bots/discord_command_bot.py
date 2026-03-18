@@ -176,9 +176,14 @@ class SuggestionSelect(discord.ui.Select):
             embed = self.cog.create_found_embed(interaction, display_name, found_locations, is_villager, nooki_data)
 
             if embed:
+                send_embeds = [embed]
+                if is_villager and nooki_data:
+                    house_embed = self.cog.create_villager_house_embed(interaction, display_name, nooki_data)
+                    if house_embed:
+                        send_embeds.append(house_embed)
                 await interaction.response.edit_message(
                     content=f"Hey <@{interaction.user.id}>, look what I found!",
-                    embed=embed,
+                    embeds=send_embeds,
                     view=None
                 )
             else:
@@ -434,25 +439,58 @@ class DiscordCommandCog(commands.Cog):
 
         # Apply Nookipedia Data if available
         if is_villager and nooki_data:
+            villager_id = nooki_data.get("id", "")
             personality = nooki_data.get("personality", "Unknown")
             species = nooki_data.get("species", "Unknown")
             phrase = nooki_data.get("phrase", "None")
-            
+            gender = nooki_data.get("gender", "Unknown")
+            birthday_month = nooki_data.get("birthday_month", "")
+            birthday_day = nooki_data.get("birthday_day", "")
+            birthday = f"{birthday_month} {birthday_day}".strip() or "Unknown"
+            sign = nooki_data.get("sign", "Unknown")
+            quote = nooki_data.get("quote", "")
+
             # NH Details
             nh = nooki_data.get("nh_details", {}) or {}
             hobby = nh.get("hobby", "Unknown")
             colors = ", ".join(nh.get("fav_colors", [])) or "Unknown"
-            
+
             embed.set_thumbnail(url=nooki_data.get("image_url", ""))
-            if nh.get("house_img"):
-                embed.set_image(url=nh.get("house_img"))
-            
-            embed.add_field(name=f"{Config.STAR_PINK} Details", 
-                            value=f"**Species:** {species}\n**Personality:** {personality}\n**Catchphrase:** \"{phrase}\"", 
-                            inline=True)
-            embed.add_field(name=f"{Config.STAR_PINK} Faves", 
-                            value=f"**Hobby:** {hobby}\n**Colors:** {colors}", 
-                            inline=True)
+
+            if quote:
+                embed.description = f"*\"{quote}\"*"
+
+            # Info field
+            info_parts = [f"**Species:** {species}", f"**Gender:** {gender}"]
+            if villager_id:
+                info_parts.append(f"**Code:** `{villager_id}`")
+            embed.add_field(
+                name=f"{Config.STAR_PINK} Info",
+                value="\n".join(info_parts),
+                inline=True
+            )
+
+            # Personality field
+            embed.add_field(
+                name=f"{Config.STAR_PINK} Personality",
+                value=f"**Type:** {personality}\n**Catchphrase:** \"{phrase}\"\n**Hobby:** {hobby}",
+                inline=True
+            )
+
+            # Birthday / Details field
+            detail_parts = []
+            if birthday != "Unknown":
+                detail_parts.append(f"**Birthday:** {birthday}")
+            if sign and sign != "Unknown":
+                detail_parts.append(f"**Sign:** {sign}")
+            if colors and colors != "Unknown":
+                detail_parts.append(f"**Colors:** {colors}")
+            if detail_parts:
+                embed.add_field(
+                    name=f"{Config.STAR_PINK} Details",
+                    value="\n".join(detail_parts),
+                    inline=True
+                )
 
         elif search_key in self.data_manager.image_cache:
             embed.set_thumbnail(url=self.data_manager.image_cache[search_key])
@@ -483,6 +521,65 @@ class DiscordCommandCog(commands.Cog):
 
         pfp_url = user.avatar.url if user.avatar else Config.DEFAULT_PFP
         embed.set_image(url=Config.FOOTER_LINE)
+        embed.set_footer(text=f"Requested by {user.display_name}", icon_url=pfp_url)
+
+        return embed
+
+    def create_villager_house_embed(self, ctx_or_interaction, villager_name, nooki_data):
+        """Create a house information embed for a villager"""
+        if not nooki_data:
+            return None
+
+        nh = nooki_data.get("nh_details", {}) or {}
+
+        flooring = nh.get("house_flooring") or "Unknown"
+        wallpaper = nh.get("house_wallpaper") or "Unknown"
+        music = nh.get("house_music") or "Unknown"
+        interior_url = nh.get("house_interior_url") or nh.get("house_img") or ""
+        exterior_url = nh.get("house_exterior_url") or ""
+
+        has_house_data = (
+            flooring != "Unknown"
+            or wallpaper != "Unknown"
+            or music != "Unknown"
+            or interior_url
+            or exterior_url
+        )
+        if not has_house_data:
+            return None
+
+        clean_name = villager_name.title()
+        user = getattr(ctx_or_interaction, "author", getattr(ctx_or_interaction, "user", None))
+
+        embed = discord.Embed(
+            title=f"{Config.EMOJI_SEARCH} {clean_name}'s House Information",
+            color=discord.Color.teal(),
+            timestamp=datetime.now()
+        )
+
+        embed.add_field(name=f"{Config.STAR_PINK} Flooring", value=flooring, inline=True)
+        embed.add_field(name=f"{Config.STAR_PINK} Wallpaper", value=wallpaper, inline=True)
+        embed.add_field(name=f"{Config.STAR_PINK} Music", value=music, inline=True)
+
+        links = []
+        if interior_url:
+            links.append(f"[Interior]({interior_url})")
+        if exterior_url:
+            links.append(f"[Exterior]({exterior_url})")
+        if links:
+            embed.add_field(
+                name=f"{Config.STAR_PINK} Image Previews",
+                value=" | ".join(links),
+                inline=False
+            )
+
+        if exterior_url:
+            embed.set_thumbnail(url=exterior_url)
+
+        if interior_url:
+            embed.set_image(url=interior_url)
+
+        pfp_url = user.avatar.url if user.avatar else Config.DEFAULT_PFP
         embed.set_footer(text=f"Requested by {user.display_name}", icon_url=pfp_url)
 
         return embed
@@ -604,7 +701,9 @@ class DiscordCommandCog(commands.Cog):
             embed = self.create_found_embed(ctx, search_term, found_locations, is_villager=True, nooki_data=nooki_data)
 
             if embed:
-                await ctx.reply(content=f"Hey <@{ctx.author.id}>, look who I found!", embed=embed)
+                house_embed = self.create_villager_house_embed(ctx, search_term, nooki_data) if nooki_data else None
+                send_embeds = [embed] + ([house_embed] if house_embed else [])
+                await ctx.reply(content=f"Hey <@{ctx.author.id}>, look who I found!", embeds=send_embeds)
                 logger.info(f"[DISCORD] Villager Hit: {search_term} -> Found")
             else:
                 await ctx.reply(f"**{search_term.title()}** is not currently on any Sub Island.")
