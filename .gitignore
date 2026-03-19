@@ -7,4 +7,4 @@ __pycache__/
 chobot.db
 .idea
 cache_dump.json
-chobot.db
+chobot.pid

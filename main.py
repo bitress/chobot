@@ -24,6 +24,7 @@ Usage:
 
 import os
 import sys
+import time
 import asyncio
 import threading
 import logging
@@ -75,6 +76,57 @@ logger = logging.getLogger("Main")
 # SHARED STOP FLAG
 # ============================================================================
 STOP_EVENT = threading.Event()
+
+# ============================================================================
+# PID LOCK FILE  (prevents duplicate instances after !update)
+# ============================================================================
+PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chobot.pid")
+# How long (seconds) to wait for the previous instance to clean up after SIGTERM.
+_SIGTERM_GRACE_SECONDS = 2
+
+
+def acquire_pid_lock() -> None:
+    """Write the current PID to the lock file, killing any prior instance first."""
+    current_pid = os.getpid()
+
+    if os.path.exists(PID_FILE):
+        try:
+            with open(PID_FILE, "r") as f:
+                old_pid = int(f.read().strip())
+        except (ValueError, OSError):
+            old_pid = None
+
+        if old_pid and old_pid != current_pid:
+            try:
+                os.kill(old_pid, signal.SIGTERM)
+                logger.info(f"[MAIN] Sent SIGTERM to previous instance (PID {old_pid}).")
+                # Give the old process a moment to clean up before we proceed.
+                time.sleep(_SIGTERM_GRACE_SECONDS)
+            except ProcessLookupError:
+                pass  # Already gone – that's fine.
+            except OSError as exc:
+                logger.warning(f"[MAIN] Could not terminate previous instance: {exc}")
+
+    try:
+        with open(PID_FILE, "w") as f:
+            f.write(str(current_pid))
+        logger.info(f"[MAIN] PID lock acquired (PID {current_pid} → {PID_FILE}).")
+    except OSError as exc:
+        logger.warning(f"[MAIN] Could not write PID file: {exc}")
+
+
+def release_pid_lock() -> None:
+    """Remove the PID lock file when shutting down cleanly."""
+    try:
+        if os.path.exists(PID_FILE):
+            with open(PID_FILE, "r") as f:
+                stored_pid = int(f.read().strip())
+            # Only remove the file if it still refers to *this* process.
+            if stored_pid == os.getpid():
+                os.remove(PID_FILE)
+                logger.info("[MAIN] PID lock released.")
+    except (OSError, ValueError):
+        pass
 
 
 # ============================================================================
@@ -274,6 +326,9 @@ def main():
     logger.info(f"  Services: {', '.join(sorted(services))}")
     logger.info("=" * 70)
 
+    # ---- Single-instance lock (kill prior instance if still alive) ---------
+    acquire_pid_lock()
+
     # ---- Validate config ---------------------------------------------------
     try:
         Config.validate()
@@ -384,7 +439,13 @@ def main():
     # Discord, which caused duplicate responses on every subsequent restart.
     if restart_requested:
         logger.info("[MAIN] Restarting process for OTA update...")
+        # Release the PID lock so the exec'd process (which re-acquires it
+        # immediately) doesn't see our own PID and try to kill itself.
+        release_pid_lock()
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    # Clean shutdown (no restart) — remove the PID lock file.
+    release_pid_lock()
 
 
 if __name__ == "__main__":

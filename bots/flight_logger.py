@@ -4,6 +4,7 @@ Tracks island visitor arrivals, alerts on unknown travelers, and handles moderat
 """
 
 import re
+import random
 import logging
 import unicodedata
 import datetime
@@ -1407,7 +1408,14 @@ class FlightLoggerCog(commands.Cog):
         
         now = datetime.datetime.now()
         timestamp = now.strftime("%Y-%m-%d %I:%M:%S %p").lower()
-        test_message_content = f"[{timestamp}] 🛬 ChoBot from Debug Island is joining Aruga."
+
+        # Pick a random sub-island as the destination; fall back to a placeholder if none loaded yet
+        if self.island_map:
+            random_dest = random.choice(tuple(self.island_map.keys())).title()
+        else:
+            random_dest = "Aruga"
+
+        test_message_content = f"[{timestamp}] 🛬 ChoBot from Treasure Island is joining {random_dest}."
         
         # Get channels
         listen_channel = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
@@ -1507,8 +1515,9 @@ class FlightLoggerCog(commands.Cog):
             value=f"Check {log_channel.mention if log_channel else 'the log channel'} to verify the bot logged the test flight (should show 'UNKNOWN TRAVELER' alert for DebugUser).",
             inline=False
         )
+        embed.set_footer(text="🛠️ DEBUG ONLY — This message will be automatically deleted in 10 minutes.")
         
-        await ctx.send(embed=embed)
+        await ctx.send(embed=embed, delete_after=600)
 
     @commands.hybrid_command(name="unwarn", aliases=["removewarn"])
     @app_commands.describe(user="The user to unwarn", reason="Reason for removing the warning (optional)")
