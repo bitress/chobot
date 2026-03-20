@@ -1949,13 +1949,12 @@ class DiscordCommandBot(commands.Bot):
         if self.user in message.mentions:
             # Strip all @mentions to extract the bare question
             question = MENTION_PATTERN.sub('', message.content).strip()
-            if question:
-                conv_key = _discord_conv_key(message)
-                async with message.channel.typing():
-                    answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY, conversation_key=conv_key)
-                await message.reply(f"🤖: {answer}")
-                logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
-                return
+            conv_key = _discord_conv_key(message)
+            async with message.channel.typing():
+                answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY, conversation_key=conv_key)
+            await message.reply(f"🤖: {answer}")
+            logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
+            return
 
         # Handle a plain reply to one of the bot's AI responses (no prefix/mention needed).
         # This lets users continue the conversation naturally by just replying.

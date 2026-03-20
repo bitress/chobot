@@ -348,6 +348,45 @@ Check chopaeng.com for the latest info.
 """
 
 # ---------------------------------------------------------------------------
+# Greeting detection helpers
+# ---------------------------------------------------------------------------
+
+_GREETINGS = {
+    'hi', 'hello', 'hey', 'hiya', 'heya', 'sup', 'yo', 'howdy',
+    'good morning', 'good afternoon', 'good evening', 'good night',
+    'greetings', 'wassup', 'whats up', "what's up", 'helo', 'ello',
+    'hoi', 'konnichiwa', 'mabuhay',
+}
+
+# Filler words that may follow a greeting and are still just a greeting.
+_GREETING_FILLERS = {'there', 'everyone', 'all', 'guys', 'folks', 'friends', 'po', 'ate', 'kuya'}
+
+_GREETING_RESPONSE = (
+    "Hello! Welcome to the Chopaeng community! 🌟 "
+    "How can I help you today? Are you looking for a specific item, need a Dodo code, "
+    "or have a question about the islands?"
+)
+
+
+def _is_greeting(text: str) -> bool:
+    """Return True if *text* is a greeting with no substantive question."""
+    t = text.lower().strip().rstrip('!.,?')
+    for g in _GREETINGS:
+        if t == g or t.startswith(g + ' ') or t.startswith(g + '!'):
+            # Check if the remainder is only emoji/punctuation or known filler words.
+            remainder = t[len(g):].strip().strip('!.,?').strip()
+            if not remainder:
+                return True
+            # All-emoji/symbol remainder
+            if all(not c.isalpha() for c in remainder):
+                return True
+            # Remainder is one or more known filler words
+            if all(w in _GREETING_FILLERS for w in remainder.split()):
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Keyword-based fallback (no API key needed)
 # ---------------------------------------------------------------------------
 
@@ -487,9 +526,16 @@ async def get_ai_answer(
     Otherwise falls back to the built-in keyword search.
     """
     if not question or not question.strip():
-        return "Please ask me something! e.g. `!ask how do I get items?`"
+        return _GREETING_RESPONSE
 
     q = question.strip()
+
+    # Respond to greetings warmly without hitting the KB or API.
+    if _is_greeting(q):
+        if conversation_key:
+            conversation_store.add(conversation_key, q, _GREETING_RESPONSE)
+        return _GREETING_RESPONSE
+
     history = conversation_store.get(conversation_key) if conversation_key else []
 
     if gemini_api_key:
@@ -532,25 +578,45 @@ async def _gemini_answer(
         )
 
     prompt = (
-        "You are Chobot, the friendly AI assistant for the Chopaeng Animal Crossing: "
-        "New Horizons community. You were built by bitress.\n\n"
-        "INSTRUCTIONS:\n"
-        "1. Use the Chopaeng Knowledge Base below as your PRIMARY source of truth "
-        "for community-specific topics (rules, islands, commands, Chopaeng info).\n"
-        "2. For general Animal Crossing: New Horizons questions (gameplay tips, "
-        "villager personalities, crafting, events, game mechanics, strategies), "
-        "use your general knowledge to give helpful answers. You are not limited "
-        "to the knowledge base for general ACNH topics.\n"
-        "3. Think step-by-step when the question is complex. Reason about what "
-        "the user actually needs, not just what keywords match.\n"
-        "4. If a user seems confused or asks a vague question, ask a clarifying "
-        "question or offer the most likely answer with a suggestion to refine.\n"
-        "5. Reply in plain text (no markdown formatting, no embeds).\n"
-        "6. Keep answers concise (2-4 sentences) but complete. Prioritize being "
-        "helpful over being brief.\n"
-        "7. Be warm, friendly, and encouraging — match the community's positive vibe.\n"
-        "8. If you truly do not know, say so and suggest where to find help "
-        "(e.g. ask a moderator, check pinned messages, or visit chopaeng.com).\n\n"
+        "# ROLE\n"
+        "You are the Chopaeng AI, the official chat support assistant for the Chopaeng "
+        "Animal Crossing: New Horizons (ACNH) community. You operate within Discord and "
+        "Twitch chat. Your tone should be warm, inclusive, and helpful, mirroring the "
+        '"choPaeng family" vibe.\n\n'
+        "# CORE DIRECTIVES\n"
+        "1. Be Conversational: If a user greets you (e.g., 'hi', 'hello'), greet them "
+        "back and ask how you can help them with the islands, items, or bots today.\n"
+        "2. Be Concise: You are operating in a chat environment. Keep answers brief, "
+        "direct, and under 3-4 sentences whenever possible.\n"
+        "3. Answer Specifically: Only provide the information the user asked for. If they "
+        "ask how to get a Dodo code, explain the `!senddodo` command. DO NOT dump the "
+        'entire command list unless explicitly asked for "all commands."\n'
+        "4. Clarify Vague Requests: If a user says 'help me', do not guess their problem. "
+        "Ask them to clarify: \"I'd love to help! What do you need assistance with? "
+        "(e.g., finding an item, getting a dodo code, subscriber perks?)\"\n"
+        "5. Format for Readability: Use backticks for commands (like `!senddodo` or "
+        "`!find <item>`). Use short bullet points if listing more than two things. "
+        "Avoid raw Markdown tables unless absolutely necessary, as they render poorly "
+        "on mobile devices.\n"
+        "6. Be warm, friendly, and encouraging — match the community's positive vibe.\n"
+        "7. If you truly do not know, say so and suggest: "
+        "'I don't have the answer to that right now! Feel free to DM an Admin or "
+        "Moderator on the server for help.'\n\n"
+        "# CONTEXT USAGE\n"
+        "Rely strictly on the provided Chopaeng Knowledge Base for community-specific "
+        "topics (rules, islands, commands, Chopaeng info). For general ACNH gameplay "
+        "questions, use your general knowledge. Do not hallucinate ACNH advice outside "
+        "the scope of the knowledge base.\n\n"
+        "# EXAMPLES\n"
+        "User: hi\n"
+        "AI: Hello! Welcome to the Chopaeng community. How can I help you today? "
+        "Are you looking for a specific item, or do you need help visiting an island?\n\n"
+        "User: help me\n"
+        "AI: I'm here to help! What are you having trouble with? Let me know if you need "
+        "help finding items, understanding the rules, or getting a Dodo code.\n\n"
+        "User: how to get dodo code\n"
+        "AI: To get a Dodo code, go to the specific island's channel in our Discord "
+        "server and type `!senddodo` or `!sd`. The bot will DM the code to you!\n\n"
         f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"
         f"{conversation_context}"
         f"\n### Current Question ###\n{question}"
