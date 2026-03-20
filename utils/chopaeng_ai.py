@@ -75,8 +75,8 @@ New Horizons (ACNH) content creator and Twitch streamer based in the Philippines
 He hosts 24/7 treasure islands where community members collect items and meet
 villagers. ACNH is a life-simulation game by Nintendo for the Nintendo Switch
 where players manage an island, collect furniture and clothing, invite animal
-villagers, and visit other players' islands. The community is called the
-"choPaeng family" — Filipino and international ACNH fans.
+villagers, and visit other players' islands. The community (the "choPaeng
+family") includes Filipino and international ACNH fans.
 
 ## Official Links
 | Platform | URL |
@@ -92,7 +92,7 @@ villagers, and visit other players' islands. The community is called the
 ## Chobot
 Chobot is the custom bot built by bitress (open-source at github.com/bitress/chobot).
 It runs on both Discord and Twitch simultaneously. It syncs with a Google Sheets
-database every hour to keep item and villager locations current across all 45 islands.
+database every hour to keep item and villager locations current across all 47 islands.
 It includes the Flight Logger, which automatically logs sub-island visitors and
 alerts staff about unrecognized users (staff can Admit, Warn, Kick, or Ban).
 Slash commands (e.g. `/find`, `/villager`, `/ask`) work as alternatives to
@@ -124,10 +124,10 @@ prefix commands in Discord.
 | `!refresh` | Refresh item cache (Admin only) | Anywhere |
 
 ## Islands Overview
-There are 45 islands total: 18 sub (subscriber/VIP) islands and 27 free islands.
+There are 47 islands total: 20 sub (subscriber/VIP) islands and 27 free islands.
 All island names are Filipino/Tagalog words with meaningful translations.
 
-### Sub Islands (18 — requires subscription or VIP role)
+### Sub Islands (20 — requires subscription or VIP role)
 | Island | Meaning |
 |--------|---------|
 | Adhika | more/extra |
@@ -187,7 +187,7 @@ availability.
 
 ## Subscriber / VIP Perks
 Subscribe via Patreon (patreon.com/cw/chopaeng/membership) to unlock:
-- Unlimited access to the 18 sub islands whenever they are open.
+- Unlimited access to the 20 sub islands whenever they are open.
 - Priority queue when islands are busy.
 - Item/villager requests — ask for specific stock on a sub island.
 - Exclusive stock: rarer items, full DIY sets, curated villager selections.
@@ -310,7 +310,7 @@ Use `!gt` to check island time, then refer to these schedules:
 Check a villager's personality: `ac!lookup villager <name>` in #villager-check.
 
 ## Support & Donations
-Donations fund server hosting (45 islands), stream upgrades, and giveaways.
+Donations fund server hosting (47 islands), stream upgrades, and giveaways.
 Ways to support: subscribe on Twitch, donate via chopaeng.com, or cheer with
 Twitch Bits.
 
@@ -379,8 +379,9 @@ def _parse_kb() -> list[tuple[str, str]]:
                 sections.append((current_heading, ' '.join(current_lines)))
                 current_lines = []
             current_heading = stripped.lstrip('#').strip()
-        elif stripped and not stripped.startswith('|--'):
+        elif stripped and not re.match(r'^[\|\-\s:]+$', stripped):
             # Include table rows (strip leading |), bullets, and prose.
+            # Skip table separator rows (e.g. |---|---|).
             clean = stripped.lstrip('|-').strip()
             if clean:
                 current_lines.append(clean)
