@@ -123,6 +123,13 @@ prefix commands in Discord.
 | `ac!lookup villager <name>` | Check villager personality | #villager-check |
 | `!refresh` | Refresh item cache (Admin only) | Anywhere |
 
+## Getting a Dodo Code (!senddodo)
+A Dodo code is a 5-character code used in ACNH to visit a Chopaeng island via Dodo Airlines.
+To get the Dodo code for an island, go to that island's channel in Discord and type `!senddodo`
+or `!sd`. The bot will DM the code directly to you. Keep the code private — do not share it
+with anyone, including friends or family. If an island is offline, `!senddodo` will tell you
+instead of sending a code.
+
 ## Islands Overview
 There are 47 islands total: 20 sub (subscriber/VIP) islands and 27 free islands.
 All island names are Filipino/Tagalog words with meaningful translations.
@@ -387,6 +394,28 @@ def _is_greeting(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Vague request detection
+# ---------------------------------------------------------------------------
+
+_VAGUE_REQUESTS = {
+    'help', 'help me', 'i need help', 'need help', 'can you help',
+    'can you help me', 'i need assistance', 'assist me', 'assistance',
+    'i have a question', 'question', 'support',
+}
+
+_VAGUE_RESPONSE = (
+    "I'm here to help! What are you having trouble with? "
+    "Let me know if you need help finding items, understanding the rules, or getting a Dodo code."
+)
+
+
+def _is_vague_request(text: str) -> bool:
+    """Return True if *text* is a vague help request with no specific topic."""
+    t = text.lower().strip().rstrip('!.,?')
+    return t in _VAGUE_REQUESTS
+
+
+# ---------------------------------------------------------------------------
 # Keyword-based fallback (no API key needed)
 # ---------------------------------------------------------------------------
 
@@ -440,9 +469,14 @@ def _wb_match(keyword: str, text: str) -> bool:
 
 
 def _trim_to_sentences(text: str, n: int = 3) -> str:
-    """Return at most *n* complete sentences from *text*."""
-    # Split on sentence-ending punctuation followed by whitespace or end-of-string.
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    """Return at most *n* complete sentences from *text*.
+
+    Splits on sentence-ending punctuation followed by whitespace, but skips
+    splits where the period is preceded by a digit (numbered list markers like
+    ``1. ``, ``2. ``).
+    """
+    # Use a 2-char lookbehind: char before '.' must be a non-digit letter.
+    sentences = re.split(r'(?<=[^\d\s][.!?])\s+', text.strip())
     trimmed = ' '.join(sentences[:n])
     return trimmed
 
@@ -535,6 +569,12 @@ async def get_ai_answer(
         if conversation_key:
             conversation_store.add(conversation_key, q, _GREETING_RESPONSE)
         return _GREETING_RESPONSE
+
+    # Respond to vague help requests with a clarifying question.
+    if _is_vague_request(q):
+        if conversation_key:
+            conversation_store.add(conversation_key, q, _VAGUE_RESPONSE)
+        return _VAGUE_RESPONSE
 
     history = conversation_store.get(conversation_key) if conversation_key else []
 
