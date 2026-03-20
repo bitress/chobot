@@ -860,6 +860,17 @@ class FlightLoggerCog(commands.Cog):
         row = await cursor.fetchone()
         return row[0] if row else None
 
+    async def _is_authorized_with_target(self, ign: str, hours: int = 24) -> bool:
+        """Return True if this IGN has a recent visit that was authorized AND has a linked target user."""
+        db = await self._get_db()
+        cutoff = int((discord.utils.utcnow() - datetime.timedelta(hours=hours)).timestamp())
+        cursor = await db.execute(
+            "SELECT 1 FROM island_visits WHERE ign = ? AND timestamp > ? AND authorized = 1 AND user_id IS NOT NULL LIMIT 1",
+            (ign, cutoff)
+        )
+        row = await cursor.fetchone()
+        return row is not None
+
     async def get_island_visits(self, user_id: int, guild_id: int, days: int = 30):
         """Get all island visits for a user within the specified number of days."""
         db = await self._get_db()
@@ -1181,6 +1192,12 @@ class FlightLoggerCog(commands.Cog):
                 return
             self._creating_alerts.add(ign_clean)
             try:
+                # If this IGN was already authorized and has a linked target within the last 24 hours,
+                # silently ignore the follow-up xlog — no new alert needed.
+                if await self._is_authorized_with_target(ign):
+                    logger.info(f"[FLIGHT] Ignoring xlog for {ign} — already authorized with a target.")
+                    return
+
                 visit_id = await self.record_island_visit(ign, island, destination, [], guild_id, alert_ts, island_type=island_type)
 
                 # Check if there is already a pending alert for this IGN to avoid flooding the channel
