@@ -231,6 +231,8 @@ class DiscordCommandCog(commands.Cog):
         self.auto_refresh_cache.start()
         # island_clean -> True (down) / False (up); None = not yet initialized
         self.island_down_states: dict[str, bool | None] = {}
+        # island_clean -> discord.Message of the sticky "island is down" embed
+        self.island_down_messages: dict[str, discord.Message] = {}
         self.island_monitor_loop.start()
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
@@ -1431,7 +1433,8 @@ class DiscordCommandCog(commands.Cog):
                 )
                 embed.set_image(url=ISLAND_DOWN_IMAGE_URL)
                 try:
-                    await channel.send(embed=embed)
+                    msg = await channel.send(embed=embed)
+                    self.island_down_messages[island_clean] = msg
                     logger.info(f"[DISCORD] Island monitor: {island} went OFFLINE")
                 except Exception as e:
                     logger.error(f"[DISCORD] Failed to send island-down embed for {island}: {e}")
@@ -1439,6 +1442,15 @@ class DiscordCommandCog(commands.Cog):
             elif is_online and was_down:
                 # Transition: offline → online
                 self.island_down_states[island_clean] = False
+                # Remove the sticky "island is down" embed
+                sticky_msg = self.island_down_messages.pop(island_clean, None)
+                if sticky_msg:
+                    try:
+                        await sticky_msg.delete()
+                    except discord.NotFound:
+                        pass  # Already deleted externally — nothing to do
+                    except Exception as e:
+                        logger.warning(f"[DISCORD] Could not delete sticky down embed for {island}: {e}")
                 embed = discord.Embed(
                     title="🏝️ Island is Back Up!",
                     description=f"**{island}** island is back online and ready to visit! 🎉",
