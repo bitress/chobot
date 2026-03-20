@@ -123,6 +123,13 @@ prefix commands in Discord.
 | `ac!lookup villager <name>` | Check villager personality | #villager-check |
 | `!refresh` | Refresh item cache (Admin only) | Anywhere |
 
+## Getting a Dodo Code (!senddodo)
+A Dodo code is a 5-character code used in ACNH to visit a Chopaeng island via Dodo Airlines.
+To get the Dodo code for an island, go to that island's channel in Discord and type `!senddodo`
+or `!sd`. The bot will DM the code directly to you. Keep the code private — do not share it
+with anyone, including friends or family. If an island is offline, `!senddodo` will tell you
+instead of sending a code.
+
 ## Islands Overview
 There are 47 islands total: 20 sub (subscriber/VIP) islands and 27 free islands.
 All island names are Filipino/Tagalog words with meaningful translations.
@@ -348,6 +355,67 @@ Check chopaeng.com for the latest info.
 """
 
 # ---------------------------------------------------------------------------
+# Greeting detection helpers
+# ---------------------------------------------------------------------------
+
+_GREETINGS = {
+    'hi', 'hello', 'hey', 'hiya', 'heya', 'sup', 'yo', 'howdy',
+    'good morning', 'good afternoon', 'good evening', 'good night',
+    'greetings', 'wassup', 'whats up', "what's up", 'helo', 'ello',
+    'hoi', 'konnichiwa', 'mabuhay',
+}
+
+# Filler words that may follow a greeting and are still just a greeting.
+_GREETING_FILLERS = {'there', 'everyone', 'all', 'guys', 'folks', 'friends', 'po', 'ate', 'kuya'}
+
+_GREETING_RESPONSE = (
+    "Hello! Welcome to the Chopaeng community! 🌟 "
+    "How can I help you today? Are you looking for a specific item, need a Dodo code, "
+    "or have a question about the islands?"
+)
+
+
+def _is_greeting(text: str) -> bool:
+    """Return True if *text* is a greeting with no substantive question."""
+    t = text.lower().strip().rstrip('!.,?')
+    for g in _GREETINGS:
+        if t == g or t.startswith(g + ' ') or t.startswith(g + '!'):
+            # Check if the remainder is only emoji/punctuation or known filler words.
+            remainder = t[len(g):].strip().strip('!.,?').strip()
+            if not remainder:
+                return True
+            # All-emoji/symbol remainder
+            if all(not c.isalpha() for c in remainder):
+                return True
+            # Remainder is one or more known filler words
+            if all(w in _GREETING_FILLERS for w in remainder.split()):
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Vague request detection
+# ---------------------------------------------------------------------------
+
+_VAGUE_REQUESTS = {
+    'help', 'help me', 'i need help', 'need help', 'can you help',
+    'can you help me', 'i need assistance', 'assist me', 'assistance',
+    'i have a question', 'question', 'support',
+}
+
+_VAGUE_RESPONSE = (
+    "I'm here to help! What are you having trouble with? "
+    "Let me know if you need help finding items, understanding the rules, or getting a Dodo code."
+)
+
+
+def _is_vague_request(text: str) -> bool:
+    """Return True if *text* is a vague help request with no specific topic."""
+    t = text.lower().strip().rstrip('!.,?')
+    return t in _VAGUE_REQUESTS
+
+
+# ---------------------------------------------------------------------------
 # Keyword-based fallback (no API key needed)
 # ---------------------------------------------------------------------------
 
@@ -401,9 +469,14 @@ def _wb_match(keyword: str, text: str) -> bool:
 
 
 def _trim_to_sentences(text: str, n: int = 3) -> str:
-    """Return at most *n* complete sentences from *text*."""
-    # Split on sentence-ending punctuation followed by whitespace or end-of-string.
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    """Return at most *n* complete sentences from *text*.
+
+    Splits on sentence-ending punctuation followed by whitespace, but skips
+    splits where the period is preceded by a digit (numbered list markers like
+    ``1. ``, ``2. ``).
+    """
+    # Use a 2-char lookbehind: char before '.' must be a non-digit letter.
+    sentences = re.split(r'(?<=[^\d\s][.!?])\s+', text.strip())
     trimmed = ' '.join(sentences[:n])
     return trimmed
 
@@ -487,9 +560,22 @@ async def get_ai_answer(
     Otherwise falls back to the built-in keyword search.
     """
     if not question or not question.strip():
-        return "Please ask me something! e.g. `!ask how do I get items?`"
+        return _GREETING_RESPONSE
 
     q = question.strip()
+
+    # Respond to greetings warmly without hitting the KB or API.
+    if _is_greeting(q):
+        if conversation_key:
+            conversation_store.add(conversation_key, q, _GREETING_RESPONSE)
+        return _GREETING_RESPONSE
+
+    # Respond to vague help requests with a clarifying question.
+    if _is_vague_request(q):
+        if conversation_key:
+            conversation_store.add(conversation_key, q, _VAGUE_RESPONSE)
+        return _VAGUE_RESPONSE
+
     history = conversation_store.get(conversation_key) if conversation_key else []
 
     if gemini_api_key:
@@ -532,25 +618,45 @@ async def _gemini_answer(
         )
 
     prompt = (
-        "You are Chobot, the friendly AI assistant for the Chopaeng Animal Crossing: "
-        "New Horizons community. You were built by bitress.\n\n"
-        "INSTRUCTIONS:\n"
-        "1. Use the Chopaeng Knowledge Base below as your PRIMARY source of truth "
-        "for community-specific topics (rules, islands, commands, Chopaeng info).\n"
-        "2. For general Animal Crossing: New Horizons questions (gameplay tips, "
-        "villager personalities, crafting, events, game mechanics, strategies), "
-        "use your general knowledge to give helpful answers. You are not limited "
-        "to the knowledge base for general ACNH topics.\n"
-        "3. Think step-by-step when the question is complex. Reason about what "
-        "the user actually needs, not just what keywords match.\n"
-        "4. If a user seems confused or asks a vague question, ask a clarifying "
-        "question or offer the most likely answer with a suggestion to refine.\n"
-        "5. Reply in plain text (no markdown formatting, no embeds).\n"
-        "6. Keep answers concise (2-4 sentences) but complete. Prioritize being "
-        "helpful over being brief.\n"
-        "7. Be warm, friendly, and encouraging — match the community's positive vibe.\n"
-        "8. If you truly do not know, say so and suggest where to find help "
-        "(e.g. ask a moderator, check pinned messages, or visit chopaeng.com).\n\n"
+        "# ROLE\n"
+        "You are the Chopaeng AI, the official chat support assistant for the Chopaeng "
+        "Animal Crossing: New Horizons (ACNH) community. You operate within Discord and "
+        "Twitch chat. Your tone should be warm, inclusive, and helpful, mirroring the "
+        '"choPaeng family" vibe.\n\n'
+        "# CORE DIRECTIVES\n"
+        "1. Be Conversational: If a user greets you (e.g., 'hi', 'hello'), greet them "
+        "back and ask how you can help them with the islands, items, or bots today.\n"
+        "2. Be Concise: You are operating in a chat environment. Keep answers brief, "
+        "direct, and under 3-4 sentences whenever possible.\n"
+        "3. Answer Specifically: Only provide the information the user asked for. If they "
+        "ask how to get a Dodo code, explain the `!senddodo` command. DO NOT dump the "
+        'entire command list unless explicitly asked for "all commands."\n'
+        "4. Clarify Vague Requests: If a user says 'help me', do not guess their problem. "
+        "Ask them to clarify: \"I'd love to help! What do you need assistance with? "
+        "(e.g., finding an item, getting a dodo code, subscriber perks?)\"\n"
+        "5. Format for Readability: Use backticks for commands (like `!senddodo` or "
+        "`!find <item>`). Use short bullet points if listing more than two things. "
+        "Avoid raw Markdown tables unless absolutely necessary, as they render poorly "
+        "on mobile devices.\n"
+        "6. Be warm, friendly, and encouraging — match the community's positive vibe.\n"
+        "7. If you truly do not know, say so and suggest: "
+        "'I don't have the answer to that right now! Feel free to DM an Admin or "
+        "Moderator on the server for help.'\n\n"
+        "# CONTEXT USAGE\n"
+        "Rely strictly on the provided Chopaeng Knowledge Base for community-specific "
+        "topics (rules, islands, commands, Chopaeng info). For general ACNH gameplay "
+        "questions, use your general knowledge. Do not hallucinate ACNH advice outside "
+        "the scope of the knowledge base.\n\n"
+        "# EXAMPLES\n"
+        "User: hi\n"
+        "AI: Hello! Welcome to the Chopaeng community. How can I help you today? "
+        "Are you looking for a specific item, or do you need help visiting an island?\n\n"
+        "User: help me\n"
+        "AI: I'm here to help! What are you having trouble with? Let me know if you need "
+        "help finding items, understanding the rules, or getting a Dodo code.\n\n"
+        "User: how to get dodo code\n"
+        "AI: To get a Dodo code, go to the specific island's channel in our Discord "
+        "server and type `!senddodo` or `!sd`. The bot will DM the code to you!\n\n"
         f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"
         f"{conversation_context}"
         f"\n### Current Question ###\n{question}"
