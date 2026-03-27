@@ -1198,78 +1198,20 @@ class FlightLoggerCog(commands.Cog):
             dest_raw   = match.group(3).strip()
             ign_clean = clean_text(ign_raw)
             isl_clean = clean_text(island_raw)
-            found, candidates = await asyncio.to_thread(
-                self._find_members_with_candidates, message.guild, ign_clean, isl_clean
+            self.last_processed = discord.utils.utcnow()
+            asyncio.create_task(
+                self._process_flight_log(message.guild, ign_raw, island_raw, dest_raw, ign_clean, isl_clean)
             )
 
+    async def _process_flight_log(self, guild, ign_raw, island_raw, dest_raw, ign_clean, isl_clean):
+        """Background task: look up members then run the full log pipeline."""
+        try:
+            found = await asyncio.to_thread(
+                self.find_matching_members, guild, ign_clean, isl_clean
+            )
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub')
-            await self._post_verbose_match_log(ign_raw, island_raw, dest_raw, ign_clean, isl_clean, candidates)
-
-    def _find_members_with_candidates(self, guild, ign_log_clean, island_log_clean):
-        """Run find_matching_members and find_all_candidates in one pass (called in thread)."""
-        candidates = self.find_all_candidates(guild, ign_log_clean, island_log_clean)
-        found = [c["member"] for c in candidates if c["full_match"]]
-        return found, candidates
-
-    async def _post_verbose_match_log(self, ign_raw, island_raw, dest_raw, ign_clean, isl_clean, candidates):
-        """Post a match-summary embed to XLOG_VERBOSE_CHANNEL_ID."""
-        verbose_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
-        if not verbose_channel:
-            return
-
-        best_match = best_partial = None
-        for c in candidates:
-            if c["full_match"]:
-                if best_match is None:
-                    best_match = c
-            elif (c["ign_match"] or c["island_match"]) and best_partial is None:
-                best_partial = c
-            if best_match and best_partial:
-                break
-
-        now = discord.utils.utcnow()
-        guild      = self.bot.get_guild(Config.GUILD_ID)
-        guild_icon = guild.icon.url if guild and guild.icon else None
-
-        if best_match:
-            color        = COLOR_SUCCESS
-            status_emoji = "<:Cho_Check:1456715827213504593>"
-            status_text  = "Match Found"
-            member_line  = f"{best_match['member'].mention} ({best_match['member'].display_name})"
-            ign_status   = "YES"
-            island_status = "YES"
-        elif best_partial:
-            color        = COLOR_INVESTIGATION
-            status_emoji = "<:Cho_Investigate:1474310726381338666>"
-            status_text  = "Partial Match"
-            member_line  = f"{best_partial['member'].mention} ({best_partial['member'].display_name})"
-            ign_status   = "YES" if best_partial["ign_match"] else "NO"
-            island_status = "YES" if best_partial["island_match"] else "NO"
-        else:
-            color        = COLOR_ALERT
-            status_emoji = Config.EMOJI_FAIL
-            status_text  = "No Match"
-            member_line  = "-"
-            ign_status   = "NO"
-            island_status = "NO"
-
-        embed = discord.Embed(
-            description=(
-                f"### {status_emoji} {status_text}\n"
-                f"`{ign_raw}` joining **{dest_raw}** from **{island_raw}**"
-            ),
-            color=color,
-            timestamp=now,
-        )
-        embed.add_field(name="Traveler IGN",   value=f"```yaml\n{ign_raw}```",          inline=True)
-        embed.add_field(name="Origin Island",  value=f"```yaml\n{island_raw.title()}```", inline=True)
-        embed.add_field(name="Destination",    value=f"```yaml\n{dest_raw.title()}```",   inline=True)
-        embed.add_field(name="Matched Member", value=member_line,                         inline=False)
-        embed.add_field(name="IGN Match",      value=f"**{ign_status}**",                 inline=True)
-        embed.add_field(name="Island Match",   value=f"**{island_status}**",              inline=True)
-        embed.set_image(url=Config.FOOTER_LINE)
-        embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
-        await verbose_channel.send(embed=embed)
+        except Exception as e:
+            logger.error(f"[FLIGHT] Pipeline error for {ign_raw}: {e}")
 
     async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub'):
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
@@ -1284,6 +1226,31 @@ class FlightLoggerCog(commands.Cog):
             mentions = " ".join([m.mention for m in found_members])
             logger.info(f"[FLIGHT] Match: {ign} | {mentions}")
             await self.record_island_visit(ign, island, destination, found_members, guild_id, visit_ts, island_type=island_type)
+
+            # Post authorized-traveler log to the xlog channel.
+            xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+            if xlog_channel:
+                guild_icon = guild.icon.url if guild and guild.icon else None
+                member_line = "\n".join(
+                    f"{m.mention} ({m.display_name})" for m in found_members
+                )
+                embed = discord.Embed(
+                    description=(
+                        f"### <:Cho_Check:1456715827213504593> Match Found\n"
+                        f"`{ign}` joining **{destination}** from **{island}**"
+                    ),
+                    color=COLOR_SUCCESS,
+                    timestamp=embed_timestamp,
+                )
+                embed.add_field(name="Traveler IGN",   value=f"```yaml\n{ign}```",              inline=True)
+                embed.add_field(name="Origin Island",  value=f"```yaml\n{island.title()}```",    inline=True)
+                embed.add_field(name="Destination",    value=f"```yaml\n{destination.title()}```", inline=True)
+                embed.add_field(name="Matched Member", value=member_line,                         inline=False)
+                embed.add_field(name="IGN Match",      value="**YES**",                           inline=True)
+                embed.add_field(name="Island Match",   value="**YES**",                           inline=True)
+                embed.set_image(url=Config.FOOTER_LINE)
+                embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
+                await xlog_channel.send(embed=embed)
         else:
             destination_link = self.get_island_channel_link(destination)
             alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
