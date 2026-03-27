@@ -1151,6 +1151,32 @@ class FlightLoggerCog(commands.Cog):
                 found_members.append(member)
         return found_members
 
+    def find_all_candidates(self, guild, ign_log_clean, island_log_clean):
+        """Return all registered members (those with '|' in nickname) with their match details.
+
+        Returns a list of dicts:
+            {member, ign_opts, island_opts, ign_match, island_match, full_match}
+        Sorted: full matches first, then partial, then no match.
+        """
+        candidates = []
+        for member in guild.members:
+            ign_opts, island_opts = self.parse_member_nick(member.display_name)
+            if not ign_opts and not island_opts:
+                continue
+            ign_match    = ign_log_clean in ign_opts
+            island_match = island_log_clean in island_opts if island_opts else True
+            full_match   = ign_match and island_match
+            candidates.append({
+                "member":       member,
+                "ign_opts":     ign_opts,
+                "island_opts":  island_opts,
+                "ign_match":    ign_match,
+                "island_match": island_match,
+                "full_match":   full_match,
+            })
+        candidates.sort(key=lambda c: (not c["full_match"], not c["ign_match"]))
+        return candidates
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author == self.bot.user or message.channel.id != Config.FLIGHT_LISTEN_CHANNEL_ID:
@@ -1162,9 +1188,87 @@ class FlightLoggerCog(commands.Cog):
             dest_raw   = match.group(3).strip()
             ign_clean = clean_text(ign_raw)
             isl_clean = clean_text(island_raw)
-            found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_clean, isl_clean)
+            found, candidates = await asyncio.to_thread(
+                self._find_members_with_candidates, message.guild, ign_clean, isl_clean
+            )
 
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub')
+            await self._post_verbose_match_log(ign_raw, island_raw, dest_raw, ign_clean, isl_clean, candidates)
+
+    def _find_members_with_candidates(self, guild, ign_log_clean, island_log_clean):
+        """Run find_matching_members and find_all_candidates in one pass (called in thread)."""
+        candidates = self.find_all_candidates(guild, ign_log_clean, island_log_clean)
+        found = [c["member"] for c in candidates if c["full_match"]]
+        return found, candidates
+
+    async def _post_verbose_match_log(self, ign_raw, island_raw, dest_raw, ign_clean, isl_clean, candidates):
+        """Post a plain-text (no emojis) match report to XLOG_VERBOSE_CHANNEL_ID."""
+        verbose_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        if not verbose_channel:
+            return
+
+        lines = [
+            "--- FLIGHT MATCH REPORT ---",
+            f"IGN      : {ign_raw}  (cleaned: {ign_clean})",
+            f"Island   : {island_raw}  (cleaned: {isl_clean})",
+            f"Dest     : {dest_raw}",
+            f"Candidates checked: {len(candidates)}",
+            "",
+        ]
+
+        matched   = [c for c in candidates if c["full_match"]]
+        partial   = [c for c in candidates if not c["full_match"] and (c["ign_match"] or c["island_match"])]
+        unmatched = [c for c in candidates if not c["full_match"] and not c["ign_match"] and not c["island_match"]]
+
+        lines.append(f"MATCHED ({len(matched)}):")
+        if matched:
+            for c in matched:
+                lines.append(
+                    f"  [MATCH]   {c['member'].display_name} ({c['member'].name})"
+                    f"  ign={c['ign_opts']}  islands={c['island_opts']}"
+                )
+        else:
+            lines.append("  (none)")
+
+        lines.append("")
+        lines.append(f"PARTIAL MATCH ({len(partial)}) — IGN or island matched but not both:")
+        if partial:
+            for c in partial:
+                ign_label    = "IGN=YES" if c["ign_match"] else "IGN=NO"
+                island_label = "ISLAND=YES" if c["island_match"] else "ISLAND=NO"
+                lines.append(
+                    f"  [PARTIAL]  {c['member'].display_name} ({c['member'].name})"
+                    f"  {ign_label}  {island_label}"
+                    f"  ign={c['ign_opts']}  islands={c['island_opts']}"
+                )
+        else:
+            lines.append("  (none)")
+
+        lines.append("")
+        lines.append(f"NOT MATCHED ({len(unmatched)}):")
+        if unmatched:
+            for c in unmatched:
+                lines.append(
+                    f"  [NO MATCH] {c['member'].display_name} ({c['member'].name})"
+                    f"  ign={c['ign_opts']}  islands={c['island_opts']}"
+                )
+        else:
+            lines.append("  (none)")
+
+        lines.append("--- END REPORT ---")
+
+        # Send in chunks to respect the 2000-char Discord message limit.
+        # CODE_BLOCK_OVERHEAD accounts for the ``` markers and newlines added around each chunk.
+        CODE_BLOCK_OVERHEAD = 8  # len("```\n") + len("```") + 1 newline safety margin
+        chunk = ""
+        for line in lines:
+            addition = line + "\n"
+            if len(chunk) + len(addition) + CODE_BLOCK_OVERHEAD > 2000:
+                await verbose_channel.send(f"```\n{chunk}```")
+                chunk = ""
+            chunk += addition
+        if chunk:
+            await verbose_channel.send(f"```\n{chunk}```")
 
     async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub'):
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
