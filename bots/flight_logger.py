@@ -1202,73 +1202,38 @@ class FlightLoggerCog(commands.Cog):
         return found, candidates
 
     async def _post_verbose_match_log(self, ign_raw, island_raw, dest_raw, ign_clean, isl_clean, candidates):
-        """Post a plain-text (no emojis) match report to XLOG_VERBOSE_CHANNEL_ID."""
+        """Post a concise match summary to XLOG_VERBOSE_CHANNEL_ID."""
         verbose_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
         if not verbose_channel:
             return
 
-        lines = [
-            "--- FLIGHT MATCH REPORT ---",
-            f"IGN      : {ign_raw}  (cleaned: {ign_clean})",
-            f"Island   : {island_raw}  (cleaned: {isl_clean})",
-            f"Dest     : {dest_raw}",
-            f"Candidates checked: {len(candidates)}",
-            "",
-        ]
+        best_match = best_partial = None
+        for c in candidates:
+            if c["full_match"]:
+                if best_match is None:
+                    best_match = c
+            elif (c["ign_match"] or c["island_match"]) and best_partial is None:
+                best_partial = c
+            if best_match and best_partial:
+                break
 
-        matched   = [c for c in candidates if c["full_match"]]
-        partial   = [c for c in candidates if not c["full_match"] and (c["ign_match"] or c["island_match"])]
-        unmatched = [c for c in candidates if not c["full_match"] and not c["ign_match"] and not c["island_match"]]
-
-        lines.append(f"MATCHED ({len(matched)}):")
-        if matched:
-            for c in matched:
-                lines.append(
-                    f"  [MATCH]   {c['member'].display_name} ({c['member'].name})"
-                    f"  ign={c['ign_opts']}  islands={c['island_opts']}"
-                )
+        if best_match:
+            status = "✅ MATCH"
+            best_line = f"{best_match['member'].display_name} ({best_match['member'].name})"
+        elif best_partial:
+            ign_label    = "IGN=YES" if best_partial["ign_match"] else "IGN=NO"
+            island_label = "ISLAND=YES" if best_partial["island_match"] else "ISLAND=NO"
+            status = f"⚠️ PARTIAL ({ign_label} {island_label})"
+            best_line = f"{best_partial['member'].display_name} ({best_partial['member'].name})"
         else:
-            lines.append("  (none)")
+            status = "❌ NO MATCH"
+            best_line = "-"
 
-        lines.append("")
-        lines.append(f"PARTIAL MATCH ({len(partial)}) — IGN or island matched but not both:")
-        if partial:
-            for c in partial:
-                ign_label    = "IGN=YES" if c["ign_match"] else "IGN=NO"
-                island_label = "ISLAND=YES" if c["island_match"] else "ISLAND=NO"
-                lines.append(
-                    f"  [PARTIAL]  {c['member'].display_name} ({c['member'].name})"
-                    f"  {ign_label}  {island_label}"
-                    f"  ign={c['ign_opts']}  islands={c['island_opts']}"
-                )
-        else:
-            lines.append("  (none)")
-
-        lines.append("")
-        lines.append(f"NOT MATCHED ({len(unmatched)}):")
-        if unmatched:
-            for c in unmatched:
-                lines.append(
-                    f"  [NO MATCH] {c['member'].display_name} ({c['member'].name})"
-                    f"  ign={c['ign_opts']}  islands={c['island_opts']}"
-                )
-        else:
-            lines.append("  (none)")
-
-        lines.append("--- END REPORT ---")
-
-        # Send in chunks to respect the 2000-char Discord message limit.
-        # CODE_BLOCK_OVERHEAD accounts for the ``` markers and newlines added around each chunk.
-        CODE_BLOCK_OVERHEAD = 8  # len("```\n") + len("```") + 1 newline safety margin
-        chunk = ""
-        for line in lines:
-            addition = line + "\n"
-            if len(chunk) + len(addition) + CODE_BLOCK_OVERHEAD > 2000:
-                await verbose_channel.send(f"```\n{chunk}```")
-                chunk = ""
-            chunk += addition
-        if chunk:
-            await verbose_channel.send(f"```\n{chunk}```")
+        msg = (
+            f"`{ign_raw}` -> `{island_raw}` | {dest_raw}\n"
+            f"**{status}** — {best_line}"
+        )
+        await verbose_channel.send(msg)
 
     async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub'):
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
