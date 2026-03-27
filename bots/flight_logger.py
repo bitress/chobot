@@ -1132,9 +1132,19 @@ class FlightLoggerCog(commands.Cog):
         return [clean_text(p) for p in parts if clean_text(p)]
 
     def parse_member_nick(self, display_name: str):
-        if not display_name or "|" not in display_name: return [], []
-        chunks = [c.strip() for c in display_name.split("|") if c.strip()]
-        if not chunks: return [], []
+        if not display_name:
+            return [], []
+        # Support common nick separators: | (preferred), then , or -
+        # / is intentionally excluded here as it is used within a field for multiple options
+        if '|' in display_name:
+            raw_chunks = display_name.split('|')
+        else:
+            if not re.search(r'[,\-]', display_name):
+                return [], []
+            raw_chunks = re.split(r'[,\-]', display_name, maxsplit=1)
+        chunks = [c.strip() for c in raw_chunks if c.strip()]
+        if not chunks:
+            return [], []
         ign_opts    = self.split_options(chunks[0])
         island_opts = [opt for chunk in chunks[1:] for opt in self.split_options(chunk)]
         return ign_opts, island_opts
@@ -1202,7 +1212,7 @@ class FlightLoggerCog(commands.Cog):
         return found, candidates
 
     async def _post_verbose_match_log(self, ign_raw, island_raw, dest_raw, ign_clean, isl_clean, candidates):
-        """Post a concise match summary to XLOG_VERBOSE_CHANNEL_ID."""
+        """Post a match-summary embed to XLOG_VERBOSE_CHANNEL_ID."""
         verbose_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
         if not verbose_channel:
             return
@@ -1217,23 +1227,49 @@ class FlightLoggerCog(commands.Cog):
             if best_match and best_partial:
                 break
 
-        if best_match:
-            status = "✅ MATCH"
-            best_line = f"{best_match['member'].display_name} ({best_match['member'].name})"
-        elif best_partial:
-            ign_label    = "IGN=YES" if best_partial["ign_match"] else "IGN=NO"
-            island_label = "ISLAND=YES" if best_partial["island_match"] else "ISLAND=NO"
-            status = f"⚠️ PARTIAL ({ign_label} {island_label})"
-            best_line = f"{best_partial['member'].display_name} ({best_partial['member'].name})"
-        else:
-            status = "❌ NO MATCH"
-            best_line = "-"
+        now = discord.utils.utcnow()
+        guild      = self.bot.get_guild(Config.GUILD_ID)
+        guild_icon = guild.icon.url if guild and guild.icon else None
 
-        msg = (
-            f"`{ign_raw}` -> `{island_raw}` | {dest_raw}\n"
-            f"**{status}** — {best_line}"
+        if best_match:
+            color        = COLOR_SUCCESS
+            status_emoji = "<:Cho_Check:1456715827213504593>"
+            status_text  = "Match Found"
+            member_line  = f"{best_match['member'].mention} ({best_match['member'].display_name})"
+            ign_status   = "YES"
+            island_status = "YES"
+        elif best_partial:
+            color        = COLOR_INVESTIGATION
+            status_emoji = "<:Cho_Investigate:1474310726381338666>"
+            status_text  = "Partial Match"
+            member_line  = f"{best_partial['member'].mention} ({best_partial['member'].display_name})"
+            ign_status   = "YES" if best_partial["ign_match"] else "NO"
+            island_status = "YES" if best_partial["island_match"] else "NO"
+        else:
+            color        = COLOR_ALERT
+            status_emoji = Config.EMOJI_FAIL
+            status_text  = "No Match"
+            member_line  = "-"
+            ign_status   = "NO"
+            island_status = "NO"
+
+        embed = discord.Embed(
+            description=(
+                f"### {status_emoji} {status_text}\n"
+                f"`{ign_raw}` joining **{dest_raw}** from **{island_raw}**"
+            ),
+            color=color,
+            timestamp=now,
         )
-        await verbose_channel.send(msg)
+        embed.add_field(name="Traveler IGN",   value=f"```yaml\n{ign_raw}```",          inline=True)
+        embed.add_field(name="Origin Island",  value=f"```yaml\n{island_raw.title()}```", inline=True)
+        embed.add_field(name="Destination",    value=f"```yaml\n{dest_raw.title()}```",   inline=True)
+        embed.add_field(name="Matched Member", value=member_line,                         inline=False)
+        embed.add_field(name="IGN Match",      value=f"**{ign_status}**",                 inline=True)
+        embed.add_field(name="Island Match",   value=f"**{island_status}**",              inline=True)
+        embed.set_image(url=Config.FOOTER_LINE)
+        embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
+        await verbose_channel.send(embed=embed)
 
     async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub'):
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
