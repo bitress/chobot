@@ -34,6 +34,7 @@ COLOR_ALERT = 0xED4245         # Discord red (for unknown traveler alerts)
 DB_NAME = "chobot.db"
 WARN_EXPIRY_DAYS = 3
 MAX_HISTORY_ENTRIES = 10  # Max entries shown per section in !flighthistory
+MAX_DEBUG_CANDIDATES = 5  # Max closest-candidate entries shown in !fdebug
 
 # --- DATABASE HELPERS ---
 async def init_db():
@@ -1517,32 +1518,75 @@ class FlightLoggerCog(commands.Cog):
     @commands.has_permissions(manage_messages=True)
     async def flight_debug(self, ctx, *, test_string: str = None):
         """
-        Test the regex against a raw message string.
-        Usage: !fdebug [Dodo Code Message]
+        Test the regex and member-matching against a raw log message string.
+        Usage: !fdebug [Flight Log Message]
         """
         if not test_string:
             return await ctx.send("**Usage:** `!fdebug [Message Content]`")
 
         match = self.join_pattern.search(test_string)
 
-        if match:
-            ign = match.group(1).strip()
-            island = match.group(2).strip()
-            dest = match.group(3).strip()
-
-            embed = discord.Embed(title="Regex Match Successful", color=0x2b2d31)
-            embed.add_field(name="IGN", value=f"`{ign}`")
-            embed.add_field(name="Island", value=f"`{island}`")
-            embed.add_field(name="Destination", value=f"`{dest}`")
-            await ctx.send(embed=embed)
-        else:
+        if not match:
             embed = discord.Embed(title="Regex Match Failed", color=0xff0000)
             embed.description = (
                 "Input did not match pattern.\n"
                 "**Check:** Format changes, hidden characters, or case sensitivity."
             )
             embed.add_field(name="Current Pattern", value=f"```regex\n{self.join_pattern.pattern}\n```", inline=False)
-            await ctx.send(embed=embed)
+            return await ctx.send(embed=embed)
+
+        ign = match.group(1).strip()
+        island = match.group(2).strip()
+        dest = match.group(3).strip()
+        ign_clean = clean_text(ign)
+        isl_clean = clean_text(island)
+
+        # Run member-matching in a thread (same as the live pipeline)
+        found = await asyncio.to_thread(
+            self.find_matching_members, ctx.guild, ign_clean, isl_clean
+        )
+        candidates = await asyncio.to_thread(
+            self.find_all_candidates, ctx.guild, ign_clean, isl_clean
+        )
+
+        destination_link = self.get_island_channel_link(dest)
+
+        if found:
+            member_line = "\n".join(f"{m.mention} (`{m.display_name}`)" for m in found)
+            embed = discord.Embed(
+                title="<:Cho_Check:1456715827213504593> Match Found",
+                description=f"This log entry **would be verified** as a known traveler.",
+                color=COLOR_SUCCESS,
+            )
+            embed.add_field(name="IGN",         value=f"`{ign}`",            inline=True)
+            embed.add_field(name="Island",      value=f"`{island}`",         inline=True)
+            embed.add_field(name="Destination", value=destination_link,      inline=True)
+            embed.add_field(name="Matched Member(s)", value=member_line,     inline=False)
+        else:
+            embed = discord.Embed(
+                title=f"{Config.EMOJI_FAIL} No Match",
+                description=f"This log entry **would trigger an unknown traveler alert**.",
+                color=COLOR_ALERT,
+            )
+            embed.add_field(name="IGN",         value=f"`{ign}`",            inline=True)
+            embed.add_field(name="Island",      value=f"`{island}`",         inline=True)
+            embed.add_field(name="Destination", value=destination_link,      inline=True)
+
+            # Show partial candidates (IGN-only or island-only matches) to help diagnose
+            partial = [c for c in candidates if c["ign_match"] or c["island_match"]][:MAX_DEBUG_CANDIDATES]
+            if partial:
+                cand_lines = []
+                for c in partial:
+                    flags = []
+                    if c["ign_match"]:    flags.append("IGN ✓")
+                    if c["island_match"]: flags.append("Island ✓")
+                    cand_lines.append(f"{c['member'].mention} (`{c['member'].display_name}`) — {', '.join(flags)}")
+                embed.add_field(name="Closest Candidates", value="\n".join(cand_lines), inline=False)
+            else:
+                embed.add_field(name="Closest Candidates", value="None found.", inline=False)
+
+        embed.set_footer(text="Debug only — no database writes or channel posts.")
+        await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="flighttest", aliases=["ftest"])
     @commands.has_permissions(manage_messages=True)
