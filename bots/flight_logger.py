@@ -627,7 +627,9 @@ class TravelerActionView(discord.ui.View):
             cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
             if cog and self.ign:
                 ign_clean = clean_text(self.ign)
-                cog._pending_alerts.pop(ign_clean, None)
+                keys_to_remove = [k for k in cog._pending_alerts if k[0] == ign_clean]
+                for k in keys_to_remove:
+                    cog._pending_alerts.pop(k, None)
         except Exception as e:
             logger.error(f"Error editing original message: {e}")
 
@@ -774,8 +776,8 @@ class FlightLoggerCog(commands.Cog):
         self.join_pattern = JOIN_PATTERN
         self._db_conn = None
         self.last_processed = None
-        self._pending_alerts: dict[str, int] = {}
-        self._creating_alerts: set[str] = set()
+        self._pending_alerts: dict[tuple[str, str], int] = {}
+        self._creating_alerts: set[tuple[str, str]] = set()
         self.fetch_islands_task.start()
         self.cleanup_warnings_task.start()
 
@@ -1268,14 +1270,16 @@ class FlightLoggerCog(commands.Cog):
             destination_link = self.get_island_channel_link(destination)
             alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
 
-            # Guard against a concurrent log_result call for the same IGN.
-            # Register the IGN synchronously (before any await) so a second
-            # coroutine sees it immediately and returns without inserting a
-            # duplicate DB row or sending a duplicate embed.
+            # Guard against a concurrent log_result call for the same IGN+destination.
+            # Register the key synchronously (before any await) so a second
+            # coroutine for the same island sees it immediately and returns without
+            # inserting a duplicate DB row or sending a duplicate embed.
             ign_clean = clean_text(ign)
-            if ign_clean in self._creating_alerts:
+            dest_clean = clean_text(destination)
+            alert_key = (ign_clean, dest_clean)
+            if alert_key in self._creating_alerts:
                 return
-            self._creating_alerts.add(ign_clean)
+            self._creating_alerts.add(alert_key)
             try:
                 # If this IGN was already authorized and has a linked target within the last 24 hours,
                 # silently ignore the follow-up xlog — no new alert needed.
@@ -1285,9 +1289,9 @@ class FlightLoggerCog(commands.Cog):
 
                 visit_id = await self.record_island_visit(ign, island, destination, [], guild_id, alert_ts, island_type=island_type)
 
-                # Check if there is already a pending alert for this IGN to avoid flooding the channel
+                # Check if there is already a pending alert for this IGN+destination to avoid flooding the channel
                 existing_msg = None
-                existing_msg_id = self._pending_alerts.get(ign_clean)
+                existing_msg_id = self._pending_alerts.get(alert_key)
                 if existing_msg_id:
                     try:
                         existing_msg = await output_channel.fetch_message(existing_msg_id)
@@ -1379,7 +1383,7 @@ class FlightLoggerCog(commands.Cog):
 
                     view = TravelerActionView(self.bot, ign, visit_id=visit_id)
                     sent_msg = await output_channel.send(embed=embed, view=view)
-                    self._pending_alerts[ign_clean] = sent_msg.id
+                    self._pending_alerts[alert_key] = sent_msg.id
 
                     # Post unknown traveler notification to xlog channel
                     if xlog_channel:
@@ -1406,7 +1410,7 @@ class FlightLoggerCog(commands.Cog):
                         xlog_view.add_item(discord.ui.Button(label="View Alert", url=sent_msg.jump_url, style=discord.ButtonStyle.link))
                         await xlog_channel.send(embed=xlog_embed, view=xlog_view)
             finally:
-                self._creating_alerts.discard(ign_clean)
+                self._creating_alerts.discard(alert_key)
 
     @commands.hybrid_command(name="recover_flights", aliases=["recoverflights"])
     @app_commands.describe(hours="How many hours to scan back (default: 48)", mode="Execution mode: 'dry' or 'run'")
