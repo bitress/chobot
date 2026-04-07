@@ -66,8 +66,13 @@ class Config:
     # Nookipedia
     NOOKIPEDIA_KEY = os.getenv("NOOKIPEDIA_KEY")
 
-    # Gemini AI (free tier — optional)
+    # AI providers (optional)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip()
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "auto").strip().lower()
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     # Web Dashboard (mod-only)
     DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")

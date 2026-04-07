@@ -242,7 +242,16 @@ class TwitchBot(commands.Bot):
             return
 
         conv_key = f"twitch:{ctx.channel.name}:{ctx.author.name}"
-        answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY, conversation_key=conv_key)
+        answer = await get_ai_answer(
+            question,
+            gemini_api_key=Config.GEMINI_API_KEY,
+            openai_api_key=Config.OPENAI_API_KEY,
+            openai_base_url=Config.OPENAI_BASE_URL,
+            provider=Config.AI_PROVIDER,
+            gemini_model=Config.GEMINI_MODEL,
+            openai_model=Config.OPENAI_MODEL,
+            conversation_key=conv_key,
+        )
 
         # Twitch messages are capped at 500 characters
         reply = f"@{ctx.author.name} {answer}"

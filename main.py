@@ -30,6 +30,7 @@ import threading
 import logging
 import traceback
 import signal
+import contextlib
 from typing import Optional, Set
 
 # Add project root to path
@@ -71,6 +72,21 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("Main")
+
+
+def configure_ssl_cert_bundle() -> None:
+    """Ensure Python/aiohttp can find a CA bundle for TLS verification."""
+    if os.getenv("SSL_CERT_FILE"):
+        return
+    try:
+        import certifi  # lazy import
+
+        ca_path = certifi.where()
+        if ca_path and os.path.exists(ca_path):
+            os.environ["SSL_CERT_FILE"] = ca_path
+            logger.info("[SSL] Using certifi CA bundle for outbound HTTPS.")
+    except Exception as exc:
+        logger.warning(f"[SSL] Could not configure certifi CA bundle: {exc}")
 
 # ============================================================================
 # SHARED STOP FLAG
@@ -218,9 +234,47 @@ def run_flask(data_manager: DataManager):
         STOP_EVENT.set()
 
 
+async def _safe_close_twitch_bot(twitch_bot: TwitchBot) -> None:
+    """Close Twitch bot, tolerating TwitchIO close bug on failed initial connect."""
+    try:
+        await twitch_bot.close()
+    except AttributeError as exc:
+        # TwitchIO can raise: 'NoneType' object has no attribute 'cancel'
+        # when close() runs before keeper task exists.
+        if "cancel" in str(exc):
+            logger.warning("[TWITCH] Ignoring known TwitchIO close bug after failed connect.")
+            return
+        raise
+
+
+async def _run_twitch_lifecycle(twitch_bot: TwitchBot) -> None:
+    """Run Twitch bot until it stops or a global stop signal is set."""
+    stop_waiter = asyncio.create_task(asyncio.to_thread(STOP_EVENT.wait))
+    start_task = asyncio.create_task(twitch_bot.start())
+
+    done, pending = await asyncio.wait(
+        {start_task, stop_waiter},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    if stop_waiter in done and STOP_EVENT.is_set():
+        logger.warning("[TWITCH] Stop signal received, closing bot...")
+        await _safe_close_twitch_bot(twitch_bot)
+
+    if start_task in done:
+        # Propagate startup/runtime exceptions to caller.
+        await start_task
+
+    for task in pending:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def run_twitch(data_manager: DataManager, find_only: bool = False):
     """Run Twitch bot in a thread with its own event loop."""
     loop: Optional[asyncio.AbstractEventLoop] = None
+    twitch_bot: Optional[TwitchBot] = None
     try:
         mode = "find-only" if find_only else "full"
         logger.info(f"[TWITCH] Starting Twitch bot ({mode} mode)...")
@@ -229,7 +283,7 @@ def run_twitch(data_manager: DataManager, find_only: bool = False):
         asyncio.set_event_loop(loop)
 
         twitch_bot = TwitchBot(data_manager)
-        loop.run_until_complete(twitch_bot.run())
+        loop.run_until_complete(_run_twitch_lifecycle(twitch_bot))
 
     except Exception as e:
         logger.error(f"[TWITCH] Critical error: {e}")
@@ -238,6 +292,8 @@ def run_twitch(data_manager: DataManager, find_only: bool = False):
     finally:
         try:
             if loop and not loop.is_closed():
+                if twitch_bot is not None:
+                    loop.run_until_complete(_safe_close_twitch_bot(twitch_bot))
                 loop.stop()
                 loop.close()
         except Exception:
@@ -314,6 +370,8 @@ async def run_discord(
 # MAIN
 # ============================================================================
 def main():
+    configure_ssl_cert_bundle()
+
     # ---- Parse CLI ---------------------------------------------------------
     services = parse_services(sys.argv)
     flags = expand_services(services)
