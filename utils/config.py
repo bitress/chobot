@@ -106,6 +106,14 @@ class Config:
     # Public base URL for uploaded files (e.g. https://pub-xxx.r2.dev or custom domain)
     R2_PUBLIC_URL       = os.getenv("R2_PUBLIC_URL", "")
 
+    # MariaDB migration (optional)
+    MARIADB_HOST = os.getenv("MARIADB_HOST", "")
+    MARIADB_PORT = _get_int("MARIADB_PORT", 3306)
+    MARIADB_USER = os.getenv("MARIADB_USER", "")
+    MARIADB_PASSWORD = os.getenv("MARIADB_PASSWORD", "")
+    MARIADB_DATABASE = os.getenv("MARIADB_DATABASE", "chobot")
+    MARIADB_TRUNCATE_BEFORE_IMPORT = os.getenv("MARIADB_TRUNCATE_BEFORE_IMPORT", "true").strip().lower() == "true"
+
     # Google Sheets
     WORKBOOK_NAME = os.getenv('WORKBOOK_NAME')
     JSON_KEYFILE = 'service_account.json'

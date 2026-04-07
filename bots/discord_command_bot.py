@@ -941,7 +941,7 @@ class DiscordCommandCog(commands.Cog):
             conversation_key=conv_key,
         )
 
-        await ctx.reply(f"🤖 **Chopaeng AI:** {answer}")
+        await ctx.reply(f"{answer}")
         logger.info(f"[DISCORD] Ask command by {ctx.author.name}: {question[:80]}")
 
     @commands.hybrid_command(name="islands", aliases=["islandstatus", "checkislands"])
@@ -2005,7 +2005,7 @@ class DiscordCommandBot(commands.Bot):
                             openai_model=Config.OPENAI_MODEL,
                             conversation_key=conv_key,
                         )
-                    await message.reply(f"🤖 **Chopaeng AI:** {answer}")
+                    await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
                     return
 

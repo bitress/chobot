@@ -103,6 +103,7 @@ Chobot is a unified system to help manage Animal Crossing communities. It watche
         python main.py flight-logger     # Discord (Flight Logger only)
         python main.py twitch            # Twitch bot (full)
         python main.py twitch-find       # Twitch (find commands only)
+        python main.py migrate-mariadb   # One-time SQLite -> MariaDB migration
         ```
     * Graceful coordinated shutdown on SIGINT/SIGTERM.
 
@@ -162,7 +163,28 @@ OPENAI_MODEL=gpt-4o-mini
 # Get a free key at https://aistudio.google.com/
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-1.5-flash
+
+# --- MARIADB MIGRATION (optional) ---
+# Used by: python main.py migrate-mariadb
+MARIADB_HOST=
+MARIADB_PORT=3306
+MARIADB_USER=
+MARIADB_PASSWORD=
+MARIADB_DATABASE=chobot
+# true = TRUNCATE target tables before import; false = append rows
+MARIADB_TRUNCATE_BEFORE_IMPORT=true
 ```
+
+### Migrating SQLite data to MariaDB
+
+1. Set the `MARIADB_*` values in your `.env` file.
+2. Run:
+    ```bash
+    python main.py migrate-mariadb
+    ```
+3. Check logs for per-table row counts and final success summary.
+
+This migrates all user tables from `chobot.db` into MariaDB. By default it truncates target tables first (`MARIADB_TRUNCATE_BEFORE_IMPORT=true`).
 
 ### Setting up Discord OAuth login for the Dashboard
 

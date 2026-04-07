@@ -37,6 +37,7 @@ from typing import Optional, Set
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils import Config, DataManager
+from utils.db_migration import migrate_sqlite_to_mariadb
 from bots import TwitchBot, DiscordCommandBot
 from bots.flight_logger import FlightLoggerCog, FreeFlightCog
 from api import run_flask_app, set_data_manager
@@ -48,6 +49,7 @@ VALID_SERVICES = {
     "all", "flask",
     "twitch", "twitch-find",
     "discord", "discord-find", "flight-logger",
+    "migrate-mariadb",
 }
 
 SERVICE_DESCRIPTIONS = {
@@ -58,6 +60,7 @@ SERVICE_DESCRIPTIONS = {
     "discord":        "Discord bot (all cogs including FlightLogger)",
     "discord-find":   "Discord bot (find/search cogs only)",
     "flight-logger":  "Discord bot with FlightLoggerCog only",
+    "migrate-mariadb": "Migrate local SQLite database to MariaDB",
 }
 
 # ============================================================================
@@ -371,6 +374,27 @@ async def run_discord(
 # ============================================================================
 def main():
     configure_ssl_cert_bundle()
+
+    # One-shot utility mode: migrate sqlite data into MariaDB and exit.
+    if len(sys.argv) > 1 and sys.argv[1].strip().lower() == "migrate-mariadb":
+        sqlite_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chobot.db")
+        try:
+            summary = migrate_sqlite_to_mariadb(
+                sqlite_path=sqlite_path,
+                host=Config.MARIADB_HOST,
+                port=Config.MARIADB_PORT,
+                user=Config.MARIADB_USER,
+                password=Config.MARIADB_PASSWORD,
+                database=Config.MARIADB_DATABASE,
+                truncate_before_import=Config.MARIADB_TRUNCATE_BEFORE_IMPORT,
+            )
+            total_rows = sum(summary.values())
+            logger.info("[MIGRATE] Success: %d tables, %d rows copied.", len(summary), total_rows)
+            return
+        except Exception as exc:
+            logger.critical(f"[MIGRATE] Failed: {exc}")
+            logger.critical(traceback.format_exc())
+            sys.exit(1)
 
     # ---- Parse CLI ---------------------------------------------------------
     services = parse_services(sys.argv)

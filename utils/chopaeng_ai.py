@@ -13,6 +13,93 @@ from typing import Optional
 logger = logging.getLogger("ChopaengAI")
 
 # ---------------------------------------------------------------------------
+# Live API endpoints + cache
+# ---------------------------------------------------------------------------
+_ISLANDS_API_URL   = "https://console.chopaeng.com/api/islands"
+_VILLAGERS_API_URL = "https://console.chopaeng.com/api/villagers/list"
+_LIVE_CACHE_TTL    = 300  # seconds — refresh every 5 minutes
+
+_live_cache: dict = {
+    "islands":    None,
+    "villagers":  None,
+    "fetched_at": 0.0,
+}
+
+
+async def _fetch_live_data() -> None:
+    """Fetch island and villager data from the console API and update the in-memory cache."""
+    import aiohttp
+    import asyncio
+
+    async def _get(session: "aiohttp.ClientSession", url: str) -> dict:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with session.get(url, timeout=timeout) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            islands_data, villagers_data = await asyncio.gather(
+                _get(session, _ISLANDS_API_URL),
+                _get(session, _VILLAGERS_API_URL),
+            )
+        _live_cache["islands"]    = islands_data
+        _live_cache["villagers"]  = villagers_data
+        _live_cache["fetched_at"] = time.time()
+        logger.debug("[ChopaengAI] Live data refreshed from console API.")
+    except Exception as exc:
+        logger.warning(f"[ChopaengAI] Failed to fetch live data: {exc}")
+
+
+def _build_live_context() -> str:
+    """Format cached live API data into a compact text block for the LLM prompt."""
+    islands_data   = _live_cache.get("islands")
+    villagers_data = _live_cache.get("villagers")
+    parts: list[str] = []
+
+    # --- Island status section ---
+    if islands_data and isinstance(islands_data.get("data"), list):
+        lines = ["## Live Island Status"]
+        for island in islands_data["data"]:
+            name     = island.get("name", "")
+            status   = island.get("status", "UNKNOWN")
+            itype    = island.get("type", "")
+            cat      = island.get("cat", "")
+            visitors = island.get("visitors", 0)
+            items    = island.get("items") or []
+            bot_up   = island.get("discord_bot_online")
+
+            # Skip internal/dummy entries
+            if not name or name.upper().startswith("ZX"):
+                continue
+
+            items_preview = ", ".join(items[:6]) + ("…" if len(items) > 6 else "")
+            bot_str  = " | Bot: ✓" if bot_up else (" | Bot: ✗" if bot_up is False else "")
+            vis_str  = f" | Visitors: {visitors}" if visitors else ""
+            line = f"- {name} [{status}] ({itype or cat})"
+            if items_preview:
+                line += f" — {items_preview}"
+            line += vis_str + bot_str
+            lines.append(line)
+        parts.append("\n".join(lines))
+
+    # --- Villager locations section (inverted: villager → islands) ---
+    if villagers_data and isinstance(villagers_data.get("islands"), dict):
+        villager_map: dict[str, list[str]] = {}
+        for island_name, v_list in villagers_data["islands"].items():
+            for v in (v_list or []):
+                # Skip placeholder entries like "Non00" or "?Toile"
+                if v and not v.startswith("Non") and not v.startswith("?"):
+                    villager_map.setdefault(v, []).append(island_name)
+
+        lines = ["## Live Villager Locations"]
+        for villager, island_names in sorted(villager_map.items()):
+            lines.append(f"- {villager}: {', '.join(island_names)}")
+        parts.append("\n".join(lines))
+
+    return "\n\n".join(parts)
+
+# ---------------------------------------------------------------------------
 # Conversation history store
 # ---------------------------------------------------------------------------
 _MAX_HISTORY_TURNS = 5   # keep last 5 exchanges (10 messages) per conversation
@@ -547,34 +634,42 @@ def _keyword_answer(question: str, history: Optional[list[dict]] = None) -> str:
 
 _AI_SYSTEM_PROMPT = (
     "# ROLE\n"
-    "You are the Chopaeng AI, the official chat support assistant for the Chopaeng "
-    "Animal Crossing: New Horizons (ACNH) community. You operate within Discord and "
-    "Twitch chat. Your tone should be warm, inclusive, and helpful, mirroring the "
-    '"choPaeng family" vibe.\n\n'
+    "You are Chobot, the official AI assistant for the Chopaeng Animal Crossing: "
+    "New Horizons (ACNH) community. You help members on Discord and Twitch with "
+    "islands, items, villagers, bot commands, and community rules. Your tone is "
+    "warm, upbeat, and inclusive — reflecting the 'choPaeng family' spirit.\n\n"
+
+    "# KNOWLEDGE SOURCES (in priority order)\n"
+    "1. **Live Data** — Real-time island statuses, item lists, visitor counts, and "
+    "villager locations fetched from the console API. Always prefer this for current "
+    "availability questions (e.g. 'where is Raymond?', 'which islands are online?', "
+    "'what items does Harana have?').\n"
+    "2. **Chopaeng Knowledge Base** — Community rules, island descriptions, commands, "
+    "how-to guides, and background info. Use this for anything not covered by live data.\n"
+    "3. **General ACNH knowledge** — For basic gameplay questions not specific to "
+    "Chopaeng. Never contradict the KB with general ACNH info.\n\n"
+
     "# CORE DIRECTIVES\n"
-    "1. Be Conversational: If a user greets you (e.g., 'hi', 'hello'), greet them "
-    "back and ask how you can help them with the islands, items, or bots today.\n"
-    "2. Be Concise: You are operating in a chat environment. Keep answers brief, "
-    "direct, and under 3-4 sentences whenever possible.\n"
-    "3. Answer Specifically: Only provide the information the user asked for. If they "
-    "ask how to get a Dodo code, explain the `!senddodo` command. DO NOT dump the "
-    'entire command list unless explicitly asked for "all commands."\n'
-    "4. Clarify Vague Requests: If a user says 'help me', do not guess their problem. "
-    "Ask them to clarify: \"I'd love to help! What do you need assistance with? "
-    "(e.g., finding an item, getting a dodo code, subscriber perks?)\"\n"
-    "5. Format for Readability: Use backticks for commands (like `!senddodo` or "
-    "`!find <item>`). Use short bullet points if listing more than two things. "
-    "Avoid raw Markdown tables unless absolutely necessary, as they render poorly "
-    "on mobile devices.\n"
-    "6. Be warm, friendly, and encouraging — match the community's positive vibe.\n"
-    "7. If you truly do not know, say so and suggest: "
-    "'I don't have the answer to that right now! Feel free to DM an Admin or "
-    "Moderator on the server for help.'\n\n"
-    "# CONTEXT USAGE\n"
-    "Rely strictly on the provided Chopaeng Knowledge Base for community-specific "
-    "topics (rules, islands, commands, Chopaeng info). For general ACNH gameplay "
-    "questions, use your general knowledge. Do not hallucinate ACNH advice outside "
-    "the scope of the knowledge base."
+    "1. **Be conversational.** Greet users warmly and invite them to ask their question.\n"
+    "2. **Be concise.** Chat context — aim for 1–4 sentences. Use bullet points only "
+    "when listing 3+ items.\n"
+    "3. **Answer specifically.** Give only what was asked. Don't dump the full command "
+    "list unless the user explicitly asks for all commands.\n"
+    "4. **Use live data for availability.** When asked about an island's status, items, "
+    "or villagers, check the Live Data section first and cite it (e.g. 'As of right now, "
+    "Raymond is on Bathala and Giliw.').\n"
+    "5. **Clarify vague requests.** If a user says 'help me' with no context, ask what "
+    "they need: finding an item, getting a Dodo code, subscriber info, etc.\n"
+    "6. **Format for mobile.** Use backticks for commands (`!senddodo`, `!find <item>`). "
+    "Avoid Markdown tables — they render poorly in Discord mobile.\n"
+    "7. **Admit unknowns honestly.** If you can't find the answer, say so and suggest "
+    "contacting an Admin or Moderator on Discord.\n\n"
+
+    "# HARD RULES\n"
+    "- Never reveal or guess Dodo codes; direct users to `!senddodo` in the island channel.\n"
+    "- Never recommend violating community rules (sharing codes, littering, AFK, etc.).\n"
+    "- Never fabricate island stock, villager locations, or visitor counts — only use "
+    "data present in the Live Data or Knowledge Base sections."
 )
 
 
@@ -592,6 +687,9 @@ def _build_prompt(question: str, history: Optional[list[dict]] = None) -> str:
             + "\n"
         )
 
+    live_context = _build_live_context()
+    live_section = f"\n### Live Island & Villager Data ###\n{live_context}\n" if live_context else ""
+
     return (
         f"{_AI_SYSTEM_PROMPT}\n\n"
         "# EXAMPLES\n"
@@ -604,7 +702,10 @@ def _build_prompt(question: str, history: Optional[list[dict]] = None) -> str:
         "User: how to get dodo code\n"
         "AI: To get a Dodo code, go to the specific island's channel in our Discord "
         "server and type `!senddodo` or `!sd`. The bot will DM the code to you!\n\n"
+        "User: where is Raymond?\n"
+        "AI: Raymond is currently on Bathala and Giliw! (based on live data)\n\n"
         f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"
+        f"{live_section}"
         f"{conversation_context}"
         f"\n### Current Question ###\n{question}"
     )
@@ -649,6 +750,10 @@ async def get_ai_answer(
         return _VAGUE_RESPONSE
 
     history = conversation_store.get(conversation_key) if conversation_key else []
+
+    # Refresh live island/villager data if the cache is stale.
+    if time.time() - _live_cache["fetched_at"] > _LIVE_CACHE_TTL:
+        await _fetch_live_data()
 
     selected = (provider or "").strip().lower()
     providers_to_try: list[tuple[str, Optional[str]]] = []
