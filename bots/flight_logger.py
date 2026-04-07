@@ -1132,7 +1132,35 @@ class FlightLoggerCog(commands.Cog):
     def split_options(self, raw: str):
         if not raw: return []
         parts = [p.strip() for p in raw.split("/") if p.strip()]
-        return [clean_text(p) for p in parts if clean_text(p)]
+        out = []
+        for p in parts:
+            norm = self.normalize_identity_text(p)
+            if norm:
+                out.append(norm)
+        return out
+
+    def normalize_identity_text(self, text: str) -> str:
+        """Normalize IGN/island while preserving symbols for strict identity checks."""
+        if not text:
+            return ""
+        # Keep symbols (e.g. $$$, _, -), normalize Unicode width/compat forms,
+        # and collapse whitespace so cosmetic spacing differences do not break matches.
+        normalized = unicodedata.normalize("NFKC", text).casefold().strip()
+
+        # Canonicalize common punctuation variants without removing symbols.
+        quote_map = {
+            "\u2018": "'", "\u2019": "'", "\u02bc": "'", "\u2032": "'", "\uff07": "'",
+            "\u201c": '"', "\u201d": '"',
+            "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
+        }
+        normalized = "".join(quote_map.get(ch, ch) for ch in normalized)
+
+        # Normalize spaces around punctuation often introduced by mobile keyboards.
+        normalized = re.sub(r"\s*'\s*", "'", normalized)
+        normalized = re.sub(r'\s*"\s*', '"', normalized)
+        normalized = re.sub(r"\s*-\s*", "-", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized
 
     def parse_member_nick(self, display_name: str):
         if not display_name:
@@ -1152,15 +1180,31 @@ class FlightLoggerCog(commands.Cog):
         island_opts = [opt for chunk in chunks[1:] for opt in self.split_options(chunk)]
         return ign_opts, island_opts
 
+    def _is_strict_nick_match(self, ign_log_clean: str, island_log_clean: str, ign_opts: list[str], island_opts: list[str]) -> bool:
+        """Return True only when both IGN and island from nickname match the flight log.
+
+        Supports paired nick formats like "IGN1/IGN2 | Island1/Island2" by checking
+        index-aligned pairs first; otherwise falls back to set membership for both fields.
+        """
+        if not ign_opts or not island_opts:
+            return False
+
+        if len(ign_opts) == len(island_opts):
+            for ign_opt, island_opt in zip(ign_opts, island_opts):
+                if ign_log_clean == ign_opt and island_log_clean == island_opt:
+                    return True
+
+        return ign_log_clean in ign_opts and island_log_clean in island_opts
+
     def find_matching_members(self, guild, ign_log_clean, island_log_clean):
-        found_members = []
+        exact_members = []
         for member in guild.members:
             ign_opts, island_opts = self.parse_member_nick(member.display_name)
             if not ign_opts and not island_opts:
                 continue
-            if ign_log_clean in ign_opts:
-                found_members.append(member)
-        return found_members
+            if self._is_strict_nick_match(ign_log_clean, island_log_clean, ign_opts, island_opts):
+                exact_members.append(member)
+        return exact_members
 
     def find_all_candidates(self, guild, ign_log_clean, island_log_clean):
         """Return all registered members (those with '|' in nickname) with their match details.
@@ -1175,8 +1219,8 @@ class FlightLoggerCog(commands.Cog):
             if not ign_opts and not island_opts:
                 continue
             ign_match    = ign_log_clean in ign_opts
-            island_match = island_log_clean in island_opts if island_opts else True
-            full_match   = ign_match
+            island_match = island_log_clean in island_opts if island_opts else False
+            full_match   = self._is_strict_nick_match(ign_log_clean, island_log_clean, ign_opts, island_opts)
             candidates.append({
                 "member":       member,
                 "ign_opts":     ign_opts,
@@ -1185,7 +1229,7 @@ class FlightLoggerCog(commands.Cog):
                 "island_match": island_match,
                 "full_match":   full_match,
             })
-        candidates.sort(key=lambda c: (not c["full_match"], not c["ign_match"]))
+        candidates.sort(key=lambda c: (not c["full_match"], not c["ign_match"], not c["island_match"]))
         return candidates
 
     @commands.Cog.listener()
@@ -1197,18 +1241,18 @@ class FlightLoggerCog(commands.Cog):
             ign_raw    = match.group(1).strip()
             island_raw = match.group(2).strip()
             dest_raw   = match.group(3).strip()
-            ign_clean = clean_text(ign_raw)
-            isl_clean = clean_text(island_raw)
+            ign_norm = self.normalize_identity_text(ign_raw)
+            isl_norm = self.normalize_identity_text(island_raw)
             self.last_processed = discord.utils.utcnow()
             asyncio.create_task(
-                self._process_flight_log(message.guild, ign_raw, island_raw, dest_raw, ign_clean, isl_clean, message.jump_url, message.content)
+                self._process_flight_log(message.guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message.jump_url, message.content)
             )
 
-    async def _process_flight_log(self, guild, ign_raw, island_raw, dest_raw, ign_clean, isl_clean, message_url=None, message_content=None):
+    async def _process_flight_log(self, guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message_url=None, message_content=None):
         """Background task: look up members then run the full log pipeline."""
         try:
             found = await asyncio.to_thread(
-                self.find_matching_members, guild, ign_clean, isl_clean
+                self.find_matching_members, guild, ign_norm, isl_norm
             )
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub', message_url=message_url, message_content=message_content)
         except Exception as e:
@@ -1223,7 +1267,9 @@ class FlightLoggerCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         guild_id = guild.id if guild else None
 
-        if found_members:
+        ambiguous_members = found_members if len(found_members) > 1 else []
+
+        if len(found_members) == 1:
             mentions = " ".join([m.mention for m in found_members])
             logger.info(f"[FLIGHT] Match: {ign} | {mentions}")
             await self.record_island_visit(ign, island, destination, found_members, guild_id, visit_ts, island_type=island_type)
@@ -1358,18 +1404,38 @@ class FlightLoggerCog(commands.Cog):
                         xlog_view.add_item(discord.ui.Button(label="View Alert", url=existing_msg.jump_url, style=discord.ButtonStyle.link))
                         await xlog_channel.send(embed=xlog_embed, view=xlog_view)
                 else:
-                    embed = discord.Embed(
-                        description=(
+                    is_ambiguous = bool(ambiguous_members)
+                    if is_ambiguous:
+                        description = (
+                            f"### {Config.EMOJI_FAIL} Ambiguous Traveler Match\n"
+                            f"Multiple members matched this flight for **{destination_link}**.\n"
+                            f"Manual review is required before admitting."
+                        )
+                        embed_color = COLOR_INVESTIGATION
+                    else:
+                        description = (
                             f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
                             f"An unregistered visitor is attempting to join **{destination_link}**.\n"
                             f"Use the buttons below to take action."
-                        ),
-                        color=COLOR_ALERT,
+                        )
+                        embed_color = COLOR_ALERT
+
+                    embed = discord.Embed(
+                        description=description,
+                        color=embed_color,
                         timestamp=embed_timestamp
                     )
                     embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
                     embed.add_field(name="Origin Island",  value=f"```yaml\n{island.title()}```", inline=True)
                     embed.add_field(name="Destination",    value=f"```yaml\n{destination.title()}```", inline=True)
+                    if is_ambiguous:
+                        candidate_lines = [
+                            f"{m.mention} ({m.display_name})"
+                            for m in ambiguous_members[:15]
+                        ]
+                        if len(ambiguous_members) > 15:
+                            candidate_lines.append(f"...and {len(ambiguous_members) - 15} more")
+                        embed.add_field(name="Possible Matches", value="\n".join(candidate_lines), inline=False)
                     embed.add_field(name="Detected",       value=f"<t:{alert_ts}:R>", inline=True)
                     embed.add_field(name="Status",         value="<:Cho_Investigate:1474310726381338666> **PENDING REVIEW**", inline=True)
                     if visit_id is not None:
@@ -1385,18 +1451,37 @@ class FlightLoggerCog(commands.Cog):
 
                     # Post unknown traveler notification to xlog channel
                     if xlog_channel:
-                        xlog_embed = discord.Embed(
-                            description=(
+                        if is_ambiguous:
+                            xlog_desc = (
+                                f"### {Config.EMOJI_FAIL} Ambiguous Flight Match\n"
+                                f"Multiple members matched this traveler for **{destination_link}**.\n"
+                                f"Flagged for manual review."
+                            )
+                            xlog_color = COLOR_INVESTIGATION
+                        else:
+                            xlog_desc = (
                                 f"### {Config.EMOJI_FAIL} Unverified Flight Detected\n"
                                 f"An unregistered traveler was detected attempting to join **{destination_link}**.\n"
                                 f"No matching member found."
-                            ),
-                            color=COLOR_ALERT,
+                            )
+                            xlog_color = COLOR_ALERT
+
+                        xlog_embed = discord.Embed(
+                            description=xlog_desc,
+                            color=xlog_color,
                             timestamp=embed_timestamp,
                         )
                         xlog_embed.add_field(name="IGN",          value=f"```yaml\n{ign}```",           inline=True)
                         xlog_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
                         xlog_embed.add_field(name="Destination",   value=destination_link,               inline=True)
+                        if is_ambiguous:
+                            candidate_lines = [
+                                f"{m.mention} ({m.display_name})"
+                                for m in ambiguous_members[:10]
+                            ]
+                            if len(ambiguous_members) > 10:
+                                candidate_lines.append(f"...and {len(ambiguous_members) - 10} more")
+                            xlog_embed.add_field(name="Possible Matches", value="\n".join(candidate_lines), inline=False)
                         xlog_embed.add_field(name="Detected",      value=f"<t:{alert_ts}:R>",            inline=True)
                         if visit_id is not None:
                             xlog_embed.add_field(name="Visit ID",  value=f"`#{visit_id}`",               inline=True)
@@ -1446,10 +1531,10 @@ class FlightLoggerCog(commands.Cog):
                         island_raw = match.group(2).strip()
                         dest_raw   = match.group(3).strip()
 
-                        ign_clean = clean_text(ign_raw)
-                        isl_clean = clean_text(island_raw)
+                        ign_norm = self.normalize_identity_text(ign_raw)
+                        isl_norm = self.normalize_identity_text(island_raw)
 
-                        found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_clean, isl_clean)
+                        found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_norm, isl_norm)
 
                         # Trigger the log result
                         await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, timestamp=message.created_at, message_url=message.jump_url, message_content=message.content)
@@ -1540,15 +1625,15 @@ class FlightLoggerCog(commands.Cog):
         ign = match.group(1).strip()
         island = match.group(2).strip()
         dest = match.group(3).strip()
-        ign_clean = clean_text(ign)
-        isl_clean = clean_text(island)
+        ign_norm = self.normalize_identity_text(ign)
+        isl_norm = self.normalize_identity_text(island)
 
         # Run member-matching in a thread (same as the live pipeline)
         found = await asyncio.to_thread(
-            self.find_matching_members, ctx.guild, ign_clean, isl_clean
+            self.find_matching_members, ctx.guild, ign_norm, isl_norm
         )
         candidates = await asyncio.to_thread(
-            self.find_all_candidates, ctx.guild, ign_clean, isl_clean
+            self.find_all_candidates, ctx.guild, ign_norm, isl_norm
         )
 
         destination_link = self.get_island_channel_link(dest)
@@ -1641,13 +1726,13 @@ class FlightLoggerCog(commands.Cog):
                 dest_raw = match.group(3).strip()
                 
                 # Clean and find matching members
-                ign_clean = clean_text(ign_raw)
-                isl_clean = clean_text(island_raw)
+                ign_norm = self.normalize_identity_text(ign_raw)
+                isl_norm = self.normalize_identity_text(island_raw)
                 found = await asyncio.to_thread(
                     self.find_matching_members, 
                     ctx.guild, 
-                    ign_clean, 
-                    isl_clean
+                    ign_norm,
+                    isl_norm
                 )
                 
                 # Log the result (this simulates what on_message would do)
