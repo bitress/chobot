@@ -145,10 +145,23 @@ TWITCH_CHANNEL=chopaeng
 WORKBOOK_NAME=ChoPaeng_Database
 IS_PRODUCTION=false
 
-# --- GEMINI AI (optional, free tier) ---
+# --- AI PROVIDERS (optional) ---
+# Provider selection: auto | openai | gemini
+# auto = tries OPENAI_API_KEY first, then GEMINI_API_KEY.
+AI_PROVIDER=auto
+
+# OpenAI (optional)
+# Get an API key at https://platform.openai.com/
+OPENAI_API_KEY=
+# Optional custom endpoint/base URL (leave blank for default OpenAI endpoint)
+# Default endpoint is https://api.openai.com/v1
+OPENAI_BASE_URL=
+OPENAI_MODEL=gpt-4o-mini
+
+# Gemini (optional, free tier)
 # Get a free key at https://aistudio.google.com/
-# Leave blank to use the built-in keyword fallback.
 GEMINI_API_KEY=
+GEMINI_MODEL=gemini-1.5-flash
 ```
 
 ### Setting up Discord OAuth login for the Dashboard

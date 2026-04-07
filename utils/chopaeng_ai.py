@@ -1,7 +1,7 @@
 """
 Chopaeng AI Module
 Answers questions about the Chopaeng community using a built-in knowledge base.
-Uses Google Gemini (free tier) when a GEMINI_API_KEY is configured;
+Uses OpenAI or Google Gemini when API keys are configured;
 falls back to keyword-based matching when no key is present.
 """
 
@@ -542,11 +542,82 @@ def _keyword_answer(question: str, history: Optional[list[dict]] = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Gemini-powered answer (optional – requires GEMINI_API_KEY)
+# LLM-powered answer (optional – requires provider API key)
 # ---------------------------------------------------------------------------
+
+_AI_SYSTEM_PROMPT = (
+    "# ROLE\n"
+    "You are the Chopaeng AI, the official chat support assistant for the Chopaeng "
+    "Animal Crossing: New Horizons (ACNH) community. You operate within Discord and "
+    "Twitch chat. Your tone should be warm, inclusive, and helpful, mirroring the "
+    '"choPaeng family" vibe.\n\n'
+    "# CORE DIRECTIVES\n"
+    "1. Be Conversational: If a user greets you (e.g., 'hi', 'hello'), greet them "
+    "back and ask how you can help them with the islands, items, or bots today.\n"
+    "2. Be Concise: You are operating in a chat environment. Keep answers brief, "
+    "direct, and under 3-4 sentences whenever possible.\n"
+    "3. Answer Specifically: Only provide the information the user asked for. If they "
+    "ask how to get a Dodo code, explain the `!senddodo` command. DO NOT dump the "
+    'entire command list unless explicitly asked for "all commands."\n'
+    "4. Clarify Vague Requests: If a user says 'help me', do not guess their problem. "
+    "Ask them to clarify: \"I'd love to help! What do you need assistance with? "
+    "(e.g., finding an item, getting a dodo code, subscriber perks?)\"\n"
+    "5. Format for Readability: Use backticks for commands (like `!senddodo` or "
+    "`!find <item>`). Use short bullet points if listing more than two things. "
+    "Avoid raw Markdown tables unless absolutely necessary, as they render poorly "
+    "on mobile devices.\n"
+    "6. Be warm, friendly, and encouraging — match the community's positive vibe.\n"
+    "7. If you truly do not know, say so and suggest: "
+    "'I don't have the answer to that right now! Feel free to DM an Admin or "
+    "Moderator on the server for help.'\n\n"
+    "# CONTEXT USAGE\n"
+    "Rely strictly on the provided Chopaeng Knowledge Base for community-specific "
+    "topics (rules, islands, commands, Chopaeng info). For general ACNH gameplay "
+    "questions, use your general knowledge. Do not hallucinate ACNH advice outside "
+    "the scope of the knowledge base."
+)
+
+
+def _build_prompt(question: str, history: Optional[list[dict]] = None) -> str:
+    """Build a provider-agnostic prompt for Gemini/OpenAI backends."""
+    conversation_context = ""
+    if history:
+        lines = []
+        for turn in history:
+            role = "User" if turn["role"] == "user" else "Assistant"
+            lines.append(f"{role}: {turn['content']}")
+        conversation_context = (
+            "\n### Previous Conversation ###\n"
+            + "\n".join(lines)
+            + "\n"
+        )
+
+    return (
+        f"{_AI_SYSTEM_PROMPT}\n\n"
+        "# EXAMPLES\n"
+        "User: hi\n"
+        "AI: Hello! Welcome to the Chopaeng community. How can I help you today? "
+        "Are you looking for a specific item, or do you need help visiting an island?\n\n"
+        "User: help me\n"
+        "AI: I'm here to help! What are you having trouble with? Let me know if you need "
+        "help finding items, understanding the rules, or getting a Dodo code.\n\n"
+        "User: how to get dodo code\n"
+        "AI: To get a Dodo code, go to the specific island's channel in our Discord "
+        "server and type `!senddodo` or `!sd`. The bot will DM the code to you!\n\n"
+        f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"
+        f"{conversation_context}"
+        f"\n### Current Question ###\n{question}"
+    )
+
+
 async def get_ai_answer(
     question: str,
     gemini_api_key: Optional[str] = None,
+    openai_api_key: Optional[str] = None,
+    openai_base_url: Optional[str] = None,
+    provider: Optional[str] = None,
+    gemini_model: str = "gemini-1.5-flash",
+    openai_model: str = "gpt-4o-mini",
     conversation_key: Optional[str] = None,
 ) -> str:
     """
@@ -556,8 +627,9 @@ async def get_ai_answer(
     from the module-level ``conversation_store`` and passed as context, and the
     new exchange is stored back so future calls continue the conversation.
 
-    If *gemini_api_key* is provided, uses Google Gemini (free tier).
-    Otherwise falls back to the built-in keyword search.
+    Prefers provider selected by *provider* ("openai" or "gemini") when set.
+    If selected provider fails or has no key, tries other configured providers,
+    then falls back to the built-in keyword search.
     """
     if not question or not question.strip():
         return _GREETING_RESPONSE
@@ -578,14 +650,40 @@ async def get_ai_answer(
 
     history = conversation_store.get(conversation_key) if conversation_key else []
 
-    if gemini_api_key:
+    selected = (provider or "").strip().lower()
+    providers_to_try: list[tuple[str, Optional[str]]] = []
+
+    if selected == "openai":
+        providers_to_try.append(("openai", openai_api_key))
+        providers_to_try.append(("gemini", gemini_api_key))
+    elif selected == "gemini":
+        providers_to_try.append(("gemini", gemini_api_key))
+        providers_to_try.append(("openai", openai_api_key))
+    else:
+        # Auto mode: prefer OpenAI when key is configured, else Gemini.
+        providers_to_try.append(("openai", openai_api_key))
+        providers_to_try.append(("gemini", gemini_api_key))
+
+    for name, key in providers_to_try:
+        if not key:
+            continue
         try:
-            answer = await _gemini_answer(q, gemini_api_key, history=history)
+            if name == "openai":
+                answer = await _openai_answer(
+                    q,
+                    key,
+                    model=openai_model,
+                    base_url=openai_base_url,
+                    history=history,
+                )
+            else:
+                answer = await _gemini_answer(q, key, model=gemini_model, history=history)
+
             if conversation_key:
                 conversation_store.add(conversation_key, q, answer)
             return answer
         except Exception as e:
-            logger.warning(f"[ChopaengAI] Gemini failed ({e}), using keyword fallback.")
+            logger.warning(f"[ChopaengAI] {name} failed ({e}), trying next fallback.")
 
     answer = _keyword_answer(q, history=history)
     if conversation_key:
@@ -596,77 +694,55 @@ async def get_ai_answer(
 async def _gemini_answer(
     question: str,
     api_key: str,
+    model: str = "gemini-1.5-flash",
     history: Optional[list[dict]] = None,
 ) -> str:
     """Call the Gemini API asynchronously and return the answer."""
     import google.generativeai as genai  # lazy import
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-
-    # Build an optional conversation context block from history.
-    conversation_context = ""
-    if history:
-        lines = []
-        for turn in history:
-            role = "User" if turn["role"] == "user" else "Assistant"
-            lines.append(f"{role}: {turn['content']}")
-        conversation_context = (
-            "\n### Previous Conversation ###\n"
-            + "\n".join(lines)
-            + "\n"
-        )
-
-    prompt = (
-        "# ROLE\n"
-        "You are the Chopaeng AI, the official chat support assistant for the Chopaeng "
-        "Animal Crossing: New Horizons (ACNH) community. You operate within Discord and "
-        "Twitch chat. Your tone should be warm, inclusive, and helpful, mirroring the "
-        '"choPaeng family" vibe.\n\n'
-        "# CORE DIRECTIVES\n"
-        "1. Be Conversational: If a user greets you (e.g., 'hi', 'hello'), greet them "
-        "back and ask how you can help them with the islands, items, or bots today.\n"
-        "2. Be Concise: You are operating in a chat environment. Keep answers brief, "
-        "direct, and under 3-4 sentences whenever possible.\n"
-        "3. Answer Specifically: Only provide the information the user asked for. If they "
-        "ask how to get a Dodo code, explain the `!senddodo` command. DO NOT dump the "
-        'entire command list unless explicitly asked for "all commands."\n'
-        "4. Clarify Vague Requests: If a user says 'help me', do not guess their problem. "
-        "Ask them to clarify: \"I'd love to help! What do you need assistance with? "
-        "(e.g., finding an item, getting a dodo code, subscriber perks?)\"\n"
-        "5. Format for Readability: Use backticks for commands (like `!senddodo` or "
-        "`!find <item>`). Use short bullet points if listing more than two things. "
-        "Avoid raw Markdown tables unless absolutely necessary, as they render poorly "
-        "on mobile devices.\n"
-        "6. Be warm, friendly, and encouraging — match the community's positive vibe.\n"
-        "7. If you truly do not know, say so and suggest: "
-        "'I don't have the answer to that right now! Feel free to DM an Admin or "
-        "Moderator on the server for help.'\n\n"
-        "# CONTEXT USAGE\n"
-        "Rely strictly on the provided Chopaeng Knowledge Base for community-specific "
-        "topics (rules, islands, commands, Chopaeng info). For general ACNH gameplay "
-        "questions, use your general knowledge. Do not hallucinate ACNH advice outside "
-        "the scope of the knowledge base.\n\n"
-        "# EXAMPLES\n"
-        "User: hi\n"
-        "AI: Hello! Welcome to the Chopaeng community. How can I help you today? "
-        "Are you looking for a specific item, or do you need help visiting an island?\n\n"
-        "User: help me\n"
-        "AI: I'm here to help! What are you having trouble with? Let me know if you need "
-        "help finding items, understanding the rules, or getting a Dodo code.\n\n"
-        "User: how to get dodo code\n"
-        "AI: To get a Dodo code, go to the specific island's channel in our Discord "
-        "server and type `!senddodo` or `!sd`. The bot will DM the code to you!\n\n"
-        f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"
-        f"{conversation_context}"
-        f"\n### Current Question ###\n{question}"
-    )
+    gemini_model = genai.GenerativeModel(model)
+    prompt = _build_prompt(question, history=history)
 
     # Gemini's generate_content is synchronous; run it in a thread to avoid blocking.
     import asyncio
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(
-        None, lambda: model.generate_content(prompt)
+        None, lambda: gemini_model.generate_content(prompt)
     )
     text = response.text.strip()
+    return text if text else _keyword_answer(question)
+
+
+async def _openai_answer(
+    question: str,
+    api_key: str,
+    model: str = "gpt-4o-mini",
+    base_url: Optional[str] = None,
+    history: Optional[list[dict]] = None,
+) -> str:
+    """Call the OpenAI Chat Completions API asynchronously and return the answer."""
+    from openai import OpenAI  # lazy import
+    import asyncio
+
+    client_kwargs = {"api_key": api_key}
+    if base_url and base_url.strip():
+        client_kwargs["base_url"] = base_url.strip()
+    client = OpenAI(**client_kwargs)
+    prompt = _build_prompt(question, history=history)
+
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(
+        None,
+        lambda: client.chat.completions.create(
+            model=model,
+            temperature=0.4,
+            messages=[
+                {"role": "system", "content": _AI_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        ),
+    )
+
+    text = (response.choices[0].message.content or "").strip()
     return text if text else _keyword_answer(question)

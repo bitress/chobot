@@ -930,7 +930,16 @@ class DiscordCommandCog(commands.Cog):
 
         await ctx.defer()
         conv_key = _discord_conv_key(ctx.message)
-        answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY, conversation_key=conv_key)
+        answer = await get_ai_answer(
+            question,
+            gemini_api_key=Config.GEMINI_API_KEY,
+            openai_api_key=Config.OPENAI_API_KEY,
+            openai_base_url=Config.OPENAI_BASE_URL,
+            provider=Config.AI_PROVIDER,
+            gemini_model=Config.GEMINI_MODEL,
+            openai_model=Config.OPENAI_MODEL,
+            conversation_key=conv_key,
+        )
 
         await ctx.reply(f"🤖 **Chopaeng AI:** {answer}")
         logger.info(f"[DISCORD] Ask command by {ctx.author.name}: {question[:80]}")
@@ -1951,7 +1960,16 @@ class DiscordCommandBot(commands.Bot):
             question = MENTION_PATTERN.sub('', message.content).strip()
             conv_key = _discord_conv_key(message)
             async with message.channel.typing():
-                answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY, conversation_key=conv_key)
+                answer = await get_ai_answer(
+                    question,
+                    gemini_api_key=Config.GEMINI_API_KEY,
+                    openai_api_key=Config.OPENAI_API_KEY,
+                    openai_base_url=Config.OPENAI_BASE_URL,
+                    provider=Config.AI_PROVIDER,
+                    gemini_model=Config.GEMINI_MODEL,
+                    openai_model=Config.OPENAI_MODEL,
+                    conversation_key=conv_key,
+                )
             await message.reply(f"🤖: {answer}")
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
             return
@@ -1977,7 +1995,16 @@ class DiscordCommandBot(commands.Bot):
                 if question:
                     conv_key = _discord_conv_key(message)
                     async with message.channel.typing():
-                        answer = await get_ai_answer(question, gemini_api_key=Config.GEMINI_API_KEY, conversation_key=conv_key)
+                        answer = await get_ai_answer(
+                            question,
+                            gemini_api_key=Config.GEMINI_API_KEY,
+                            openai_api_key=Config.OPENAI_API_KEY,
+                            openai_base_url=Config.OPENAI_BASE_URL,
+                            provider=Config.AI_PROVIDER,
+                            gemini_model=Config.GEMINI_MODEL,
+                            openai_model=Config.OPENAI_MODEL,
+                            conversation_key=conv_key,
+                        )
                     await message.reply(f"🤖 **Chopaeng AI:** {answer}")
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
                     return

@@ -57,7 +57,7 @@ class Config:
         FLIGHT_LOG_CHANNEL_ID = 1473286727224524915
         IGNORE_CHANNEL_ID = 809295405128089611
         SUB_MOD_CHANNEL_ID = 1473286794995830845
-        XLOG_VERBOSE_CHANNEL_ID = 1486899475631968367
+        XLOG_VERBOSE_CHANNEL_ID = 1491101080430579964
 
     # Patreon
     PATREON_TOKEN = os.getenv("PATREON_TOKEN")
@@ -66,8 +66,13 @@ class Config:
     # Nookipedia
     NOOKIPEDIA_KEY = os.getenv("NOOKIPEDIA_KEY")
 
-    # Gemini AI (free tier — optional)
+    # AI providers (optional)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip()
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "auto").strip().lower()
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     # Web Dashboard (mod-only)
     DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
