@@ -45,6 +45,93 @@ GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
 # Any message older than this window is no longer at risk of being replayed.
 COMMAND_CLAIM_EXPIRY_SECONDS = 300  # 5 minutes
 
+# Trivia game settings
+TRIVIA_TIMEOUT = 30  # seconds before revealing the answer automatically
+
+# ACNH trivia question bank — (question, [choice_A, B, C, D], correct_index 0-based)
+ACNH_TRIVIA_QUESTIONS: list[dict] = [
+    {"q": "What species is Marshall?",
+     "c": ["Hamster", "Squirrel", "Cat", "Rabbit"], "a": 1},
+    {"q": "Which personality type does Raymond have?",
+     "c": ["Lazy", "Cranky", "Smug", "Jock"], "a": 2},
+    {"q": "What is the name of the airport attendant in ACNH?",
+     "c": ["Tom Nook", "Orville", "Dodo", "Isabelle"], "a": 1},
+    {"q": "Which villager is known for the catchphrase 'aight'?",
+     "c": ["Marshal", "Lucky", "Stitches", "Bob"], "a": 1},
+    {"q": "What item do you need to terraform your island in ACNH?",
+     "c": ["Golden Shovel", "Island Designer App", "Pro Membership", "Ladder"], "a": 1},
+    {"q": "Who is the shopkeeper at Nook's Cranny?",
+     "c": ["Tom Nook", "Timmy & Tommy", "Label", "Leif"], "a": 1},
+    {"q": "What species is Isabelle?",
+     "c": ["Dog", "Cat", "Shih Tzu", "Rabbit"], "a": 0},
+    {"q": "What personality type does Stitches have?",
+     "c": ["Normal", "Peppy", "Lazy", "Smug"], "a": 2},
+    {"q": "Which fruit is NOT a starting fruit in ACNH?",
+     "c": ["Apples", "Pears", "Durian", "Oranges"], "a": 2},
+    {"q": "What species is Ankha?",
+     "c": ["Dog", "Rabbit", "Cat", "Bear"], "a": 2},
+    {"q": "What type of item is the Golden Axe?",
+     "c": ["Tool", "Furniture", "Clothing", "Fossil"], "a": 0},
+    {"q": "What day does K.K. Slider perform on?",
+     "c": ["Friday", "Saturday", "Sunday", "Monday"], "a": 1},
+    {"q": "What personality type is Cranky?",
+     "c": ["Male", "Female", "Neutral", "Rare"], "a": 0},
+    {"q": "What species is Bob?",
+     "c": ["Bear", "Cat", "Dog", "Frog"], "a": 1},
+    {"q": "What is the rarest fruit you can get from Nook Miles Ticket islands?",
+     "c": ["Coconuts", "All are equally rare", "Your native fruit", "Pears"], "a": 1},
+    {"q": "What do you use to catch bugs in ACNH?",
+     "c": ["Fishing Rod", "Net", "Bug Trap", "Shovel"], "a": 1},
+    {"q": "Which character runs the Able Sisters tailor shop?",
+     "c": ["Mabel & Sable", "Celeste", "Label", "Harriet"], "a": 0},
+    {"q": "What species is Goldie?",
+     "c": ["Horse", "Rabbit", "Dog", "Cat"], "a": 2},
+    {"q": "How many personality types exist in ACNH for female villagers?",
+     "c": ["2", "3", "4", "5"], "a": 2},
+    {"q": "What species is Merengue?",
+     "c": ["Bear", "Rhino", "Hippo", "Dog"], "a": 1},
+    {"q": "What material do you need to craft a Simple DIY Workbench?",
+     "c": ["Iron Nuggets", "Wood only", "Stone + Wood", "Gold Nuggets"], "a": 1},
+    {"q": "What species is Judy?",
+     "c": ["Bear Cub", "Koala", "Hamster", "Cat"], "a": 0},
+    {"q": "Which event features shooting stars you can wish on?",
+     "c": ["Fishing Tourney", "Bug-Off", "Meteor Shower", "Harvest Festival"], "a": 2},
+    {"q": "What item does Celeste give you during a meteor shower?",
+     "c": ["Star Fragment", "Magic Wand Recipe", "DIY Recipe", "Shooting Star Wand"], "a": 2},
+    {"q": "How many villagers can live on your island at once?",
+     "c": ["8", "10", "12", "15"], "a": 1},
+    {"q": "What species is Lucky?",
+     "c": ["Cat", "Dog", "Bear", "Wolf"], "a": 1},
+    {"q": "Which character hosts the Fishing Tourney?",
+     "c": ["Blathers", "C.J.", "Flick", "Chip"], "a": 1},
+    {"q": "Which character buys bugs at a premium during the Bug-Off?",
+     "c": ["C.J.", "Flick", "Nat", "Pascal"], "a": 1},
+    {"q": "What species is Marshal?",
+     "c": ["Bear", "Hamster", "Squirrel", "Mouse"], "a": 2},
+    {"q": "What do Star Fragments primarily come from?",
+     "c": ["Fossils", "Meteor Showers", "Balloon Presents", "Diving"], "a": 1},
+    {"q": "How many iron nuggets does it take to build Nook's Cranny?",
+     "c": ["10", "20", "30", "40"], "a": 2},
+    {"q": "What species is Fauna?",
+     "c": ["Rabbit", "Deer", "Koala", "Bear"], "a": 1},
+    {"q": "Which island facility is unlocked last by default?",
+     "c": ["Museum", "Nook's Cranny", "Resident Services Building", "Able Sisters"], "a": 3},
+    {"q": "What is the maximum number of stars you can wish on in one meteor shower night?",
+     "c": ["10", "20", "Unlimited", "50"], "a": 2},
+    {"q": "What personality type is Peppy?",
+     "c": ["Male", "Female", "Both", "Rare"], "a": 1},
+    {"q": "What species is Zucker?",
+     "c": ["Frog", "Bear", "Octopus", "Cat"], "a": 2},
+    {"q": "Which ACNH character can identify fossils?",
+     "c": ["Tom Nook", "Blathers", "Isabelle", "Celeste"], "a": 1},
+    {"q": "What are the two types of turnips in ACNH?",
+     "c": ["Red & White", "White & Yellow", "Purple & White", "Golden & White"], "a": 0},
+    {"q": "What is Chopaeng known for in the ACNH community?",
+     "c": ["Speedrunning", "Hosting 24/7 treasure islands", "Drawing fan art", "Making mods"], "a": 1},
+    {"q": "What command do you type to get a Dodo code on a Chopaeng sub island?",
+     "c": ["!dodo", "!senddodo", "!code", "!sd — same as !senddodo"], "a": 3},
+]
+
 # Shared SQLite database path (project root)
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chobot.db")
 
@@ -208,6 +295,95 @@ def _discord_conv_key(message: discord.Message) -> str:
     """Return a stable per-user-per-channel key for conversation history."""
     guild_id = message.guild.id if message.guild else "dm"
     return f"discord:{guild_id}:{message.channel.id}:{message.author.id}"
+
+
+# ---------------------------------------------------------------------------
+# Trivia UI
+# ---------------------------------------------------------------------------
+
+_TRIVIA_LETTER = ["🇦", "🇧", "🇨", "🇩"]
+
+
+class TriviaView(discord.ui.View):
+    """Multiple-choice trivia buttons for a single ACNH question.
+
+    The first user to click the correct answer wins.  After *timeout* seconds,
+    or once any button is clicked, all buttons are disabled and the result is
+    revealed.
+    """
+
+    def __init__(self, question: dict, timeout: int = TRIVIA_TIMEOUT):
+        super().__init__(timeout=timeout)
+        self.question = question
+        self.answered = False
+
+        for idx, choice in enumerate(question["c"]):
+            label = f"{_TRIVIA_LETTER[idx]} {choice}"
+            btn = discord.ui.Button(
+                label=label,
+                custom_id=str(idx),
+                style=discord.ButtonStyle.secondary,
+                row=0 if idx < 2 else 1,
+            )
+            btn.callback = self._make_callback(idx)
+            self.add_item(btn)
+
+    def _make_callback(self, idx: int):
+        async def callback(interaction: discord.Interaction):
+            if self.answered:
+                await interaction.response.defer()
+                return
+            self.answered = True
+            correct = self.question["a"]
+            self._update_buttons(correct, chosen=idx)
+            self.stop()
+
+            if idx == correct:
+                result_text = (
+                    f"✅ **{interaction.user.display_name}** got it! "
+                    f"The answer is **{self.question['c'][correct]}**! 🎉"
+                )
+            else:
+                result_text = (
+                    f"❌ **{interaction.user.display_name}** answered "
+                    f"**{self.question['c'][idx]}**, but the correct answer is "
+                    f"**{self.question['c'][correct]}**."
+                )
+
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send(result_text)
+
+        return callback
+
+    def _update_buttons(self, correct: int, chosen: int | None = None) -> None:
+        """Colour and disable all buttons."""
+        for item in self.children:
+            if not isinstance(item, discord.ui.Button):
+                continue
+            btn_idx = int(item.custom_id)
+            if btn_idx == correct:
+                item.style = discord.ButtonStyle.success
+            elif chosen is not None and btn_idx == chosen and chosen != correct:
+                item.style = discord.ButtonStyle.danger
+            else:
+                item.style = discord.ButtonStyle.secondary
+            item.disabled = True
+
+    async def on_timeout(self) -> None:
+        if self.answered:
+            return
+        self.answered = True
+        correct = self.question["a"]
+        self._update_buttons(correct)
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+                await self.message.reply(
+                    f"⏰ Time's up! The correct answer was "
+                    f"**{self.question['c'][correct]}**."
+                )
+            except Exception:
+                pass
 
 
 class SuggestionSelect(discord.ui.Select):
@@ -846,6 +1022,8 @@ class DiscordCommandCog(commands.Cog):
             value=(
                 "`!islands [sub|free]` - Check island bot status (sub, free, or both)\n"
                 "*Aliases: !islandstatus, !checkislands*\n"
+                "`!trivia` - Play an ACNH quiz question with button answers!\n"
+                "*Aliases: !acnhquiz, !quiz*\n"
                 "`!status` - Show bot status and cache info\n"
                 "`!ping` - Check bot response time\n"
                 "`!random` - Get a random item suggestion\n"
@@ -994,6 +1172,30 @@ class DiscordCommandCog(commands.Cog):
         else:
             await ctx.reply(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to check availability!")
 
+    @commands.hybrid_command(name="trivia", aliases=["acnhquiz", "quiz"])
+    async def trivia(self, ctx):
+        """Play an ACNH trivia question! Answer with the buttons before time runs out."""
+        q = random.choice(ACNH_TRIVIA_QUESTIONS)
+        letter = _TRIVIA_LETTER
+        choices_text = "\n".join(
+            f"{letter[i]} {choice}" for i, choice in enumerate(q["c"])
+        )
+        embed = discord.Embed(
+            title="🏝️ ACNH Trivia!",
+            description=f"**{q['q']}**\n\n{choices_text}",
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(
+            text=f"You have {TRIVIA_TIMEOUT} seconds to answer! • Asked by {ctx.author.display_name}",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP,
+        )
+        view = TriviaView(q, timeout=TRIVIA_TIMEOUT)
+        msg = await ctx.reply(embed=embed, view=view)
+        # Store the message reference so on_timeout can edit it
+        view.message = msg
+        logger.info(f"[DISCORD] Trivia question asked by {ctx.author.name}: {q['q'][:60]}")
+
     @commands.hybrid_command(name="status")
     async def status(self, ctx):
         """Show bot status"""
@@ -1028,6 +1230,7 @@ class DiscordCommandCog(commands.Cog):
 
         await ctx.defer()
         conv_key = _discord_conv_key(ctx.message)
+        channel_name = getattr(ctx.channel, "name", None)
         answer = await get_ai_answer(
             question,
             gemini_api_key=Config.GEMINI_API_KEY,
@@ -1037,6 +1240,7 @@ class DiscordCommandCog(commands.Cog):
             gemini_model=Config.GEMINI_MODEL,
             openai_model=Config.OPENAI_MODEL,
             conversation_key=conv_key,
+            channel_context=channel_name,
         )
 
         await ctx.reply(f"{answer}")
@@ -2259,6 +2463,7 @@ class DiscordCommandBot(commands.Bot):
             # Strip all @mentions to extract the bare question
             question = MENTION_PATTERN.sub('', message.content).strip()
             conv_key = _discord_conv_key(message)
+            channel_name = getattr(message.channel, "name", None)
             async with message.channel.typing():
                 answer = await get_ai_answer(
                     question,
@@ -2269,6 +2474,7 @@ class DiscordCommandBot(commands.Bot):
                     gemini_model=Config.GEMINI_MODEL,
                     openai_model=Config.OPENAI_MODEL,
                     conversation_key=conv_key,
+                    channel_context=channel_name,
                 )
             await message.reply(f"🤖: {answer}")
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
@@ -2294,6 +2500,7 @@ class DiscordCommandBot(commands.Bot):
                 question = message.content.strip()
                 if question:
                     conv_key = _discord_conv_key(message)
+                    channel_name = getattr(message.channel, "name", None)
                     async with message.channel.typing():
                         answer = await get_ai_answer(
                             question,
@@ -2304,6 +2511,7 @@ class DiscordCommandBot(commands.Bot):
                             gemini_model=Config.GEMINI_MODEL,
                             openai_model=Config.OPENAI_MODEL,
                             conversation_key=conv_key,
+                            channel_context=channel_name,
                         )
                     await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
