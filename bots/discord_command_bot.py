@@ -1627,7 +1627,7 @@ class DiscordCommandCog(commands.Cog):
         # --- Free island status ---
         if self.free_island_lookup:
             for island in Config.FREE_ISLANDS:
-                island_clean_free = clean_text(island)
+                free_island_clean = clean_text(island)
                 try:
                     is_online = await self._check_island_online(guild, island, lookup=self.free_island_lookup)
                 except Exception as e:
@@ -1636,16 +1636,16 @@ class DiscordCommandCog(commands.Cog):
                 _upsert_bot_status(island.lower(), island, is_online)
 
                 # Track transitions for free islands so subscribers can be notified
-                prev_free = self.island_down_states.get(f"free:{island_clean_free}")
-                if prev_free is None:
-                    self.island_down_states[f"free:{island_clean_free}"] = False
+                free_was_down = self.island_down_states.get(f"free:{free_island_clean}")
+                if free_was_down is None:
+                    self.island_down_states[f"free:{free_island_clean}"] = False
                     continue
-                if not is_online and not prev_free:
-                    self.island_down_states[f"free:{island_clean_free}"] = True
-                    await self._notify_island_subscribers(island_clean_free, island, online=False)
-                elif is_online and prev_free:
-                    self.island_down_states[f"free:{island_clean_free}"] = False
-                    await self._notify_island_subscribers(island_clean_free, island, online=True)
+                if not is_online and not free_was_down:
+                    self.island_down_states[f"free:{free_island_clean}"] = True
+                    await self._notify_island_subscribers(free_island_clean, island, online=False)
+                elif is_online and free_was_down:
+                    self.island_down_states[f"free:{free_island_clean}"] = False
+                    await self._notify_island_subscribers(free_island_clean, island, online=True)
 
     @island_monitor_loop.before_loop
     async def before_island_monitor_loop(self):
