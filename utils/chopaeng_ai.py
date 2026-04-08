@@ -416,7 +416,7 @@ family") includes Filipino and international ACNH fans.
 | Facebook | facebook.com/chopaenglive |
 | TikTok | tiktok.com/@chopaeng |
 | Discord | discord.gg/chopaeng |
-| Patreon | patreon.com/cw/chopaeng/membership |
+| Patreon | https://patreon.com/cw/chopaeng/membership |
 
 ## Chobot
 Chobot is the custom bot built by bitress.
@@ -522,14 +522,15 @@ Stock rotates regularly across all islands. Use `!find <item>` to check current
 availability.
 
 ## Subscriber / VIP Perks
-Subscribe via Patreon (patreon.com/cw/chopaeng/membership) to unlock:
+Subscribe via Patreon (https://patreon.com/cw/chopaeng/membership) to unlock:
 - Unlimited access to the 20 sub islands whenever they are open.
 - Priority queue when islands are busy.
 - Item/villager requests — ask for specific stock on a sub island.
 - Exclusive stock: rarer items, full DIY sets, curated villager selections.
 - Faster Dodo code delivery.
 
-After subscribing, link your membership in Discord (see #set-nick or #get-roles)
+After subscribing, link your membership in Discord (see <#1465428124937359481> to get started,
+then <#1081147108612124742> or <#762351782382141440>)
 to receive the sub role and unlock access.
 
 ## Community Rules (All Members)
@@ -546,7 +547,7 @@ These apply on every treasure island (sub and free), in addition to the above:
 1. **Dodo Code is confidential.** Do not share it with anyone — not other
    accounts, friends, or family. One character/island per membership.
 2. **Set your server nickname** to `ACNH Character Name | Your ACNH Island Name`
-   (e.g. `Kuya | Hiraya`) in the #set-nick channel.
+   (e.g. `Kuya | Hiraya`) in the <#1081147108612124742> channel.
 3. **Leave via the airport.** Do not press "-" to close the game; this may
    cause lost items. No AFK on islands.
 4. **Check internet before flying.** NAT Type A or B required. NAT Type C or D
