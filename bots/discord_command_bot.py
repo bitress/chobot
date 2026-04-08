@@ -1661,9 +1661,14 @@ class DiscordCommandCog(commands.Cog):
         flight_cog = self.bot.get_cog('FlightLoggerCog')
         if flight_cog:
             flight_cog.register_dodo_request(ctx.author.id, ctx.author, ctx.channel, reply_msg, guild_icon)
-            asyncio.create_task(
-                self._post_dodo_xlog_fallback(ctx, reply_msg, guild_icon, xlog_channel)
-            )
+
+            async def _guarded_fallback():
+                try:
+                    await self._post_dodo_xlog_fallback(ctx, reply_msg, guild_icon, xlog_channel)
+                except Exception as e:
+                    logger.warning(f"[DISCORD] Dodo xlog fallback task failed: {e}")
+
+            asyncio.create_task(_guarded_fallback())
             return
 
         await self._send_dodo_request_xlog(ctx, reply_msg, guild_icon, xlog_channel)

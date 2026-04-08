@@ -1035,7 +1035,6 @@ class FlightLoggerCog(commands.Cog):
             'channel': channel,
             'reply_msg': reply_msg,
             'guild_icon': guild_icon,
-            'timestamp': discord.utils.utcnow().timestamp(),
         }
 
     def pop_pending_dodo_request(self, user_id: int) -> dict | None:
