@@ -763,7 +763,6 @@ class TravelerActionView(discord.ui.View):
             ephemeral=True,
         )
 
-
 class FlagConfirmView(discord.ui.View):
     """Confirmation dialog for flagging a verified flight."""
 
@@ -776,9 +775,14 @@ class FlagConfirmView(discord.ui.View):
     @discord.ui.button(label="Yes, Flag", style=discord.ButtonStyle.danger, emoji="🚩", row=0)
     async def confirm_flag(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Proceed with flagging."""
-        await self.parent_view._execute_flag(interaction, self.original_message)
-        await interaction.response.edit_message(content="🚩 Flight flagged for review.", view=None)
-        self.stop()
+        try:
+            await self.parent_view._execute_flag(interaction, self.original_message)
+            await interaction.response.edit_message(content="🚩 Flight flagged for review.", view=None)
+        except Exception as e:
+            logger.error(f"[FLAG] Error in confirm_flag: {e}", exc_info=True)
+            await interaction.response.send_message(f"Error flagging flight: {e}", ephemeral=True)
+        finally:
+            self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=0)
     async def cancel_flag(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -907,16 +911,21 @@ class VerifiedFlightFlagView(discord.ui.View):
         except discord.NotFound:
             return
 
-        embed = interaction.message.embeds[0] if interaction.message.embeds else None
-        ign = self.ign or self._extract_field(embed, "IGN")
+        try:
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            ign = self.ign or (self._extract_field(embed, "IGN") if embed else None) or "Unknown"
 
-        # Show confirmation dialog
-        confirm_view = FlagConfirmView(self, ign, interaction.message)
-        await interaction.followup.send(
-            f"🚩 Are you sure you want to flag **{ign or 'this flight'}** for review?",
-            view=confirm_view,
-            ephemeral=True
-        )
+            # Show confirmation dialog
+            confirm_view = FlagConfirmView(self, ign, interaction.message)
+            await interaction.followup.send(
+                f"🚩 Are you sure you want to flag **{ign}** for review?",
+                view=confirm_view,
+                ephemeral=True
+            )
+        except Exception as e:
+            logger.error(f"[FLAG] Error in flag_action: {e}", exc_info=True)
+            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
 
 # Compiled once at module level; shared by all flight-monitoring cogs.
 JOIN_PATTERN = re.compile(
@@ -1428,7 +1437,7 @@ class FlightLoggerCog(commands.Cog):
         if len(found_members) == 1:
             mentions = " ".join([m.mention for m in found_members])
             logger.info(f"[FLIGHT] Match: {ign} | {mentions}")
-            await self.record_island_visit(ign, island, destination, found_members, guild_id, visit_ts, island_type=island_type)
+            visit_id = await self.record_island_visit(ign, island, destination, found_members, guild_id, visit_ts, island_type=island_type)
 
             # Post authorized-traveler log to the xlog channel.
             xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
@@ -1457,11 +1466,13 @@ class FlightLoggerCog(commands.Cog):
                 embed.add_field(name="IGN",         value=f"```yaml\n{ign}```",           inline=True)
                 embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
                 embed.add_field(name="Destination", value=destination_link,               inline=True)
+                if visit_id is not None:
+                    embed.add_field(name="Visit ID", value=f"`#{visit_id}`",              inline=True)
                 embed.set_image(url=Config.FOOTER_LINE)
                 embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
 
                 # Create view with flag button and optional view flight link
-                flag_view = VerifiedFlightFlagView(self.bot, ign, visit_id=None, message_url=message_url)
+                flag_view = VerifiedFlightFlagView(bot=self.bot)
                 if message_url:
                     flag_view.add_item(discord.ui.Button(label="View Flight", url=message_url, style=discord.ButtonStyle.link))
                 
