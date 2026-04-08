@@ -40,6 +40,7 @@ VISITOR_LINE_PATTERN = re.compile(r'#\d+:\s*(.+)')
 AVAILABLE_SLOT_TEXT = "available slot"
 ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
 GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
+DODO_XLOG_TIMEOUT = 1800  # seconds to wait for a verified flight before posting the dodo-request xlog
 
 # How long (seconds) a command claim record is kept before being pruned.
 # Any message older than this window is no longer at risk of being replayed.
@@ -1645,7 +1646,11 @@ class DiscordCommandCog(commands.Cog):
         return embed
 
     async def _log_dodo_request_to_xlog(self, ctx, reply_msg: discord.Message | None) -> None:
-        """Post a notification to the xlog channel when a user successfully requests the dodo code."""
+        """Post a notification to the xlog channel when a user successfully requests the dodo code.
+
+        If the flight logger is available, defers the xlog post until the user is seen joining
+        (or DODO_XLOG_TIMEOUT seconds elapse, whichever comes first).
+        """
         xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
         if not xlog_channel:
             return
@@ -1653,16 +1658,42 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         guild_icon = guild.icon.url if guild and guild.icon else None
 
-        # Try to link this request to the user's most recent flight log entry.
+        flight_cog = self.bot.get_cog('FlightLoggerCog')
+        if flight_cog:
+            flight_cog.register_dodo_request(ctx.author.id, ctx.author, ctx.channel, reply_msg, guild_icon)
+
+            async def _guarded_fallback():
+                try:
+                    await self._post_dodo_xlog_fallback(ctx, reply_msg, guild_icon, xlog_channel)
+                except Exception as e:
+                    logger.warning(f"[DISCORD] Dodo xlog fallback task failed: {e}")
+
+            asyncio.create_task(_guarded_fallback())
+            return
+
+        await self._send_dodo_request_xlog(ctx, reply_msg, guild_icon, xlog_channel)
+
+    async def _post_dodo_xlog_fallback(self, ctx, reply_msg: discord.Message | None, guild_icon: str | None, xlog_channel) -> None:
+        """After DODO_XLOG_TIMEOUT, post the dodo-request xlog if the flight logger hasn't already merged it."""
+        await asyncio.sleep(DODO_XLOG_TIMEOUT)
+        flight_cog = self.bot.get_cog('FlightLoggerCog')
+        if flight_cog:
+            pending = flight_cog.pop_pending_dodo_request(ctx.author.id)
+            if pending is None:
+                return  # Already merged into the verified-flight xlog entry
+
         visit_id = None
         try:
-            from bots.flight_logger import FlightLoggerCog
-            flight_cog = self.bot.get_cog('FlightLoggerCog')
+            guild = self.bot.get_guild(Config.GUILD_ID)
             if flight_cog and guild:
                 visit_id = await flight_cog.get_recent_visit_id_by_user(ctx.author.id, guild.id)
         except Exception as e:
-            logger.warning(f"[DISCORD] Could not look up visit ID for xlog: {e}")
+            logger.warning(f"[DISCORD] Could not look up visit ID for xlog fallback: {e}")
 
+        await self._send_dodo_request_xlog(ctx, reply_msg, guild_icon, xlog_channel, visit_id=visit_id)
+
+    async def _send_dodo_request_xlog(self, ctx, reply_msg: discord.Message | None, guild_icon: str | None, xlog_channel, visit_id: int | None = None) -> None:
+        """Build and send the dodo-request embed to xlog."""
         embed = discord.Embed(
             title="✈️ Dodo Code Requested",
             description=(

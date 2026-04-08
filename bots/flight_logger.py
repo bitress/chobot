@@ -942,6 +942,7 @@ class FlightLoggerCog(commands.Cog):
         self.last_processed = None
         self._pending_alerts: dict[tuple[str, str], int] = {}
         self._creating_alerts: set[tuple[str, str]] = set()
+        self._pending_dodo_requests: dict[int, dict] = {}
         self.fetch_islands_task.start()
         self.cleanup_warnings_task.start()
 
@@ -1026,6 +1027,19 @@ class FlightLoggerCog(commands.Cog):
         )
         row = await cursor.fetchone()
         return row[0] if row else None
+
+    def register_dodo_request(self, user_id: int, member: discord.Member, channel: discord.abc.GuildChannel, reply_msg: discord.Message | None, guild_icon: str | None) -> None:
+        """Register a pending dodo-code request so it can be merged with the verified-flight xlog entry."""
+        self._pending_dodo_requests[user_id] = {
+            'member': member,
+            'channel': channel,
+            'reply_msg': reply_msg,
+            'guild_icon': guild_icon,
+        }
+
+    def pop_pending_dodo_request(self, user_id: int) -> dict | None:
+        """Remove and return the pending dodo-request info for the given user, or None if not found."""
+        return self._pending_dodo_requests.pop(user_id, None)
 
     async def get_recent_visit_id_by_user(self, user_id: int, guild_id: int, hours: int = 6) -> int | None:
         """Find the most recent island_visits.id for the given Discord user within the last N hours."""
@@ -1479,6 +1493,13 @@ class FlightLoggerCog(commands.Cog):
                 embed.add_field(name="Destination", value=destination_link,               inline=True)
                 if visit_id is not None:
                     embed.add_field(name="Visit ID", value=f"`#{visit_id}`",              inline=True)
+
+                # Merge any pending dodo-code request from this member into the embed,
+                # suppressing the separate "Dodo Code Requested" xlog entry.
+                dodo_req = self.pop_pending_dodo_request(found_members[0].id)
+                if dodo_req is not None:
+                    embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+
                 embed.set_image(url=Config.FOOTER_LINE)
                 embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
 
@@ -1486,6 +1507,8 @@ class FlightLoggerCog(commands.Cog):
                 flag_view = VerifiedFlightFlagView(bot=self.bot)
                 if message_url:
                     flag_view.add_item(discord.ui.Button(label="View Flight", url=message_url, style=discord.ButtonStyle.link))
+                if dodo_req is not None and dodo_req.get('reply_msg'):
+                    flag_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
                 
                 await xlog_channel.send(embed=embed, view=flag_view)
         else:
