@@ -5,12 +5,23 @@ Uses OpenAI or Google Gemini when API keys are configured;
 falls back to keyword-based matching when no key is present.
 """
 
+import collections
+import json
 import logging
+import os
 import re
+import threading
 import time
 from typing import Optional
 
 logger = logging.getLogger("ChopaengAI")
+
+# Path to the JSON file used to persist the rolling chat-log across restarts.
+# Lives in the project root (same directory as chobot.db).
+_CHAT_LOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "chat_log.json",
+)
 
 # ---------------------------------------------------------------------------
 # Live API endpoints + cache
@@ -306,6 +317,82 @@ class ConversationStore:
 
 # Module-level singleton used by get_ai_answer and the bot modules.
 conversation_store = ConversationStore()
+
+# ---------------------------------------------------------------------------
+# Rolling chat-log learned from a designated Discord channel
+# ---------------------------------------------------------------------------
+_CHAT_LOG_MAX = 50    # keep the most recent N messages
+_CHAT_LOG_MAX_LEN = 500  # max characters per message stored
+
+_chat_log_lock = threading.Lock()
+_chat_log_last_save: float = 0.0   # Unix timestamp of last successful disk write
+_CHAT_LOG_SAVE_MIN_INTERVAL = 1.0  # minimum seconds between disk writes
+
+
+def _load_chat_log() -> collections.deque:
+    """Load the persisted chat-log from disk, or return an empty deque on error."""
+    try:
+        with open(_CHAT_LOG_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            dq = collections.deque(maxlen=_CHAT_LOG_MAX)
+            for entry in data[-_CHAT_LOG_MAX:]:
+                if isinstance(entry, dict) and "author" in entry and "content" in entry:
+                    dq.append(entry)
+            logger.info(f"[ChopaengAI] Chat-log loaded from disk ({len(dq)} messages).")
+            return dq
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.warning(f"[ChopaengAI] Could not load chat-log from {_CHAT_LOG_PATH}: {exc}")
+    return collections.deque(maxlen=_CHAT_LOG_MAX)
+
+
+def _save_chat_log(snapshot: list) -> None:
+    """Atomically write *snapshot* to the chat-log JSON file."""
+    tmp_path = _CHAT_LOG_PATH + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(snapshot, fh, ensure_ascii=False)
+        os.replace(tmp_path, _CHAT_LOG_PATH)
+    except Exception as exc:
+        logger.warning(f"[ChopaengAI] Could not persist chat-log: {exc}")
+
+
+# Initialise from disk at import time so the log survives bot restarts.
+_chat_log: collections.deque = _load_chat_log()
+
+
+def add_chat_message(author: str, content: str) -> None:
+    """Append a message from the learn-channel to the rolling chat log and persist it.
+
+    Disk writes are throttled to at most once per *_CHAT_LOG_SAVE_MIN_INTERVAL* seconds
+    to avoid excessive I/O in high-traffic channels.
+    """
+    global _chat_log_last_save
+    if not content or not content.strip():
+        return
+    safe_author = str(author)[:100].replace("\n", " ").replace("\r", " ")
+    safe_content = content.strip()[:_CHAT_LOG_MAX_LEN].replace("\n", " ").replace("\r", " ")
+    with _chat_log_lock:
+        _chat_log.append({"author": safe_author, "content": safe_content})
+        snapshot = list(_chat_log)
+        now = time.monotonic()
+        due_for_save = (now - _chat_log_last_save) >= _CHAT_LOG_SAVE_MIN_INTERVAL
+        if due_for_save:
+            _chat_log_last_save = now
+    if due_for_save:
+        _save_chat_log(snapshot)
+
+
+def _build_chat_log_context() -> str:
+    """Format the rolling chat log into a compact text block for the LLM prompt."""
+    with _chat_log_lock:
+        snapshot = list(_chat_log)
+    if not snapshot:
+        return ""
+    lines = [f"{entry['author']}: {entry['content']}" for entry in snapshot]
+    return "\n".join(lines)
 
 
 CHOPAENG_KNOWLEDGE = """
@@ -855,7 +942,7 @@ _AI_SYSTEM_PROMPT = (
 )
 
 
-def _build_prompt(question: str, history: Optional[list[dict]] = None) -> str:
+def _build_prompt(question: str, history: Optional[list[dict]] = None, channel_context: Optional[str] = None) -> str:
     """Build a provider-agnostic prompt for Gemini/OpenAI backends."""
     conversation_context = ""
     if history:
@@ -871,6 +958,17 @@ def _build_prompt(question: str, history: Optional[list[dict]] = None) -> str:
 
     live_context = _build_live_context()
     live_section = f"\n### Live Island & Villager Data ###\n{live_context}\n" if live_context else ""
+
+    chat_log_context = _build_chat_log_context()
+    chat_log_section = (
+        f"\n### Recent Community Chat ###\n{chat_log_context}\n"
+        if chat_log_context else ""
+    )
+
+    channel_section = (
+        f"\n### Channel Context ###\nThis question was asked in the Discord channel: #{channel_context}\n"
+        if channel_context else ""
+    )
 
     return (
         f"{_AI_SYSTEM_PROMPT}\n\n"
@@ -900,6 +998,8 @@ def _build_prompt(question: str, history: Optional[list[dict]] = None) -> str:
         "AI: Raymond is currently on Bathala and Giliw!\n\n"
         f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"
         f"{live_section}"
+        f"{chat_log_section}"
+        f"{channel_section}"
         f"{conversation_context}"
         f"\n### Current Question ###\n{question}"
     )
@@ -914,6 +1014,7 @@ async def get_ai_answer(
     gemini_model: str = "gemini-1.5-flash",
     openai_model: str = "gpt-4o-mini",
     conversation_key: Optional[str] = None,
+    channel_context: Optional[str] = None,
 ) -> str:
     """
     Answer a question about Chopaeng.
@@ -921,6 +1022,10 @@ async def get_ai_answer(
     If *conversation_key* is provided, past exchanges for that key are retrieved
     from the module-level ``conversation_store`` and passed as context, and the
     new exchange is stored back so future calls continue the conversation.
+
+    *channel_context* is the Discord channel name where the question was asked.
+    When provided it is injected into the prompt so the AI can tailor its answers
+    to the topic of that channel (e.g. #free-islands vs #general-chat).
 
     Prefers provider selected by *provider* ("openai" or "gemini") when set.
     If selected provider fails or has no key, tries other configured providers,
@@ -980,9 +1085,12 @@ async def get_ai_answer(
                     model=openai_model,
                     base_url=openai_base_url,
                     history=history,
+                    channel_context=channel_context,
                 )
             else:
-                answer = await _gemini_answer(q, key, model=gemini_model, history=history)
+                answer = await _gemini_answer(
+                    q, key, model=gemini_model, history=history, channel_context=channel_context
+                )
 
             if conversation_key:
                 conversation_store.add(conversation_key, q, answer)
@@ -1001,13 +1109,14 @@ async def _gemini_answer(
     api_key: str,
     model: str = "gemini-1.5-flash",
     history: Optional[list[dict]] = None,
+    channel_context: Optional[str] = None,
 ) -> str:
     """Call the Gemini API asynchronously and return the answer."""
     import google.generativeai as genai  # lazy import
 
     genai.configure(api_key=api_key)
     gemini_model = genai.GenerativeModel(model)
-    prompt = _build_prompt(question, history=history)
+    prompt = _build_prompt(question, history=history, channel_context=channel_context)
 
     # Gemini's generate_content is synchronous; run it in a thread to avoid blocking.
     import asyncio
@@ -1025,6 +1134,7 @@ async def _openai_answer(
     model: str = "gpt-4o-mini",
     base_url: Optional[str] = None,
     history: Optional[list[dict]] = None,
+    channel_context: Optional[str] = None,
 ) -> str:
     """Call the OpenAI Chat Completions API asynchronously and return the answer."""
     from openai import OpenAI  # lazy import
@@ -1034,7 +1144,7 @@ async def _openai_answer(
     if base_url and base_url.strip():
         client_kwargs["base_url"] = base_url.strip()
     client = OpenAI(**client_kwargs)
-    prompt = _build_prompt(question, history=history)
+    prompt = _build_prompt(question, history=history, channel_context=channel_context)
 
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(

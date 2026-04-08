@@ -22,7 +22,7 @@ from thefuzz import process, fuzz
 from utils.config import Config
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
-from utils.chopaeng_ai import get_ai_answer, conversation_store
+from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -44,6 +44,93 @@ GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
 # How long (seconds) a command claim record is kept before being pruned.
 # Any message older than this window is no longer at risk of being replayed.
 COMMAND_CLAIM_EXPIRY_SECONDS = 300  # 5 minutes
+
+# Trivia game settings
+TRIVIA_TIMEOUT = 30  # seconds before revealing the answer automatically
+
+# ACNH trivia question bank — (question, [choice_A, B, C, D], correct_index 0-based)
+ACNH_TRIVIA_QUESTIONS: list[dict] = [
+    {"q": "What species is Marshall?",
+     "c": ["Hamster", "Squirrel", "Cat", "Rabbit"], "a": 1},
+    {"q": "Which personality type does Raymond have?",
+     "c": ["Lazy", "Cranky", "Smug", "Jock"], "a": 2},
+    {"q": "What is the name of the airport attendant in ACNH?",
+     "c": ["Tom Nook", "Orville", "Dodo", "Isabelle"], "a": 1},
+    {"q": "Which villager is known for the catchphrase 'kerplunk'?",
+     "c": ["Bob", "Lucky", "Marshal", "Stitches"], "a": 2},
+    {"q": "What item do you need to terraform your island in ACNH?",
+     "c": ["Golden Shovel", "Island Designer App", "Pro Membership", "Ladder"], "a": 1},
+    {"q": "Who is the shopkeeper at Nook's Cranny?",
+     "c": ["Tom Nook", "Timmy & Tommy", "Label", "Leif"], "a": 1},
+    {"q": "What species is Isabelle?",
+     "c": ["Dog", "Cat", "Shih Tzu", "Rabbit"], "a": 0},
+    {"q": "What personality type does Stitches have?",
+     "c": ["Normal", "Peppy", "Lazy", "Smug"], "a": 2},
+    {"q": "Which fruit is NOT a starting fruit in ACNH?",
+     "c": ["Apples", "Pears", "Durian", "Oranges"], "a": 2},
+    {"q": "What species is Ankha?",
+     "c": ["Dog", "Rabbit", "Cat", "Bear"], "a": 2},
+    {"q": "What type of item is the Golden Axe?",
+     "c": ["Tool", "Furniture", "Clothing", "Fossil"], "a": 0},
+    {"q": "What day does K.K. Slider perform on?",
+     "c": ["Friday", "Saturday", "Sunday", "Monday"], "a": 1},
+    {"q": "Which personality type is exclusive to male villagers in ACNH?",
+     "c": ["Lazy", "Cranky", "Smug", "Jock"], "a": 1},
+    {"q": "What species is Bob?",
+     "c": ["Bear", "Cat", "Dog", "Frog"], "a": 1},
+    {"q": "Which fruit does NOT grow natively on mystery islands (Nook Miles Tickets)?",
+     "c": ["Cherries", "Pears", "Coconuts", "Durians"], "a": 3},
+    {"q": "What do you use to catch bugs in ACNH?",
+     "c": ["Fishing Rod", "Net", "Bug Trap", "Shovel"], "a": 1},
+    {"q": "Which character runs the Able Sisters tailor shop?",
+     "c": ["Mabel & Sable", "Celeste", "Label", "Harriet"], "a": 0},
+    {"q": "What species is Goldie?",
+     "c": ["Horse", "Rabbit", "Dog", "Cat"], "a": 2},
+    {"q": "How many personality types exist in ACNH for female villagers?",
+     "c": ["2", "3", "4", "5"], "a": 2},
+    {"q": "What species is Merengue?",
+     "c": ["Bear", "Rhino", "Hippo", "Dog"], "a": 1},
+    {"q": "What material do you need to craft a Simple DIY Workbench?",
+     "c": ["Iron Nuggets", "Wood only", "Stone + Wood", "Gold Nuggets"], "a": 1},
+    {"q": "What species is Judy?",
+     "c": ["Bear Cub", "Koala", "Hamster", "Cat"], "a": 0},
+    {"q": "Which event features shooting stars you can wish on?",
+     "c": ["Fishing Tourney", "Bug-Off", "Meteor Shower", "Harvest Festival"], "a": 2},
+    {"q": "What item does Celeste give you during a meteor shower?",
+     "c": ["Star Fragment", "Magic Wand Recipe", "DIY Recipe", "Shooting Star Wand"], "a": 2},
+    {"q": "How many villagers can live on your island at once?",
+     "c": ["8", "10", "12", "15"], "a": 1},
+    {"q": "What species is Lucky?",
+     "c": ["Cat", "Dog", "Bear", "Wolf"], "a": 1},
+    {"q": "Which character hosts the Fishing Tourney?",
+     "c": ["Blathers", "C.J.", "Flick", "Chip"], "a": 1},
+    {"q": "Which character buys bugs at a premium during the Bug-Off?",
+     "c": ["C.J.", "Flick", "Nat", "Pascal"], "a": 1},
+    {"q": "What species is Marshal?",
+     "c": ["Bear", "Hamster", "Squirrel", "Mouse"], "a": 2},
+    {"q": "What do Star Fragments primarily come from?",
+     "c": ["Fossils", "Meteor Showers", "Balloon Presents", "Diving"], "a": 1},
+    {"q": "How many iron nuggets does it take to build Nook's Cranny?",
+     "c": ["10", "20", "30", "40"], "a": 2},
+    {"q": "What species is Fauna?",
+     "c": ["Rabbit", "Deer", "Koala", "Bear"], "a": 1},
+    {"q": "Which island facility is unlocked last by default?",
+     "c": ["Museum", "Nook's Cranny", "Resident Services Building", "Able Sisters"], "a": 3},
+    {"q": "What is the maximum number of stars you can wish on in one meteor shower night?",
+     "c": ["10", "20", "Unlimited", "50"], "a": 2},
+    {"q": "What personality type is Peppy?",
+     "c": ["Male", "Female", "Both", "Rare"], "a": 1},
+    {"q": "What species is Zucker?",
+     "c": ["Frog", "Bear", "Octopus", "Cat"], "a": 2},
+    {"q": "Which ACNH character can identify fossils?",
+     "c": ["Tom Nook", "Blathers", "Isabelle", "Celeste"], "a": 1},
+    {"q": "What are the two types of turnips in ACNH?",
+     "c": ["Red & White", "White & Yellow", "Purple & White", "Golden & White"], "a": 0},
+    {"q": "What is Chopaeng known for in the ACNH community?",
+     "c": ["Speedrunning", "Hosting 24/7 treasure islands", "Drawing fan art", "Making mods"], "a": 1},
+    {"q": "What command do you type to get a Dodo code on a Chopaeng sub island?",
+     "c": ["!dodo", "!senddodo", "!code", "!sd — same as !senddodo"], "a": 3},
+]
 
 # Shared SQLite database path (project root)
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chobot.db")
@@ -88,6 +175,91 @@ def _init_command_claims_db() -> None:
         logger.error(f"[DISCORD] Failed to init command_claims table: {exc}")
 
 
+def _init_subscriptions_db() -> None:
+    """Create the island_subscriptions table for online/offline alert opt-ins."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS island_subscriptions (
+                    user_id INTEGER NOT NULL,
+                    island_clean TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'sub',
+                    PRIMARY KEY (user_id, island_clean, kind)
+                )"""
+            )
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to init island_subscriptions table: {exc}")
+
+
+def _add_subscription(user_id: int, island_clean: str, kind: str) -> bool:
+    """Subscribe *user_id* to alerts for *island_clean*.
+
+    Returns True if a new row was inserted, False if it already existed.
+    """
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO island_subscriptions (user_id, island_clean, kind) VALUES (?, ?, ?)",
+                (user_id, island_clean, kind),
+            )
+            return cursor.rowcount > 0
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to add subscription {user_id}/{island_clean}: {exc}")
+        return False
+
+
+def _remove_subscription(user_id: int, island_clean: str | None) -> int:
+    """Remove subscription(s) for *user_id*.
+
+    If *island_clean* is None, all subscriptions for the user are removed.
+    Returns the number of rows deleted.
+    """
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            if island_clean is None:
+                cursor = conn.execute(
+                    "DELETE FROM island_subscriptions WHERE user_id = ?",
+                    (user_id,),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM island_subscriptions WHERE user_id = ? AND island_clean = ?",
+                    (user_id, island_clean),
+                )
+            return cursor.rowcount
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to remove subscription {user_id}/{island_clean}: {exc}")
+        return 0
+
+
+def _get_user_subscriptions(user_id: int) -> list[tuple[str, str]]:
+    """Return a list of (island_clean, kind) tuples the user is subscribed to."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            rows = conn.execute(
+                "SELECT island_clean, kind FROM island_subscriptions WHERE user_id = ? ORDER BY island_clean",
+                (user_id,),
+            ).fetchall()
+            return rows
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to fetch subscriptions for {user_id}: {exc}")
+        return []
+
+
+def _get_island_subscribers(island_clean: str) -> list[int]:
+    """Return a list of user_ids subscribed to alerts for *island_clean*."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            rows = conn.execute(
+                "SELECT user_id FROM island_subscriptions WHERE island_clean = ?",
+                (island_clean,),
+            ).fetchall()
+            return [r[0] for r in rows]
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to fetch subscribers for {island_clean}: {exc}")
+        return []
+
+
 def _try_claim_command(message_id: int) -> bool:
     """Attempt to claim a message ID for command processing.
 
@@ -123,6 +295,95 @@ def _discord_conv_key(message: discord.Message) -> str:
     """Return a stable per-user-per-channel key for conversation history."""
     guild_id = message.guild.id if message.guild else "dm"
     return f"discord:{guild_id}:{message.channel.id}:{message.author.id}"
+
+
+# ---------------------------------------------------------------------------
+# Trivia UI
+# ---------------------------------------------------------------------------
+
+_TRIVIA_LETTER = ["🇦", "🇧", "🇨", "🇩"]
+
+
+class TriviaView(discord.ui.View):
+    """Multiple-choice trivia buttons for a single ACNH question.
+
+    The first user to click the correct answer wins.  After *timeout* seconds,
+    or once any button is clicked, all buttons are disabled and the result is
+    revealed.
+    """
+
+    def __init__(self, question: dict, timeout: int = TRIVIA_TIMEOUT):
+        super().__init__(timeout=timeout)
+        self.question = question
+        self.answered = False
+
+        for idx, choice in enumerate(question["c"]):
+            label = f"{_TRIVIA_LETTER[idx]} {choice}"
+            btn = discord.ui.Button(
+                label=label,
+                custom_id=str(idx),
+                style=discord.ButtonStyle.secondary,
+                row=0 if idx < 2 else 1,
+            )
+            btn.callback = self._make_callback(idx)
+            self.add_item(btn)
+
+    def _make_callback(self, idx: int):
+        async def callback(interaction: discord.Interaction):
+            if self.answered:
+                await interaction.response.defer()
+                return
+            self.answered = True
+            correct = self.question["a"]
+            self._update_buttons(correct, chosen=idx)
+            self.stop()
+
+            if idx == correct:
+                result_text = (
+                    f"✅ **{interaction.user.display_name}** got it! "
+                    f"The answer is **{self.question['c'][correct]}**! 🎉"
+                )
+            else:
+                result_text = (
+                    f"❌ **{interaction.user.display_name}** answered "
+                    f"**{self.question['c'][idx]}**, but the correct answer is "
+                    f"**{self.question['c'][correct]}**."
+                )
+
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send(result_text)
+
+        return callback
+
+    def _update_buttons(self, correct: int, chosen: int | None = None) -> None:
+        """Colour and disable all buttons."""
+        for item in self.children:
+            if not isinstance(item, discord.ui.Button):
+                continue
+            btn_idx = int(item.custom_id)
+            if btn_idx == correct:
+                item.style = discord.ButtonStyle.success
+            elif chosen is not None and btn_idx == chosen and chosen != correct:
+                item.style = discord.ButtonStyle.danger
+            else:
+                item.style = discord.ButtonStyle.secondary
+            item.disabled = True
+
+    async def on_timeout(self) -> None:
+        if self.answered:
+            return
+        self.answered = True
+        correct = self.question["a"]
+        self._update_buttons(correct)
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+                await self.message.reply(
+                    f"⏰ Time's up! The correct answer was "
+                    f"**{self.question['c'][correct]}**."
+                )
+            except Exception:
+                pass
 
 
 class SuggestionSelect(discord.ui.Select):
@@ -761,6 +1022,8 @@ class DiscordCommandCog(commands.Cog):
             value=(
                 "`!islands [sub|free]` - Check island bot status (sub, free, or both)\n"
                 "*Aliases: !islandstatus, !checkislands*\n"
+                "`!trivia` - Play an ACNH quiz question with button answers!\n"
+                "*Aliases: !acnhquiz, !quiz*\n"
                 "`!status` - Show bot status and cache info\n"
                 "`!ping` - Check bot response time\n"
                 "`!random` - Get a random item suggestion\n"
@@ -793,6 +1056,19 @@ class DiscordCommandCog(commands.Cog):
                 "`/flight_status` - Diagnose flight logger connection and activity\n"
                 "`/recover_flights [hours] [dry/run]` - Recover missing flight records\n"
                 "`/unwarn <user>` - Remove all warnings from a user"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name=f"{Config.STAR_PINK} Island Alert Subscriptions",
+            value=(
+                "`!subscribe <island>` - Get a DM when an island comes online/offline\n"
+                "*Aliases: !islandalert*\n"
+                "`!unsubscribe <island|all>` - Remove an alert (or all alerts)\n"
+                "*Aliases: !unislandalert*\n"
+                "`!mysubscriptions` - List your active island alert subscriptions\n"
+                "*Aliases: !mysubs, !myalerts*"
             ),
             inline=False
         )
@@ -896,6 +1172,30 @@ class DiscordCommandCog(commands.Cog):
         else:
             await ctx.reply(f"🎲 Random suggestion: **{display_name}** - use `!find {display_name}` to check availability!")
 
+    @commands.hybrid_command(name="trivia", aliases=["acnhquiz", "quiz"])
+    async def trivia(self, ctx):
+        """Play an ACNH trivia question! Answer with the buttons before time runs out."""
+        q = random.choice(ACNH_TRIVIA_QUESTIONS)
+        letter = _TRIVIA_LETTER
+        choices_text = "\n".join(
+            f"{letter[i]} {choice}" for i, choice in enumerate(q["c"])
+        )
+        embed = discord.Embed(
+            title="🏝️ ACNH Trivia!",
+            description=f"**{q['q']}**\n\n{choices_text}",
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(
+            text=f"You have {TRIVIA_TIMEOUT} seconds to answer! • Asked by {ctx.author.display_name}",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP,
+        )
+        view = TriviaView(q, timeout=TRIVIA_TIMEOUT)
+        msg = await ctx.reply(embed=embed, view=view)
+        # Store the message reference so on_timeout can edit it
+        view.message = msg
+        logger.info(f"[DISCORD] Trivia question asked by {ctx.author.name}: {q['q'][:60]}")
+
     @commands.hybrid_command(name="status")
     async def status(self, ctx):
         """Show bot status"""
@@ -930,6 +1230,7 @@ class DiscordCommandCog(commands.Cog):
 
         await ctx.defer()
         conv_key = _discord_conv_key(ctx.message)
+        channel_name = getattr(ctx.channel, "name", None)
         answer = await get_ai_answer(
             question,
             gemini_api_key=Config.GEMINI_API_KEY,
@@ -939,6 +1240,7 @@ class DiscordCommandCog(commands.Cog):
             gemini_model=Config.GEMINI_MODEL,
             openai_model=Config.OPENAI_MODEL,
             conversation_key=conv_key,
+            channel_context=channel_name,
         )
 
         await ctx.reply(f"{answer}")
@@ -1386,6 +1688,53 @@ class DiscordCommandCog(commands.Cog):
 
         return False
 
+    async def _notify_island_subscribers(self, island_clean: str, island_display: str, online: bool) -> None:
+        """DM all subscribers for *island_clean* about a status change.
+
+        *online* is True when the island just came back up, False when it went down.
+        Failed DMs (e.g. DMs disabled) are silently skipped.
+        """
+        user_ids = _get_island_subscribers(island_clean)
+        if not user_ids:
+            return
+
+        if online:
+            title = "🏝️ Island is Back Up!"
+            description = (
+                f"**{island_display.title()}** island is back online and ready to visit! 🎉\n"
+                f"Head to the island channel and use `!senddodo` or `!sd` to get the Dodo code."
+            )
+            color = discord.Color.green()
+        else:
+            title = "🏝️ Island is Down"
+            description = (
+                f"**{island_display.title()}** island has gone **offline**.\n"
+                f"You'll be notified again when it comes back up."
+            )
+            color = discord.Color.red()
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text="Use !unsubscribe to stop these alerts.")
+
+        sent = 0
+        for uid in user_ids:
+            try:
+                user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                await user.send(embed=embed)
+                sent += 1
+            except (discord.Forbidden, discord.NotFound):
+                pass
+            except Exception as exc:
+                logger.warning(f"[DISCORD] Could not DM subscriber {uid} for {island_clean}: {exc}")
+
+        if sent:
+            logger.info(f"[DISCORD] Notified {sent} subscriber(s) that {island_display} is {'back ONLINE' if online else 'OFFLINE'}")
+
     @tasks.loop(seconds=30)
     async def island_monitor_loop(self):
         """Background task: detect island down/up transitions and notify in channel."""
@@ -1448,6 +1797,9 @@ class DiscordCommandCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"[DISCORD] Failed to send island-down embed for {island}: {e}")
 
+                # DM subscribers about the outage
+                await self._notify_island_subscribers(island_clean, island, online=False)
+
             elif is_online and was_down:
                 # Transition: offline → online
                 self.island_down_states[island_clean] = False
@@ -1473,15 +1825,31 @@ class DiscordCommandCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"[DISCORD] Failed to send island-back-up embed for {island}: {e}")
 
+                # DM subscribers who opted in to alerts for this island
+                await self._notify_island_subscribers(island_clean, island, online=True)
+
         # --- Free island status ---
         if self.free_island_lookup:
             for island in Config.FREE_ISLANDS:
+                free_island_clean = clean_text(island)
                 try:
                     is_online = await self._check_island_online(guild, island, lookup=self.free_island_lookup)
                 except Exception as e:
                     logger.error(f"[DISCORD] island_monitor_loop error checking free island {island}: {e}")
                     continue
                 _upsert_bot_status(island.lower(), island, is_online)
+
+                # Track transitions for free islands so subscribers can be notified
+                free_was_down = self.island_down_states.get(f"free:{free_island_clean}")
+                if free_was_down is None:
+                    self.island_down_states[f"free:{free_island_clean}"] = False
+                    continue
+                if not is_online and not free_was_down:
+                    self.island_down_states[f"free:{free_island_clean}"] = True
+                    await self._notify_island_subscribers(free_island_clean, island, online=False)
+                elif is_online and free_was_down:
+                    self.island_down_states[f"free:{free_island_clean}"] = False
+                    await self._notify_island_subscribers(free_island_clean, island, online=True)
 
     @island_monitor_loop.before_loop
     async def before_island_monitor_loop(self):
@@ -1704,6 +2072,137 @@ class DiscordCommandCog(commands.Cog):
         await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] toptravellers called by {ctx.author.name} (kind={kind!r}, period={period!r})")
 
+    # ── Island subscription autocomplete ────────────────────────────────────
+
+    async def island_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete helper: combines sub + free island names."""
+        all_islands = sorted(
+            set(self.sub_island_lookup.keys()) | set(self.free_island_lookup.keys())
+        )
+        current_lower = current.lower()
+        matches = [n for n in all_islands if current_lower in n] if current else all_islands
+        return [
+            app_commands.Choice(name=name.title(), value=name)
+            for name in matches[:25]
+        ]
+
+    # ── Subscription commands ─────────────────────────────────────────────
+
+    @commands.hybrid_command(name="subscribe", aliases=["islandalert"])
+    @app_commands.describe(island="The island you want to be notified about when it comes online")
+    @app_commands.autocomplete(island=island_name_autocomplete)
+    async def subscribe_island(self, ctx, *, island: str = ""):
+        """Subscribe to DM alerts when an island comes back online."""
+        if not island:
+            await ctx.reply(
+                "Usage: `!subscribe <island>` — e.g. `!subscribe alapaap`\n"
+                "You'll receive a DM when that island comes back online.",
+                ephemeral=True,
+            )
+            return
+
+        island_clean = clean_text(island)
+        if not island_clean:
+            await ctx.reply("Please provide a valid island name.", ephemeral=True)
+            return
+
+        # Determine island kind
+        if island_clean in self.sub_island_lookup:
+            kind = "sub"
+        elif island_clean in self.free_island_lookup:
+            kind = "free"
+        else:
+            # Suggest closest match
+            all_islands = sorted(
+                set(self.sub_island_lookup.keys()) | set(self.free_island_lookup.keys())
+            )
+            suggestion = ""
+            if all_islands:
+                best = process.extractOne(island_clean, all_islands, scorer=fuzz.ratio)
+                if best and best[1] >= 60:
+                    suggestion = f" Did you mean **{best[0].title()}**?"
+            await ctx.reply(
+                f"Island **{island.title()}** not found.{suggestion}",
+                ephemeral=True,
+            )
+            return
+
+        added = _add_subscription(ctx.author.id, island_clean, kind)
+        if added:
+            await ctx.reply(
+                f"✅ You'll be DM'd when **{island_clean.title()}** comes back online!",
+                ephemeral=True,
+            )
+            logger.info(f"[DISCORD] {ctx.author.name} subscribed to {island_clean} ({kind})")
+        else:
+            await ctx.reply(
+                f"You're already subscribed to **{island_clean.title()}** alerts.",
+                ephemeral=True,
+            )
+
+    @commands.hybrid_command(name="unsubscribe", aliases=["unislandalert"])
+    @app_commands.describe(island="Island to stop alerts for, or 'all' to remove all subscriptions")
+    @app_commands.autocomplete(island=island_name_autocomplete)
+    async def unsubscribe_island(self, ctx, *, island: str = ""):
+        """Unsubscribe from island online alerts."""
+        if not island:
+            await ctx.reply(
+                "Usage: `!unsubscribe <island>` or `!unsubscribe all`",
+                ephemeral=True,
+            )
+            return
+
+        if island.strip().lower() == "all":
+            removed = _remove_subscription(ctx.author.id, None)
+            if removed:
+                await ctx.reply("✅ Removed all your island alert subscriptions.", ephemeral=True)
+            else:
+                await ctx.reply("You have no active island alert subscriptions.", ephemeral=True)
+            logger.info(f"[DISCORD] {ctx.author.name} unsubscribed from all islands")
+            return
+
+        island_clean = clean_text(island)
+        removed = _remove_subscription(ctx.author.id, island_clean)
+        if removed:
+            await ctx.reply(
+                f"✅ You'll no longer receive alerts for **{island_clean.title()}**.",
+                ephemeral=True,
+            )
+            logger.info(f"[DISCORD] {ctx.author.name} unsubscribed from {island_clean}")
+        else:
+            await ctx.reply(
+                f"You weren't subscribed to **{island_clean.title()}** alerts.",
+                ephemeral=True,
+            )
+
+    @commands.hybrid_command(name="mysubscriptions", aliases=["mysubs", "myalerts"])
+    async def my_subscriptions(self, ctx):
+        """List all your active island alert subscriptions."""
+        subs = _get_user_subscriptions(ctx.author.id)
+        if not subs:
+            await ctx.reply(
+                "You have no active island alert subscriptions.\n"
+                "Use `!subscribe <island>` to get DM'd when an island comes back online.",
+                ephemeral=True,
+            )
+            return
+
+        lines = [f"• **{name.title()}** ({kind})" for name, kind in subs]
+        embed = discord.Embed(
+            title="🔔 Your Island Alert Subscriptions",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(
+            text="Use !unsubscribe <island> or !unsubscribe all to cancel.",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP,
+        )
+        await ctx.reply(embed=embed, ephemeral=True)
+        logger.info(f"[DISCORD] {ctx.author.name} checked their subscriptions ({len(subs)} total)")
+
     @commands.hybrid_command(name="refresh")
     @commands.has_permissions(administrator=True)
     async def refresh(self, ctx):
@@ -1842,6 +2341,7 @@ class DiscordCommandBot(commands.Bot):
     async def setup_hook(self):
         """Setup bot cogs and sync commands"""
         _init_command_claims_db()
+        _init_subscriptions_db()
 
         if self._load_command_cog:
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
@@ -1917,8 +2417,12 @@ class DiscordCommandBot(commands.Bot):
             guild = message.guild.name if message.guild else "DM"
             channel = message.channel.name if hasattr(message.channel, 'name') else "DM"
             logger.info(f"[DISCORD {guild} #{channel}] {message.author}: {message.content}")
-        
-        # Check if message is in FIND_BOT_CHANNEL_ID and starts with command prefix
+
+        # Feed messages from the designated learn channel into the AI chat-log.
+        if Config.AI_LEARN_CHANNEL_ID and message.channel.id == Config.AI_LEARN_CHANNEL_ID:
+            if message.content and not message.content.startswith(self.command_prefix) and not message.author.bot:
+                add_chat_message(message.author.display_name, message.content)
+
         if Config.FIND_BOT_CHANNEL_ID and message.channel.id == Config.FIND_BOT_CHANNEL_ID:
             if message.content.startswith(self.command_prefix):
                 # Extract command name (first word after prefix)
@@ -1959,6 +2463,7 @@ class DiscordCommandBot(commands.Bot):
             # Strip all @mentions to extract the bare question
             question = MENTION_PATTERN.sub('', message.content).strip()
             conv_key = _discord_conv_key(message)
+            channel_name = getattr(message.channel, "name", None)
             async with message.channel.typing():
                 answer = await get_ai_answer(
                     question,
@@ -1969,6 +2474,7 @@ class DiscordCommandBot(commands.Bot):
                     gemini_model=Config.GEMINI_MODEL,
                     openai_model=Config.OPENAI_MODEL,
                     conversation_key=conv_key,
+                    channel_context=channel_name,
                 )
             await message.reply(f"🤖: {answer}")
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
@@ -1994,6 +2500,7 @@ class DiscordCommandBot(commands.Bot):
                 question = message.content.strip()
                 if question:
                     conv_key = _discord_conv_key(message)
+                    channel_name = getattr(message.channel, "name", None)
                     async with message.channel.typing():
                         answer = await get_ai_answer(
                             question,
@@ -2004,6 +2511,7 @@ class DiscordCommandBot(commands.Bot):
                             gemini_model=Config.GEMINI_MODEL,
                             openai_model=Config.OPENAI_MODEL,
                             conversation_key=conv_key,
+                            channel_context=channel_name,
                         )
                     await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
