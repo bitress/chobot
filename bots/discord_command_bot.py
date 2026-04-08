@@ -88,6 +88,91 @@ def _init_command_claims_db() -> None:
         logger.error(f"[DISCORD] Failed to init command_claims table: {exc}")
 
 
+def _init_subscriptions_db() -> None:
+    """Create the island_subscriptions table for online/offline alert opt-ins."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS island_subscriptions (
+                    user_id INTEGER NOT NULL,
+                    island_clean TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'sub',
+                    PRIMARY KEY (user_id, island_clean, kind)
+                )"""
+            )
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to init island_subscriptions table: {exc}")
+
+
+def _add_subscription(user_id: int, island_clean: str, kind: str) -> bool:
+    """Subscribe *user_id* to alerts for *island_clean*.
+
+    Returns True if a new row was inserted, False if it already existed.
+    """
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO island_subscriptions (user_id, island_clean, kind) VALUES (?, ?, ?)",
+                (user_id, island_clean, kind),
+            )
+            return cursor.rowcount > 0
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to add subscription {user_id}/{island_clean}: {exc}")
+        return False
+
+
+def _remove_subscription(user_id: int, island_clean: str | None) -> int:
+    """Remove subscription(s) for *user_id*.
+
+    If *island_clean* is None, all subscriptions for the user are removed.
+    Returns the number of rows deleted.
+    """
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            if island_clean is None:
+                cursor = conn.execute(
+                    "DELETE FROM island_subscriptions WHERE user_id = ?",
+                    (user_id,),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM island_subscriptions WHERE user_id = ? AND island_clean = ?",
+                    (user_id, island_clean),
+                )
+            return cursor.rowcount
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to remove subscription {user_id}/{island_clean}: {exc}")
+        return 0
+
+
+def _get_user_subscriptions(user_id: int) -> list[tuple[str, str]]:
+    """Return a list of (island_clean, kind) tuples the user is subscribed to."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            rows = conn.execute(
+                "SELECT island_clean, kind FROM island_subscriptions WHERE user_id = ? ORDER BY island_clean",
+                (user_id,),
+            ).fetchall()
+            return rows
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to fetch subscriptions for {user_id}: {exc}")
+        return []
+
+
+def _get_island_subscribers(island_clean: str) -> list[int]:
+    """Return a list of user_ids subscribed to alerts for *island_clean*."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            rows = conn.execute(
+                "SELECT user_id FROM island_subscriptions WHERE island_clean = ?",
+                (island_clean,),
+            ).fetchall()
+            return [r[0] for r in rows]
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to fetch subscribers for {island_clean}: {exc}")
+        return []
+
+
 def _try_claim_command(message_id: int) -> bool:
     """Attempt to claim a message ID for command processing.
 
@@ -798,6 +883,19 @@ class DiscordCommandCog(commands.Cog):
         )
 
         embed.add_field(
+            name=f"{Config.STAR_PINK} Island Alert Subscriptions",
+            value=(
+                "`!subscribe <island>` - Get a DM when an island comes online/offline\n"
+                "*Aliases: !islandalert*\n"
+                "`!unsubscribe <island|all>` - Remove an alert (or all alerts)\n"
+                "*Aliases: !unislandalert*\n"
+                "`!mysubscriptions` - List your active island alert subscriptions\n"
+                "*Aliases: !mysubs, !myalerts*"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
             name=f"{Config.STAR_PINK} Admin Commands",
             value=(
                 "`!refresh` - Manually refresh cache (Admin only)\n"
@@ -1386,6 +1484,53 @@ class DiscordCommandCog(commands.Cog):
 
         return False
 
+    async def _notify_island_subscribers(self, island_clean: str, island_display: str, online: bool) -> None:
+        """DM all subscribers for *island_clean* about a status change.
+
+        *online* is True when the island just came back up, False when it went down.
+        Failed DMs (e.g. DMs disabled) are silently skipped.
+        """
+        user_ids = _get_island_subscribers(island_clean)
+        if not user_ids:
+            return
+
+        if online:
+            title = "🏝️ Island is Back Up!"
+            description = (
+                f"**{island_display.title()}** island is back online and ready to visit! 🎉\n"
+                f"Head to the island channel and use `!senddodo` or `!sd` to get the Dodo code."
+            )
+            color = discord.Color.green()
+        else:
+            title = "🏝️ Island is Down"
+            description = (
+                f"**{island_display.title()}** island has gone **offline**.\n"
+                f"You'll be notified again when it comes back up."
+            )
+            color = discord.Color.red()
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text="Use !unsubscribe to stop these alerts.")
+
+        sent = 0
+        for uid in user_ids:
+            try:
+                user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                await user.send(embed=embed)
+                sent += 1
+            except (discord.Forbidden, discord.NotFound):
+                pass
+            except Exception as exc:
+                logger.warning(f"[DISCORD] Could not DM subscriber {uid} for {island_clean}: {exc}")
+
+        if sent:
+            logger.info(f"[DISCORD] Notified {sent} subscriber(s) that {island_display} is {'back ONLINE' if online else 'OFFLINE'}")
+
     @tasks.loop(seconds=30)
     async def island_monitor_loop(self):
         """Background task: detect island down/up transitions and notify in channel."""
@@ -1448,6 +1593,9 @@ class DiscordCommandCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"[DISCORD] Failed to send island-down embed for {island}: {e}")
 
+                # DM subscribers about the outage
+                await self._notify_island_subscribers(island_clean, island, online=False)
+
             elif is_online and was_down:
                 # Transition: offline → online
                 self.island_down_states[island_clean] = False
@@ -1473,15 +1621,31 @@ class DiscordCommandCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"[DISCORD] Failed to send island-back-up embed for {island}: {e}")
 
+                # DM subscribers who opted in to alerts for this island
+                await self._notify_island_subscribers(island_clean, island, online=True)
+
         # --- Free island status ---
         if self.free_island_lookup:
             for island in Config.FREE_ISLANDS:
+                island_clean_free = clean_text(island)
                 try:
                     is_online = await self._check_island_online(guild, island, lookup=self.free_island_lookup)
                 except Exception as e:
                     logger.error(f"[DISCORD] island_monitor_loop error checking free island {island}: {e}")
                     continue
                 _upsert_bot_status(island.lower(), island, is_online)
+
+                # Track transitions for free islands so subscribers can be notified
+                prev_free = self.island_down_states.get(f"free:{island_clean_free}")
+                if prev_free is None:
+                    self.island_down_states[f"free:{island_clean_free}"] = False
+                    continue
+                if not is_online and not prev_free:
+                    self.island_down_states[f"free:{island_clean_free}"] = True
+                    await self._notify_island_subscribers(island_clean_free, island, online=False)
+                elif is_online and prev_free:
+                    self.island_down_states[f"free:{island_clean_free}"] = False
+                    await self._notify_island_subscribers(island_clean_free, island, online=True)
 
     @island_monitor_loop.before_loop
     async def before_island_monitor_loop(self):
@@ -1704,6 +1868,137 @@ class DiscordCommandCog(commands.Cog):
         await ctx.reply(embed=embed)
         logger.info(f"[DISCORD] toptravellers called by {ctx.author.name} (kind={kind!r}, period={period!r})")
 
+    # ── Island subscription autocomplete ────────────────────────────────────
+
+    async def island_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete helper: combines sub + free island names."""
+        all_islands = sorted(
+            set(self.sub_island_lookup.keys()) | set(self.free_island_lookup.keys())
+        )
+        current_lower = current.lower()
+        matches = [n for n in all_islands if current_lower in n] if current else all_islands
+        return [
+            app_commands.Choice(name=name.title(), value=name)
+            for name in matches[:25]
+        ]
+
+    # ── Subscription commands ─────────────────────────────────────────────
+
+    @commands.hybrid_command(name="subscribe", aliases=["islandalert"])
+    @app_commands.describe(island="The island you want to be notified about when it comes online")
+    @app_commands.autocomplete(island=island_name_autocomplete)
+    async def subscribe_island(self, ctx, *, island: str = ""):
+        """Subscribe to DM alerts when an island comes back online."""
+        if not island:
+            await ctx.reply(
+                "Usage: `!subscribe <island>` — e.g. `!subscribe alapaap`\n"
+                "You'll receive a DM when that island comes back online.",
+                ephemeral=True,
+            )
+            return
+
+        island_clean = clean_text(island)
+        if not island_clean:
+            await ctx.reply("Please provide a valid island name.", ephemeral=True)
+            return
+
+        # Determine island kind
+        if island_clean in self.sub_island_lookup:
+            kind = "sub"
+        elif island_clean in self.free_island_lookup:
+            kind = "free"
+        else:
+            # Suggest closest match
+            all_islands = sorted(
+                set(self.sub_island_lookup.keys()) | set(self.free_island_lookup.keys())
+            )
+            suggestion = ""
+            if all_islands:
+                best = process.extractOne(island_clean, all_islands, scorer=fuzz.ratio)
+                if best and best[1] >= 60:
+                    suggestion = f" Did you mean **{best[0].title()}**?"
+            await ctx.reply(
+                f"Island **{island.title()}** not found.{suggestion}",
+                ephemeral=True,
+            )
+            return
+
+        added = _add_subscription(ctx.author.id, island_clean, kind)
+        if added:
+            await ctx.reply(
+                f"✅ You'll be DM'd when **{island_clean.title()}** comes back online!",
+                ephemeral=True,
+            )
+            logger.info(f"[DISCORD] {ctx.author.name} subscribed to {island_clean} ({kind})")
+        else:
+            await ctx.reply(
+                f"You're already subscribed to **{island_clean.title()}** alerts.",
+                ephemeral=True,
+            )
+
+    @commands.hybrid_command(name="unsubscribe", aliases=["unislandalert"])
+    @app_commands.describe(island="Island to stop alerts for, or 'all' to remove all subscriptions")
+    @app_commands.autocomplete(island=island_name_autocomplete)
+    async def unsubscribe_island(self, ctx, *, island: str = ""):
+        """Unsubscribe from island online alerts."""
+        if not island:
+            await ctx.reply(
+                "Usage: `!unsubscribe <island>` or `!unsubscribe all`",
+                ephemeral=True,
+            )
+            return
+
+        if island.strip().lower() == "all":
+            removed = _remove_subscription(ctx.author.id, None)
+            if removed:
+                await ctx.reply("✅ Removed all your island alert subscriptions.", ephemeral=True)
+            else:
+                await ctx.reply("You have no active island alert subscriptions.", ephemeral=True)
+            logger.info(f"[DISCORD] {ctx.author.name} unsubscribed from all islands")
+            return
+
+        island_clean = clean_text(island)
+        removed = _remove_subscription(ctx.author.id, island_clean)
+        if removed:
+            await ctx.reply(
+                f"✅ You'll no longer receive alerts for **{island_clean.title()}**.",
+                ephemeral=True,
+            )
+            logger.info(f"[DISCORD] {ctx.author.name} unsubscribed from {island_clean}")
+        else:
+            await ctx.reply(
+                f"You weren't subscribed to **{island_clean.title()}** alerts.",
+                ephemeral=True,
+            )
+
+    @commands.hybrid_command(name="mysubscriptions", aliases=["mysubs", "myalerts"])
+    async def my_subscriptions(self, ctx):
+        """List all your active island alert subscriptions."""
+        subs = _get_user_subscriptions(ctx.author.id)
+        if not subs:
+            await ctx.reply(
+                "You have no active island alert subscriptions.\n"
+                "Use `!subscribe <island>` to get DM'd when an island comes back online.",
+                ephemeral=True,
+            )
+            return
+
+        lines = [f"• **{name.title()}** ({kind})" for name, kind in subs]
+        embed = discord.Embed(
+            title="🔔 Your Island Alert Subscriptions",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(
+            text="Use !unsubscribe <island> or !unsubscribe all to cancel.",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP,
+        )
+        await ctx.reply(embed=embed, ephemeral=True)
+        logger.info(f"[DISCORD] {ctx.author.name} checked their subscriptions ({len(subs)} total)")
+
     @commands.hybrid_command(name="refresh")
     @commands.has_permissions(administrator=True)
     async def refresh(self, ctx):
@@ -1842,6 +2137,7 @@ class DiscordCommandBot(commands.Bot):
     async def setup_hook(self):
         """Setup bot cogs and sync commands"""
         _init_command_claims_db()
+        _init_subscriptions_db()
 
         if self._load_command_cog:
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
