@@ -22,7 +22,7 @@ from thefuzz import process, fuzz
 from utils.config import Config
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
-from utils.chopaeng_ai import get_ai_answer, conversation_store
+from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -1917,8 +1917,12 @@ class DiscordCommandBot(commands.Bot):
             guild = message.guild.name if message.guild else "DM"
             channel = message.channel.name if hasattr(message.channel, 'name') else "DM"
             logger.info(f"[DISCORD {guild} #{channel}] {message.author}: {message.content}")
-        
-        # Check if message is in FIND_BOT_CHANNEL_ID and starts with command prefix
+
+        # Feed messages from the designated learn channel into the AI chat-log.
+        if Config.AI_LEARN_CHANNEL_ID and message.channel.id == Config.AI_LEARN_CHANNEL_ID:
+            if message.content and not message.content.startswith(self.command_prefix):
+                add_chat_message(message.author.display_name, message.content)
+
         if Config.FIND_BOT_CHANNEL_ID and message.channel.id == Config.FIND_BOT_CHANNEL_ID:
             if message.content.startswith(self.command_prefix):
                 # Extract command name (first word after prefix)

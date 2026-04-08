@@ -41,6 +41,7 @@ class Config:
     LOG_CHANNEL_ID = _get_int('CHANNEL_ID')
     ISLAND_ACCESS_ROLE = _get_int('ISLAND_ACCESS_ROLE', 788749941949464577)
     FIND_BOT_CHANNEL_ID = _get_int('FIND_BOT_CHANNEL_ID')
+    AI_LEARN_CHANNEL_ID = _get_int('AI_LEARN_CHANNEL_ID', 907642922906845264)
 
     # Environment Specific Channels
     if IS_PRODUCTION:

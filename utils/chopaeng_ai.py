@@ -5,6 +5,7 @@ Uses OpenAI or Google Gemini when API keys are configured;
 falls back to keyword-based matching when no key is present.
 """
 
+import collections
 import logging
 import re
 import time
@@ -306,6 +307,27 @@ class ConversationStore:
 
 # Module-level singleton used by get_ai_answer and the bot modules.
 conversation_store = ConversationStore()
+
+# ---------------------------------------------------------------------------
+# Rolling chat-log learned from a designated Discord channel
+# ---------------------------------------------------------------------------
+_CHAT_LOG_MAX = 50  # keep the most recent N messages
+
+_chat_log: collections.deque = collections.deque(maxlen=_CHAT_LOG_MAX)
+
+
+def add_chat_message(author: str, content: str) -> None:
+    """Append a message from the learn-channel to the rolling chat log."""
+    if content and content.strip():
+        _chat_log.append({"author": author, "content": content.strip()})
+
+
+def _build_chat_log_context() -> str:
+    """Format the rolling chat log into a compact text block for the LLM prompt."""
+    if not _chat_log:
+        return ""
+    lines = [f"{entry['author']}: {entry['content']}" for entry in _chat_log]
+    return "\n".join(lines)
 
 
 CHOPAENG_KNOWLEDGE = """
@@ -872,6 +894,12 @@ def _build_prompt(question: str, history: Optional[list[dict]] = None) -> str:
     live_context = _build_live_context()
     live_section = f"\n### Live Island & Villager Data ###\n{live_context}\n" if live_context else ""
 
+    chat_log_context = _build_chat_log_context()
+    chat_log_section = (
+        f"\n### Recent Community Chat ###\n{chat_log_context}\n"
+        if chat_log_context else ""
+    )
+
     return (
         f"{_AI_SYSTEM_PROMPT}\n\n"
         "# EXAMPLES\n"
@@ -900,6 +928,7 @@ def _build_prompt(question: str, history: Optional[list[dict]] = None) -> str:
         "AI: Raymond is currently on Bathala and Giliw!\n\n"
         f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"
         f"{live_section}"
+        f"{chat_log_section}"
         f"{conversation_context}"
         f"\n### Current Question ###\n{question}"
     )
