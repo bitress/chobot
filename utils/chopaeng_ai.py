@@ -410,12 +410,12 @@ family") includes Filipino and international ACNH fans.
 ## Official Links
 | Platform | URL |
 |----------|-----|
-| Website | chopaeng.com |
-| Twitch | twitch.tv/chopaeng |
-| YouTube | youtube.com/@chopaeng |
-| Facebook | facebook.com/chopaenglive |
-| TikTok | tiktok.com/@chopaeng |
-| Discord | discord.gg/chopaeng |
+| Website | https://chopaeng.com |
+| Twitch | https://twitch.tv/chopaeng |
+| YouTube | https://youtube.com/@chopaeng |
+| Facebook | https://facebook.com/chopaenglive |
+| TikTok | https://tiktok.com/@chopaeng |
+| Discord | https://discord.gg/chopaeng |
 | Patreon | https://patreon.com/cw/chopaeng/membership |
 
 ## Chobot
@@ -648,13 +648,13 @@ Check a villager's personality: `ac!lookup villager <name>` in #villager-check.
 
 ## Support & Donations
 Donations fund server hosting (47 islands), stream upgrades, and giveaways.
-Ways to support: subscribe on Twitch, donate via chopaeng.com, or cheer with
+Ways to support: subscribe on Twitch, donate via https://chopaeng.com, or cheer with
 Twitch Bits.
 
 ## Giveaways
 Regular community giveaways include rare ACNH items, DIY recipes, real-life
 prizes, and special island visits. Announced on Discord and Twitch.
-Check chopaeng.com for the latest info.
+Check https://chopaeng.com for the latest info.
 
 ## Tips
 - "Chopaeng" is a playful Filipino term of endearment from "paeng."
