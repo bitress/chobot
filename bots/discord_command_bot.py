@@ -1501,8 +1501,9 @@ class DiscordCommandCog(commands.Cog):
         try:
             island_msg = await self.bot.wait_for('message', check=dodo_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
             await island_msg.delete()
-            await ctx.reply(embed=self._build_dodo_sent_embed(ctx))
+            reply_msg = await ctx.reply(embed=self._build_dodo_sent_embed(ctx))
             logger.info(f"[DISCORD] Intercepted and redesigned !sd response for {ctx.channel.name}")
+            await self._log_dodo_request_to_xlog(ctx, reply_msg)
         except asyncio.TimeoutError:
             logger.warning(f"[DISCORD] Timeout waiting for island bot !sd response in {ctx.channel.name}")
             await ctx.reply(embed=self._create_island_down_embed(ctx))
@@ -1642,6 +1643,49 @@ class DiscordCommandCog(commands.Cog):
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
         embed.set_image(url=Config.FOOTER_LINE)
         return embed
+
+    async def _log_dodo_request_to_xlog(self, ctx, reply_msg: discord.Message | None) -> None:
+        """Post a notification to the xlog channel when a user successfully requests the dodo code."""
+        xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        if not xlog_channel:
+            return
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        guild_icon = guild.icon.url if guild and guild.icon else None
+
+        # Try to link this request to the user's most recent flight log entry.
+        visit_id = None
+        try:
+            from bots.flight_logger import FlightLoggerCog
+            flight_cog = self.bot.get_cog('FlightLoggerCog')
+            if flight_cog and guild:
+                visit_id = await flight_cog.get_recent_visit_id_by_user(ctx.author.id, guild.id)
+        except Exception as e:
+            logger.warning(f"[DISCORD] Could not look up visit ID for xlog: {e}")
+
+        embed = discord.Embed(
+            title="✈️ Dodo Code Requested",
+            description=(
+                f"{ctx.author.mention} requested the dodo code in {ctx.channel.mention}."
+            ),
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Member",  value=f"{ctx.author.mention} ({ctx.author.display_name})", inline=True)
+        embed.add_field(name="Channel", value=ctx.channel.mention,                                  inline=True)
+        if visit_id is not None:
+            embed.add_field(name="Visit ID", value=f"`#{visit_id}`",                                inline=True)
+        embed.set_image(url=Config.FOOTER_LINE)
+        embed.set_footer(text="Chopaeng Camp™ • Dodo Request", icon_url=guild_icon)
+
+        view = discord.ui.View()
+        if reply_msg:
+            view.add_item(discord.ui.Button(label="View Request", url=reply_msg.jump_url, style=discord.ButtonStyle.link))
+
+        try:
+            await xlog_channel.send(embed=embed, view=view)
+        except Exception as e:
+            logger.warning(f"[DISCORD] Failed to post dodo request to xlog: {e}")
 
     async def _check_island_online(self, guild: discord.Guild, island: str, lookup: dict | None = None) -> bool:
         """Return True if the island appears to be online, False otherwise.

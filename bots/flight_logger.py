@@ -1027,6 +1027,17 @@ class FlightLoggerCog(commands.Cog):
         row = await cursor.fetchone()
         return row[0] if row else None
 
+    async def get_recent_visit_id_by_user(self, user_id: int, guild_id: int, hours: int = 6) -> int | None:
+        """Find the most recent island_visits.id for the given Discord user within the last N hours."""
+        db = await self._get_db()
+        cutoff = int((discord.utils.utcnow() - datetime.timedelta(hours=hours)).timestamp())
+        cursor = await db.execute(
+            "SELECT id FROM island_visits WHERE user_id = ? AND guild_id = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 1",
+            (user_id, guild_id, cutoff)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
     async def _is_authorized_with_target(self, ign: str, hours: int = 24) -> bool:
         """Return True if this IGN has a recent visit that was authorized AND has a linked target user."""
         db = await self._get_db()
