@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from typing import Optional
 
@@ -323,7 +324,9 @@ conversation_store = ConversationStore()
 _CHAT_LOG_MAX = 50    # keep the most recent N messages
 _CHAT_LOG_MAX_LEN = 500  # max characters per message stored
 
-_chat_log_lock = __import__("threading").Lock()
+_chat_log_lock = threading.Lock()
+_chat_log_last_save: float = 0.0   # Unix timestamp of last successful disk write
+_CHAT_LOG_SAVE_MIN_INTERVAL = 1.0  # minimum seconds between disk writes
 
 
 def _load_chat_log() -> collections.deque:
@@ -361,7 +364,12 @@ _chat_log: collections.deque = _load_chat_log()
 
 
 def add_chat_message(author: str, content: str) -> None:
-    """Append a message from the learn-channel to the rolling chat log and persist it."""
+    """Append a message from the learn-channel to the rolling chat log and persist it.
+
+    Disk writes are throttled to at most once per *_CHAT_LOG_SAVE_MIN_INTERVAL* seconds
+    to avoid excessive I/O in high-traffic channels.
+    """
+    global _chat_log_last_save
     if not content or not content.strip():
         return
     safe_author = str(author)[:100].replace("\n", " ").replace("\r", " ")
@@ -369,7 +377,12 @@ def add_chat_message(author: str, content: str) -> None:
     with _chat_log_lock:
         _chat_log.append({"author": safe_author, "content": safe_content})
         snapshot = list(_chat_log)
-    _save_chat_log(snapshot)
+        now = time.monotonic()
+        due_for_save = (now - _chat_log_last_save) >= _CHAT_LOG_SAVE_MIN_INTERVAL
+        if due_for_save:
+            _chat_log_last_save = now
+    if due_for_save:
+        _save_chat_log(snapshot)
 
 
 def _build_chat_log_context() -> str:
