@@ -1920,7 +1920,7 @@ class DiscordCommandBot(commands.Bot):
 
         # Feed messages from the designated learn channel into the AI chat-log.
         if Config.AI_LEARN_CHANNEL_ID and message.channel.id == Config.AI_LEARN_CHANNEL_ID:
-            if message.content and not message.content.startswith(self.command_prefix):
+            if message.content and not message.content.startswith(self.command_prefix) and not message.author.bot:
                 add_chat_message(message.author.display_name, message.content)
 
         if Config.FIND_BOT_CHANNEL_ID and message.channel.id == Config.FIND_BOT_CHANNEL_ID:

@@ -311,22 +311,30 @@ conversation_store = ConversationStore()
 # ---------------------------------------------------------------------------
 # Rolling chat-log learned from a designated Discord channel
 # ---------------------------------------------------------------------------
-_CHAT_LOG_MAX = 50  # keep the most recent N messages
+_CHAT_LOG_MAX = 50    # keep the most recent N messages
+_CHAT_LOG_MAX_LEN = 500  # max characters per message stored
 
 _chat_log: collections.deque = collections.deque(maxlen=_CHAT_LOG_MAX)
+_chat_log_lock = __import__("threading").Lock()
 
 
 def add_chat_message(author: str, content: str) -> None:
     """Append a message from the learn-channel to the rolling chat log."""
-    if content and content.strip():
-        _chat_log.append({"author": author, "content": content.strip()})
+    if not content or not content.strip():
+        return
+    safe_author = str(author)[:100].replace("\n", " ").replace("\r", " ")
+    safe_content = content.strip()[:_CHAT_LOG_MAX_LEN].replace("\n", " ").replace("\r", " ")
+    with _chat_log_lock:
+        _chat_log.append({"author": safe_author, "content": safe_content})
 
 
 def _build_chat_log_context() -> str:
     """Format the rolling chat log into a compact text block for the LLM prompt."""
-    if not _chat_log:
+    with _chat_log_lock:
+        snapshot = list(_chat_log)
+    if not snapshot:
         return ""
-    lines = [f"{entry['author']}: {entry['content']}" for entry in _chat_log]
+    lines = [f"{entry['author']}: {entry['content']}" for entry in snapshot]
     return "\n".join(lines)
 
 
