@@ -603,14 +603,15 @@ def reveal_dodo(name):
     if island_cat == "member" and not effective_required_roles and not bool(user.get("is_mod")):
         return jsonify({"error": "Subscriber roles are not configured for this island"}), 403
 
-    # Member islands also require the island access gate role unless user is admin.
+    if not _has_island_access(user.get("roles", []), effective_required_roles, bool(user.get("is_mod"))):
+        return jsonify({"error": "You don't have the required subscription for this island"}), 403
+
+    # After confirming subscription access, member islands require the island access gate role
+    # unless the user is an admin.
     island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
     if island_cat == "member" and island_access_role and not bool(user.get("is_admin", False)):
         if island_access_role not in set(user.get("roles", [])):
             return jsonify({"error": "You need island access role to reveal this dodo code"}), 403
-
-    if not _has_island_access(user.get("roles", []), effective_required_roles, bool(user.get("is_mod"))):
-        return jsonify({"error": "You don't have the required subscription for this island"}), 403
 
     # Find the dodo code from the filesystem
     dodo_code = None
