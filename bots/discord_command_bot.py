@@ -1479,7 +1479,7 @@ class DiscordCommandCog(commands.Cog):
     async def send_dodo(self, ctx):
         """Send the dodo code to a user via DM"""
         if not self._is_sub_island_channel(ctx.channel):
-            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
+            await ctx.reply("This command can only be used in a sub island channel. Please read the sticky post below carefully and make sure you understand and follow all the rules before agreeing to them.", ephemeral=True)
             return
 
         if self.check_cooldown(str(ctx.author.id)):
