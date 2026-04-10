@@ -1479,7 +1479,7 @@ class DiscordCommandCog(commands.Cog):
     async def send_dodo(self, ctx):
         """Send the dodo code to a user via DM"""
         if not self._is_sub_island_channel(ctx.channel):
-            await ctx.reply("This command can only be used in a sub island channel. Please read the sticky post below carefully and make sure you understand and follow all the rules before agreeing to them.", ephemeral=True)
+            await ctx.reply("This command can only be used in a sub island channel. Please read the sticky post below carefully and make sure you understand and follow all the <#783677194576330792> before agreeing to them.", ephemeral=True)
             return
 
         if self.check_cooldown(str(ctx.author.id)):
@@ -2532,6 +2532,28 @@ class DiscordCommandBot(commands.Bot):
                     except discord.Forbidden:
                         logger.warning(f"[DISCORD] Missing permissions to delete message in FIND_BOT_CHANNEL")
                     return  # Don't process the command
+
+        # Auto-reply to direct messages (except explicit bot commands).
+        if message.guild is None and not message.content.startswith(self.command_prefix):
+            question = message.content.strip()
+            if question:
+                conv_key = _discord_conv_key(message)
+                channel_name = getattr(message.channel, "name", None) or "dm"
+                async with message.channel.typing():
+                    answer = await get_ai_answer(
+                        question,
+                        gemini_api_key=Config.GEMINI_API_KEY,
+                        openai_api_key=Config.OPENAI_API_KEY,
+                        openai_base_url=Config.OPENAI_BASE_URL,
+                        provider=Config.AI_PROVIDER,
+                        gemini_model=Config.GEMINI_MODEL,
+                        openai_model=Config.OPENAI_MODEL,
+                        conversation_key=conv_key,
+                        channel_context=channel_name,
+                    )
+                await message.reply(f"🤖: {answer}")
+                logger.info(f"[DISCORD] DM auto-reply by {message.author.name}: {question[:80]}")
+            return
 
         # Handle bot mention as an implicit !ask
         if self.user in message.mentions:
