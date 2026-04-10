@@ -174,21 +174,29 @@ def init_dashboard_db():
         # Full IslandData-compatible table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS islands (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                type        TEXT NOT NULL DEFAULT '',
-                items       TEXT NOT NULL DEFAULT '[]',
-                theme       TEXT NOT NULL DEFAULT 'teal',
-                cat         TEXT NOT NULL DEFAULT 'public',
-                description TEXT NOT NULL DEFAULT '',
-                seasonal    TEXT NOT NULL DEFAULT '',
-                status      TEXT NOT NULL DEFAULT 'OFFLINE',
-                visitors    INTEGER NOT NULL DEFAULT 0,
-                dodo_code   TEXT,
-                map_url     TEXT,
-                updated_at  TEXT
+                id             TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                type           TEXT NOT NULL DEFAULT '',
+                items          TEXT NOT NULL DEFAULT '[]',
+                theme          TEXT NOT NULL DEFAULT 'teal',
+                cat            TEXT NOT NULL DEFAULT 'public',
+                description    TEXT NOT NULL DEFAULT '',
+                seasonal       TEXT NOT NULL DEFAULT '',
+                status         TEXT NOT NULL DEFAULT 'OFFLINE',
+                visitors       INTEGER NOT NULL DEFAULT 0,
+                dodo_code      TEXT,
+                map_url        TEXT,
+                updated_at     TEXT,
+                required_roles TEXT NOT NULL DEFAULT '[]'
             )
         """)
+
+        # Migrate: add required_roles column if it was created without it
+        try:
+            conn.execute("ALTER TABLE islands ADD COLUMN required_roles TEXT NOT NULL DEFAULT '[]'")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         # Live island bot presence, written by the Discord bot's monitor loop
         conn.execute("""
@@ -449,11 +457,15 @@ def _where_clause(conditions: list) -> str:
 
 
 def row_to_island_dict(row: dict) -> dict:
-    """Decode the items JSON column and return a plain dict."""
+    """Decode JSON columns and return a plain dict."""
     try:
         row["items"] = json.loads(row.get("items") or "[]")
     except (ValueError, TypeError):
         row["items"] = []
+    try:
+        row["required_roles"] = json.loads(row.get("required_roles") or "[]")
+    except (ValueError, TypeError):
+        row["required_roles"] = []
     return row
 
 
@@ -487,7 +499,7 @@ _row_to_island_dict = row_to_island_dict
 # Canonical fields exposed by the public API (in consistent order)
 _API_ISLAND_FIELDS = (
     "cat", "description", "discord_bot_online", "dodo_code", "id", "items",
-    "map_url", "name", "seasonal", "status", "theme",
+    "map_url", "name", "required_roles", "seasonal", "status", "theme",
     "type", "updated_at", "visitors",
 )
 
@@ -511,16 +523,17 @@ def _merge_island(db_row: dict, fs: dict | None) -> dict:
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# Domain restriction — dashboard is only served from console.chopaeng.com
+# Domain restriction — dashboard is served from console.chopaeng.com,
+# and localhost for local development.
 # ---------------------------------------------------------------------------
-_ALLOWED_DASHBOARD_HOST = "console.chopaeng.com"
+_ALLOWED_DASHBOARD_HOSTS = {"console.chopaeng.com", "localhost", "127.0.0.1"}
 
 
 @dashboard.before_request
 def _restrict_to_console_domain():
-    """Return 404 for any request that did not arrive via console.chopaeng.com."""
+    """Return 404 for any request that did not arrive via an allowed dashboard host."""
     host = request.host.split(":")[0]  # strip optional port
-    if host != _ALLOWED_DASHBOARD_HOST:
+    if host not in _ALLOWED_DASHBOARD_HOSTS:
         abort(404)
 
 
@@ -922,6 +935,14 @@ def island_detail(name):
         isl_cat          = request.form.get("cat", "public")
         isl_theme        = request.form.get("theme", "teal")
         isl_status       = request.form.get("status", "OFFLINE")
+        # required_roles comes as a JSON array from the hidden input
+        roles_raw = request.form.get("required_roles_json", "") or "[]"
+        try:
+            isl_required_roles = json.loads(roles_raw) if roles_raw.startswith("[") else []
+            # Only keep string role IDs to avoid injecting arbitrary data
+            isl_required_roles = [str(r) for r in isl_required_roles if str(r).isdigit()]
+        except (ValueError, TypeError):
+            isl_required_roles = []
         isl_dodo         = meta["dodo_code"] if meta else (_read_file(fs_path, "Dodo.txt") if fs_path else None)
         _fs_visitors_raw = _parse_visitor_value(_read_file(fs_path, "Visitors.txt")) if not meta and fs_path else None
         isl_visitors_raw = str(meta["visitors"]) if meta else (_fs_visitors_raw or "0")
@@ -956,20 +977,22 @@ def island_detail(name):
                 db2.execute(
                     """INSERT INTO islands
                            (id, name, type, items, theme, cat, description, seasonal,
-                            status, visitors, dodo_code, map_url, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            status, visitors, dodo_code, map_url, updated_at, required_roles)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(id) DO UPDATE SET
                            name=excluded.name, type=excluded.type, items=excluded.items,
                            theme=excluded.theme, cat=excluded.cat,
                            description=excluded.description, seasonal=excluded.seasonal,
                            status=excluded.status, visitors=excluded.visitors,
-                           dodo_code=excluded.dodo_code, updated_at=excluded.updated_at""",
+                           dodo_code=excluded.dodo_code, updated_at=excluded.updated_at,
+                           required_roles=excluded.required_roles""",
                     (
                         island_id, upper, isl_type, json.dumps(items_list),
                         isl_theme, isl_cat, isl_desc, isl_seasonal,
                         isl_status, isl_visitors, isl_dodo,
                         meta["map_url"] if meta else None,
                         datetime.now(timezone.utc).isoformat(),
+                        json.dumps(isl_required_roles),
                     ),
                 )
                 db2.commit()
@@ -983,7 +1006,7 @@ def island_detail(name):
         "id": island_id, "name": upper, "type": "", "items": [],
         "theme": "teal", "cat": "public", "description": "", "seasonal": "",
         "status": "OFFLINE", "visitors": 0, "dodo_code": None,
-        "map_url": None, "updated_at": None,
+        "map_url": None, "updated_at": None, "required_roles": [],
     }
     island["fs_path"]     = fs_path
     island["fs_type"]     = fs_type
@@ -1020,6 +1043,7 @@ def island_detail(name):
         allowed_statuses=ALLOWED_STATUSES,
         r2_configured=r2_configured,
         sparkline_7d=sparkline_7d,
+        subscription_roles=Config.subscription_roles(),
     )
 
 

@@ -78,6 +78,9 @@ class Config:
     # Web Dashboard (mod-only)
     DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
 
+    # Discord webhook for logging dodo code reveals on the website
+    DODO_LOG_WEBHOOK_URL = os.getenv("DODO_LOG_WEBHOOK_URL", "")
+
     # Flask session signing key.
     # If unset, a cryptographically random key is generated each process startup
     # (browser sessions will be lost on restart).
@@ -146,6 +149,36 @@ class Config:
     ]
 
     ISLAND_BOT_ROLE_ID = _get_int('ISLAND_BOT_ROLE_ID')
+
+    # Mod roles — members with these bypass all island access restrictions.
+    SENIOR_MOD_ROLE_ID = _get_int("SENIOR_MOD_ROLE_ID")
+    BABY_MOD_ROLE_ID   = _get_int("BABY_MOD_ROLE_ID")
+
+    # Subscription roles — Discord role IDs for each tier.
+    # Set these in your .env file (values are integers).
+    ROLE_CHOSOUP       = _get_int("ROLE_CHOSOUP")        # ChoSoup
+    ROLE_Y_CHOSOUP     = _get_int("ROLE_Y_CHOSOUP")      # y ChoSoup (ChoSoup AND another sub)
+    ROLE_CHOTATO_CLUB  = _get_int("ROLE_CHOTATO_CLUB")   # ChoTato Club
+    ROLE_Y_CHOTATO_CLUB = _get_int("ROLE_Y_CHOTATO_CLUB") # y ChoTato Club (ChoTato Club AND another sub)
+    ROLE_CHOCOLATE     = _get_int("ROLE_CHOCOLATE")      # ChoColate
+    ROLE_CHOFRIES      = _get_int("ROLE_CHOFRIES")       # ChoFries
+    ROLE_Y_CHOCOLATE   = _get_int("ROLE_Y_CHOCOLATE")    # y ChoColate (ChoColate AND another sub)
+
+    # Ordered list of (role_id, display_name) for all subscription tiers.
+    # Used by the dashboard UI and API role-gating logic.
+    @classmethod
+    def subscription_roles(cls) -> list[tuple[str, str]]:
+        """Return [(role_id_str, display_name), ...] for every configured subscription role."""
+        pairs = [
+            (cls.ROLE_CHOSOUP,        "ChoSoup"),
+            (cls.ROLE_Y_CHOSOUP,      "y ChoSoup"),
+            (cls.ROLE_CHOTATO_CLUB,   "ChoTato Club"),
+            (cls.ROLE_Y_CHOTATO_CLUB, "y ChoTato Club"),
+            (cls.ROLE_CHOCOLATE,      "ChoColate"),
+            (cls.ROLE_CHOFRIES,       "ChoFries"),
+            (cls.ROLE_Y_CHOCOLATE,    "y ChoColate"),
+        ]
+        return [(str(rid), name) for rid, name in pairs if rid]
 
     # Discord Embed Assets
     EMOJI_SEARCH = "<a:heartside:784055539881214002>"

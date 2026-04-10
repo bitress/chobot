@@ -9,13 +9,17 @@ Combines all API endpoints:
 import os
 import re
 import time
+import json
+import secrets as _secrets
 import logging
 import sqlite3
 import threading
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
 from thefuzz import process, fuzz
 
@@ -36,7 +40,14 @@ app.secret_key = Config.FLASK_SECRET_KEY
 # reverse proxy (nginx, Cloudflare Tunnel, etc.) so that url_for(_external=True)
 # produces the correct https:// URL instead of http://.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-CORS(app, resources={r"/*": {"origins": "*"}})
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SECURE"] = True
+CORS(app, resources={r"/*": {"origins": [
+    "https://www.chopaeng.com",
+    "https://chopaeng.com",
+    "http://localhost:5173",
+    "http://localhost:3000",
+]}}, supports_credentials=True)
 
 # Register the mod-only web dashboard
 app.register_blueprint(dashboard, url_prefix="/dashboard")
@@ -57,6 +68,95 @@ data_manager = None
 
 # Guard: prevents multiple concurrent cache-refresh operations
 _refresh_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Auth — short-lived opaque tokens for Discord OAuth (website subscribers)
+# Works cross-domain: frontend stores the token in localStorage and sends it
+# as "Authorization: Bearer <token>" on every authenticated request.
+# ---------------------------------------------------------------------------
+_AUTH_TOKEN_TTL = 86400  # 24 hours
+_auth_tokens: dict[str, dict] = {}   # token → {user_data, expires_at}
+_auth_tokens_lock = threading.Lock()
+
+_DISCORD_UA = "DiscordBot (https://chopaeng.com, 1.0)"
+_ADMINISTRATOR_PERM = 0x8   # Discord Administrator permission bit
+
+def _make_auth_token(user_data: dict) -> str:
+    token = _secrets.token_urlsafe(32)
+    expires_at = time.monotonic() + _AUTH_TOKEN_TTL
+    with _auth_tokens_lock:
+        _auth_tokens[token] = {"user": user_data, "expires_at": expires_at}
+    return token
+
+def _get_auth_user(token: str) -> dict | None:
+    """Return user dict if token is valid and not expired, else None."""
+    if not token:
+        return None
+    with _auth_tokens_lock:
+        entry = _auth_tokens.get(token)
+    if not entry:
+        return None
+    if time.monotonic() > entry["expires_at"]:
+        with _auth_tokens_lock:
+            _auth_tokens.pop(token, None)
+        return None
+    return entry["user"]
+
+def _current_auth_user() -> dict | None:
+    """Extract Bearer token from request and return user dict, or None."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return _get_auth_user(auth[len("Bearer "):])
+    return None
+
+def _is_mod(roles: list[str]) -> bool:
+    """True if the user holds one of the configured moderator roles."""
+    mod_ids = {
+        str(Config.ADMIN_ROLE_ID),
+        str(Config.SENIOR_MOD_ROLE_ID),
+        str(Config.BABY_MOD_ROLE_ID),
+    } - {"None", "0", ""}
+    return bool(mod_ids & set(roles))
+
+def _has_island_access(roles: list[str], required_roles: list[str], is_mod: bool = False) -> bool:
+    """True if the user may see this island's dodo code.
+
+    Access is granted when:
+    - The island has no required_roles (free/public)
+    - The user is a mod (token is_mod=true, ADMIN_ROLE_ID, SENIOR_MOD_ROLE_ID, or BABY_MOD_ROLE_ID)
+    - The user holds at least one of the island's required_roles
+    """
+    if not required_roles:
+        return True
+    if is_mod:
+        return True
+    if _is_mod(roles):
+        return True
+    return bool(set(required_roles) & set(roles))
+
+def _fire_dodo_webhook(username: str, avatar_url: str, island_name: str, dodo_code: str) -> None:
+    """POST a Discord webhook message in the background."""
+    url = Config.DODO_LOG_WEBHOOK_URL
+    if not url:
+        return
+    payload = json.dumps({
+        "embeds": [{
+            "description": f"**{username}** revealed a code at **{island_name}**",
+            "color": 0x57F287,
+            "footer": {"text": f"Dodo: {dodo_code}"},
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "thumbnail": {"url": avatar_url} if avatar_url else {},
+        }]
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": _DISCORD_UA},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as exc:
+        logger.warning("Dodo webhook failed: %s", exc)
 
 
 def set_data_manager(dm):
@@ -196,7 +296,7 @@ def process_island(entry, island_type):
     }
 
 
-def _build_island_response(entry, island_type, db_island, discord_bot_online=None):
+def _build_island_response(entry, island_type, db_island, discord_bot_online=None, viewer_is_mod=False):
     """Build the enriched island response merging live filesystem data with DB metadata."""
     name = entry.name.upper()
 
@@ -204,7 +304,7 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
     visitors, visitor_list = _parse_visitor_list(get_file_content(entry.path, "Visitors.txt"))
 
     # Determine live status and dodo_code from filesystem
-    if island_type == "VIP":
+    if island_type == "VIP" and not viewer_is_mod:
         status = "SUB ONLY"
         dodo_code = None  # Do not expose dodo code for subscriber-only islands
     elif raw_dodo is None:
@@ -239,6 +339,7 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
         "type":              db_island.get("type", ""),
         "updated_at":        db_island.get("updated_at"),
         "discord_bot_online": discord_bot_online,
+        "required_roles":    db_island.get("required_roles", []),
     }
 
 # ============================================================================
@@ -248,6 +349,226 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
 ALLOWED_CATEGORIES = {"public", "member"}
 ALLOWED_THEMES = {"pink", "teal", "purple", "gold"}
 ALLOWED_STATUSES = {"ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE"}
+
+# ============================================================================
+# AUTH ROUTES  (Discord OAuth for public website subscribers)
+# ============================================================================
+
+@app.route("/api/auth/discord")
+def auth_discord():
+    """Initiate Discord OAuth flow for public website subscribers."""
+    if not Config.DISCORD_CLIENT_ID:
+        return jsonify({"error": "Discord OAuth not configured"}), 503
+    if not Config.GUILD_ID:
+        return jsonify({"error": "GUILD_ID not set"}), 503
+
+    return_to = request.args.get("return_to", "")
+    # Whitelist: only allow redirect back to chopaeng.com or localhost
+    allowed_hosts = {"www.chopaeng.com", "chopaeng.com", "localhost"}
+    try:
+        parsed = urllib.parse.urlparse(return_to)
+        if parsed.hostname not in allowed_hosts:
+            return_to = "https://www.chopaeng.com/auth/callback"
+    except Exception:
+        return_to = "https://www.chopaeng.com/auth/callback"
+
+    state = _secrets.token_hex(16)
+    session["sub_oauth_state"] = state
+    session["sub_return_to"] = return_to
+    callback_url = url_for("auth_callback", _external=True)
+    params = urllib.parse.urlencode({
+        "client_id":     Config.DISCORD_CLIENT_ID,
+        "redirect_uri":  callback_url,
+        "response_type": "code",
+        "scope":         "identify guilds.members.read",
+        "state":         state,
+    })
+    return redirect(f"https://discord.com/api/oauth2/authorize?{params}")
+
+
+@app.route("/api/auth/callback")
+def auth_callback():
+    """Handle Discord OAuth callback for public website subscribers."""
+    error = request.args.get("error")
+    if error:
+        return_to = session.pop("sub_return_to", "https://www.chopaeng.com/auth/callback")
+        return redirect(f"{return_to}?error={urllib.parse.quote(error)}")
+
+    state = request.args.get("state", "")
+    if state != session.pop("sub_oauth_state", ""):
+        return_to = session.pop("sub_return_to", "https://www.chopaeng.com/auth/callback")
+        return redirect(f"{return_to}?error=invalid_state")
+
+    code = request.args.get("code", "")
+    return_to = session.pop("sub_return_to", "https://www.chopaeng.com/auth/callback")
+
+    callback_url = url_for("auth_callback", _external=True)
+    try:
+        token_body = urllib.parse.urlencode({
+            "client_id":     Config.DISCORD_CLIENT_ID,
+            "client_secret": Config.DISCORD_CLIENT_SECRET,
+            "grant_type":    "authorization_code",
+            "code":          code,
+            "redirect_uri":  callback_url,
+        }).encode()
+        req = urllib.request.Request(
+            "https://discord.com/api/oauth2/token",
+            data=token_body,
+            headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": _DISCORD_UA},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            token_resp = json.loads(resp.read().decode())
+    except Exception:
+        return redirect(f"{return_to}?error=token_exchange_failed")
+
+    access_token = token_resp.get("access_token")
+    if not access_token:
+        return redirect(f"{return_to}?error=no_access_token")
+
+    # Fetch guild member record (roles + permissions)
+    member_roles: list[str] = []
+    member_perms = 0
+    try:
+        mem_req = urllib.request.Request(
+            f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
+            headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
+        )
+        with urllib.request.urlopen(mem_req, timeout=10) as resp:
+            member_data = json.loads(resp.read().decode())
+        member_roles = [str(r) for r in member_data.get("roles", [])]
+        try:
+            member_perms = int(member_data.get("permissions", "0") or 0)
+        except (ValueError, TypeError):
+            member_perms = 0
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return redirect(f"{return_to}?error=not_a_member")
+        return redirect(f"{return_to}?error=roles_fetch_failed")
+    except Exception:
+        return redirect(f"{return_to}?error=roles_fetch_failed")
+
+    # Fetch basic user info
+    discord_user_id = discord_username = discord_avatar_url = ""
+    try:
+        user_req = urllib.request.Request(
+            "https://discord.com/api/users/@me",
+            headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
+        )
+        with urllib.request.urlopen(user_req, timeout=10) as resp:
+            user_data = json.loads(resp.read().decode())
+        discord_user_id  = str(user_data.get("id", ""))
+        discord_username = user_data.get("global_name") or user_data.get("username", "")
+        avatar_hash = user_data.get("avatar") or ""
+        if discord_user_id and avatar_hash and re.fullmatch(r"(?:a_)?[0-9a-f]{32}", avatar_hash):
+            discord_avatar_url = (
+                f"https://cdn.discordapp.com/avatars/{discord_user_id}/{avatar_hash}.png?size=64"
+            )
+    except Exception:
+        pass
+
+    is_admin = bool(member_perms & _ADMINISTRATOR_PERM)
+    token = _make_auth_token({
+        "user_id":   discord_user_id,
+        "username":  discord_username,
+        "avatar":    discord_avatar_url,
+        "roles":     member_roles,
+        "is_mod":    _is_mod(member_roles) or is_admin,
+    })
+
+    logger.info("Website OAuth login: user=%s is_mod=%s", discord_username, _is_mod(member_roles) or is_admin)
+    return redirect(f"{return_to}?token={urllib.parse.quote(token)}")
+
+
+@app.route("/api/auth/me")
+def auth_me():
+    """Return the current authenticated user's info."""
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"logged_in": False}), 200
+    return jsonify({
+        "logged_in":  True,
+        "user_id":    user["user_id"],
+        "username":   user["username"],
+        "avatar":     user["avatar"],
+        "roles":      user["roles"],
+        "is_mod":     user["is_mod"],
+    })
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    """Invalidate the current auth token."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth[len("Bearer "):]
+        with _auth_tokens_lock:
+            _auth_tokens.pop(token, None)
+    return jsonify({"logged_out": True})
+
+
+# ============================================================================
+# DODO REVEAL — authenticated, fires webhook
+# ============================================================================
+
+@app.route("/api/islands/<name>/dodo", methods=["POST"])
+def reveal_dodo(name):
+    """Return the dodo code for an island if the user has the required role.
+
+    The client must send:   Authorization: Bearer <token>
+    On success, fires a Discord webhook and returns the dodo code.
+    """
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    target = name.upper()
+
+    # Load island metadata (required_roles)
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT required_roles FROM islands WHERE UPPER(name) = ?", (target,)
+        ).fetchone()
+    finally:
+        db.close()
+
+    required_roles: list[str] = []
+    if row:
+        try:
+            required_roles = json.loads(row["required_roles"] or "[]")
+        except (ValueError, TypeError):
+            required_roles = []
+
+    if not _has_island_access(user.get("roles", []), required_roles, bool(user.get("is_mod"))):
+        return jsonify({"error": "You don't have the required subscription for this island"}), 403
+
+    # Find the dodo code from the filesystem
+    dodo_code = None
+    for base_dir in [Config.DIR_FREE, Config.DIR_VIP]:
+        if not base_dir or not os.path.exists(base_dir):
+            continue
+        for candidate in [target, name]:
+            path = os.path.join(base_dir, candidate)
+            if os.path.isdir(path):
+                raw = get_file_content(path, "Dodo.txt")
+                if raw and raw not in ["00000", "-----", "", "GETTIN'"]:
+                    dodo_code = raw
+                break
+        if dodo_code:
+            break
+
+    if not dodo_code:
+        return jsonify({"error": "Dodo code not available right now"}), 404
+
+    # Fire webhook in background thread so the response isn't delayed
+    threading.Thread(
+        target=_fire_dodo_webhook,
+        args=(user["username"], user["avatar"], target, dodo_code),
+        daemon=True,
+    ).start()
+
+    return jsonify({"island": target, "dodo_code": dodo_code})
 
 # ============================================================================
 # API ROUTES
@@ -503,13 +824,17 @@ def api_list_villagers_by_island():
 @app.route('/api/islands', methods=['GET'])
 def get_islands():
     """Get all island statuses and Dodo codes with full metadata."""
+    viewer = _current_auth_user()
+    viewer_roles = viewer.get("roles", []) if viewer else []
+    viewer_is_mod = bool(viewer and (viewer.get("is_mod") or _is_mod(viewer_roles)))
+
     # Load island metadata from DB, keyed by uppercase name
     db_map = {}
     discord_status = {}
     db = get_db()
     try:
         rows = db.execute(
-            "SELECT id, name, cat, description, items, map_url, seasonal, theme, type, updated_at "
+            "SELECT id, name, cat, description, items, map_url, seasonal, theme, type, updated_at, required_roles "
             "FROM islands ORDER BY name"
         ).fetchall()
         for row in rows:
@@ -535,6 +860,7 @@ def get_islands():
                     results.append(_build_island_response(
                         entry, "Free", db_map.get(name, {}),
                         discord_status.get(name.lower()),
+                        viewer_is_mod,
                     ))
 
     if os.path.exists(Config.DIR_VIP):
@@ -545,6 +871,7 @@ def get_islands():
                     results.append(_build_island_response(
                         entry, "VIP", db_map.get(name, {}),
                         discord_status.get(name.lower()),
+                        viewer_is_mod,
                     ))
 
     results.sort(key=lambda x: x['name'])

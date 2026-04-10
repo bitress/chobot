@@ -684,7 +684,7 @@ class DiscordCommandCog(commands.Cog):
         state = "online" if is_online else "offline"
         duration = self._format_status_duration(since_utc, now_utc)
         stamp = updated_at_utc.strftime("%Y-%m-%d %H:%M UTC")
-        return f"{visitors}/7 visitors | Island {state} for {duration} | Last update: {stamp}"
+        return f"{visitors}/7 visitors | Island {state} for {duration} |    pdate: {stamp}"
 
     @tasks.loop(seconds=TOPIC_SYNC_INTERVAL_SECONDS)
     async def topic_sync_loop(self):
