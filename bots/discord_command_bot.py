@@ -15,6 +15,7 @@ from datetime import datetime, timezone, timedelta
 from itertools import cycle
 
 import discord
+import requests
 from discord import app_commands
 from discord.ext import commands, tasks
 from thefuzz import process, fuzz
@@ -41,6 +42,7 @@ AVAILABLE_SLOT_TEXT = "available slot"
 ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
 GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
 DODO_XLOG_TIMEOUT = 1800  # seconds to wait for a verified flight before posting the dodo-request xlog
+TOPIC_SYNC_INTERVAL_SECONDS = 30
 
 # How long (seconds) a command claim record is kept before being pruned.
 # Any message older than this window is no longer at risk of being replayed.
@@ -489,12 +491,15 @@ class DiscordCommandCog(commands.Cog):
         self.cooldowns = {}
         self.sub_island_lookup = {}
         self.free_island_lookup = {}
+        self.channel_topic_cache: dict[int, str] = {}
+        self.island_status_since: dict[str, tuple[bool, datetime]] = {}
 
         # island_clean -> True (down) / False (up); None = not yet initialized
         self.island_down_states: dict[str, bool | None] = {}
         # island_clean -> discord.Message of the sticky "island is down" embed
         self.island_down_messages: dict[str, discord.Message] = {}
         self.island_monitor_loop.start()
+        self.topic_sync_loop.start()
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Filter items from cache for autocomplete"""
@@ -611,6 +616,167 @@ class DiscordCommandCog(commands.Cog):
     def cog_unload(self):
         """Cleanup on unload"""
         self.island_monitor_loop.cancel()
+        self.topic_sync_loop.cancel()
+
+    @staticmethod
+    def _parse_iso8601(value: str | None) -> datetime | None:
+        """Parse an ISO8601 datetime string into a timezone-aware UTC datetime."""
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _format_status_duration(since_utc: datetime, now_utc: datetime) -> str:
+        """Return elapsed time as '<h>h <m>m' or '<m>m' for topic display."""
+        elapsed = max(0, int((now_utc - since_utc).total_seconds()))
+        hours, rem = divmod(elapsed, 3600)
+        minutes = rem // 60
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        return f"{minutes}m"
+
+    async def _fetch_islands_api_snapshot(self) -> tuple[dict[str, dict], datetime | None] | tuple[None, None]:
+        """Fetch island snapshot from the API and return map keyed by cleaned island name."""
+        base_url = os.getenv("API_BASE_URL", "https://console.chopaeng.com").rstrip("/")
+        url = f"{base_url}/api/islands"
+
+        def _get_json():
+            response = requests.get(url, timeout=8)
+            response.raise_for_status()
+            return response.json()
+
+        try:
+            payload = await asyncio.to_thread(_get_json)
+        except Exception as exc:
+            logger.warning(f"[DISCORD] topic sync API request failed: {exc}")
+            return None, None
+
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+        island_map: dict[str, dict] = {}
+        for item in data:
+            name = item.get("name") if isinstance(item, dict) else None
+            if not name:
+                continue
+            normalized = clean_text(name)
+            canonical = re.sub(r'^\d+', '', normalized)
+            island_map[canonical or normalized] = item
+
+        meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+        api_timestamp = self._parse_iso8601(meta.get("timestamp")) if isinstance(meta, dict) else None
+        return island_map, api_timestamp
+
+    def _build_channel_topic(
+        self,
+        visitor_count: int,
+        is_online: bool,
+        since_utc: datetime,
+        updated_at_utc: datetime,
+        now_utc: datetime,
+    ) -> str:
+        """Build channel topic text from API snapshot data."""
+        visitors = max(0, min(7, int(visitor_count)))
+        state = "online" if is_online else "offline"
+        duration = self._format_status_duration(since_utc, now_utc)
+        stamp = updated_at_utc.strftime("%Y-%m-%d %H:%M UTC")
+        return f"{visitors}/7 visitors | Island {state} for {duration} | Last update: {stamp}"
+
+    @tasks.loop(seconds=TOPIC_SYNC_INTERVAL_SECONDS)
+    async def topic_sync_loop(self):
+        """Auto-sync sub island channel topics using /api/islands snapshot data."""
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if not guild:
+            return
+
+        # Always refresh channel lookup so the loop can recover from stale cache
+        # or early startup timing where categories were temporarily unavailable.
+        await self.fetch_islands()
+        if not self.sub_island_lookup:
+            logger.warning("[DISCORD] Topic sync skipped: no sub-island channels discovered yet.")
+            return
+
+        island_map, api_timestamp = await self._fetch_islands_api_snapshot()
+        if not island_map:
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        last_update = api_timestamp or now_utc
+
+        updated_count = 0
+        missing_payload_count = 0
+
+        for island_clean, channel_id in self.sub_island_lookup.items():
+            island_payload = island_map.get(island_clean)
+            if not island_payload:
+                # Fuzzy fallback for naming drifts between folder name and channel name.
+                island_payload = next(
+                    (v for k, v in island_map.items() if island_clean in k or k in island_clean),
+                    None,
+                )
+            if not island_payload:
+                missing_payload_count += 1
+                continue
+
+            channel = guild.get_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                continue
+
+            status_text = str(island_payload.get("status", "")).upper()
+            bot_online = island_payload.get("discord_bot_online")
+            is_online = bool(bot_online) if bot_online is not None else (status_text == "ONLINE")
+
+            state_info = self.island_status_since.get(island_clean)
+            if state_info is None or state_info[0] != is_online:
+                self.island_status_since[island_clean] = (is_online, now_utc)
+                status_since = now_utc
+            else:
+                status_since = state_info[1]
+
+            visitor_count = island_payload.get("visitors", 0)
+            try:
+                visitor_count = int(visitor_count)
+            except (TypeError, ValueError):
+                visitor_count = 0
+
+            topic_text = self._build_channel_topic(
+                visitor_count=visitor_count,
+                is_online=is_online,
+                since_utc=status_since,
+                updated_at_utc=last_update,
+                now_utc=now_utc,
+            )
+
+            if self.channel_topic_cache.get(channel_id) == topic_text:
+                continue
+            if (channel.topic or "") == topic_text:
+                self.channel_topic_cache[channel_id] = topic_text
+                continue
+
+            try:
+                await channel.edit(topic=topic_text, reason="Auto-sync island status topic from API")
+                self.channel_topic_cache[channel_id] = topic_text
+                logger.info(f"[DISCORD] Topic synced for #{channel.name}: {topic_text}")
+                updated_count += 1
+            except discord.Forbidden:
+                logger.warning(f"[DISCORD] Missing permission to edit topic for #{channel.name}")
+            except discord.HTTPException as exc:
+                logger.warning(f"[DISCORD] Failed to edit topic for #{channel.name}: {exc}")
+
+        logger.info(
+            f"[DISCORD] Topic sync cycle complete: {updated_count} updated, "
+            f"{missing_payload_count} without API match, {len(self.sub_island_lookup)} channels scanned"
+        )
+
+    @topic_sync_loop.before_loop
+    async def before_topic_sync_loop(self):
+        """Wait until ready and ensure island lookups are loaded before topic sync starts."""
+        await self.bot.wait_until_ready()
+        await self.fetch_islands()
 
     def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
         """Check if user is on cooldown"""
