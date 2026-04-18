@@ -51,6 +51,12 @@ COMMAND_CLAIM_EXPIRY_SECONDS = 300  # 5 minutes
 # Trivia game settings
 TRIVIA_TIMEOUT = 30  # seconds before revealing the answer automatically
 
+# Pattern for dodo code update announcements to auto-delete in sub-island channels
+DODO_UPDATE_PATTERN = re.compile(
+    r"The Dodo code for .+? has updated,? the new Dodo code is:?\s*[A-HJ-NP-Z0-9]{5}",
+    re.IGNORECASE,
+)
+
 # ACNH trivia question bank — (question, [choice_A, B, C, D], correct_index 0-based)
 ACNH_TRIVIA_QUESTIONS: list[dict] = [
     {"q": "What species is Marshall?",
@@ -1727,6 +1733,7 @@ class DiscordCommandCog(commands.Cog):
             return False
         return getattr(channel, "category_id", None) == Config.CATEGORY_ID
 
+
     def _build_status_embed(self, ctx, title: str, description: str, color: discord.Color) -> discord.Embed:
         """Build a status embed with the given title, description and color."""
         embed = discord.Embed(
@@ -2685,6 +2692,24 @@ class DiscordCommandBot(commands.Bot):
                     except discord.Forbidden:
                         logger.warning(f"[DISCORD] Missing permissions to delete message in FIND_BOT_CHANNEL")
                     return  # Don't process the command
+
+                        # Auto-delete dodo code update announcements in sub-island channels
+                if (
+                    message.author.bot
+                    and self._is_sub_island_channel(message.channel)
+                    and DODO_UPDATE_PATTERN.search(message.content)
+                ):
+                    try:
+                        await message.delete()
+                        logger.info(
+                            f"[DISCORD] Deleted dodo code update message in #{message.channel.name} "
+                            f"from {message.author}"
+                        )
+                    except discord.Forbidden:
+                        logger.warning(f"[DISCORD] Missing permissions to delete dodo update message in #{message.channel.name}")
+                    except discord.HTTPException as exc:
+                        logger.warning(f"[DISCORD] Failed to delete dodo update message: {exc}")
+                    return
 
         # Auto-reply to direct messages (except explicit bot commands).
         if message.guild is None and not message.content.startswith(self.command_prefix):
