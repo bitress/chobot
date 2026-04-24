@@ -38,6 +38,7 @@ ISLAND_DOWN_IMAGE_URL = "https://cdn.chopaeng.com/misc/Bot-is-Down.jpg"
 ISLAND_VISITORS_PATTERN = re.compile(r"The following visitors are on (.+?):", re.IGNORECASE)
 ISLAND_DODO_SENT_PATTERN = re.compile(r".+?:\s*Sent you the dodo code via DM", re.IGNORECASE)
 VISITOR_LINE_PATTERN = re.compile(r'#\d+:\s*(.+)')
+DODO_UPDATE_NOTIFICATION_PATTERN = re.compile(r"\[\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}:\d{2}\s+(?:am|pm)\]\s+The Dodo code for .+ has updated, the new Dodo code is:", re.IGNORECASE)
 AVAILABLE_SLOT_TEXT = "available slot"
 ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
 GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
@@ -2641,6 +2642,18 @@ class DiscordCommandBot(commands.Bot):
     async def on_message(self, message):
         """Handle messages"""
         if message.author == self.user:
+            return
+
+        # Auto-delete Dodo code update notification messages (only in SUB_CATEGORY channels)
+        if DODO_UPDATE_NOTIFICATION_PATTERN.search(message.content):
+            if hasattr(message.channel, 'category_id') and message.channel.category_id == Config.CATEGORY_ID:
+                try:
+                    await message.delete()
+                    logger.info(f"[DISCORD] Auto-deleted Dodo code update notification from {message.author}: {message.content[:100]}")
+                except discord.Forbidden:
+                    logger.warning(f"[DISCORD] Missing permissions to delete Dodo code update message from {message.author}")
+                except discord.NotFound:
+                    logger.warning(f"[DISCORD] Dodo code update message was already deleted")
             return
 
         # Prevent duplicate responses when multiple bot instances share the same
