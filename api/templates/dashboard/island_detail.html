@@ -128,6 +128,37 @@
                         <input type="hidden" name="items_json" id="itemsJson">
                     </div>
 
+                    <!-- Required Roles -->
+                    <div class="mb-4">
+                        <label class="db-label">
+                            Required Subscription Roles
+                            <span class="text-lowercase ms-1" style="font-weight:600;color:#bbb;">(any one grants dodo access)</span>
+                        </label>
+                        <div class="d-flex flex-wrap gap-2 p-3"
+                             style="background:var(--nook-cream);border:2px solid #e1e6d3;border-radius:12px;">
+                            {% if subscription_roles %}
+                                {% for role_id, role_name in subscription_roles %}
+                                <label class="d-flex align-items-center gap-2 px-3 py-2 rounded-pill cursor-pointer"
+                                       style="background:#fff;border:2px solid #e1e6d3;font-size:.8rem;font-weight:700;
+                                              color:#555;user-select:none;">
+                                    <input type="checkbox"
+                                           class="required-role-cb"
+                                           value="{{ role_id }}"
+                                           {% if role_id in (island.required_roles | map('string') | list) %}checked{% endif %}
+                                           style="accent-color:var(--nook-green);width:15px;height:15px;">
+                                    {{ role_name }}
+                                </label>
+                                {% endfor %}
+                            {% else %}
+                                <p class="x-small text-muted mb-0">
+                                    No subscription roles configured — set ROLE_CHOSOUP etc. in .env
+                                </p>
+                            {% endif %}
+                        </div>
+                        <input type="hidden" name="required_roles_json" id="requiredRolesJson"
+                               value="{{ island.required_roles | tojson }}">
+                    </div>
+
                     <!-- Actions -->
                     <div class="d-flex align-items-center gap-3">
                         <button type="submit" class="btn btn-nook-primary px-4 py-2 rounded-3 fw-bold">
@@ -307,6 +338,10 @@
     }
     document.getElementById('islandForm').addEventListener('submit', function() {
         syncItemsJson();
+        // Sync required roles checkboxes → hidden JSON input
+        const checked = Array.from(document.querySelectorAll('.required-role-cb:checked'))
+            .map(cb => cb.value);
+        document.getElementById('requiredRolesJson').value = JSON.stringify(checked);
     });
     document.getElementById('itemsTextarea').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); syncItemsJson(); }

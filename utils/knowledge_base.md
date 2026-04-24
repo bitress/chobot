@@ -226,6 +226,11 @@ For multiple villagers: `!mvi Judy Marshal Raymond`.
 3. Enter the home and invite the Sanrio villager.
 4. Leave the island. Time-travel one day forward to complete the move.
 
+First make sure there is a villager in the first plot of land, it has to be any character. I recommend injecting a villager you might want in case this doesn't work. Now you fly to the island where u injected the villager, once in the island u inject your new character, either sanrio or an amiibo one. Make sure the bot says "VILLAGER INJECTED". If you miss this step, it wont come with you.
+
+Now you go in the first plot of land, talk to the villager you injected before, it wont look like the amiibo villager. Ask them to move in, and if you did everything correct and bot works, you have a new character. If u inject ANY AMIIBO character before flying they will not, and i repeat THEY WILL NOT  move to your island. You have to make sure you do the very first step i said
+
+
 ## Max Bells (Bell Glitch)
 1. Get 1 stack of turnips on a Chopaeng island.
 2. Sell at Nook's Cranny on the same island (price shows -64,000,000 bells — proceed).

@@ -40,7 +40,7 @@ class Config:
     FREE_CATEGORY_ID = _get_int('FREE_CATEGORY_ID')
     LOG_CHANNEL_ID = _get_int('CHANNEL_ID')
     ISLAND_ACCESS_ROLE = _get_int('ISLAND_ACCESS_ROLE', 788749941949464577)
-    FIND_BOT_CHANNEL_ID = _get_int('FIND_BOT_CHANNEL_ID')
+    FIND_BOT_CHANNEL_ID = _get_int('FIND_BOT_CHANNEL_ID', 1450554092626903232)
     AI_LEARN_CHANNEL_ID = _get_int('AI_LEARN_CHANNEL_ID', 907642922906845264)
 
     # Environment Specific Channels
@@ -78,36 +78,22 @@ class Config:
     # Web Dashboard (mod-only)
     DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
 
-    # Flask session signing key.
-    # If unset, a cryptographically random key is generated each process startup
-    # (browser sessions will be lost on restart).
-    # Set FLASK_SECRET_KEY explicitly in .env for persistent sessions.
+    # Discord webhook for logging dodo code reveals on the website
+    DODO_LOG_WEBHOOK_URL = os.getenv("DODO_LOG_WEBHOOK_URL", "")
+
     FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY") or __import__("secrets").token_hex(32)
 
-    # Discord OAuth2 — for dashboard login via Discord.
-    # Register an application at https://discord.com/developers/applications,
-    # set OAuth2 → Redirects to your dashboard's callback URL:
-    #   https://your-domain/dashboard/oauth2/callback
-    # Only DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET need to be set here;
-    # the redirect URI is derived automatically from the incoming request.
     DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID", "")
     DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
 
-    # Senior Mod role ID for dashboard access via Discord OAuth.
-    # Any member holding this role (or having the Discord Administrator permission)
-    # gets full access.  Must be set in your .env — role IDs are unique per server.
     ADMIN_ROLE_ID = _get_int("ADMIN_ROLE_ID")
 
-    # Cloudflare R2 (S3-compatible) — for island map uploads
-    # Endpoint format: https://<account_id>.r2.cloudflarestorage.com
     R2_ACCOUNT_ID       = os.getenv("R2_ACCOUNT_ID", "")
     R2_ACCESS_KEY_ID    = os.getenv("R2_ACCESS_KEY_ID", "")
     R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
     R2_BUCKET_NAME      = os.getenv("R2_BUCKET_NAME", "chobot-maps")
-    # Public base URL for uploaded files (e.g. https://pub-xxx.r2.dev or custom domain)
     R2_PUBLIC_URL       = os.getenv("R2_PUBLIC_URL", "")
 
-    # MariaDB migration (optional)
     MARIADB_HOST = os.getenv("MARIADB_HOST", "")
     MARIADB_PORT = _get_int("MARIADB_PORT", 3306)
     MARIADB_USER = os.getenv("MARIADB_USER", "")
@@ -120,11 +106,9 @@ class Config:
     JSON_KEYFILE = 'service_account.json'
     CACHE_REFRESH_HOURS = 1
 
-    # Villagers & Dodo Directories
     VILLAGERS_DIR = os.getenv('VILLAGERS_DIR')
     TWITCH_VILLAGERS_DIR = os.getenv('TWITCH_VILLAGERS_DIR')
 
-    # Logic: Free users access Twitch dir, VIPs access standard dir
     DIR_FREE = TWITCH_VILLAGERS_DIR
     DIR_VIP = VILLAGERS_DIR
 
@@ -146,6 +130,32 @@ class Config:
     ]
 
     ISLAND_BOT_ROLE_ID = _get_int('ISLAND_BOT_ROLE_ID')
+
+    # Mod roles — members with these bypass all island access restrictions.
+    SENIOR_MOD_ROLE_ID = _get_int("SENIOR_MOD_ROLE_ID")
+    BABY_MOD_ROLE_ID   = _get_int("BABY_MOD_ROLE_ID")
+
+    ROLE_CHOSOUP       = _get_int("ROLE_CHOSOUP")        # ChoSoup
+    ROLE_Y_CHOSOUP     = _get_int("ROLE_Y_CHOSOUP")      # y ChoSoup (ChoSoup AND another sub)
+    ROLE_CHOTATO_CLUB  = _get_int("ROLE_CHOTATO_CLUB")   # ChoTato Club
+    ROLE_Y_CHOTATO_CLUB = _get_int("ROLE_Y_CHOTATO_CLUB") # y ChoTato Club (ChoTato Club AND another sub)
+    ROLE_CHOCOLATE     = _get_int("ROLE_CHOCOLATE")      # ChoColate
+    ROLE_CHOFRIES      = _get_int("ROLE_CHOFRIES")       # ChoFries
+    ROLE_Y_CHOCOLATE   = _get_int("ROLE_Y_CHOCOLATE")    # y ChoColate (ChoColate AND another sub)
+
+    @classmethod
+    def subscription_roles(cls) -> list[tuple[str, str]]:
+        """Return [(role_id_str, display_name), ...] for every configured subscription role."""
+        pairs = [
+            (cls.ROLE_CHOSOUP,        "ChoSoup"),
+            (cls.ROLE_Y_CHOSOUP,      "y ChoSoup"),
+            (cls.ROLE_CHOTATO_CLUB,   "ChoTato Club"),
+            (cls.ROLE_Y_CHOTATO_CLUB, "y ChoTato Club"),
+            (cls.ROLE_CHOCOLATE,      "ChoColate"),
+            (cls.ROLE_CHOFRIES,       "ChoFries"),
+            (cls.ROLE_Y_CHOCOLATE,    "y ChoColate"),
+        ]
+        return [(str(rid), name) for rid, name in pairs if rid]
 
     # Discord Embed Assets
     EMOJI_SEARCH = "<a:heartside:784055539881214002>"
