@@ -36,6 +36,7 @@ ISLAND_DOWN_IMAGE_URL = "https://cdn.chopaeng.com/misc/Bot-is-Down.jpg"
 
 # Patterns for intercepting island bot responses
 ISLAND_VISITORS_PATTERN = re.compile(r"The following visitors are on (.+?):", re.IGNORECASE)
+ISLAND_VILLAGERS_PATTERN = re.compile(r"The following villagers are on (.+?):", re.IGNORECASE)
 ISLAND_DODO_SENT_PATTERN = re.compile(r".+?:\s*Sent you the dodo code via DM", re.IGNORECASE)
 VISITOR_LINE_PATTERN = re.compile(r'#\d+:\s*(.+)')
 DODO_UPDATE_NOTIFICATION_PATTERN = re.compile(r"\[\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}:\d{2}\s+(?:am|pm)\]\s+The Dodo code for .+ has updated, the new Dodo code is:", re.IGNORECASE)
@@ -1167,6 +1168,7 @@ class DiscordCommandCog(commands.Cog):
             value=(
                 "`!senddodo` or `!sd` - Get the dodo code for this sub island\n"
                 "`!visitors` - Check current visitors on this sub island\n"
+                "`!villagers` - Check current villagers on this sub island\n"
                 "*Use these in a sub island channel. If the island is offline, you'll see an 'island is down' message.*"
             ),
             inline=False
@@ -1706,6 +1708,51 @@ class DiscordCommandCog(commands.Cog):
             logger.warning(f"[DISCORD] Timeout waiting for island bot !visitors response in {ctx.channel.name}")
             await ctx.reply(embed=self._create_island_down_embed(ctx))
 
+    @commands.hybrid_command(name="villagers")
+    async def villagers(self, ctx):
+        """Check current villagers on the sub island"""
+        if not self._is_sub_island_channel(ctx.channel):
+            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
+            return
+
+        if self.check_cooldown(str(ctx.author.id)):
+            return
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
+
+        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+            return
+
+        def villagers_check(msg):
+            return (
+                msg.author.id == island_bot.id
+                and msg.channel.id == ctx.channel.id
+                and ISLAND_VILLAGERS_PATTERN.search(msg.content)
+            )
+
+        try:
+            island_msg = await self.bot.wait_for('message', check=villagers_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
+
+            match = ISLAND_VILLAGERS_PATTERN.search(island_msg.content)
+            island_name = match.group(1).strip() if match else ctx.channel.name
+
+            # Extract villagers from the message
+            villager_text = island_msg.content
+            if ":" in villager_text:
+                villager_list = villager_text.split(":", 1)[1].strip()
+                villagers_list = [v.strip() for v in villager_list.split(",")]
+            else:
+                villagers_list = []
+
+            await island_msg.delete()
+            await ctx.reply(embed=self._build_villagers_embed(ctx, island_name, villagers_list))
+            logger.info(f"[DISCORD] Intercepted and redesigned !villagers response for {ctx.channel.name}")
+        except asyncio.TimeoutError:
+            logger.warning(f"[DISCORD] Timeout waiting for island bot !villagers response in {ctx.channel.name}")
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+
     def _get_island_bot_for_channel(self, guild: discord.Guild, channel: discord.TextChannel):
         """Return the island bot member for the given channel, or None if not found."""
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
@@ -1776,6 +1823,31 @@ class DiscordCommandCog(commands.Cog):
         embed.add_field(
             name="Slots",
             value=f"`{len(filled)}/{total}` occupied · `{available}` available",
+            inline=False
+        )
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+        return embed
+
+    def _build_villagers_embed(self, ctx, island_name: str, villagers_list: list) -> discord.Embed:
+        """Build a nicely formatted villagers embed from a parsed villager list."""
+        total = len(villagers_list)
+
+        villager_display = []
+        for i, v in enumerate(villagers_list, 1):
+            villager_display.append(f"`#{i}` 🏠 **{v}**")
+
+        color = discord.Color.green() if total > 0 else discord.Color.orange()
+        embed = discord.Embed(
+            title=f"🏝️ Villagers on {island_name}",
+            description="\n".join(villager_display) if villager_display else "*No villager data available.*",
+            color=color,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(
+            name="Residents",
+            value=f"`{total}/10` villagers",
             inline=False
         )
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
