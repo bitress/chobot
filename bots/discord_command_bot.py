@@ -38,6 +38,9 @@ ISLAND_DOWN_IMAGE_URL = "https://cdn.chopaeng.com/misc/Bot-is-Down.jpg"
 ISLAND_VISITORS_PATTERN = re.compile(r"The following visitors are on (.+?):", re.IGNORECASE)
 ISLAND_VILLAGERS_PATTERN = re.compile(r"The following villagers are on (.+?):", re.IGNORECASE)
 ISLAND_DODO_SENT_PATTERN = re.compile(r".+?:\s*Sent you the dodo code via DM", re.IGNORECASE)
+ISLAND_DROP_PATTERN = re.compile(r"Item drop request will be executed momentarily", re.IGNORECASE)
+ISLAND_INJECT_QUEUED_PATTERN = re.compile(r"Villager inject request has been added to the queue", re.IGNORECASE)
+ISLAND_INJECT_COMPLETE_PATTERN = re.compile(r"(.+?) has been injected by the bot at Index (\d+)", re.IGNORECASE)
 VISITOR_LINE_PATTERN = re.compile(r'#\d+:\s*(.+)')
 DODO_UPDATE_NOTIFICATION_PATTERN = re.compile(r"\[\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}:\d{2}\s+(?:am|pm)\]\s+The Dodo code for .+ has updated, the new Dodo code is:", re.IGNORECASE)
 AVAILABLE_SLOT_TEXT = "available slot"
@@ -1175,6 +1178,8 @@ class DiscordCommandCog(commands.Cog):
                 "`!senddodo` or `!sd` - Get the dodo code for this sub island\n"
                 "`!visitors` - Check current visitors on this sub island\n"
                 "`!villagers` - Check current villagers on this sub island\n"
+                "`!drop` - Request item drop on this sub island\n"
+                "`!injectvillager <name>` - Inject a villager onto this sub island\n"
                 "*Use these in a sub island channel. If the island is offline, you'll see an 'island is down' message.*"
             ),
             inline=False
@@ -1759,6 +1764,91 @@ class DiscordCommandCog(commands.Cog):
             logger.warning(f"[DISCORD] Timeout waiting for island bot !villagers response in {ctx.channel.name}")
             await ctx.reply(embed=self._create_island_down_embed(ctx))
 
+    @commands.hybrid_command(name="drop")
+    async def drop(self, ctx):
+        """Request item drop on the sub island"""
+        if not self._is_sub_island_channel(ctx.channel):
+            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
+            return
+
+        if self.check_cooldown(str(ctx.author.id)):
+            return
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
+
+        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+            return
+
+        def drop_check(msg):
+            return (
+                msg.author.id == island_bot.id
+                and msg.channel.id == ctx.channel.id
+                and ISLAND_DROP_PATTERN.search(msg.content)
+            )
+
+        try:
+            island_msg = await self.bot.wait_for('message', check=drop_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
+            await island_msg.delete()
+            await ctx.reply(embed=self._build_drop_embed(ctx))
+            logger.info(f"[DISCORD] Intercepted and redesigned !drop response for {ctx.channel.name}")
+        except asyncio.TimeoutError:
+            logger.warning(f"[DISCORD] Timeout waiting for island bot !drop response in {ctx.channel.name}")
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+
+    @commands.hybrid_command(name="injectvillager", aliases=["iv"])
+    async def inject_villager(self, ctx, villager_name: str):
+        """Inject a villager onto the sub island"""
+        if not self._is_sub_island_channel(ctx.channel):
+            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
+            return
+
+        if self.check_cooldown(str(ctx.author.id)):
+            return
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
+
+        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+            return
+
+        # First check for the queued message
+        def inject_queued_check(msg):
+            return (
+                msg.author.id == island_bot.id
+                and msg.channel.id == ctx.channel.id
+                and ISLAND_INJECT_QUEUED_PATTERN.search(msg.content)
+            )
+
+        # Then check for the completion message
+        def inject_complete_check(msg):
+            return (
+                msg.author.id == island_bot.id
+                and msg.channel.id == ctx.channel.id
+                and ISLAND_INJECT_COMPLETE_PATTERN.search(msg.content)
+            )
+
+        try:
+            # Wait for the queued confirmation
+            queued_msg = await self.bot.wait_for('message', check=inject_queued_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
+            await queued_msg.delete()
+
+            # Wait for the completion message
+            complete_msg = await self.bot.wait_for('message', check=inject_complete_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT + 10)
+            
+            match = ISLAND_INJECT_COMPLETE_PATTERN.search(complete_msg.content)
+            injected_villager = match.group(1).strip() if match else villager_name
+            injected_index = match.group(2) if match else "0"
+            
+            await complete_msg.delete()
+            await ctx.reply(embed=self._build_inject_villager_embed(ctx, injected_villager, injected_index))
+            logger.info(f"[DISCORD] Intercepted and redesigned !injectvillager response for {ctx.channel.name}")
+        except asyncio.TimeoutError:
+            logger.warning(f"[DISCORD] Timeout waiting for island bot !injectvillager response in {ctx.channel.name}")
+            await ctx.reply(embed=self._create_island_down_embed(ctx))
+
     def _get_island_bot_for_channel(self, guild: discord.Guild, channel: discord.TextChannel):
         """Return the island bot member for the given channel, or None if not found."""
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
@@ -1855,6 +1945,42 @@ class DiscordCommandCog(commands.Cog):
         embed.add_field(
             name="Residents",
             value=f"`{total}/10` villagers",
+            inline=False
+        )
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+        return embed
+
+    def _build_drop_embed(self, ctx) -> discord.Embed:
+        """Build a nicely formatted item drop embed."""
+        embed = discord.Embed(
+            title="📦 Item Drop Requested",
+            description="Item drop request will be executed momentarily.",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+        return embed
+
+    def _build_inject_villager_embed(self, ctx, villager_name: str, index: str) -> discord.Embed:
+        """Build a nicely formatted villager injection embed."""
+        embed = discord.Embed(
+            title="✨ Villager Injected",
+            description=f"**{villager_name}** has been injected onto the island!",
+            color=discord.Color.purple(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(
+            name="Villager",
+            value=f"{villager_name}",
+            inline=False
+        )
+        embed.add_field(
+            name="Plot Index",
+            value=f"`{index}`",
             inline=False
         )
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
