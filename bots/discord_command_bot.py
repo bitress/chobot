@@ -1854,6 +1854,7 @@ class DiscordCommandCog(commands.Cog):
     @commands.hybrid_command(name="mvi", aliases=["multiinject"])
     async def multi_inject_villager(self, ctx, *villager_names):
         """Inject multiple villagers onto the sub island"""
+
         if not villager_names:
             await ctx.reply("Please provide at least one villager name.", ephemeral=True)
             return
@@ -1872,7 +1873,10 @@ class DiscordCommandCog(commands.Cog):
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
 
-        # Check for the multi-queued message
+        # 🔥 SEND COMMAND TO ISLAND BOT (missing in your code)
+        command_str = f"!mvi {' '.join(villager_names)}"
+        await ctx.send(command_str)
+
         def multi_inject_queued_check(msg):
             return (
                 msg.author.id == island_bot.id
@@ -1880,7 +1884,6 @@ class DiscordCommandCog(commands.Cog):
                 and ISLAND_INJECT_MULTI_QUEUED_PATTERN.search(msg.content)
             )
 
-        # Then check for the completion message
         def inject_complete_check(msg):
             return (
                 msg.author.id == island_bot.id
@@ -1889,34 +1892,46 @@ class DiscordCommandCog(commands.Cog):
             )
 
         try:
-            # Wait for the queued confirmation
-            queued_msg = await self.bot.wait_for('message', check=multi_inject_queued_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
-            
-            # Extract number of villagers from queued message
+            # Wait for queued confirmation
+            queued_msg = await self.bot.wait_for(
+                'message',
+                check=multi_inject_queued_check,
+                timeout=ISLAND_BOT_INTERCEPT_TIMEOUT
+            )
+
             match = ISLAND_INJECT_MULTI_QUEUED_PATTERN.search(queued_msg.content)
             num_villagers = int(match.group(1)) if match else len(villager_names)
-            
+
             await queued_msg.delete()
 
-            # Wait for each villager's completion message
             injected_villagers = []
+
             for _ in range(num_villagers):
-                complete_msg = await self.bot.wait_for('message', check=inject_complete_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT + 10)
-                
+                complete_msg = await self.bot.wait_for(
+                    'message',
+                    check=inject_complete_check,
+                    timeout=ISLAND_BOT_INTERCEPT_TIMEOUT + 10
+                )
+
                 match = ISLAND_INJECT_COMPLETE_PATTERN.search(complete_msg.content)
                 if match:
                     villager = match.group(1).strip()
                     index = match.group(2)
                     injected_villagers.append((villager, index))
-                
+
                 await complete_msg.delete()
+
+            # fallback if nothing parsed
+            if not injected_villagers:
+                raise asyncio.TimeoutError
 
             await ctx.reply(embed=self._build_multi_inject_villager_embed(ctx, injected_villagers))
             logger.info(f"[DISCORD] Intercepted and redesigned !mvi response for {ctx.channel.name}")
+
         except asyncio.TimeoutError:
             logger.warning(f"[DISCORD] Timeout waiting for island bot !mvi response in {ctx.channel.name}")
             await ctx.reply(embed=self._create_island_down_embed(ctx))
-
+            
     def _get_island_bot_for_channel(self, guild: discord.Guild, channel: discord.TextChannel):
         """Return the island bot member for the given channel, or None if not found."""
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
