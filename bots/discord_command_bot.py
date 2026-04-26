@@ -1851,9 +1851,11 @@ class DiscordCommandCog(commands.Cog):
             logger.warning(f"[DISCORD] Timeout waiting for island bot !injectvillager response in {ctx.channel.name}")
             await ctx.reply(embed=self._create_island_down_embed(ctx))
 
-    @commands.hybrid_command(name="mvi", aliases=["multiinject"])
-    async def multi_inject_villager(self, ctx, *villager_names):
+    @commands.hybrid_command(name="mvi")
+    async def multi_inject_villager(self, ctx, villagers: str):
         """Inject multiple villagers onto the sub island"""
+
+        villager_names = [name.strip() for name in villagers.split(",") if name.strip()]
 
         if not villager_names:
             await ctx.reply("Please provide at least one villager name.", ephemeral=True)
