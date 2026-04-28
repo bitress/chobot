@@ -142,7 +142,7 @@ The Discord is a family-friendly community. All members must follow these rules:
 3. No offensive, NSFW, racist, violent, or hateful content in messages,
    nicknames, bios, or posts.
 4. No spam, swearing, external links, or self-promotion.
-5. For questions, DM Chopaeng or any Admin/Moderator.
+5. For questions, DM Chopaeng or any Moderator.
 
 ### Island-Specific Rules (All Visitors)
 These apply on every treasure island (sub and free), in addition to the above:
@@ -221,10 +221,6 @@ Example: mug with Pink (5) + Square Logo (32) = 37 → `!customize 074E 37`.
 For multiple villagers: `!mvi Judy Marshal Raymond`.
 
 ### Getting a Sanrio / In-Boxes Villager
-1. Be on the island. Check the first house for a villager "in boxes."
-2. Leave the house. Inject a Sanrio villager: `!injectvillager Marty`.
-3. Enter the home and invite the Sanrio villager.
-4. Leave the island. Time-travel one day forward to complete the move.
 
 First make sure there is a villager in the first plot of land, it has to be any character. I recommend injecting a villager you might want in case this doesn't work. Now you fly to the island where u injected the villager, once in the island u inject your new character, either sanrio or an amiibo one. Make sure the bot says "VILLAGER INJECTED". If you miss this step, it wont come with you.
 
@@ -265,9 +261,6 @@ Check https://chopaeng.com for the latest info.
 
 ## Tips
 - "Chopaeng" is a playful Filipino term of endearment from "paeng."
-- "Hiraya Manawari" means "may the wishes of your heart be granted."
-- Items rotate regularly — always use `!find` before visiting.
-- The bot cache refreshes hourly; new items appear quickly.
 - If an island is offline, `!senddodo` tells you instead of sending a code.
 - Free islands are ideal for newcomers; sub islands have rarer stock.
 - Use `!villager` for animal residents; use `!find` for items.
