@@ -1480,6 +1480,33 @@ class FlightLoggerCog(commands.Cog):
                         content_preview = content_preview[:97] + "..."
                     desc_lines.append(f"[{content_preview}]({message_url})")
                 desc_lines.append(f"Member Linked: {member_line}")
+
+                # Add roles/subscription info for the matched member
+                member = found_members[0]
+                member_roles = [r for r in member.roles if r.name != "@everyone"]
+                has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in member_roles)
+                sub_roles = {int(role_id): name for role_id, name in Config.subscription_roles()}
+                highlight_present = [(sub_roles[r.id], r.mention) for r in member_roles if r.id in sub_roles]
+
+                # Design: Use a block with emoji and clear separation
+                if has_access:
+                    if highlight_present:
+                        sub_lines = [f"{name} {mention}" for name, mention in highlight_present]
+                        desc_lines.append(
+                            f"<:ChoSoup:1031974843656192080> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
+                        )
+                    else:
+                        desc_lines.append(
+                            f"<:ChoSoup:1031974843656192080> **Subscription(s):**\n> None detected."
+                        )
+                    desc_lines.append(
+                        f"<:starsparkle1:766724172474220574> **Island Access:** <@&{Config.ISLAND_ACCESS_ROLE}>"
+                    )
+                else:
+                    desc_lines.append(
+                        f"<:CampWarning:1172346431542140961> **No Island Access Role**"
+                    )
+
                 desc_lines.append("\nLog details matched with a member.")
 
                 embed = discord.Embed(
