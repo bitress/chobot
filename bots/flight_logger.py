@@ -1491,20 +1491,20 @@ class FlightLoggerCog(commands.Cog):
                 # Design: Use a block with emoji and clear separation
                 if has_access:
                     if highlight_present:
-                        sub_lines = [f"{name} {mention}" for name, mention in highlight_present]
+                        sub_lines = [f"{mention}" for mention in highlight_present]
                         desc_lines.append(
-                            f"<:ChoSoup:1031974843656192080> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
+                            f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
                         )
                     else:
                         desc_lines.append(
-                            f"<:ChoSoup:1031974843656192080> **Subscription(s):**\n> None detected."
+                            f"<a:CampWarning:1172346431542140961> **Subscription(s):**\n> None detected."
                         )
                     desc_lines.append(
-                        f"<:starsparkle1:766724172474220574> **Island Access:** <@&{Config.ISLAND_ACCESS_ROLE}>"
+                        f"<a:starpink:784055540321091584> **Has Island Access?** Yes"
                     )
                 else:
                     desc_lines.append(
-                        f"<:CampWarning:1172346431542140961> **No Island Access Role**"
+                        f"<a:CampWarning:1172346431542140961> **No Island Access Role**"
                     )
 
                 desc_lines.append("\nLog details matched with a member.")
