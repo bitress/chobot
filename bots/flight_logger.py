@@ -1491,7 +1491,7 @@ class FlightLoggerCog(commands.Cog):
                 # Design: Use a block with emoji and clear separation
                 if has_access:
                     if highlight_present:
-                        sub_lines = [f"{mention}" for mention in highlight_present]
+                        sub_lines = [f"{mention}" for _, mention in highlight_present]
                         desc_lines.append(
                             f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
                         )
