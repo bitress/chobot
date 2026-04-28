@@ -1483,24 +1483,29 @@ class FlightLoggerCog(commands.Cog):
 
                 # Add roles/subscription info for the matched member
                 member = found_members[0]
-                # Highlighted role IDs and friendly names
-                highlight_roles = {
-                    1031974843656192080: "ChoSoup",
-                    1048323845771247681: "Y ChoSoup",
-                    960926374066012180: "Chotato Club",
-                    1048323845771247679: "Y Chotato Club",
-                    1039516557405081601: "Chocolate",
-                    1048323845771247680: "Y Chocolate",
-                    1031974954113179729: "ChoFries",
-                }
-                # Get all roles (excluding @everyone)
                 member_roles = [r for r in member.roles if r.name != "@everyone"]
-                # Find highlight roles present (by ID)
-                highlight_present = [(highlight_roles[r.id], r.mention) for r in member_roles if r.id in highlight_roles]
-                if highlight_present:
-                    desc_lines.append("**Subscription:** " + ", ".join(f"{name} {mention}" for name, mention in highlight_present))
+                has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in member_roles)
+                sub_roles = {int(role_id): name for role_id, name in Config.subscription_roles()}
+                highlight_present = [(sub_roles[r.id], r.mention) for r in member_roles if r.id in sub_roles]
+
+                # Design: Use a block with emoji and clear separation
+                if has_access:
+                    if highlight_present:
+                        sub_lines = [f"{name} {mention}" for name, mention in highlight_present]
+                        desc_lines.append(
+                            f"<:ChoSoup:1031974843656192080> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
+                        )
+                    else:
+                        desc_lines.append(
+                            f"<:ChoSoup:1031974843656192080> **Subscription(s):**\n> None detected."
+                        )
+                    desc_lines.append(
+                        f"<:starsparkle1:766724172474220574> **Island Access:** <@&{Config.ISLAND_ACCESS_ROLE}>"
+                    )
                 else:
-                    desc_lines.append("No subscription.")
+                    desc_lines.append(
+                        f"<:CampWarning:1172346431542140961> **No Island Access Role**"
+                    )
 
                 desc_lines.append("\nLog details matched with a member.")
 
