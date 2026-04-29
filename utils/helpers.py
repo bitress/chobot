@@ -154,21 +154,49 @@ def get_best_suggestions(query: str, keys: list, limit: int = 8) -> list:
     else:
         candidates = keys
 
-    # 3) Fuzzy match
-    matches = process.extract(
+    q_token_count = len(q_tokens) if q_tokens else 1
+
+    # 3) Fuzzy match – use token_set_ratio but penalise candidates with fewer
+    #    tokens than the query so that a single-word item (e.g. "speaker") does
+    #    not outscore a multi-word item (e.g. "pa speaker") when the query
+    #    itself is multi-word.  token_set_ratio returns 100 whenever one set of
+    #    tokens is a subset of the other, which would otherwise make "speaker"
+    #    an equally good match for the query "pa speaker" as "pa speaker" itself.
+    raw_matches = process.extract(
         qn,
         candidates,
         limit=limit * 2,
         scorer=fuzz.token_set_ratio
     )
 
-    filtered = [m[0] for m in matches if m[1] >= thresh]
+    scored = []
+    for candidate, base_score in raw_matches:
+        k_token_count = len(tokenize(candidate)) or 1
+        if k_token_count < q_token_count:
+            adjusted = base_score * (k_token_count / q_token_count)
+        else:
+            adjusted = float(base_score)
+        scored.append((candidate, adjusted))
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    filtered = [c for c, s in scored if s >= thresh]
 
     # 4) Plural/singular fallback
     if not filtered and qn.endswith("s") and len(qn) > 3:
         q2 = qn[:-1]
+        # q2 is qn with the trailing 's' removed; token count is the same
+        q2_token_count = q_token_count
         matches2 = process.extract(q2, candidates, limit=limit * 2, scorer=fuzz.token_set_ratio)
-        filtered = [m[0] for m in matches2 if m[1] >= smart_threshold(q2)]
+        scored2 = []
+        for candidate, base_score in matches2:
+            k_token_count = len(tokenize(candidate)) or 1
+            if k_token_count < q2_token_count:
+                adjusted = base_score * (k_token_count / q2_token_count)
+            else:
+                adjusted = float(base_score)
+            scored2.append((candidate, adjusted))
+        scored2.sort(key=lambda x: x[1], reverse=True)
+        filtered = [c for c, s in scored2 if s >= smart_threshold(q2)]
 
     # Return unique, in order
     seen = set()
