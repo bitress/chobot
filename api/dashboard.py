@@ -974,6 +974,9 @@ def island_detail(name):
 
             db2 = get_db()
             try:
+                # We do NOT include `required_roles` in the DO UPDATE SET clause
+                # so that we do not overwrite the background sync performed by the bot.
+                # It is included in INSERT so that new records get the default '[]'.
                 db2.execute(
                     """INSERT INTO islands
                            (id, name, type, items, theme, cat, description, seasonal,
@@ -984,8 +987,7 @@ def island_detail(name):
                            theme=excluded.theme, cat=excluded.cat,
                            description=excluded.description, seasonal=excluded.seasonal,
                            status=excluded.status, visitors=excluded.visitors,
-                           dodo_code=excluded.dodo_code, updated_at=excluded.updated_at,
-                           required_roles=excluded.required_roles""",
+                           dodo_code=excluded.dodo_code, updated_at=excluded.updated_at""",
                     (
                         island_id, upper, isl_type, json.dumps(items_list),
                         isl_theme, isl_cat, isl_desc, isl_seasonal,
@@ -1043,7 +1045,6 @@ def island_detail(name):
         allowed_statuses=ALLOWED_STATUSES,
         r2_configured=r2_configured,
         sparkline_7d=sparkline_7d,
-        subscription_roles=Config.subscription_roles(),
     )
 
 

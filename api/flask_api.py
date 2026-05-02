@@ -135,15 +135,6 @@ def _has_island_access(roles: list[str], required_roles: list[str], is_mod: bool
         return True
     return bool(set(required_roles) & set(roles))
 
-def _configured_subscription_role_ids() -> list[str]:
-    """Return every configured subscriber role ID as strings.
-
-    Includes tier roles and the legacy ISLAND_ACCESS_ROLE fallback when set.
-    """
-    role_ids = {rid for rid, _name in Config.subscription_roles()}
-    if Config.ISLAND_ACCESS_ROLE:
-        role_ids.add(str(Config.ISLAND_ACCESS_ROLE))
-    return [rid for rid in role_ids if rid not in {"", "0", "None"}]
 
 def _fire_dodo_webhook(
     username: str,
@@ -597,8 +588,6 @@ def reveal_dodo(name):
 
     # Safety: member islands must never become public because required_roles is empty.
     effective_required_roles = required_roles
-    if island_cat == "member" and not effective_required_roles:
-        effective_required_roles = _configured_subscription_role_ids()
 
     if island_cat == "member" and not effective_required_roles and not bool(user.get("is_mod")):
         return jsonify({"error": "Subscriber roles are not configured for this island"}), 403

@@ -135,27 +135,6 @@ class Config:
     SENIOR_MOD_ROLE_ID = _get_int("SENIOR_MOD_ROLE_ID")
     BABY_MOD_ROLE_ID   = _get_int("BABY_MOD_ROLE_ID")
 
-    ROLE_CHOSOUP       = _get_int("ROLE_CHOSOUP")        # ChoSoup
-    ROLE_Y_CHOSOUP     = _get_int("ROLE_Y_CHOSOUP")      # y ChoSoup (ChoSoup AND another sub)
-    ROLE_CHOTATO_CLUB  = _get_int("ROLE_CHOTATO_CLUB")   # ChoTato Club
-    ROLE_Y_CHOTATO_CLUB = _get_int("ROLE_Y_CHOTATO_CLUB") # y ChoTato Club (ChoTato Club AND another sub)
-    ROLE_CHOCOLATE     = _get_int("ROLE_CHOCOLATE")      # ChoColate
-    ROLE_CHOFRIES      = _get_int("ROLE_CHOFRIES")       # ChoFries
-    ROLE_Y_CHOCOLATE   = _get_int("ROLE_Y_CHOCOLATE")    # y ChoColate (ChoColate AND another sub)
-
-    @classmethod
-    def subscription_roles(cls) -> list[tuple[str, str]]:
-        """Return [(role_id_str, display_name), ...] for every configured subscription role."""
-        pairs = [
-            (cls.ROLE_CHOSOUP,        "ChoSoup"),
-            (cls.ROLE_Y_CHOSOUP,      "y ChoSoup"),
-            (cls.ROLE_CHOTATO_CLUB,   "ChoTato Club"),
-            (cls.ROLE_Y_CHOTATO_CLUB, "y ChoTato Club"),
-            (cls.ROLE_CHOCOLATE,      "ChoColate"),
-            (cls.ROLE_CHOFRIES,       "ChoFries"),
-            (cls.ROLE_Y_CHOCOLATE,    "y ChoColate"),
-        ]
-        return [(str(rid), name) for rid, name in pairs if rid]
 
     # Discord Embed Assets
     EMOJI_SEARCH = "<a:heartside:784055539881214002>"

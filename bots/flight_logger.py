@@ -1485,7 +1485,18 @@ class FlightLoggerCog(commands.Cog):
                 member = found_members[0]
                 member_roles = [r for r in member.roles if r.name != "@everyone"]
                 has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in member_roles)
-                sub_roles = {int(role_id): name for role_id, name in Config.subscription_roles()}
+                
+                sub_roles = {}
+                dest_clean = clean_text(destination)
+                channel_id = self.island_map.get(dest_clean)
+                dest_channel = guild.get_channel(channel_id) if channel_id else None
+                
+                if dest_channel:
+                    for target, overwrite in dest_channel.overwrites.items():
+                        if isinstance(target, discord.Role) and overwrite.read_messages is True:
+                            if target.name != "@everyone":
+                                sub_roles[target.id] = target.name
+                
                 highlight_present = [(sub_roles[r.id], r.mention) for r in member_roles if r.id in sub_roles]
 
                 # Design: Use a block with emoji and clear separation

@@ -576,6 +576,23 @@ class DiscordCommandCog(commands.Cog):
                 temp_lookup[island_clean] = channel.id
                 fetched_islands.append(island_clean.title())
                 count += 1
+                
+                req_roles = []
+                for target, overwrite in channel.overwrites.items():
+                    if isinstance(target, discord.Role) and overwrite.read_messages is True:
+                        if target.name != "@everyone":
+                            req_roles.append(str(target.id))
+                
+                if req_roles:
+                    try:
+                        import json
+                        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+                            conn.execute(
+                                "UPDATE islands SET required_roles = ? WHERE UPPER(name) = ?",
+                                (json.dumps(req_roles), island_clean.upper())
+                            )
+                    except Exception as e:
+                        logger.error(f"[DISCORD] Failed to save required_roles for {island_clean}: {e}")
 
         self.sub_island_lookup = temp_lookup
 
