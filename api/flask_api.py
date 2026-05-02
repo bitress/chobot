@@ -594,7 +594,7 @@ def reveal_dodo(name):
 
     # Check for general island access role first
     island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
-    if island_cat == "member" and island_access_role and not bool(user.get("is_admin", False)):
+    if island_access_role and not bool(user.get("is_admin", False)):
         if island_access_role not in set(user.get("roles", [])):
             return jsonify({"error": "You need island access role to reveal this dodo code"}), 403
 
