@@ -222,9 +222,15 @@ For multiple villagers: `!mvi Judy Marshal Raymond`.
 
 ### Getting a Sanrio / In-Boxes Villager
 
-First make sure there is a villager in the first plot of land, it has to be any character. I recommend injecting a villager you might want in case this doesn't work. Now you fly to the island where u injected the villager, once in the island u inject your new character, either sanrio or an amiibo one. Make sure the bot says "VILLAGER INJECTED". If you miss this step, it wont come with you.
+**Important Note:** If you inject *any* Amiibo character before flying, they will **NOT** move to your island. You must follow these steps precisely:
 
-Now you go in the first plot of land, talk to the villager you injected before, it wont look like the amiibo villager. Ask them to move in, and if you did everything correct and bot works, you have a new character. If u inject ANY AMIIBO character before flying they will not, and i repeat THEY WILL NOT  move to your island. You have to make sure you do the very first step i said
+1. **Prepare the first plot:** Before flying, ensure there is a villager in the first plot of land (it can be any character). *Recommendation: Inject a normal villager you might want anyway, just in case this process fails.*
+2. **Fly to the island:** Travel to the island where you injected that first villager.
+3. **Inject the Amiibo/Sanrio character:** Once you have safely landed on the island, inject your new character (either Sanrio or Amiibo).
+4. **Wait for confirmation:** Make sure the bot replies with "VILLAGER INJECTED" in the chat. If you miss this step, the character won't come with you.
+5. **Invite the character:** Go to the first plot of land and talk to the villager you originally injected. *Note: They will NOT look like the Amiibo villager you just injected.* Ask them to move in.
+
+If you did everything correctly, you will now have your new Sanrio/Amiibo character!
 
 
 ## Max Bells (Bell Glitch)
