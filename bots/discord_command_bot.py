@@ -49,7 +49,7 @@ ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
 GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
 DODO_XLOG_TIMEOUT = 1800  # seconds to wait for a verified flight before posting the dodo-request xlog
 TOPIC_SYNC_INTERVAL_SECONDS = 30
-FREE_DODO_BOARD_INTERVAL_SECONDS = 10
+FREE_DODO_BOARD_INTERVAL_SECONDS = 60
 FREE_DODO_BOARD_EMBEDS_PER_MESSAGE = 10
 FREE_DODO_BOARD_MARKER = "Chopaeng Camp™ • Free Dodo Board"
 
@@ -509,6 +509,7 @@ class DiscordCommandCog(commands.Cog):
         self.channel_topic_cache: dict[int, str] = {}
         self.island_status_since: dict[str, tuple[bool, datetime]] = {}
         self.free_dodo_board_messages: list[discord.Message] = []
+        self.free_dodo_board_startup_cleanup_done = False
 
         # island_clean -> True (down) / False (up); None = not yet initialized
         self.island_down_states: dict[str, bool | None] = {}
@@ -919,6 +920,8 @@ class DiscordCommandCog(commands.Cog):
         description = str(item.get("description") or "").strip()
         dodo_code = raw_code if DODO_CODE_PATTERN.fullmatch(raw_code) else None
 
+        island_url = "https://www.chopaeng.com/island/"+raw_name.lower()    
+
         if dodo_code:
             color = discord.Color.green()
             code_line = f"`{dodo_code}`"
@@ -932,15 +935,13 @@ class DiscordCommandCog(commands.Cog):
             code_line = "*Unavailable*"
             status_line = "Offline"
 
-        channel_id = self.free_island_lookup.get(clean_text(raw_name))
-        channel_line = f"<#{channel_id}>" if channel_id else "*Channel unavailable*"
         details = []
         if description:
             details.append(description[:180])
 
         embed = discord.Embed(
             title=f"{display_name}",
-            url="https://www.chopaeng.com/island/"+raw_name.lower() or None,
+            url=island_url or None,
             description="\n".join(details) if details else "Live public island access.",
             color=color,
             timestamp=checked_at,
@@ -948,7 +949,6 @@ class DiscordCommandCog(commands.Cog):
         embed.add_field(name="Dodo Code", value=code_line, inline=True)
         embed.add_field(name="Visitors", value=visitors, inline=True)
         embed.add_field(name="Status", value=status_line, inline=True)
-        embed.add_field(name="Island Channel", value=channel_line, inline=False)
         if map_url:
             embed.set_thumbnail(url=map_url)
         embed.set_image(url=Config.FOOTER_LINE)
@@ -1001,6 +1001,35 @@ class DiscordCommandCog(commands.Cog):
         messages.sort(key=lambda msg: msg.created_at)
         self.free_dodo_board_messages = messages
 
+    async def _delete_existing_free_dodo_board_messages(self, channel: discord.TextChannel) -> None:
+        """Delete stale Free Dodo board messages left behind by a previous bot process."""
+        if not self.bot.user:
+            return
+
+        deleted = 0
+        try:
+            async for msg in channel.history(limit=100):
+                if msg.author.id != self.bot.user.id or not msg.embeds:
+                    continue
+                footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
+                if not footer or FREE_DODO_BOARD_MARKER not in footer:
+                    continue
+                try:
+                    await msg.delete()
+                    deleted += 1
+                except discord.NotFound:
+                    pass
+        except discord.Forbidden:
+            logger.warning(f"[DISCORD] Missing permission to delete old Free Dodo board messages in #{channel.name}")
+            return
+        except discord.HTTPException as exc:
+            logger.warning(f"[DISCORD] Failed while deleting old Free Dodo board messages in #{channel.name}: {exc}")
+            return
+
+        self.free_dodo_board_messages = []
+        if deleted:
+            logger.info(f"[DISCORD] Deleted {deleted} stale Free Dodo board message(s) in #{channel.name}")
+
     async def _publish_free_dodo_board(self, channel: discord.TextChannel, embed_chunks: list[list[discord.Embed]]) -> None:
         """Edit or create the Discord messages that hold the Free Dodo board."""
         await self._load_existing_free_dodo_board_messages(channel)
@@ -1050,6 +1079,10 @@ class DiscordCommandCog(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             logger.warning(f"[DISCORD] Free Dodo board target {channel_id} is not a text channel.")
             return
+
+        if not self.free_dodo_board_startup_cleanup_done:
+            await self._delete_existing_free_dodo_board_messages(channel)
+            self.free_dodo_board_startup_cleanup_done = True
 
         await self.fetch_free_islands()
         checked_at = datetime.now(timezone.utc)
