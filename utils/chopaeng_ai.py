@@ -88,12 +88,11 @@ def _build_live_context() -> str:
                 continue
 
             items_preview = ", ".join(items[:6]) + ("…" if len(items) > 6 else "")
-            bot_str  = " | Bot: ✓" if bot_up else (" | Bot: ✗" if bot_up is False else "")
             vis_str  = f" | Visitors: {visitors}" if visitors else ""
             line = f"- {name} [{status}] ({itype or cat})"
             if items_preview:
                 line += f" — {items_preview}"
-            line += vis_str + bot_str
+            line += vis_str
             lines.append(line)
         parts.append("\n".join(lines))
 
@@ -125,6 +124,7 @@ def _extract_live_search_candidates(question: str) -> list[tuple[str, str]]:
         ("item", r"^!(?:find|locate)\s+(.+)$", "explicit item command"),
         ("villager", r"^(?:find|search)\s+villager\s+(.+)$", "villager search phrase"),
         ("item", r"^(?:find|search)\s+item\s+(.+)$", "item search phrase"),
+        ("item", r"^(?:do\s+you\s+have|is\s+there)\s+(?:any\s+)?(.+)$", "do you have item"),
         ("item", r"^does\s+any\s+island\s+have\s+(.+)$", "does any island have item"),
         ("item", r"^does\s+any\s+island\s+stock\s+(.+)$", "does any island stock item"),
         ("item", r"^can\s+i\s+find\s+(.+?)\s+on\s+any\s+island$", "can I find item on any island"),
@@ -135,6 +135,7 @@ def _extract_live_search_candidates(question: str) -> list[tuple[str, str]]:
         ("item", r"^what\s+islands?\s+(?:has|have)\s+(.+)$", "what islands have item"),
         ("item", r"^where\s+can\s+i\s+find\s+(.+)$", "where can I find"),
         ("villager", r"^where\s+is\s+villager\s+(.+)$", "where is villager"),
+        ("villager", r"^is\s+(.+)\s+(?:on\s+any\s+island|here)$", "is villager on any island"),
         ("villager", r"^villager\s+(.+)$", "short villager query"),
     ]
 
@@ -716,9 +717,10 @@ def _build_prompt(question: str, history: Optional[list[dict]] = None, channel_c
         "`!customize <HEX> <code>` to generate the customized code, and finally `!drop <code>` "
         "to drop it.\n\n"
         "User: how do I get a Sanrio villager\n"
-        "AI: Follow the Sanrio villager steps from the KB: be on the island, check the first "
-        "house for an in-boxes villager, leave the house, run `!injectvillager Marty`, then go "
-        "back in and invite them. For more request help, check <#782872507551055892>.\n\n"
+        "AI: Follow the 7-step guide in our Knowledge Base: first inject a placeholder "
+        "villager, fly to the island, then inject your target Sanrio/Amiibo character while "
+        "physically on the island. For a detailed walkthrough, check the #guides channel or "
+        "ask me for the specific steps!\n\n"
         "User: where is Raymond?\n"
         "AI: Raymond is currently on Bathala and Giliw!\n\n"
         f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"

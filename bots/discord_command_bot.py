@@ -588,8 +588,8 @@ class DiscordCommandCog(commands.Cog):
                         import json
                         with sqlite3.connect(_DB_PATH, timeout=5) as conn:
                             conn.execute(
-                                "UPDATE islands SET required_roles = ? WHERE UPPER(name) = ?",
-                                (json.dumps(req_roles), island_clean.upper())
+                                "UPDATE islands SET required_roles = ?, channel_id = ? WHERE UPPER(name) = ?",
+                                (json.dumps(req_roles), str(channel.id), island_clean.upper())
                             )
                     except Exception as e:
                         logger.error(f"[DISCORD] Failed to save required_roles for {island_clean}: {e}")

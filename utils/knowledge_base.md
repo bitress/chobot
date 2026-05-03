@@ -6,7 +6,7 @@ New Horizons (ACNH) content creator and Twitch streamer based in the Philippines
 He hosts 24/7 treasure islands where community members collect items and meet
 villagers. ACNH is a life-simulation game by Nintendo for the Nintendo Switch
 where players manage an island, collect furniture and clothing, invite animal
-villagers, and visit other players' islands. The community (the "choPaeng
+villagers, and visit other players' islands. The community (the "ChoPaeng
 family") includes Filipino and international ACNH fans.
 
 ## Official Links
@@ -222,15 +222,27 @@ For multiple villagers: `!mvi Judy Marshal Raymond`.
 
 ### Getting a Sanrio / In-Boxes Villager
 
-**Important Note:** If you inject *any* Amiibo character before flying, they will **NOT** move to your island. You must follow these steps precisely:
+1. **Inject a Placeholder**
+   Before flying anywhere, use the bot to inject any standard villager into the first plot of land on the target island.
+   *Warning: Do not inject your desired Amiibo/Sanrio character at this stage. If you do it before flying, they will absolutely refuse to move to your island.*
 
-1. **Prepare the first plot:** Before flying, ensure there is a villager in the first plot of land (it can be any character). *Recommendation: Inject a normal villager you might want anyway, just in case this process fails.*
-2. **Fly to the island:** Travel to the island where you injected that first villager.
-3. **Inject the Amiibo/Sanrio character:** Once you have safely landed on the island, inject your new character (either Sanrio or Amiibo).
-4. **Wait for confirmation:** Make sure the bot replies with "VILLAGER INJECTED" in the chat. If you miss this step, the character won't come with you.
-5. **Invite the character:** Go to the first plot of land and talk to the villager you originally injected. *Note: They will NOT look like the Amiibo villager you just injected.* Ask them to move in.
+2. **Fly to the Target Island**
+   Travel to the island where you just injected the placeholder villager.
 
-If you did everything correctly, you will now have your new Sanrio/Amiibo character!
+3. **Inject the Target Character**
+   Once you are physically on the island, inject your desired Amiibo or Sanrio character.
+
+4. **Wait for Bot Confirmation**
+   Watch the bot logs. You must wait for it to explicitly say **VILLAGER INJECTED**. If you miss this step and proceed anyway, the villager is not coming with you.
+
+5. **Visit the First Plot**
+   Go into the house on the first plot of land.
+
+6. **Talk to the Decoy**
+   Speak to the villager inside. They will visually look like the placeholder you injected in Step 1, not the Amiibo character. This is normal.
+
+7. **Ask Them to Move In**
+   Invite them to live on your island. Assuming the bot worked and you followed the sequence, your new Amiibo/Sanrio character will be the one actually moving in.
 
 
 ## Max Bells (Bell Glitch)

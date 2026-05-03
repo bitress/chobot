@@ -187,13 +187,20 @@ def init_dashboard_db():
                 dodo_code      TEXT,
                 map_url        TEXT,
                 updated_at     TEXT,
-                required_roles TEXT NOT NULL DEFAULT '[]'
+                required_roles TEXT NOT NULL DEFAULT '[]',
+                channel_id     TEXT
             )
         """)
 
         # Migrate: add required_roles column if it was created without it
         try:
             conn.execute("ALTER TABLE islands ADD COLUMN required_roles TEXT NOT NULL DEFAULT '[]'")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        try:
+            conn.execute("ALTER TABLE islands ADD COLUMN channel_id TEXT")
             conn.commit()
         except sqlite3.OperationalError:
             pass  # Column already exists

@@ -143,6 +143,7 @@ def _fire_dodo_webhook(
     avatar_url: str,
     island_name: str,
     dodo_code: str,
+    channel_id: str = None,
 ) -> None:
     """POST a Discord webhook message in the background."""
     url = Config.DODO_LOG_WEBHOOK_URL
@@ -154,20 +155,40 @@ def _fire_dodo_webhook(
     nick_value = (nickname or "").strip() or "(none)"
     user_id_value = (user_id or "").strip() or "(unknown)"
 
+    island_url_name = urllib.parse.quote(island_name)
+    island_link = f"https://www.chopaeng.com/island/{island_url_name}"
+
     embed = {
-        "description": f"**{display_name}** revealed a dodo code at **{island_name}**",
-        "color": 0x57F287,
+        "title": f"✈️ Dodo Code Revealed: {island_name}",
+        "url": island_link,
+        "color": 0x2ecc71,  # Emerald Green
+        "author": {
+            "name": f"{display_name} (@{account_name})",
+            "icon_url": avatar_url if avatar_url else None
+        },
+        "description": f"A user has revealed the Dodo code for island: [**{island_name}**]({island_link})",
         "fields": [
-            {"name": "Guild Nickname", "value": nick_value, "inline": True},
-            {"name": "Discord Username", "value": account_name, "inline": True},
-            {"name": "Island", "value": island_name, "inline": True},
+            {
+                "name": "👤 User Information",
+                "value": f"**Nick:** {nick_value}\n**User ID:** `{user_id_value}`",
+                "inline": True
+            },
+            {
+                "name": "🏝️ Island Details",
+                "value": (
+                    f"**Code:** `{dodo_code}`\n"
+                    f"**Web:** [View Island]({island_link})" +
+                    (f"\n**Discord:** [Go to Channel](https://discord.com/channels/{Config.GUILD_ID}/{channel_id})" if channel_id else "")
+                ),
+                "inline": True
+            }
         ],
-        "footer": {"text": "Chopaeng Dodo Reveal Log"},
+        "footer": {
+            "text": "ChoBot",
+            "icon_url": "https://www.chopaeng.com/assets/logo-C5oO0bbj.webp"
+        },
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
-    # Discord rejects empty embed objects like "thumbnail": {}.
-    if avatar_url:
-        embed["thumbnail"] = {"url": avatar_url}
 
     payload = json.dumps({"embeds": [embed]}).encode()
     try:
@@ -572,15 +593,17 @@ def reveal_dodo(name):
     db = get_db()
     try:
         row = db.execute(
-            "SELECT cat, required_roles FROM islands WHERE UPPER(name) = ?", (target,)
+            "SELECT cat, required_roles, channel_id FROM islands WHERE UPPER(name) = ?", (target,)
         ).fetchone()
     finally:
         db.close()
 
     island_cat = ""
     required_roles: list[str] = []
+    channel_id = None
     if row:
         island_cat = (row["cat"] or "").strip().lower()
+        channel_id = row["channel_id"]
         try:
             required_roles = json.loads(row["required_roles"] or "[]")
         except (ValueError, TypeError):
@@ -589,16 +612,19 @@ def reveal_dodo(name):
     # Safety: member islands must never become public because required_roles is empty.
     effective_required_roles = required_roles
 
-    if island_cat == "member" and not effective_required_roles and not bool(user.get("is_mod")):
+    is_viewer_admin = bool(user.get("is_admin"))
+    is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
+
+    if island_cat == "member" and not effective_required_roles and not is_viewer_mod:
         return jsonify({"error": "Subscriber roles are not configured for this island"}), 403
 
     # Check for general island access role first
     island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
-    if island_access_role and not bool(user.get("is_admin", False)):
+    if island_access_role and not is_viewer_admin:
         if island_access_role not in set(user.get("roles", [])):
             return jsonify({"error": "You need island access role to reveal this dodo code"}), 403
 
-    if not _has_island_access(user.get("roles", []), effective_required_roles, bool(user.get("is_mod"))):
+    if not _has_island_access(user.get("roles", []), effective_required_roles, is_viewer_mod):
         return jsonify({"error": "You don't have the required subscription for this island"}), 403
 
     # Find the dodo code from the filesystem
@@ -629,6 +655,7 @@ def reveal_dodo(name):
             user["avatar"],
             target,
             dodo_code,
+            channel_id,
         ),
         daemon=True,
     ).start()
@@ -641,29 +668,52 @@ def reveal_dodo(name):
 
 @app.route('/')
 def home():
-    """API home with endpoint info"""
+    """API home with endpoint info and system status"""
+    cache_count = 0
+    last_update = None
+    if data_manager:
+        with data_manager.lock:
+            cache_count = len(data_manager.cache)
+            last_update = data_manager.last_update
+
     return jsonify({
-        "status": "online",
-        "message": "ChoBot API - All systems operational",
+        "system": {
+            "name": "ChoBot API",
+            "version": "1.1.0",
+            "status": "online" if cache_count > 0 else "initializing",
+            "server_time": datetime.now().isoformat(),
+        },
+        "data_stats": {
+            "items_in_cache": cache_count,
+            "last_gsheets_sync": last_update.isoformat() if last_update else None,
+            "island_file_cache_ttl": f"{_FILE_CACHE_TTL}s"
+        },
         "endpoints": {
-            "items": "/find, /api/find",
-            "villagers": "/villager, /api/villager, /api/villagers/list",
-            "islands": "/api/islands, /api/islands/<name>/visitors",
-            "patreon": "/api/patreon/posts, /api/patreon/posts/<id>",
-            "status": "/status",
-            "refresh": "/api/refresh (POST)",
-            "health": "/health"
-        },
-        "data_freshness": {
-            "islands": (
-                f"Near-real-time — dodo codes and visitor counts are read directly from "
-                f"island bot files, cached for up to {_FILE_CACHE_TTL} seconds."
-            ),
-            "items_villagers": (
-                "Refreshed from Google Sheets on a scheduled interval. "
-                "See /health for refresh_interval_seconds and next_update."
-            ),
-        },
+            "islands": {
+                "path": "/api/islands",
+                "description": "Get real-time status, visitors, and dodo codes for all islands"
+            },
+            "search_items": {
+                "path": "/api/find?q=<item>",
+                "description": "Search for item availability across all islands"
+            },
+            "search_villagers": {
+                "path": "/api/villager?q=<name>",
+                "description": "Locate specific villagers on islands"
+            },
+            "villager_list": {
+                "path": "/api/villagers/list",
+                "description": "Get all current villagers grouped by island"
+            },
+            "patreon_posts": {
+                "path": "/api/patreon/posts",
+                "description": "List cached community posts"
+            },
+            "health": {
+                "path": "/api/health",
+                "description": "Detailed system health and synchronization metrics"
+            }
+        }
     })
 
 @app.route('/health')
@@ -891,7 +941,8 @@ def get_islands():
     """Get all island statuses and Dodo codes with full metadata."""
     viewer = _current_auth_user()
     viewer_roles = viewer.get("roles", []) if viewer else []
-    viewer_is_mod = bool(viewer and (viewer.get("is_mod") or _is_mod(viewer_roles)))
+    viewer_is_admin = bool(viewer and viewer.get("is_admin"))
+    viewer_is_mod = bool(viewer and (viewer.get("is_mod") or viewer_is_admin or _is_mod(viewer_roles)))
 
     # Load island metadata from DB, keyed by uppercase name
     db_map = {}
