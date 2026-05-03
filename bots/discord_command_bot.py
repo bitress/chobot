@@ -938,11 +938,16 @@ class DiscordCommandCog(commands.Cog):
         details = []
         if description:
             details.append(description[:180])
+        
+        links = [f"\n[View Island]({island_url})"]
+        if map_url:
+            links.append(f"[View Map]({map_url})")
+        details.append(" • ".join(links))
 
         embed = discord.Embed(
             title=f"{display_name}",
             url=island_url or None,
-            description="\n".join(details) if details else "Live public island access.",
+            description="\n".join(details),
             color=color,
             timestamp=checked_at,
         )
