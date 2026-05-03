@@ -151,28 +151,22 @@ def _fire_dodo_webhook(
         return
 
     display_name = (nickname or "").strip() or (username or "").strip() or "Unknown User"
-    account_name = (username or "").strip() or "Unknown User"
 
     island_url_name = urllib.parse.quote(island_name)
     island_link = f"https://www.chopaeng.com/island/{island_url_name}"
 
     embed = {
-        "title": f"✈️ Dodo Code Revealed: <#{channel_id}>",
-        "url": island_link,
+        "title": f"✈️ Dodo Code Revealed",
         "color": 0x2ecc71,  # Emerald Green
-        "author": {
-            "name": f"{display_name} (@{account_name})",
-            "icon_url": avatar_url if avatar_url else None
-        },
-        "description": f"A user has revealed the Dodo code for island: <#{channel_id}>",
+        "description": f"<@{user_id}> has revealed the Dodo code for island: <#{channel_id}>",
         "fields": [
             {
-                "name": "👤 User",
-                "value": f"**Nick:** {display_name}\n",
+                "name": "Member",
+                "value": f"{display_name} (<@{user_id}>)",
                 "inline": True
             },
             {
-                "name": "🏝️ Island",
+                "name": "Island",
                 "value": (
                     (f"<#{channel_id}>" if channel_id else "") +
                     f"\n[View Island]({island_link})"
@@ -181,7 +175,7 @@ def _fire_dodo_webhook(
             }
         ],
         "footer": {
-            "text": "ChoBot",
+            "text": "Chopaeng Camp™ • Dodo Reveal",
             "icon_url": "https://www.chopaeng.com/assets/logo-C5oO0bbj.webp"
         },
         "timestamp": datetime.utcnow().isoformat() + "Z",
