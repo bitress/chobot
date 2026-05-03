@@ -49,6 +49,9 @@ ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
 GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
 DODO_XLOG_TIMEOUT = 1800  # seconds to wait for a verified flight before posting the dodo-request xlog
 TOPIC_SYNC_INTERVAL_SECONDS = 30
+FREE_DODO_BOARD_INTERVAL_SECONDS = 10
+FREE_DODO_BOARD_EMBEDS_PER_MESSAGE = 10
+FREE_DODO_BOARD_MARKER = "Chopaeng Camp™ • Free Dodo Board"
 
 # How long (seconds) a command claim record is kept before being pruned.
 # Any message older than this window is no longer at risk of being replayed.
@@ -505,6 +508,7 @@ class DiscordCommandCog(commands.Cog):
         self.free_island_lookup = {}
         self.channel_topic_cache: dict[int, str] = {}
         self.island_status_since: dict[str, tuple[bool, datetime]] = {}
+        self.free_dodo_board_messages: list[discord.Message] = []
 
         # island_clean -> True (down) / False (up); None = not yet initialized
         self.island_down_states: dict[str, bool | None] = {}
@@ -512,6 +516,7 @@ class DiscordCommandCog(commands.Cog):
         self.island_down_messages: dict[str, discord.Message] = {}
         self.island_monitor_loop.start()
         self.topic_sync_loop.start()
+        self.free_dodo_board_loop.start()
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Filter items from cache for autocomplete"""
@@ -646,6 +651,7 @@ class DiscordCommandCog(commands.Cog):
         """Cleanup on unload"""
         self.island_monitor_loop.cancel()
         self.topic_sync_loop.cancel()
+        self.free_dodo_board_loop.cancel()
 
     @staticmethod
     def _parse_iso8601(value: str | None) -> datetime | None:
@@ -670,8 +676,8 @@ class DiscordCommandCog(commands.Cog):
             return f"{hours}h {minutes}m"
         return f"{minutes}m"
 
-    async def _fetch_islands_api_snapshot(self) -> tuple[dict[str, dict], datetime | None] | tuple[None, None]:
-        """Fetch island snapshot from the API and return map keyed by cleaned island name."""
+    async def _fetch_islands_api_data(self) -> tuple[list[dict], datetime | None] | tuple[None, None]:
+        """Fetch raw island snapshot data from the API."""
         base_url = os.getenv("API_BASE_URL", "https://console.chopaeng.com").rstrip("/")
         url = f"{base_url}/api/islands"
 
@@ -683,10 +689,22 @@ class DiscordCommandCog(commands.Cog):
         try:
             payload = await asyncio.to_thread(_get_json)
         except Exception as exc:
-            logger.warning(f"[DISCORD] topic sync API request failed: {exc}")
+            logger.warning(f"[DISCORD] island API request failed: {exc}")
             return None, None
 
         data = payload.get("data", []) if isinstance(payload, dict) else []
+        if not isinstance(data, list):
+            data = []
+        meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+        api_timestamp = self._parse_iso8601(meta.get("timestamp")) if isinstance(meta, dict) else None
+        return data, api_timestamp
+
+    async def _fetch_islands_api_snapshot(self) -> tuple[dict[str, dict], datetime | None] | tuple[None, None]:
+        """Fetch island snapshot from the API and return map keyed by cleaned island name."""
+        data, api_timestamp = await self._fetch_islands_api_data()
+        if data is None:
+            return None, None
+
         island_map: dict[str, dict] = {}
         for item in data:
             name = item.get("name") if isinstance(item, dict) else None
@@ -696,8 +714,6 @@ class DiscordCommandCog(commands.Cog):
             canonical = re.sub(r'^\d+', '', normalized)
             island_map[canonical or normalized] = item
 
-        meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
-        api_timestamp = self._parse_iso8601(meta.get("timestamp")) if isinstance(meta, dict) else None
         return island_map, api_timestamp
 
     def _build_channel_topic(
@@ -806,6 +822,254 @@ class DiscordCommandCog(commands.Cog):
         """Wait until ready and ensure island lookups are loaded before topic sync starts."""
         await self.bot.wait_until_ready()
         await self.fetch_islands()
+
+    @staticmethod
+    def _read_first_line(path: str) -> str | None:
+        """Read a small status file, retrying once if the island bot has it locked."""
+        for attempt in range(2):
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    return f.read().strip()
+            except OSError:
+                if attempt == 0:
+                    time.sleep(0.05)
+        return None
+
+    @staticmethod
+    def _parse_visitor_count(value: object) -> str:
+        """Normalize visitor values for display."""
+        if value is None:
+            return "0/7"
+        text = str(value).strip()
+        if not text:
+            return "0/7"
+        if text.upper() == "FULL":
+            return "FULL"
+        if text.isdigit():
+            return f"{max(0, min(7, int(text)))}/7"
+        if re.fullmatch(r"\d+\s*/\s*7", text):
+            return text.replace(" ", "")
+        return text[:32]
+
+    def _read_free_dodo_files(self) -> list[dict]:
+        """Fallback reader for free-island Dodo files when the API is unavailable."""
+        base_dir = Config.DIR_FREE
+        if not base_dir or not os.path.exists(base_dir):
+            return []
+
+        items = []
+        with os.scandir(base_dir) as entries:
+            for entry in entries:
+                if not entry.is_dir():
+                    continue
+
+                raw_dodo = self._read_first_line(os.path.join(entry.path, "Dodo.txt"))
+                raw_visitors = self._read_first_line(os.path.join(entry.path, "Visitors.txt"))
+                dodo_code = None
+                status = "OFFLINE"
+
+                if raw_dodo in ("00000", "-----", ""):
+                    status = "REFRESHING"
+                elif raw_dodo and DODO_CODE_PATTERN.fullmatch(raw_dodo.strip().upper()):
+                    dodo_code = raw_dodo.strip().upper()
+                    status = "ONLINE"
+
+                items.append({
+                    "name": entry.name.upper(),
+                    "dodo_code": dodo_code,
+                    "visitors": self._parse_visitor_count(raw_visitors),
+                    "status": status,
+                    "type": "Free",
+                })
+
+        return sorted(items, key=lambda item: str(item.get("name", "")))
+
+    async def _fetch_free_dodo_board_data(self) -> tuple[list[dict], datetime | None]:
+        """Return free-island data for the Dodo board."""
+        data, api_timestamp = await self._fetch_islands_api_data()
+        if data is not None:
+            known_free = {clean_text(name) for name in Config.FREE_ISLANDS}
+            known_free.update(self.free_island_lookup.keys())
+            free_items = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                island_type = str(item.get("type", "")).strip().lower()
+                island_clean = clean_text(str(item.get("name", "")))
+                if island_type == "free" or island_clean in known_free:
+                    free_items.append(item)
+            return sorted(free_items, key=lambda item: str(item.get("name", ""))), api_timestamp
+
+        file_items = await asyncio.to_thread(self._read_free_dodo_files)
+        return file_items, None
+
+    def _build_free_dodo_embed(
+        self,
+        item: dict,
+        checked_at: datetime,
+        footer_icon_url: str | None = None,
+    ) -> discord.Embed:
+        """Build one free-island Dodo board embed."""
+        raw_name = str(item.get("name") or "Unknown Island").strip()
+        display_name = raw_name.title()
+        raw_code = str(item.get("dodo_code") or "").strip().upper()
+        status = str(item.get("status") or "UNKNOWN").strip().upper()
+        visitors = self._parse_visitor_count(item.get("visitors"))
+        map_url = str(item.get("map_url") or "").strip()
+        description = str(item.get("description") or "").strip()
+        dodo_code = raw_code if DODO_CODE_PATTERN.fullmatch(raw_code) else None
+
+        if dodo_code:
+            color = discord.Color.green()
+            code_line = f"`{dodo_code}`"
+            status_line = "Online"
+        elif status == "REFRESHING":
+            color = discord.Color.orange()
+            code_line = "*Refreshing*"
+            status_line = "Refreshing"
+        else:
+            color = discord.Color.red()
+            code_line = "*Unavailable*"
+            status_line = "Offline"
+
+        channel_id = self.free_island_lookup.get(clean_text(raw_name))
+        channel_line = f"<#{channel_id}>" if channel_id else "*Channel unavailable*"
+        details = []
+        if description:
+            details.append(description[:180])
+
+        embed = discord.Embed(
+            title=f"{display_name}",
+            url="https://www.chopaeng.com/island/"+raw_name.lower() or None,
+            description="\n".join(details) if details else "Live public island access.",
+            color=color,
+            timestamp=checked_at,
+        )
+        embed.add_field(name="Dodo Code", value=code_line, inline=True)
+        embed.add_field(name="Visitors", value=visitors, inline=True)
+        embed.add_field(name="Status", value=status_line, inline=True)
+        embed.add_field(name="Island Channel", value=channel_line, inline=False)
+        if map_url:
+            embed.set_thumbnail(url=map_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+        embed.set_footer(
+            text=f"{FREE_DODO_BOARD_MARKER}",
+            icon_url=footer_icon_url,
+        )
+        return embed
+
+    def _build_free_dodo_empty_embed(
+        self,
+        checked_at: datetime,
+        footer_icon_url: str | None = None,
+    ) -> discord.Embed:
+        embed = discord.Embed(
+            title="Free Island Dodo Board",
+            description="No free island Dodo codes are available right now.",
+            color=discord.Color.orange(),
+            timestamp=checked_at,
+        )
+        embed.set_image(url=Config.FOOTER_LINE)
+        embed.set_footer(
+            text=f"{FREE_DODO_BOARD_MARKER} - Updates every 10s - Last checked {checked_at:%H:%M:%S} UTC",
+            icon_url=footer_icon_url,
+        )
+        return embed
+
+    async def _load_existing_free_dodo_board_messages(self, channel: discord.TextChannel) -> None:
+        """Find board messages from the current bot after a restart."""
+        if self.free_dodo_board_messages:
+            return
+        if not self.bot.user:
+            return
+
+        messages = []
+        try:
+            async for msg in channel.history(limit=50):
+                if msg.author.id != self.bot.user.id or not msg.embeds:
+                    continue
+                footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
+                if footer and FREE_DODO_BOARD_MARKER in footer:
+                    messages.append(msg)
+        except discord.Forbidden:
+            logger.warning(f"[DISCORD] Missing permission to read Free Dodo board history in #{channel.name}")
+            return
+        except discord.HTTPException as exc:
+            logger.warning(f"[DISCORD] Failed to read Free Dodo board history in #{channel.name}: {exc}")
+            return
+
+        messages.sort(key=lambda msg: msg.created_at)
+        self.free_dodo_board_messages = messages
+
+    async def _publish_free_dodo_board(self, channel: discord.TextChannel, embed_chunks: list[list[discord.Embed]]) -> None:
+        """Edit or create the Discord messages that hold the Free Dodo board."""
+        await self._load_existing_free_dodo_board_messages(channel)
+        expected_count = len(embed_chunks)
+
+        for idx, embeds in enumerate(embed_chunks):
+            try:
+                if idx < len(self.free_dodo_board_messages):
+                    await self.free_dodo_board_messages[idx].edit(content=None, embeds=embeds)
+                else:
+                    msg = await channel.send(embeds=embeds)
+                    self.free_dodo_board_messages.append(msg)
+            except discord.NotFound:
+                self.free_dodo_board_messages = []
+                logger.warning("[DISCORD] Free Dodo board message disappeared; it will be recreated next cycle.")
+                return
+            except discord.Forbidden:
+                logger.warning(f"[DISCORD] Missing permission to update Free Dodo board in #{channel.name}")
+                return
+            except discord.HTTPException as exc:
+                logger.warning(f"[DISCORD] Failed to update Free Dodo board in #{channel.name}: {exc}")
+                return
+
+        extras = self.free_dodo_board_messages[expected_count:]
+        self.free_dodo_board_messages = self.free_dodo_board_messages[:expected_count]
+        for msg in extras:
+            try:
+                await msg.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+    @tasks.loop(seconds=FREE_DODO_BOARD_INTERVAL_SECONDS)
+    async def free_dodo_board_loop(self):
+        """Keep the public free-island Dodo board updated."""
+        channel_id = Config.FREE_DODO_BOARD_CHANNEL_ID
+        if not channel_id:
+            return
+
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+                logger.warning(f"[DISCORD] Free Dodo board channel {channel_id} unavailable: {exc}")
+                return
+
+        if not isinstance(channel, discord.TextChannel):
+            logger.warning(f"[DISCORD] Free Dodo board target {channel_id} is not a text channel.")
+            return
+
+        await self.fetch_free_islands()
+        checked_at = datetime.now(timezone.utc)
+        free_items, _ = await self._fetch_free_dodo_board_data()
+        footer_icon_url = channel.guild.icon.url if channel.guild and channel.guild.icon else None
+        embeds = [self._build_free_dodo_embed(item, checked_at, footer_icon_url) for item in free_items]
+        if not embeds:
+            embeds = [self._build_free_dodo_empty_embed(checked_at, footer_icon_url)]
+
+        embed_chunks = [
+            embeds[i:i + FREE_DODO_BOARD_EMBEDS_PER_MESSAGE]
+            for i in range(0, len(embeds), FREE_DODO_BOARD_EMBEDS_PER_MESSAGE)
+        ]
+        await self._publish_free_dodo_board(channel, embed_chunks)
+
+    @free_dodo_board_loop.before_loop
+    async def before_free_dodo_board_loop(self):
+        """Wait until ready before starting the public Free Dodo board."""
+        await self.bot.wait_until_ready()
+        await self.fetch_free_islands()
 
     def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
         """Check if user is on cooldown"""

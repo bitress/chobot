@@ -163,7 +163,6 @@ def _fire_dodo_webhook(
             {
                 "name": "Member",
                 "value": f"{display_name} (<@{user_id}>)",
-                "inline": True
             },
             {
                 "name": "Island",
@@ -171,7 +170,6 @@ def _fire_dodo_webhook(
                     (f"<#{channel_id}>" if channel_id else "") +
                     f"\n[View Island]({island_link})"
                 ),
-                "inline": True
             }
         ],
         "footer": {
