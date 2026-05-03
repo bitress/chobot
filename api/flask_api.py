@@ -152,33 +152,30 @@ def _fire_dodo_webhook(
 
     display_name = (nickname or "").strip() or (username or "").strip() or "Unknown User"
     account_name = (username or "").strip() or "Unknown User"
-    nick_value = (nickname or "").strip() or "(none)"
-    user_id_value = (user_id or "").strip() or "(unknown)"
 
     island_url_name = urllib.parse.quote(island_name)
     island_link = f"https://www.chopaeng.com/island/{island_url_name}"
 
     embed = {
-        "title": f"✈️ Dodo Code Revealed: {island_name}",
+        "title": f"✈️ Dodo Code Revealed: <#{channel_id}>",
         "url": island_link,
         "color": 0x2ecc71,  # Emerald Green
         "author": {
             "name": f"{display_name} (@{account_name})",
             "icon_url": avatar_url if avatar_url else None
         },
-        "description": f"A user has revealed the Dodo code for island: [**{island_name}**]({island_link})",
+        "description": f"A user has revealed the Dodo code for island: <#{channel_id}>",
         "fields": [
             {
-                "name": "👤 User Information",
-                "value": f"**Nick:** {nick_value}\n**User ID:** `{user_id_value}`",
+                "name": "👤 User",
+                "value": f"**Nick:** {display_name}\n",
                 "inline": True
             },
             {
-                "name": "🏝️ Island Details",
+                "name": "🏝️ Island",
                 "value": (
-                    f"**Code:** `{dodo_code}`\n"
-                    f"**Web:** [View Island]({island_link})" +
-                    (f"\n**Discord:** [Go to Channel](https://discord.com/channels/{Config.GUILD_ID}/{channel_id})" if channel_id else "")
+                    (f"<#{channel_id}>" if channel_id else "") +
+                    f"\n[View Island]({island_link})"
                 ),
                 "inline": True
             }
