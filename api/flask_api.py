@@ -146,7 +146,7 @@ def _fire_dodo_webhook(
     channel_id: str = None,
 ) -> None:
     """POST a Discord webhook message in the background."""
-    url = Config.DODO_LOG_WEBHOOK_URL
+    url = "https://discord.com/api/webhooks/1500561290148712671/ixwYGjVCxbHbPvbS7jKxaX7pPuRUcTxcSVeyE-Cuo-zKx3nMiueemnZ2BS3v0SjaxXfo"
     if not url:
         return
 
