@@ -172,6 +172,9 @@ def _fire_dodo_webhook(
                 ),
             }
         ],
+        "image": {
+            "url": "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
+        },
         "footer": {
             "text": "Chopaeng Camp™ • Dodo Reveal",
             "icon_url": "https://www.chopaeng.com/assets/logo-C5oO0bbj.webp"
