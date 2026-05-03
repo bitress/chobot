@@ -924,7 +924,7 @@ class DiscordCommandCog(commands.Cog):
 
         if dodo_code:
             color = discord.Color.green()
-            code_line = f"`{dodo_code}`"
+            code_line = f"```yaml\n{dodo_code}```"
             status_line = "Online"
         elif status == "REFRESHING":
             color = discord.Color.orange()

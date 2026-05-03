@@ -153,7 +153,7 @@ def _fire_dodo_webhook(
     display_name = (nickname or "").strip() or (username or "").strip() or "Unknown User"
 
     island_url_name = urllib.parse.quote(island_name)
-    island_link = f"https://www.chopaeng.com/island/{island_url_name}"
+    island_link = f"https://www.chopaeng.com/island/{island_url_name.lower()}"
 
     embed = {
         "title": f"✈️ Dodo Code Revealed",
