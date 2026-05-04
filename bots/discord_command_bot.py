@@ -48,6 +48,11 @@ AVAILABLE_SLOT_TEXT = "available slot"
 ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
 GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
 DODO_XLOG_TIMEOUT = 1800  # seconds to wait for a verified flight before posting the dodo-request xlog
+
+# Nickname submission channel validation
+NICKNAME_SUBMISSION_CHANNEL_ID = 1081147108612124742
+# Format: Nickname[/Nickname...] | Island Name[/Island Name...]
+NICKNAME_FORMAT_PATTERN = re.compile(r'^[^\s|]+(?:/[^\s|]+)*\s*\|\s*[^\s|]+(?:/[^\s|]+)*$', re.MULTILINE)
 TOPIC_SYNC_INTERVAL_SECONDS = 150
 FREE_DODO_BOARD_INTERVAL_SECONDS = 60
 FREE_DODO_BOARD_EMBEDS_PER_MESSAGE = 10
@@ -660,6 +665,49 @@ class DiscordCommandCog(commands.Cog):
         self.topic_sync_loop.cancel()
         self.free_dodo_board_loop.cancel()
 
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Validate nickname/island submissions and nuke improperly formatted messages."""
+        
+        # Ignore bots, DMs, and messages outside the designated channel
+        if message.author.bot or message.guild is None or message.channel.id != NICKNAME_SUBMISSION_CHANNEL_ID:
+            return
+
+        content = message.content.strip()
+        if not content:
+            return
+
+        # Evaluate each line against the regex
+        lines = [line.strip() for line in content.split('\n') if line.strip()]
+        
+        if not all(NICKNAME_FORMAT_PATTERN.match(line) for line in lines):
+            try:
+                await message.delete()
+                logger.info(f"[DISCORD] Purged invalid submission from {message.author}: {content[:100]}")
+                
+                # The format notice to send to the user
+                notice = (
+                    "Your recent submission was deleted due to incorrect formatting.\n"
+                    "**Format:** `ACNH Character Name | Your ACNH Island Name`\n"
+                    "**Sample:** `ChoPaeng | ChoPaeng Camp`\n"
+                )
+                
+                # Attempt to DM the user silently
+                try:
+                    await message.author.send(notice)
+                except discord.Forbidden:
+                    # Fallback: Send to channel, suppress ping notification, delete after 10 seconds
+                    await message.channel.send(
+                        f"{message.author.mention} {notice}", 
+                        delete_after=10.0, 
+                        silent=True 
+                    )
+
+            except discord.Forbidden:
+                logger.warning(f"[DISCORD] Missing permissions to smite message from {message.author} in {NICKNAME_SUBMISSION_CHANNEL_ID}")
+            except discord.NotFound:
+                pass # Already dead
+
     @staticmethod
     def _parse_iso8601(value: str | None) -> datetime | None:
         """Parse an ISO8601 datetime string into a timezone-aware UTC datetime."""
@@ -1157,12 +1205,13 @@ class DiscordCommandCog(commands.Cog):
         # If no channel found, return bold text
         return f"**{island_name.title()}**"
 
-    def create_found_embed(self, ctx_or_interaction, search_term, location_string, is_villager=False, nooki_data=None):
+    def create_found_embed(self, ctx_or_interaction, search_term, location_string, is_villager=False, nooki_data=None, island_map=None):
 
         user = getattr(ctx_or_interaction, "author", getattr(ctx_or_interaction, "user", None))
         clean_name = search_term.title()
         loc_list = sorted(list(set(location_string.split(", "))))
         sub_islands_found = []
+        island_map = island_map or {}
 
         for loc in loc_list:
             loc_key = clean_text(loc)
@@ -1175,7 +1224,14 @@ class DiscordCommandCog(commands.Cog):
 
             # Use get_island_channel_link for robust linking with fallback
             island_link = self.get_island_channel_link(loc)
-            sub_islands_found.append(island_link)
+            island_payload = island_map.get(loc_key)
+            is_online = None
+            if isinstance(island_payload, dict):
+                status_text = str(island_payload.get("status", "")).upper()
+                bot_online = island_payload.get("discord_bot_online")
+                is_online = bool(bot_online) if bot_online is not None else (status_text == "ONLINE")
+            status_icon = "🟢" if is_online is True else "🔴" if is_online is False else "⚪"
+            sub_islands_found.append(f"{status_icon} {island_link}")
 
         # If no Sub Islands match, return None to indicate availability failure
         if not sub_islands_found:
@@ -1403,7 +1459,14 @@ class DiscordCommandCog(commands.Cog):
             with self.data_manager.lock:
                 display_name = cache.get("_display", {}).get(search_term, search_term_raw)
 
-            embed = self.create_found_embed(ctx, display_name, found_locations, is_villager=False)
+            island_map, _ = await self._fetch_islands_api_snapshot()
+            embed = self.create_found_embed(
+                ctx,
+                display_name,
+                found_locations,
+                is_villager=False,
+                island_map=island_map or {},
+            )
 
             if embed:
                 await ctx.reply(content=f"Hey <@{ctx.author.id}>, look what I found!", embed=embed)
@@ -1452,7 +1515,15 @@ class DiscordCommandCog(commands.Cog):
 
         if found_locations:
             nooki_data = await NookipediaClient.get_villager_info(search_term)
-            embed = self.create_found_embed(ctx, search_term, found_locations, is_villager=True, nooki_data=nooki_data)
+            island_map, _ = await self._fetch_islands_api_snapshot()
+            embed = self.create_found_embed(
+                ctx,
+                search_term,
+                found_locations,
+                is_villager=True,
+                nooki_data=nooki_data,
+                island_map=island_map or {},
+            )
 
             if embed:
                 house_embed = self.create_villager_house_embed(ctx, search_term, nooki_data) if nooki_data else None
