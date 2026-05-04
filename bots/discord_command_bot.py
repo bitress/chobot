@@ -202,9 +202,15 @@ def _init_subscriptions_db() -> None:
                     user_id INTEGER NOT NULL,
                     island_clean TEXT NOT NULL,
                     kind TEXT NOT NULL DEFAULT 'sub',
+                    has_island_access INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (user_id, island_clean, kind)
                 )"""
             )
+            # Migrate existing databases: add has_island_access column if it doesn't exist
+            try:
+                conn.execute("ALTER TABLE island_subscriptions ADD COLUMN has_island_access INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
     except Exception as exc:
         logger.error(f"[DISCORD] Failed to init island_subscriptions table: {exc}")
 

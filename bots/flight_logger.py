@@ -50,7 +50,8 @@ async def init_db():
                 guild_id INTEGER,
                 authorized INTEGER NOT NULL DEFAULT 0,
                 timestamp INTEGER NOT NULL,
-                island_type TEXT NOT NULL DEFAULT 'sub'
+                island_type TEXT NOT NULL DEFAULT 'sub',
+                has_island_access INTEGER NOT NULL DEFAULT 0
             )
         """)
         await db.execute("""
@@ -77,6 +78,11 @@ async def init_db():
         # Migrate existing databases: add island_type column if it doesn't exist
         try:
             await db.execute("ALTER TABLE island_visits ADD COLUMN island_type TEXT NOT NULL DEFAULT 'sub'")
+        except aiosqlite.OperationalError:
+            pass  # Column already exists
+        # Migrate existing databases: add has_island_access column if it doesn't exist
+        try:
+            await db.execute("ALTER TABLE island_visits ADD COLUMN has_island_access INTEGER NOT NULL DEFAULT 0")
         except aiosqlite.OperationalError:
             pass  # Column already exists
         await db.commit()
@@ -608,9 +614,41 @@ class TravelerActionView(discord.ui.View):
             
             # Update color and header
             embed.color = color
-            embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=interaction.user.display_avatar.url)
+            embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=target_user.display_avatar.url if target_user else interaction.user.display_avatar.url)
             resolved_ts = int(discord.utils.utcnow().timestamp())
             action_value = f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>"
+            
+            # Add island access status and subscription roles if target is a member
+            if target_user and hasattr(target_user, 'roles'):
+                has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in target_user.roles)
+                access_status = "Yes" if has_access else "No"
+                action_value += f"\n**Has Island Access?** {access_status}"
+                
+                # Get destination from embed to check subscription roles
+                dest_channel = None
+                for field in embed.fields:
+                    if field.name == "Destination":
+                        dest_name = field.value
+                        dest_clean = clean_text(dest_name)
+                        channel_id = self.island_map.get(dest_clean) if hasattr(self, 'island_map') else None
+                        dest_channel = interaction.guild.get_channel(channel_id) if channel_id else None
+                        break
+                
+                # Extract subscription roles for this destination
+                if dest_channel:
+                    sub_roles = {}
+                    for target_obj, overwrite in dest_channel.overwrites.items():
+                        if isinstance(target_obj, discord.Role) and overwrite.read_messages is True:
+                            if target_obj.name != "@everyone":
+                                sub_roles[target_obj.id] = target_obj.name
+                    
+                    highlight_present = [sub_roles[r.id] for r in target_user.roles if r.id in sub_roles]
+                    if highlight_present:
+                        subs_str = ", ".join(highlight_present)
+                        action_value += f"\n**Subscription(s):** {subs_str}"
+                    else:
+                        action_value += f"\n**Subscription(s):** None"
+            
             if reason:
                 action_value += f"\n**Reason:** {reason}"
             if mod_log_url:
