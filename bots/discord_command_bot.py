@@ -1012,7 +1012,7 @@ class DiscordCommandCog(commands.Cog):
             embed.set_thumbnail(url=map_url)
         embed.set_image(url=Config.FOOTER_LINE)
         embed.set_footer(
-            text=f"{FREE_DODO_BOARD_MARKER}",
+            text=f"{FREE_DODO_BOARD_MARKER} • {raw_name}",
             icon_url=footer_icon_url,
         )
         return embed
@@ -1030,7 +1030,7 @@ class DiscordCommandCog(commands.Cog):
         )
         embed.set_image(url=Config.FOOTER_LINE)
         embed.set_footer(
-            text=f"{FREE_DODO_BOARD_MARKER} - Updates every 10s - Last checked {checked_at:%H:%M:%S} UTC",
+            text=f"{FREE_DODO_BOARD_MARKER}",
             icon_url=footer_icon_url,
         )
         return embed
@@ -1089,17 +1089,17 @@ class DiscordCommandCog(commands.Cog):
         if deleted:
             logger.info(f"[DISCORD] Deleted {deleted} stale Free Dodo board message(s) in #{channel.name}")
 
-    async def _publish_free_dodo_board(self, channel: discord.TextChannel, embed_chunks: list[list[discord.Embed]]) -> None:
-        """Edit or create the Discord messages that hold the Free Dodo board."""
+    async def _publish_free_dodo_board(self, channel: discord.TextChannel, embeds: list[discord.Embed]) -> None:
+        """Edit or create individual Discord messages for each Free Dodo board entry."""
         await self._load_existing_free_dodo_board_messages(channel)
-        expected_count = len(embed_chunks)
+        expected_count = len(embeds)
 
-        for idx, embeds in enumerate(embed_chunks):
+        for idx, embed in enumerate(embeds):
             try:
                 if idx < len(self.free_dodo_board_messages):
-                    await self.free_dodo_board_messages[idx].edit(content=None, embeds=embeds)
+                    await self.free_dodo_board_messages[idx].edit(content=None, embeds=[embed])
                 else:
-                    msg = await channel.send(embeds=embeds)
+                    msg = await channel.send(embed=embed)
                     self.free_dodo_board_messages.append(msg)
             except discord.NotFound:
                 self.free_dodo_board_messages = []
@@ -1151,11 +1151,7 @@ class DiscordCommandCog(commands.Cog):
         if not embeds:
             embeds = [self._build_free_dodo_empty_embed(checked_at, footer_icon_url)]
 
-        embed_chunks = [
-            embeds[i:i + FREE_DODO_BOARD_EMBEDS_PER_MESSAGE]
-            for i in range(0, len(embeds), FREE_DODO_BOARD_EMBEDS_PER_MESSAGE)
-        ]
-        await self._publish_free_dodo_board(channel, embed_chunks)
+        await self._publish_free_dodo_board(channel, embeds)
 
     @free_dodo_board_loop.before_loop
     async def before_free_dodo_board_loop(self):
