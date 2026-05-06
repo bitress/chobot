@@ -1,2381 +1,1178 @@
 """
-Discord Flight Logger Module
-Tracks island visitor arrivals, alerts on unknown travelers, and handles moderation internally.
+Flask API Module
+Combines all API endpoints:
+- Item/Villager Search
+- Dodo Code/Island Status
+- Patreon Posts
 """
 
+import os
 import re
-import random
+import time
+import json
+import secrets as _secrets
 import logging
-import unicodedata
-import datetime
-import asyncio
-import aiosqlite
+import sqlite3
+import threading
+import urllib.parse
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta
 
-import discord
-from discord import app_commands
-from discord.ext import commands, tasks
-from discord.ui import View, UserSelect, Select, button
+import requests
+from flask import Flask, jsonify, request, session, redirect, url_for
+from flask_cors import CORS
+from thefuzz import process, fuzz
+
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.serving import ThreadedWSGIServer
+
 from utils.config import Config
-from utils.helpers import clean_text
+from utils.helpers import format_locations_text, parse_locations_json, normalize_text
+from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value, _parse_visitor_list
 
-logger = logging.getLogger("FlightLogger")
 
-# --- CONSTANTS ---
-# Colors
-COLOR_SUCCESS = 0x2ECC71      # Green (for admits, unwarns)
-COLOR_INVESTIGATION = 0xF1C40F  # Amber/Yellow (for investigation)
-COLOR_WARN = 0xE67E22          # Orange (for warnings)
-COLOR_KICK = 0xF1C40F          # Yellow (for kicks)
-COLOR_BAN = 0x992D22           # Red (for bans)
-COLOR_DISMISS = 0x95A5A6       # Grey (for dismissed/false positives)
-COLOR_ALERT = 0xED4245         # Discord red (for unknown traveler alerts)
+logger = logging.getLogger("FlaskAPI")
 
-# --- DATABASE SETUP ---
-DB_NAME = "chobot.db"
-WARN_EXPIRY_DAYS = 3
-MAX_HISTORY_ENTRIES = 10  # Max entries shown per section in !flighthistory
-MAX_DEBUG_CANDIDATES = 5  # Max closest-candidate entries shown in !fdebug
+# Initialize Flask app
+app = Flask(__name__)
+app.secret_key = Config.FLASK_SECRET_KEY
+# Trust one level of X-Forwarded-For / X-Forwarded-Proto headers from the
+# reverse proxy (nginx, Cloudflare Tunnel, etc.) so that url_for(_external=True)
+# produces the correct https:// URL instead of http://.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SECURE"] = True
+CORS(app, resources={r"/*": {"origins": [
+    "https://www.chopaeng.com",
+    "https://chopaeng.com",
+    "http://localhost:5173",
+    "http://localhost:3000",
+]}}, supports_credentials=True)
 
-# --- DATABASE HELPERS ---
-async def init_db():
-    """Initializes the database schema."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS island_visits (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ign TEXT NOT NULL,
-                origin_island TEXT NOT NULL,
-                destination TEXT NOT NULL,
-                user_id INTEGER,
-                guild_id INTEGER,
-                authorized INTEGER NOT NULL DEFAULT 0,
-                timestamp INTEGER NOT NULL,
-                island_type TEXT NOT NULL DEFAULT 'sub',
-                has_island_access INTEGER NOT NULL DEFAULT 0
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS warnings (
-                user_id INTEGER,
-                guild_id INTEGER,
-                reason TEXT,
-                mod_id INTEGER,
-                timestamp INTEGER,
-                visit_id INTEGER REFERENCES island_visits(id),
-                action_type TEXT NOT NULL DEFAULT 'WARN'
-            )
-        """)
-        # Migrate existing databases: add visit_id column if it doesn't exist
-        try:
-            await db.execute("ALTER TABLE warnings ADD COLUMN visit_id INTEGER REFERENCES island_visits(id)")
-        except aiosqlite.OperationalError:
-            pass  # Column already exists
-        # Migrate existing databases: add action_type column if it doesn't exist
-        try:
-            await db.execute("ALTER TABLE warnings ADD COLUMN action_type TEXT NOT NULL DEFAULT 'WARN'")
-        except aiosqlite.OperationalError:
-            pass  # Column already exists
-        # Migrate existing databases: add island_type column if it doesn't exist
-        try:
-            await db.execute("ALTER TABLE island_visits ADD COLUMN island_type TEXT NOT NULL DEFAULT 'sub'")
-        except aiosqlite.OperationalError:
-            pass  # Column already exists
-        # Migrate existing databases: add has_island_access column if it doesn't exist
-        try:
-            await db.execute("ALTER TABLE island_visits ADD COLUMN has_island_access INTEGER NOT NULL DEFAULT 0")
-        except aiosqlite.OperationalError:
-            pass  # Column already exists
-        await db.commit()
+# Register the mod-only web dashboard
+app.register_blueprint(dashboard, url_prefix="/dashboard")
+init_dashboard_db()
 
-DEFAULT_REASON_TEXT = (
-    "Breaking [Sub Rule #2](https://discord.com/channels/729590421478703135/"
-    "783677194576330792/1137904975553499217). We have removed your island access "
-    "for now. Please read the <#783677194576330792> again to gain access."
-)
+# Suppress Flask/Werkzeug standard logs
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
-REASON_TEMPLATES = {
-    "rule_top_1": "Breaking [Sub Top Rule](https://discord.com/channels/729590421478703135/783677194576330792/1249835404098801756) or [Sub Rule #1](https://discord.com/channels/729590421478703135/783677194576330792/1249835467067752461). We have removed your island access for now.",
-    "rule_2": "Breaking [Sub Rule #2](https://discord.com/channels/729590421478703135/783677194576330792/1137904975553499217). We have removed your island access for now. Please read the <#783677194576330792> again to gain access.",
-    "rule_3_4": "Breaking [Sub Rule #3](https://discord.com/channels/729590421478703135/783677194576330792/1137905005433733211)/[Sub Rule #4](https://discord.com/channels/729590421478703135/783677194576330792/1137905033699151893). We have removed your island access for now.",
-    "rule_6": "Breaking [Sub Rule #6](https://discord.com/channels/729590421478703135/783677194576330792/1137905106919096442). We have removed your island access for now. Please read the <#783677194576330792> again to gain access.",
-    "rule_8": "Breaking [Sub Rule #8](https://discord.com/channels/729590421478703135/783677194576330792/1137905158257397875). We have removed your island access for now. Please read the <#783677194576330792> again to gain access."
+
+# Patreon cache
+patreon_cache = {
+    "list": {"data": None, "timestamp": None},
+    "posts": {}
 }
 
-REASON_OPTIONS = [
-    discord.SelectOption(label="Sub Top Rule / Rule #1", value="rule_top_1", description="Breaking [Sub Top Rule]"),
-    discord.SelectOption(label="Sub Rule #2", value="rule_2", description="Breaking [Sub Rule #2]"),
-    discord.SelectOption(label="Sub Rule #3 / #4", value="rule_3_4", description="Breaking [Sub Rule #3]"),
-    discord.SelectOption(label="Sub Rule #6", value="rule_6", description="Breaking [Sub Rule #6]"),
-    discord.SelectOption(label="Sub Rule #8", value="rule_8", description="Breaking [Sub Rule #8]"),
-    discord.SelectOption(label="Custom Reason", value="custom", description="Provide a custom reason"),
-]
-
-DURATION_OPTIONS = [
-    discord.SelectOption(label="1 Hour",    value="1h"),
-    discord.SelectOption(label="1 Day",     value="1d"),
-    discord.SelectOption(label="2 Days",    value="2d"),
-    discord.SelectOption(label="3 Days",    value="3d"),
-    discord.SelectOption(label="1 Week",    value="1w"),
-    discord.SelectOption(label="Permanent", value="perm"),
-]
-
-def _build_options_with_default(base_options: list[discord.SelectOption], selected_value: str | None, custom_text: str | None = None):
-    new_options = []
-    for opt in base_options:
-        label = opt.label
-        description = opt.description
-        is_default = (opt.value == selected_value)
-
-        if opt.value == "custom" and custom_text:
-            cleaned_text = custom_text.replace("\n", " ").strip()
-            display_text = (cleaned_text[:50] + "...") if len(cleaned_text) > 50 else cleaned_text
-            label = f"Custom: {display_text}"
-            description = "Click to modify your custom reason"
-
-        new_options.append(
-            discord.SelectOption(
-                label=label, value=opt.value, description=description,
-                default=is_default
-            )
-        )
-    return new_options
-
-def _parse_duration(duration: str) -> datetime.timedelta | None:
-    """Parse a duration string into a timedelta. Returns None for permanent."""
-    mapping = {
-        "1h": datetime.timedelta(hours=1),
-        "1d": datetime.timedelta(days=1),
-        "2d": datetime.timedelta(days=2),
-        "3d": datetime.timedelta(days=3),
-        "1w": datetime.timedelta(weeks=1),
-    }
-    return mapping.get(duration)
-
-def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str, case_id: str, warn_count: int, duration: str, action_verb: str):
-    """Generates the visual embed mimicking Sapphire"""
-    now = discord.utils.utcnow()
-    
-    mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
-
-    if action_verb.upper() in ["KICKED", "BANNED"]:
-        desc_lines = [
-            f"> **{member.mention} ({member.display_name})** has been {action_verb.lower()}!",
-            f"> **Reason:** {reason}",
-            f"> **Responsible:** {mod.mention} ({mod_role_name})",
-        ]
-    else:
-        delta = _parse_duration(duration)
-        desc_lines = [
-            f"> **{member.mention} ({member.display_name})** has been {action_verb.lower()}!",
-            f"> **Reason:** {reason}",
-            f"> **Duration:** {duration}",
-            f"> **Count:** {warn_count}",
-            f"> **Responsible:** {mod.mention} ({mod_role_name})",
-        ]
-        if delta is not None:
-            expiry_ts = int((now + delta).timestamp())
-            desc_lines.append(f"> Automatically expires <t:{expiry_ts}:R>")
-        desc_lines.extend([
-            f"> **Proof:** Verified (Log System)",
-            "> ",
-            "> **For Sub Members**: Please double check our <#783677194576330792> channel.",
-            "> **For Free Members**: Kindly refer to our <#755522711492493342> channel."
-        ])
-
-    embed = discord.Embed(
-        title=f"**{action_verb.title()} Case ID: {case_id}**",
-        description="\n".join(desc_lines),
-        color=0xff0000,
-        timestamp=now
-    )
-    embed.set_thumbnail(url="https://i.ibb.co/HXyRH3R/2668-Siren.gif")
-    embed.set_footer(text=f"Mod: {mod.display_name}", icon_url=mod.display_avatar.url)
-    return embed
-
-# --- UI VIEWS ---
-
-# --- REFACTORED UI COMPONENTS ---
-
-class TargetSelect(discord.ui.UserSelect):
-    def __init__(self, parent_view, default_member=None):
-        defaults = [default_member] if default_member is not None else []
-        super().__init__(
-            placeholder="1. Select the Target User...",
-            min_values=1,
-            max_values=1,
-            row=0,
-            default_values=defaults
-        )
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        # discord.py 2.0+ automatically resolves members in self.values
-        if self.values:
-            # self.values[0] is typically a Member or User object
-            self.parent_view.selected_member = self.values[0]
-        
-        await self.parent_view.refresh_state(interaction)
-
-class DurationSelect(discord.ui.Select):
-    def __init__(self, parent_view, current_duration):
-        options = _build_options_with_default(DURATION_OPTIONS, current_duration)
-        super().__init__(
-            placeholder="2. Select Duration",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=1
-        )
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.values:
-            self.parent_view.selected_duration = self.values[0]
-        await self.parent_view.refresh_state(interaction)
-
-class CustomReasonModal(discord.ui.Modal, title="Custom Punishment Reason"):
-    reason_input = discord.ui.TextInput(
-        label="Reason",
-        placeholder="Enter the specific reason for this action...",
-        style=discord.TextStyle.paragraph,
-        required=True,
-        min_length=5,
-        max_length=500
-    )
-
-    def __init__(self, parent_view):
-        super().__init__()
-        self.parent_view = parent_view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        self.parent_view.selected_reason = "custom"
-        self.parent_view.custom_reason_text = self.reason_input.value
-        await self.parent_view.refresh_state(interaction)
-
-class ReasonSelect(discord.ui.Select):
-    def __init__(self, parent_view, current_reason, custom_text=None):
-        options = _build_options_with_default(REASON_OPTIONS, current_reason, custom_text)
-        super().__init__(
-            placeholder="3. Select Reason",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=2
-        )
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.values:
-            selected = self.values[0]
-            if selected == "custom":
-                await interaction.response.send_modal(CustomReasonModal(self.parent_view))
-            else:
-                self.parent_view.selected_reason = selected
-                self.parent_view.custom_reason_text = None
-                await self.parent_view.refresh_state(interaction)
-
-class ConfirmButton(discord.ui.Button):
-    def __init__(self, parent_view, label, style, disabled):
-        super().__init__(label=label, style=style, disabled=disabled, row=3)
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        await self.parent_view.execute_punishment(interaction)
-
-class CancelButton(discord.ui.Button):
-    def __init__(self, parent_view):
-        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary, row=3)
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(content="Action cancelled.", view=None)
-        self.parent_view.stop()
-
-# --- REFACTORED BUILDER VIEW ---
-
-class PunishmentBuilderView(discord.ui.View):
-    def __init__(self, action_type: str, original_view: "TravelerActionView", log_message: discord.Message):
-        super().__init__(timeout=3600)
-        self.action_type = action_type
-        self.original_view = original_view
-        self.log_message = log_message
-
-        self.selected_member: discord.Member | discord.User | None = None
-        self.selected_duration: str | None = "3d"
-        self.selected_reason: str | None = None
-        self.custom_reason_text: str | None = None
-        
-        # Initial render
-        self._update_components()
-
-    def _update_components(self):
-        """Clear and re-add components based on current state."""
-        self.clear_items()
-        self._add_link_buttons()
-
-
-        self.add_item(TargetSelect(self, default_member=self.selected_member))
-
-        if self.action_type == "WARN":
-            self.add_item(DurationSelect(self, self.selected_duration))
-        self.add_item(ReasonSelect(self, self.selected_reason, self.custom_reason_text))
-
-        # 4. Confirm & Cancel Buttons
-        # Submission restricted until all required fields are filled
-        has_member = self.selected_member is not None
-        has_reason = self.selected_reason is not None
-        has_duration = self.selected_duration is not None or self.action_type != "WARN"
-
-        can_submit = has_member and has_reason and has_duration
-        
-        if self.selected_member:
-            target_name = getattr(self.selected_member, "display_name", str(self.selected_member))
-            label = f"Confirm {self.action_type.title()} on {target_name}"
-        else:
-            label = "Confirm Action"
-
-        style = discord.ButtonStyle.danger
-        self.add_item(ConfirmButton(self, label, style, disabled=not can_submit))
-        self.add_item(CancelButton(self))
-
-    async def refresh_state(self, interaction: discord.Interaction):
-        """Called by children to update the view state and message."""
-        self._update_components()
-        
-        # Use edit_original_response if the interaction has already been responded to (e.g. Modal)
-        if interaction.response.is_done():
-            await interaction.edit_original_response(view=self)
-        else:
-            await interaction.response.edit_message(view=self)
-
-    async def execute_punishment(self, interaction: discord.Interaction):
-        """Pass execution to the Cog for cleaner logic."""
-        cog = interaction.client.get_cog("FlightLoggerCog")
-        if not cog:
-            return await interaction.response.send_message("Error: FlightLoggerCog not found.", ephemeral=True)
-
-        # Disable EVERYTHING in the builder view to prevent double-click
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(view=self)
-
-        target = self.selected_member
-        
-        if self.selected_reason == "custom" and self.custom_reason_text:
-            reason_text = self.custom_reason_text
-        else:
-            reason_text = REASON_TEMPLATES.get(self.selected_reason, DEFAULT_REASON_TEXT)
-        
-        await cog._execute_punishment_internal(
-            interaction,
-            target,
-            self.action_type,
-            reason_text,
-            self.selected_duration,
-            self.original_view,
-            self.log_message
-        )
-        self.stop()
-
-
-class AdmitUserSelect(discord.ui.UserSelect):
-    """Optional user selector for linking a Discord member to an admit action."""
-
-    def __init__(self, parent_view: "AdmitConfirmView"):
-        super().__init__(
-            placeholder="(Optional) Link to a Discord user...",
-            min_values=0,
-            max_values=1,
-            row=0,
-        )
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        self.parent_view.selected_member = self.values[0] if self.values else None
-        try:
-            await interaction.response.edit_message(content=self.parent_view._build_content())
-        except discord.NotFound:
-            pass
-
-
-class AdmitConfirmView(discord.ui.View):
-    """Confirmation dialog for admitting a traveler."""
-
-    def __init__(self, parent_view: "TravelerActionView", ign: str, original_alert_message: discord.Message):
-        super().__init__(timeout=300)
-        self.parent_view = parent_view
-        self.ign = ign
-        self.original_alert_message = original_alert_message
-        self.selected_member: discord.Member | discord.User | None = None
-        self.add_item(AdmitUserSelect(self))
-
-    def _build_content(self) -> str:
-        base = f"Are you sure you want to admit **{self.ign or 'Visitor'}**?"
-        if self.selected_member:
-            return f"{base}\n👤 Linked to: {self.selected_member.mention}"
-        return base
-
-    @discord.ui.button(label="Yes, Admit", style=discord.ButtonStyle.success, row=1)
-    async def confirm_admit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Proceed with admission."""
-        msg = f"**{self.ign or 'Visitor'}** is cleared for entry."
-        if self.selected_member:
-            msg += f" Linked to {self.selected_member.mention}."
-        # Update the original alert message (the flight log alert)
-        await self.parent_view._resolve_alert(
-            interaction, "AUTHORIZED", COLOR_SUCCESS, msg,
-            target_user=self.selected_member,
-            log_message=self.original_alert_message,
-        )
-        cog = self.parent_view.bot.get_cog("FlightLoggerCog") if self.parent_view.bot else None
-        if cog:
-            ign = self.ign
-            visit_id = getattr(self.parent_view, 'visit_id', None)
-            # Prefer embed-embedded ID (survives bot restarts), then IGN lookup
-            if not visit_id and self.original_alert_message and self.original_alert_message.embeds:
-                visit_id = self.parent_view._get_visit_id_from_embed(self.original_alert_message.embeds[0])
-            if not visit_id and ign:
-                visit_id = await cog._get_recent_visit_id_by_ign(ign)
-            if visit_id is not None:
-                db = await cog._get_db()
-                # Mark the visit as authorized now that a mod has manually admitted the traveler
-                await db.execute(
-                    "UPDATE island_visits SET authorized = 1 WHERE id = ?",
-                    (visit_id,),
-                )
-                # Link the selected Discord member to the visit record if provided
-                if self.selected_member:
-                    await db.execute(
-                        "UPDATE island_visits SET user_id = ? WHERE id = ? AND user_id IS NULL",
-                        (self.selected_member.id, visit_id),
-                    )
-                await db.commit()
-            target_id = self.selected_member.id if self.selected_member else None
-            await cog.add_warning(target_id, interaction.guild.id, None, interaction.user.id, visit_id, action_type='ADMIT')
-        # Update the confirmation message to show success
-        await interaction.response.edit_message(content=msg, view=None)
-        self.stop()
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
-    async def cancel_admit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Cancel admission."""
-        await interaction.response.edit_message(content="Admission cancelled.", view=None)
-        self.stop()
-
-
-class NoteModal(discord.ui.Modal, title="Add Note"):
-    """Modal for adding a note to a flight alert."""
-    note_input = discord.ui.TextInput(
-        label="Note",
-        style=discord.TextStyle.paragraph,
-        placeholder="Enter your note about this traveler...",
-        required=True,
-        max_length=500
-    )
-
-    def __init__(self, parent_view: "TravelerActionView", alert_message: discord.Message, linked_user: discord.Member | discord.User | None = None):
-        super().__init__()
-        self.parent_view = parent_view
-        self.alert_message = alert_message
-        self.linked_user = linked_user
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            message_to_edit = self.alert_message
-            embed = message_to_edit.embeds[0]
-            timestamp = int(discord.utils.utcnow().timestamp())
-            note_value = self.note_input.value
-            if self.linked_user:
-                note_value += f"\n-# Linked: {self.linked_user.mention}"
-            note_value += f"\n-# Added <t:{timestamp}:R>"
-            embed.add_field(
-                name=f"<:Cho_Notes:1474311464688029817> Note by {interaction.user.display_name}",
-                value=note_value,
-                inline=False
-            )
-            await message_to_edit.edit(embed=embed)
-            cog = self.parent_view.bot.get_cog("FlightLoggerCog") if self.parent_view.bot else None
-            if cog:
-                ign = self.parent_view.ign
-                visit_id = self.parent_view.visit_id
-                # Prefer embed-embedded ID (survives bot restarts), then IGN lookup
-                if not visit_id and message_to_edit.embeds:
-                    visit_id = self.parent_view._get_visit_id_from_embed(message_to_edit.embeds[0])
-                if not visit_id and ign:
-                    visit_id = await cog._get_recent_visit_id_by_ign(ign)
-                target_id = self.linked_user.id if self.linked_user else None
-                await cog.add_warning(target_id, interaction.guild.id, self.note_input.value, interaction.user.id, visit_id, action_type='NOTE')
-            await interaction.response.send_message("<:Cho_Notes:1474311464688029817> Note added to the alert.", ephemeral=True)
-        except Exception as e:
-            logger.error(f"Error adding note: {e}")
-            await interaction.response.send_message(f"Error: {e}", ephemeral=True)
-
-
-class NoteUserSelect(discord.ui.UserSelect):
-    """Optional user selector for linking a Discord member to a note."""
-
-    def __init__(self, parent_view: "NoteBuilderView"):
-        super().__init__(
-            placeholder="(Optional) Link to a Discord user...",
-            min_values=0,
-            max_values=1,
-            row=0,
-        )
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        self.parent_view.selected_member = self.values[0] if self.values else None
-        content = "<:Cho_Notes:1474311464688029817> **Add Note:**\nOptionally link a Discord user, then click **Write Note...**"
-        if self.parent_view.selected_member:
-            content += f"\n👤 Linked to: {self.parent_view.selected_member.mention}"
-        try:
-            await interaction.response.edit_message(content=content)
-        except discord.NotFound:
-            pass
-
-
-class NoteBuilderView(discord.ui.View):
-    """Ephemeral view shown before the note modal to optionally link a Discord user."""
-
-    def __init__(self, parent_view: "TravelerActionView", alert_message: discord.Message):
-        super().__init__(timeout=300)
-        self.parent_view = parent_view
-        self.alert_message = alert_message
-        self.selected_member: discord.Member | discord.User | None = None
-        self.add_item(NoteUserSelect(self))
-
-    @discord.ui.button(label="Write Note...", style=discord.ButtonStyle.primary, row=1)
-    async def write_note(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(
-            NoteModal(self.parent_view, self.alert_message, linked_user=self.selected_member)
-        )
-        self.stop()
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
-    async def cancel_note(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="Cancelled.", view=None)
-        self.stop()
-
-
-class TravelerActionView(discord.ui.View):
-    def __init__(self, bot=None, ign=None, visit_id=None, message_url=None, xlog_url=None):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.ign = ign
-        self.visit_id = visit_id
-        self.message_url = message_url   # "View Flight Standing" link
-        self.xlog_url = xlog_url         # "View Flight Log" link
-
-
-    def _get_ign_from_embed(self, embed: discord.Embed):
-        """Extracts IGN from the '👤 Traveler (IGN)' field in the alert embed."""
-        if not embed or not embed.fields:
-            return None
-        for field in embed.fields:
-            if "Traveler (IGN)" in field.name:
-                # Value is usually "```yaml\nIGN```"
-                match = re.search(r"```(?:yaml)?\n(.*?)\n?```", field.value)
-                if match:
-                    return match.group(1).strip()
+# Data manager will be set from main.py
+data_manager = None
+
+# Guard: prevents multiple concurrent cache-refresh operations
+_refresh_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Auth — short-lived opaque tokens for Discord OAuth (website subscribers)
+# Works cross-domain: frontend stores the token in localStorage and sends it
+# as "Authorization: Bearer <token>" on every authenticated request.
+# ---------------------------------------------------------------------------
+_AUTH_TOKEN_TTL = 86400  # 24 hours
+_auth_tokens: dict[str, dict] = {}   # token → {user_data, expires_at}
+_auth_tokens_lock = threading.Lock()
+
+_DISCORD_UA = "DiscordBot (https://chopaeng.com, 1.0)"
+_ADMINISTRATOR_PERM = 0x8   # Discord Administrator permission bit
+
+def _make_auth_token(user_data: dict) -> str:
+    token = _secrets.token_urlsafe(32)
+    expires_at = time.monotonic() + _AUTH_TOKEN_TTL
+    with _auth_tokens_lock:
+        _auth_tokens[token] = {"user": user_data, "expires_at": expires_at}
+    return token
+
+def _get_auth_user(token: str) -> dict | None:
+    """Return user dict if token is valid and not expired, else None."""
+    if not token:
         return None
-
-    def _get_visit_id_from_embed(self, embed: discord.Embed) -> int | None:
-        """Extracts the visit ID from the 'Visit ID' field in the alert embed."""
-        if not embed or not embed.fields:
-            return None
-        for field in embed.fields:
-            if field.name == "Visit ID":
-                match = re.search(r"#(\d+)", field.value)
-                if match:
-                    return int(match.group(1))
+    with _auth_tokens_lock:
+        entry = _auth_tokens.get(token)
+    if not entry:
         return None
+    if time.monotonic() > entry["expires_at"]:
+        with _auth_tokens_lock:
+            _auth_tokens.pop(token, None)
+        return None
+    return entry["user"]
 
-    async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None, reason=None, mod_log_url=None):
-        """Internal helper to update the alert embed state. Does NOT send interaction responses."""
-        target_str      = f"{target_user.mention}" if target_user else "Visitor (unlinked)"
-        message_to_edit = log_message or (interaction.message if interaction.response.is_done() else None)
+def _current_auth_user() -> dict | None:
+    """Extract Bearer token from request and return user dict, or None."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return _get_auth_user(auth[len("Bearer "):])
+    return None
 
-        if not message_to_edit:
-            return
+def _is_mod(roles: list[str]) -> bool:
+    """True if the user holds one of the configured moderator roles."""
+    mod_ids = {
+        str(Config.ADMIN_ROLE_ID),
+        str(Config.SENIOR_MOD_ROLE_ID),
+        str(Config.BABY_MOD_ROLE_ID),
+    } - {"None", "0", ""}
+    return bool(mod_ids & set(roles))
 
-        try:
-            # Refresh message state if possible to avoid 404
-            embed = message_to_edit.embeds[0]
-            
-            # Remove investigation fields and update Status field
-            fields_to_keep = []
-            for f in embed.fields:
-                if "Investigating" in f.name:
-                    continue
-                if f.name == "Status":
-                    # Replace Status field with resolved status
-                    fields_to_keep.append(("Status", f"<:Cho_Check:1456715827213504593> **{status_label}**", True))
-                else:
-                    fields_to_keep.append((f.name, f.value, f.inline))
+def _has_island_access(roles: list[str], required_roles: list[str], is_mod: bool = False) -> bool:
+    """True if the user may see this island's dodo code.
 
-            embed.clear_fields()
-            for name, value, inline in fields_to_keep:
-                embed.add_field(name=name, value=value, inline=inline)
-            
-            # Update color and header
-            embed.color = color
-            embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=target_user.display_avatar.url if target_user else interaction.user.display_avatar.url)
-            resolved_ts = int(discord.utils.utcnow().timestamp())
-            action_value = f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>"
-            
-            # Add island access status and subscription roles if target is a member
-            if target_user and hasattr(target_user, 'roles'):
-                has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in target_user.roles)
-                access_status = "Yes" if has_access else "No"
-                action_value += f"\n**Has Island Access?** {access_status}"
-                
-                # Get destination from embed to check subscription roles
-                dest_channel = None
-                for field in embed.fields:
-                    if field.name == "Destination":
-                        dest_name = field.value
-                        dest_clean = clean_text(dest_name)
-                        channel_id = self.island_map.get(dest_clean) if hasattr(self, 'island_map') else None
-                        dest_channel = interaction.guild.get_channel(channel_id) if channel_id else None
-                        break
-                
-                # Extract subscription roles for this destination
-                if dest_channel:
-                    sub_roles = {}
-                    for target_obj, overwrite in dest_channel.overwrites.items():
-                        if isinstance(target_obj, discord.Role) and overwrite.read_messages is True:
-                            if target_obj.name != "@everyone":
-                                sub_roles[target_obj.id] = target_obj.name
-                    
-                    highlight_present = [sub_roles[r.id] for r in target_user.roles if r.id in sub_roles]
-                    if highlight_present:
-                        subs_str = ", ".join(highlight_present)
-                        action_value += f"\n**Subscription(s):** {subs_str}"
-                    else:
-                        action_value += f"\n**Subscription(s):** None"
-            
-            if reason:
-                action_value += f"\n**Reason:** {reason}"
-            if mod_log_url:
-                action_value += f"\n[View in Mod Log]({mod_log_url})"
-            embed.add_field(
-                name="<:ChoLove:818216528449241128> Action Taken",
-                value=action_value,
-                inline=False
-            )
-            self.clear_items()
-            self._add_link_buttons()
-
-            await message_to_edit.edit(embed=embed, view=self)
-
-            # Remove from pending alerts so future joins create a fresh alert
-            cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
-            if cog and self.ign:
-                ign_clean = clean_text(self.ign)
-                keys_to_remove = [k for k in cog._pending_alerts if k[0] == ign_clean]
-                for k in keys_to_remove:
-                    cog._pending_alerts.pop(k, None)
-        except Exception as e:
-            logger.error(f"Error editing original message: {e}")
-
-    def disable_all_items(self):
-        for child in self.children:
-            child.disabled = True
-
-    def _add_link_buttons(self):
-        """Re-attach persistent link buttons after any clear_items() call."""
-        if self.message_url:
-            self.add_item(discord.ui.Button(
-                label="View Flight Standing",
-                url=self.message_url,
-                style=discord.ButtonStyle.link,
-                row=3,
-            ))
-        if self.xlog_url:
-            self.add_item(discord.ui.Button(
-                label="View Flight Log",
-                url=self.xlog_url,
-                style=discord.ButtonStyle.link,
-                row=3,
-            ))
-
-    @discord.ui.button(label="Investigate", style=discord.ButtonStyle.secondary, emoji="<:Cho_Investigate:1474310726381338666>", custom_id="fl_investigate", row=0)
-    async def investigate_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return  # Stale interaction, silently ignore
-
-        ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
-        mod = interaction.user
-        timestamp = int(discord.utils.utcnow().timestamp())
-
-        try:
-            message_to_edit = interaction.message
-            embed = message_to_edit.embeds[0]
-
-            # Update color to amber/yellow
-            embed.color = COLOR_INVESTIGATION
-
-            # Update author to show investigation status
-            embed.set_author(name="UNDER INVESTIGATION", icon_url=mod.display_avatar.url)
-
-            # Update Status field if it exists
-            updated_fields = []
-            for f in embed.fields:
-                if f.name == "Status":
-                    updated_fields.append((f.name, "<:Cho_Investigate:1474310726381338666> **INVESTIGATING**", f.inline))
-                else:
-                    updated_fields.append((f.name, f.value, f.inline))
-            embed.clear_fields()
-            for name, value, inline in updated_fields:
-                embed.add_field(name=name, value=value, inline=inline)
-
-            # Add investigation field
-            embed.add_field(
-                name="<:Cho_Investigate:1474310726381338666> Investigating",
-                value=f"**{mod.mention}** is looking into this. Started <t:{timestamp}:R>",
-                inline=False
-            )
-
-            # Disable only the Investigate button
-            button.disabled = True
-
-            await message_to_edit.edit(embed=embed, view=self)
-            await interaction.followup.send("<:Cho_Investigate:1474310726381338666> Marked as under investigation.", ephemeral=True)
-        except Exception as e:
-            logger.error(f"Error marking as under investigation: {e}")
-            await interaction.followup.send(f"Error: {e}", ephemeral=True)
-
-    @discord.ui.button(label="Admit", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>", custom_id="fl_admit", row=0)
-    async def confirm_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return  # Stale interaction, silently ignore
-        ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
-        # Show confirmation dialog
-        confirm_view = AdmitConfirmView(self, ign, interaction.message)
-        await interaction.followup.send(
-            f"Are you sure you want to admit **{ign or 'Visitor'}**?",
-            view=confirm_view,
-            ephemeral=True
-        )
-
-    @discord.ui.button(label="Warn", style=discord.ButtonStyle.primary, emoji="<:Cho_Warn:1456712416271405188>", custom_id="fl_warn", row=1)
-    async def warn_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return
-        view = PunishmentBuilderView("WARN", self, log_message=interaction.message)
-        await interaction.followup.send("<:Cho_Warn:1456712416271405188> **Build Warning:**", view=view, ephemeral=True)
-
-    @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary, emoji="<:Cho_Kick:1456714701630214349>", custom_id="fl_kick", row=1)
-    async def kick_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return
-        view = PunishmentBuilderView("KICK", self, log_message=interaction.message)
-        await interaction.followup.send("<:Cho_Kick:1456714701630214349> **Build Kick:**", view=view, ephemeral=True)
-
-    @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger, emoji="<:Cho_Ban:1473530840725061793>", custom_id="fl_ban", row=1)
-    async def ban_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return
-        view = PunishmentBuilderView("BAN", self, log_message=interaction.message)
-        await interaction.followup.send("<:Cho_Ban:1473530840725061793> **Build Ban:**", view=view, ephemeral=True)
-
-    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="<:Cho_Dismiss:1474955282026332180>", custom_id="fl_dismiss", row=2)
-    async def dismiss_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Dismiss the alert as a false positive or non-threat."""
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return
-        ign = self.ign or self._get_ign_from_embed(interaction.message.embeds[0])
-        msg = f"**{ign or 'Visitor'}** dismissed."
-        await self._resolve_alert(
-            interaction, "DISMISSED", COLOR_DISMISS, msg, log_message=interaction.message
-        )
-        cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
-        if cog:
-            visit_id = self.visit_id
-            if not visit_id and interaction.message and interaction.message.embeds:
-                visit_id = self._get_visit_id_from_embed(interaction.message.embeds[0])
-            if not visit_id and ign:
-                visit_id = await cog._get_recent_visit_id_by_ign(ign)
-            await cog.add_warning(None, interaction.guild.id, None, interaction.user.id, visit_id, action_type='DISMISS')
-        await interaction.followup.send(f"**{ign or 'Visitor'}** case has been dismissed.", ephemeral=True)
-
-    @discord.ui.button(label="Note", style=discord.ButtonStyle.secondary, emoji="<:Cho_Notes:1474311464688029817>", custom_id="fl_note", row=2)
-    async def note_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Add a note to the alert without taking action."""
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return
-        view = NoteBuilderView(self, interaction.message)
-        await interaction.followup.send(
-            "<:Cho_Notes:1474311464688029817> **Add Note:**\nOptionally link a Discord user, then click **Write Note...**",
-            view=view,
-            ephemeral=True,
-        )
-
-class FlagConfirmView(discord.ui.View):
-    """Confirmation dialog for flagging a verified flight."""
-
-    def __init__(self, parent_view: "VerifiedFlightFlagView", ign: str, original_message: discord.Message):
-        super().__init__(timeout=300)
-        self.parent_view = parent_view
-        self.ign = ign
-        self.original_message = original_message
-
-    @discord.ui.button(label="Yes, Flag", style=discord.ButtonStyle.danger, emoji="🚩", row=0)
-    async def confirm_flag(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Proceed with flagging."""
-        try:
-            await self.parent_view._execute_flag(interaction, self.original_message)
-            await interaction.response.edit_message(content="🚩 Flight flagged for review.", view=None)
-        except Exception as e:
-            logger.error(f"[FLAG] Error in confirm_flag: {e}", exc_info=True)
-            await interaction.response.send_message(f"Error flagging flight: {e}", ephemeral=True)
-        finally:
-            self.stop()
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=0)
-    async def cancel_flag(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Cancel flag action."""
-        await interaction.response.edit_message(content="Flag action cancelled.", view=None)
-        self.stop()
-
-
-class VerifiedFlightFlagView(discord.ui.View):
-    """View attached to verified-flight xlog messages.
-
-    Provides a 🚩 Flag button so mods can escalate a bot-matched flight to a
-    manual alert when they believe the match was missed or incorrect.
-    Once flagged the button is replaced by a static "View Alert (manual)" link.
+    Access is granted when:
+    - The island has no required_roles (free/public)
+    - The user is a mod (token is_mod=true, ADMIN_ROLE_ID, SENIOR_MOD_ROLE_ID, or BABY_MOD_ROLE_ID)
+    - The user holds at least one of the island's required_roles
     """
-
-    def __init__(self, bot=None, ign=None, visit_id=None, message_url=None):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.ign = ign
-        self.visit_id = visit_id
-        self.message_url = message_url
-
-    def _extract_field(self, embed: discord.Embed, field_name: str) -> str | None:
-        """Return the plain-text value of a named embed field."""
-        if not embed or not embed.fields:
-            return None
-        for field in embed.fields:
-            if field.name == field_name:
-                match = re.search(r"```(?:yaml)?\n(.*?)\n?```", field.value, re.DOTALL)
-                if match:
-                    return match.group(1).strip()
-                return field.value
-        return None
-
-    async def _execute_flag(self, interaction: discord.Interaction, xlog_message: discord.Message):
-        """Execute the flag action: create alert and update xlog message."""
-        embed = xlog_message.embeds[0] if xlog_message.embeds else None
-        ign = self.ign or self._extract_field(embed, "IGN")
-        island = self._extract_field(embed, "Island Name") if embed else None
-        destination_display = self._extract_field(embed, "Destination") if embed else "Unknown"
-
-        visit_id = self.visit_id
-        if not visit_id and embed:
-            for field in embed.fields:
-                if field.name == "Visit ID":
-                    m = re.search(r"#(\d+)", field.value)
-                    if m:
-                        visit_id = int(m.group(1))
-                        break
-
-        # Recover message_url from embed description if not stored in self
-        msg_url = self.message_url
-        if not msg_url and embed and embed.description:
-            m = re.search(r'\[.*?\]\((https?://[^)]+)\)', embed.description)
-            if m:
-                msg_url = m.group(1)
-
-        # --- Create manual alert in the flight log channel ---
-        alert_msg = None
-        output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID) if self.bot else None
-        if output_channel:
-            guild = self.bot.get_guild(Config.GUILD_ID) if self.bot else None
-            guild_icon = guild.icon.url if guild and guild.icon else None
-            alert_ts = int(discord.utils.utcnow().timestamp())
-
-            alert_embed = discord.Embed(
-                description=(
-                    f"### {Config.EMOJI_FAIL} Flight Flagged for Review\n"
-                    f"A verified flight was manually flagged by {interaction.user.mention}.\n"
-                    f"Use the buttons below to take action."
-                ),
-                color=COLOR_INVESTIGATION,
-                timestamp=discord.utils.utcnow(),
-            )
-            alert_embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign or 'Unknown'}```", inline=True)
-            if island:
-                alert_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
-            alert_embed.add_field(name="Destination", value=destination_display or "Unknown", inline=True)
-            alert_embed.add_field(name="Flagged", value=f"<t:{alert_ts}:R>", inline=True)
-            alert_embed.add_field(name="Status", value="<:Cho_Investigate:1474310726381338666> **PENDING REVIEW**", inline=True)
-            if visit_id is not None:
-                alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
-            alert_embed.set_image(url=Config.FOOTER_LINE)
-            alert_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
-
-            action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
-            alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
-
-        # Log the flag action in the warnings table (None user_id = no linked Discord member)
-        cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
-        if cog:
-            await cog.add_warning(
-                None, interaction.guild_id,
-                "Flight manually flagged for review",
-                interaction.user.id, visit_id, action_type='FLAG',
-            )
-
-        # --- Update the xlog message: mark as flagged, swap button for link ---
-        try:
-            if embed:
-                embed.color = COLOR_INVESTIGATION
-                embed.title = "🚩 Flagged Flight"
-                flag_ts = int(discord.utils.utcnow().timestamp())
-                embed.add_field(
-                    name="🚩 Flagged",
-                    value=f"By {interaction.user.mention} <t:{flag_ts}:R>",
-                    inline=False,
-                )
-
-            new_view = discord.ui.View()
-            if msg_url:
-                new_view.add_item(discord.ui.Button(label="View Flight Standing", url=msg_url, style=discord.ButtonStyle.link))
-            if alert_msg:
-                new_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
-
-            await xlog_message.edit(embed=embed, view=new_view)
-        except Exception as e:
-            logger.error(f"[FLAG] Error updating xlog message after flag: {e}")
-
-    @discord.ui.button(label="Flag", style=discord.ButtonStyle.secondary, emoji="🚩", custom_id="fl_flag_verified", row=0)
-    async def flag_action(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Escalate a verified flight to a manual alert with confirmation."""
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
-            return
-
-        try:
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
-            ign = self.ign or (self._extract_field(embed, "IGN") if embed else None) or "Unknown"
-
-            # Show confirmation dialog
-            confirm_view = FlagConfirmView(self, ign, interaction.message)
-            await interaction.followup.send(
-                f"🚩 Are you sure you want to flag **{ign}** for review?",
-                view=confirm_view,
-                ephemeral=True
-            )
-        except Exception as e:
-            logger.error(f"[FLAG] Error in flag_action: {e}", exc_info=True)
-            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+    if not required_roles:
+        return True
+    if is_mod:
+        return True
+    if _is_mod(roles):
+        return True
+    return bool(set(required_roles) & set(roles))
 
 
-# Compiled once at module level; shared by all flight-monitoring cogs.
-JOIN_PATTERN = re.compile(
-    r"\[.*?\]\s*.*?\s+(.*?)\s+from\s+(.*?)\s+is joining\s+(.*?)(?:\.|$)",
-    re.IGNORECASE
-)
+def _fire_dodo_webhook(
+    username: str,
+    nickname: str,
+    user_id: str,
+    avatar_url: str,
+    island_name: str,
+    dodo_code: str,
+    channel_id: str = None,
+) -> None:
+    """POST a Discord webhook message in the background."""
+    url = Config.DODO_LOG_WEBHOOK_URL
+    if not url:
+        return
 
-class FlightLoggerCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.island_map = {}
-        self.join_pattern = JOIN_PATTERN
-        self._db_conn = None
-        self.last_processed = None
-        self._pending_alerts: dict[tuple[str, str], int] = {}
-        self._creating_alerts: set[tuple[str, str]] = set()
-        self._pending_dodo_requests: dict[int, dict] = {}
-        self.fetch_islands_task.start()
-        self.cleanup_warnings_task.start()
+    display_name = (nickname or "").strip() or (username or "").strip() or "Unknown User"
 
-    async def _get_db(self):
-        if self._db_conn is None:
-            self._db_conn = await aiosqlite.connect(DB_NAME)
-        return self._db_conn
+    island_url_name = urllib.parse.quote(island_name)
+    island_link = f"https://www.chopaeng.com/island/{island_url_name.lower()}"
 
-    async def add_warning(self, user_id, guild_id, reason, mod_id, visit_id=None, action_type='WARN'):
-        db = await self._get_db()
-        await db.execute(
-            "INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp()), visit_id, action_type)
-        )
-        await db.commit()
-
-    async def get_warn_count(self, user_id: int, guild_id: int, days: int = WARN_EXPIRY_DAYS):
-        db = await self._get_db()
-        cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
-        cursor = await db.execute(
-            "SELECT COUNT(*) FROM warnings WHERE user_id = ? AND guild_id = ? AND timestamp > ? AND action_type = 'WARN'",
-            (user_id, guild_id, cutoff)
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else 0
-
-    async def remove_latest_warning(self, user_id: int, guild_id: int):
-        """Remove the most recent warning for a user and return its details."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT rowid, reason, mod_id, timestamp FROM warnings WHERE user_id = ? AND guild_id = ? ORDER BY timestamp DESC LIMIT 1",
-            (user_id, guild_id)
-        )
-        row = await cursor.fetchone()
-        if row:
-            rowid, reason, mod_id, timestamp = row
-            await db.execute("DELETE FROM warnings WHERE rowid = ?", (rowid,))
-            await db.commit()
-            return {"reason": reason, "mod_id": mod_id, "timestamp": timestamp}
-        return None
-
-    async def remove_all_warnings(self, user_id: int, guild_id: int):
-        """Remove all warnings for a user and return the count removed."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "DELETE FROM warnings WHERE user_id = ? AND guild_id = ?",
-            (user_id, guild_id)
-        )
-        count = cursor.rowcount
-        await db.commit()
-        return count
-
-    async def get_warnings(self, user_id: int, guild_id: int, days: int = 30):
-        """Get all warnings for a user within the specified number of days, including any linked island visit."""
-        db = await self._get_db()
-        cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
-        cursor = await db.execute(
-            """SELECT w.reason, w.mod_id, w.timestamp, w.visit_id,
-                      iv.ign, iv.origin_island, iv.destination, iv.timestamp
-               FROM warnings w
-               LEFT JOIN island_visits iv ON w.visit_id = iv.id
-               WHERE w.user_id = ? AND w.guild_id = ? AND w.timestamp > ? AND w.action_type = 'WARN'
-               ORDER BY w.timestamp DESC""",
-            (user_id, guild_id, cutoff)
-        )
-        rows = await cursor.fetchall()
-        return [
+    embed = {
+        "title": f"✈️ Dodo Code Revealed",
+        "color": 0x2ecc71,  # Emerald Green
+        "description": f"<@{user_id}> has revealed the Dodo code for island: <#{channel_id}>",
+        "fields": [
             {
-                "reason": r[0], "mod_id": r[1], "timestamp": r[2], "visit_id": r[3],
-                "visit_ign": r[4], "visit_origin": r[5], "visit_destination": r[6], "visit_ts": r[7],
+                "name": "Member",
+                "value": f"{display_name} (<@{user_id}>)",
+            },
+            {
+                "name": "Island",
+                "value": (
+                    (f"<#{channel_id}>" if channel_id else "") +
+                    f"\n[View Island]({island_link})"
+                ),
             }
-            for r in rows
-        ]
+        ],
+        "image": {
+            "url": "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
+        },
+        "footer": {
+            "text": "Chopaeng Camp™ • Dodo Reveal",
+            "icon_url": "https://www.chopaeng.com/assets/logo-C5oO0bbj.webp"
+        },
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
 
-    async def _get_recent_visit_id_by_ign(self, ign: str, hours: int = 24) -> int | None:
-        """Find the most recent island_visits.id for the given IGN within the last N hours."""
-        db = await self._get_db()
-        cutoff = int((discord.utils.utcnow() - datetime.timedelta(hours=hours)).timestamp())
-        cursor = await db.execute(
-            "SELECT id FROM island_visits WHERE ign = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 1",
-            (ign, cutoff)
+    payload = json.dumps({"embeds": [embed]}).encode()
+    try:
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": _DISCORD_UA},
+            method="POST",
         )
-        row = await cursor.fetchone()
-        return row[0] if row else None
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            # Discord commonly returns 204 No Content for webhook success.
+            if resp.status not in (200, 204):
+                logger.warning("Dodo webhook unexpected HTTP status: %s", resp.status)
+            else:
+                logger.debug("Dodo webhook delivered for island=%s user=%s", island_name, username)
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode(errors="replace")
+        except Exception:
+            pass
+        logger.warning("Dodo webhook failed HTTP %s: %s", exc.code, body)
+    except Exception as exc:
+        logger.warning("Dodo webhook failed: %s", exc)
 
-    def register_dodo_request(self, user_id: int, member: discord.Member, channel: discord.abc.GuildChannel, reply_msg: discord.Message | None, guild_icon: str | None) -> None:
-        """Register a pending dodo-code request so it can be merged with the verified-flight xlog entry."""
-        self._pending_dodo_requests[user_id] = {
-            'member': member,
-            'channel': channel,
-            'reply_msg': reply_msg,
-            'guild_icon': guild_icon,
+
+def set_data_manager(dm):
+    """Set the data manager instance"""
+    global data_manager
+    data_manager = dm
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def extract_image_from_html(html_content):
+    """Extract image URL from HTML content"""
+    if not html_content:
+        return None
+    match = re.search(r'<img [^>]*src="([^"]+)"', html_content)
+    return match.group(1) if match else None
+
+
+def process_post_attributes(post_id, attrs):
+    """Process Patreon post attributes"""
+    image_url = None
+
+    if attrs.get("embed_data"):
+        embed = attrs["embed_data"]
+        if "image" in embed and "url" in embed["image"]:
+            image_url = embed["image"]["url"]
+        elif "thumbnail_url" in embed:
+            image_url = embed["thumbnail_url"]
+
+    if not image_url:
+        image_url = extract_image_from_html(attrs.get("content"))
+
+    return {
+        "id": post_id,
+        "attributes": {
+            "embed_data": attrs.get("embed_data"),
+            "title": attrs["title"],
+            "content": attrs["content"],
+            "published_at": attrs["published_at"],
+            "url": attrs["url"],
+            "is_public": attrs["is_public"],
+            "image": {"large_url": image_url}
+        },
+        "type": "post"
+    }
+
+
+_file_cache: dict = {}
+_file_cache_lock = threading.Lock()
+_FILE_CACHE_TTL = 3  # seconds
+
+
+def get_file_content(folder_path, filename):
+    """Read file content safely with caching and retry to reduce file-lock contention.
+
+    The C# SysBot writes to these files with exclusive access (FileShare.None).
+    Caching minimises how often the file is opened, and the retry handles the
+    brief window where C# holds an exclusive write lock.
+    """
+    path = os.path.join(folder_path, filename)
+
+    now = time.monotonic()
+    with _file_cache_lock:
+        cached = _file_cache.get(path)
+        if cached is not None:
+            content, ts = cached
+            if now - ts < _FILE_CACHE_TTL:
+                return content
+
+    if not os.path.exists(path):
+        return None
+
+    for attempt in range(3):
+        try:
+            with open(path, 'r', encoding='utf-8-sig') as f:
+                content = f.read().strip()
+            with _file_cache_lock:
+                _file_cache[path] = (content, time.monotonic())
+            return content
+        except OSError:
+            if attempt < 2:
+                time.sleep(0.05)
+        except Exception:
+            break
+
+    # Return stale cache rather than None if the file is still locked
+    with _file_cache_lock:
+        cached = _file_cache.get(path)
+    if cached is not None:
+        return cached[0]
+    return None
+
+
+def process_island(entry, island_type):
+    """Process island data for Dodo API"""
+    name = entry.name.upper()
+
+    raw_dodo = get_file_content(entry.path, "Dodo.txt")
+    raw_visitors = _parse_visitor_value(get_file_content(entry.path, "Visitors.txt"))
+
+    status = "ONLINE"
+    display_dodo = raw_dodo
+    display_visitors = "0/7"
+
+    # Visitor Logic
+    if raw_visitors:
+        if raw_visitors.upper() == "FULL":
+            display_visitors = "FULL"
+        elif raw_visitors.isdigit():
+            display_visitors = f"{raw_visitors}/7"
+        else:
+            display_visitors = raw_visitors
+
+    # Dodo/Status Logic
+    if island_type == "VIP":
+        status = "SUB ONLY"
+        display_dodo = "SUB ONLY"
+    else:
+        if raw_dodo is None:
+            status = "OFFLINE"
+            display_dodo = "....."
+            display_visitors = "0/7"
+        elif raw_dodo in ["00000", "-----", ""]:
+            status = "REFRESHING"
+            display_dodo = "WAIT..."
+            display_visitors = "0/7"
+        else:
+            display_dodo = raw_dodo
+
+    return {
+        "name": name,
+        "dodo": display_dodo,
+        "status": status,
+        "type": island_type,
+        "visitors": display_visitors
+    }
+
+
+def _build_island_response(entry, island_type, db_island, discord_bot_online=None, viewer_is_mod=False):
+    """Build the enriched island response merging live filesystem data with DB metadata."""
+    name = entry.name.upper()
+
+    raw_dodo = get_file_content(entry.path, "Dodo.txt")
+    visitors, visitor_list = _parse_visitor_list(get_file_content(entry.path, "Visitors.txt"))
+
+    # Determine live status and dodo_code from filesystem
+    if island_type == "VIP" and not viewer_is_mod:
+        status = "SUB ONLY"
+        dodo_code = None  # Do not expose dodo code for subscriber-only islands
+    elif raw_dodo is None:
+        status = "OFFLINE"
+        dodo_code = None
+    elif raw_dodo in ["00000", "-----", ""]:
+        status = "REFRESHING"
+        dodo_code = None
+    else:
+        status = "ONLINE"
+        dodo_code = raw_dodo
+
+    # When the Discord bot is not confirmed online, hide live data to avoid stale values
+    if not discord_bot_online:
+        visitors = 0
+        visitor_list = []
+        dodo_code = None
+
+    return {
+        "id":                db_island.get("id", name.lower()),
+        "name":              name,
+        "cat":               db_island.get("cat", "public"),
+        "description":       db_island.get("description", ""),
+        "dodo_code":         dodo_code,
+        "visitors":          visitors,
+        "visitor_list":      visitor_list,
+        "items":             db_island.get("items", []),
+        "map_url":           db_island.get("map_url"),
+        "seasonal":          db_island.get("seasonal", ""),
+        "status":            status,
+        "theme":             db_island.get("theme", "teal"),
+        "type":              db_island.get("type", ""),
+        "updated_at":        db_island.get("updated_at"),
+        "discord_bot_online": discord_bot_online,
+        "required_roles":    db_island.get("required_roles", []),
+    }
+
+# ============================================================================
+# ISLAND METADATA CRUD (separate from /api/islands Dodo-status endpoint)
+# ============================================================================
+
+ALLOWED_CATEGORIES = {"public", "member"}
+ALLOWED_THEMES = {"pink", "teal", "purple", "gold"}
+ALLOWED_STATUSES = {"ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE"}
+
+# ============================================================================
+# AUTH ROUTES  (Discord OAuth for public website subscribers)
+# ============================================================================
+
+@app.route("/api/auth/discord")
+def auth_discord():
+    """Initiate Discord OAuth flow for public website subscribers."""
+    if not Config.DISCORD_CLIENT_ID:
+        return jsonify({"error": "Discord OAuth not configured"}), 503
+    if not Config.GUILD_ID:
+        return jsonify({"error": "GUILD_ID not set"}), 503
+
+    return_to = request.args.get("return_to", "")
+    # Whitelist: only allow redirect back to chopaeng.com or localhost
+    allowed_hosts = {"www.chopaeng.com", "chopaeng.com", "localhost"}
+    try:
+        parsed = urllib.parse.urlparse(return_to)
+        if parsed.hostname not in allowed_hosts:
+            return_to = "https://www.chopaeng.com/auth/callback"
+    except Exception:
+        return_to = "https://www.chopaeng.com/auth/callback"
+
+    state = _secrets.token_hex(16)
+    session["sub_oauth_state"] = state
+    session["sub_return_to"] = return_to
+    callback_url = url_for("auth_callback", _external=True)
+    params = urllib.parse.urlencode({
+        "client_id":     Config.DISCORD_CLIENT_ID,
+        "redirect_uri":  callback_url,
+        "response_type": "code",
+        "scope":         "identify guilds.members.read",
+        "state":         state,
+    })
+    return redirect(f"https://discord.com/api/oauth2/authorize?{params}")
+
+
+@app.route("/api/auth/callback")
+def auth_callback():
+    """Handle Discord OAuth callback for public website subscribers."""
+    error = request.args.get("error")
+    if error:
+        return_to = session.pop("sub_return_to", "https://www.chopaeng.com/auth/callback")
+        return redirect(f"{return_to}?error={urllib.parse.quote(error)}")
+
+    state = request.args.get("state", "")
+    if state != session.pop("sub_oauth_state", ""):
+        return_to = session.pop("sub_return_to", "https://www.chopaeng.com/auth/callback")
+        return redirect(f"{return_to}?error=invalid_state")
+
+    code = request.args.get("code", "")
+    return_to = session.pop("sub_return_to", "https://www.chopaeng.com/auth/callback")
+
+    callback_url = url_for("auth_callback", _external=True)
+    try:
+        token_body = urllib.parse.urlencode({
+            "client_id":     Config.DISCORD_CLIENT_ID,
+            "client_secret": Config.DISCORD_CLIENT_SECRET,
+            "grant_type":    "authorization_code",
+            "code":          code,
+            "redirect_uri":  callback_url,
+        }).encode()
+        req = urllib.request.Request(
+            "https://discord.com/api/oauth2/token",
+            data=token_body,
+            headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": _DISCORD_UA},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            token_resp = json.loads(resp.read().decode())
+    except Exception:
+        return redirect(f"{return_to}?error=token_exchange_failed")
+
+    access_token = token_resp.get("access_token")
+    if not access_token:
+        return redirect(f"{return_to}?error=no_access_token")
+
+    # Fetch guild member record (roles + permissions)
+    member_roles: list[str] = []
+    member_nickname = ""
+    member_perms = 0
+    try:
+        mem_req = urllib.request.Request(
+            f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
+            headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
+        )
+        with urllib.request.urlopen(mem_req, timeout=10) as resp:
+            member_data = json.loads(resp.read().decode())
+        member_roles = [str(r) for r in member_data.get("roles", [])]
+        member_nickname = (member_data.get("nick") or "").strip()
+        try:
+            member_perms = int(member_data.get("permissions", "0") or 0)
+        except (ValueError, TypeError):
+            member_perms = 0
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return redirect(f"{return_to}?error=not_a_member")
+        return redirect(f"{return_to}?error=roles_fetch_failed")
+    except Exception:
+        return redirect(f"{return_to}?error=roles_fetch_failed")
+
+    # Fetch basic user info
+    discord_user_id = discord_username = discord_avatar_url = ""
+    try:
+        user_req = urllib.request.Request(
+            "https://discord.com/api/users/@me",
+            headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
+        )
+        with urllib.request.urlopen(user_req, timeout=10) as resp:
+            user_data = json.loads(resp.read().decode())
+        discord_user_id  = str(user_data.get("id", ""))
+        discord_username = (
+            member_nickname
+            or user_data.get("global_name")
+            or user_data.get("username", "")
+        )
+        avatar_hash = user_data.get("avatar") or ""
+        if discord_user_id and avatar_hash and re.fullmatch(r"(?:a_)?[0-9a-f]{32}", avatar_hash):
+            discord_avatar_url = (
+                f"https://cdn.discordapp.com/avatars/{discord_user_id}/{avatar_hash}.png?size=64"
+            )
+    except Exception:
+        pass
+
+    is_admin = bool(member_perms & _ADMINISTRATOR_PERM)
+    token = _make_auth_token({
+        "user_id":   discord_user_id,
+        "username":  discord_username,
+        "nickname":  member_nickname,
+        "avatar":    discord_avatar_url,
+        "roles":     member_roles,
+        "is_admin":  is_admin,
+        "is_mod":    _is_mod(member_roles) or is_admin,
+    })
+
+    logger.info("Website OAuth login: user=%s is_mod=%s", discord_username, _is_mod(member_roles) or is_admin)
+    return redirect(f"{return_to}?token={urllib.parse.quote(token)}")
+
+
+@app.route("/api/auth/me")
+def auth_me():
+    """Return the current authenticated user's info."""
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"logged_in": False}), 200
+    return jsonify({
+        "logged_in":  True,
+        "user_id":    user["user_id"],
+        "username":   user["username"],
+        "nickname":   user.get("nickname", ""),
+        "avatar":     user["avatar"],
+        "roles":      user["roles"],
+        "is_admin":   user.get("is_admin", False),
+        "is_mod":     user["is_mod"],
+    })
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    """Invalidate the current auth token."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth[len("Bearer "):]
+        with _auth_tokens_lock:
+            _auth_tokens.pop(token, None)
+    return jsonify({"logged_out": True})
+
+
+# ============================================================================
+# DODO REVEAL — authenticated, fires webhook
+# ============================================================================
+
+@app.route("/api/islands/<name>/dodo", methods=["POST"])
+def reveal_dodo(name):
+    """Return the dodo code for an island if the user has the required role.
+
+    The client must send:   Authorization: Bearer <token>
+    On success, fires a Discord webhook and returns the dodo code.
+    """
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    target = name.upper()
+
+    # Load island metadata (cat + required_roles)
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT cat, required_roles, channel_id FROM islands WHERE UPPER(name) = ?", (target,)
+        ).fetchone()
+    finally:
+        db.close()
+
+    island_cat = ""
+    required_roles: list[str] = []
+    channel_id = None
+    if row:
+        island_cat = (row["cat"] or "").strip().lower()
+        channel_id = row["channel_id"]
+        try:
+            required_roles = json.loads(row["required_roles"] or "[]")
+        except (ValueError, TypeError):
+            required_roles = []
+
+    # Safety: member islands must never become public because required_roles is empty.
+    effective_required_roles = required_roles
+
+    is_viewer_admin = bool(user.get("is_admin"))
+    is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
+
+    if island_cat == "member" and not effective_required_roles and not is_viewer_mod:
+        return jsonify({"error": "Subscriber roles are not configured for this island"}), 403
+
+    # Check for general island access role first
+    island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
+    if island_access_role and not is_viewer_admin:
+        if island_access_role not in set(user.get("roles", [])):
+            return jsonify({"error": "You need island access role to reveal this dodo code"}), 403
+
+    if not _has_island_access(user.get("roles", []), effective_required_roles, is_viewer_mod):
+        return jsonify({"error": "You don't have the required subscription for this island"}), 403
+
+    # Find the dodo code from the filesystem
+    dodo_code = None
+    for base_dir in [Config.DIR_FREE, Config.DIR_VIP]:
+        if not base_dir or not os.path.exists(base_dir):
+            continue
+        for candidate in [target, name]:
+            path = os.path.join(base_dir, candidate)
+            if os.path.isdir(path):
+                raw = get_file_content(path, "Dodo.txt")
+                if raw and raw not in ["00000", "-----", "", "GETTIN'"]:
+                    dodo_code = raw
+                break
+        if dodo_code:
+            break
+
+    if not dodo_code:
+        return jsonify({"error": "Dodo code not available right now"}), 404
+
+    # Fire webhook in background thread so the response isn't delayed
+    threading.Thread(
+        target=_fire_dodo_webhook,
+        args=(
+            user["username"],
+            user.get("nickname", ""),
+            user.get("user_id", ""),
+            user["avatar"],
+            target,
+            dodo_code,
+            channel_id,
+        ),
+        daemon=True,
+    ).start()
+
+    return jsonify({"island": target, "dodo_code": dodo_code})
+
+# ============================================================================
+# API ROUTES
+# ============================================================================
+
+@app.route('/')
+def home():
+    """API home with endpoint info and system status"""
+    cache_count = 0
+    last_update = None
+    if data_manager:
+        with data_manager.lock:
+            cache_count = len(data_manager.cache)
+            last_update = data_manager.last_update
+
+    return jsonify({
+        "system": {
+            "name": "ChoBot API",
+            "version": "1.1.0",
+            "status": "online" if cache_count > 0 else "initializing",
+            "server_time": datetime.now().isoformat(),
+        },
+        "data_stats": {
+            "items_in_cache": cache_count,
+            "last_gsheets_sync": last_update.isoformat() if last_update else None,
+            "island_file_cache_ttl": f"{_FILE_CACHE_TTL}s"
+        },
+        "endpoints": {
+            "islands": {
+                "path": "/api/islands",
+                "description": "Get real-time status, visitors, and dodo codes for all islands"
+            },
+            "search_items": {
+                "path": "/api/find?q=<item>",
+                "description": "Search for item availability across all islands"
+            },
+            "search_villagers": {
+                "path": "/api/villager?q=<name>",
+                "description": "Locate specific villagers on islands"
+            },
+            "villager_list": {
+                "path": "/api/villagers/list",
+                "description": "Get all current villagers grouped by island"
+            },
+            "patreon_posts": {
+                "path": "/api/patreon/posts",
+                "description": "List cached community posts"
+            },
+            "health": {
+                "path": "/api/health",
+                "description": "Detailed system health and synchronization metrics"
+            }
         }
+    })
 
-    def pop_pending_dodo_request(self, user_id: int) -> dict | None:
-        """Remove and return the pending dodo-request info for the given user, or None if not found."""
-        return self._pending_dodo_requests.pop(user_id, None)
+@app.route('/health')
+@app.route('/api/health')
+def health():
+    """Health check endpoint for monitoring"""
+    if data_manager is None:
+        return jsonify({"status": "unavailable", "error": "Data manager not initialised"}), 503
 
-    async def get_recent_visit_id_by_user(self, user_id: int, guild_id: int, hours: int = 6) -> int | None:
-        """Find the most recent island_visits.id for the given Discord user within the last N hours."""
-        db = await self._get_db()
-        cutoff = int((discord.utils.utcnow() - datetime.timedelta(hours=hours)).timestamp())
-        cursor = await db.execute(
-            "SELECT id FROM island_visits WHERE user_id = ? AND guild_id = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 1",
-            (user_id, guild_id, cutoff)
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else None
+    with data_manager.lock:
+        cache_count = len(data_manager.cache)
+        last_update = data_manager.last_update
 
-    async def _is_authorized_with_target(self, ign: str, hours: int = 24) -> bool:
-        """Return True if this IGN has a recent visit that was authorized AND has a linked target user."""
-        db = await self._get_db()
-        cutoff = int((discord.utils.utcnow() - datetime.timedelta(hours=hours)).timestamp())
-        cursor = await db.execute(
-            "SELECT 1 FROM island_visits WHERE ign = ? AND timestamp > ? AND authorized = 1 AND user_id IS NOT NULL LIMIT 1",
-            (ign, cutoff)
-        )
-        row = await cursor.fetchone()
-        return row is not None
+    is_healthy = cache_count > 0 and last_update is not None
 
-    async def get_island_visits(self, user_id: int, guild_id: int, days: int = 30):
-        """Get all island visits for a user within the specified number of days."""
-        db = await self._get_db()
-        cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
-        cursor = await db.execute(
-            """SELECT id, ign, origin_island, destination, authorized, timestamp
-               FROM island_visits
-               WHERE user_id = ? AND guild_id = ? AND timestamp > ?
-               ORDER BY timestamp DESC""",
-            (user_id, guild_id, cutoff)
-        )
-        rows = await cursor.fetchall()
-        return [
-            {"id": r[0], "ign": r[1], "origin_island": r[2], "destination": r[3],
-             "authorized": bool(r[4]), "timestamp": r[5]}
-            for r in rows
-        ]
+    refresh_interval_seconds = int(data_manager.cache_refresh_hours * 3600)
+    if last_update is not None:
+        next_update = (last_update + timedelta(seconds=refresh_interval_seconds)).isoformat()
+    else:
+        next_update = None
 
-    async def record_island_visit(self, ign: str, origin_island: str, destination: str, found_members: list[discord.Member], guild_id: int | None, timestamp: int, authorized: int | None = None, island_type: str = 'sub') -> int | None:
-        """Record an island visit (authorized or unauthorized) in the database. Returns the visit ID."""
-        db = await self._get_db()
-        visit_id = None
-        if found_members:
-            for member in found_members:
-                cursor = await db.execute(
-                    "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-                    (ign, origin_island, destination, member.id, guild_id, timestamp, island_type)
-                )
-                visit_id = cursor.lastrowid
-        else:
-            auth_val = authorized if authorized is not None else 0
-            cursor = await db.execute(
-                "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
-                (ign, origin_island, destination, guild_id, auth_val, timestamp, island_type)
-            )
-            visit_id = cursor.lastrowid
-        await db.commit()
-        return visit_id
+    response = {
+        "status": "healthy" if is_healthy else "degraded",
+        "timestamp": datetime.now().isoformat(),
+        "cache": {
+            "items": cache_count,
+            "last_update": last_update.isoformat() if last_update else None,
+            "refresh_interval_seconds": refresh_interval_seconds,
+            "next_update": next_update,
+        },
+        "islands": {
+            "file_cache_ttl_seconds": _FILE_CACHE_TTL,
+        },
+    }
 
-    async def cleanup_expired_warnings(self):
-        """Delete warnings older than WARN_EXPIRY_DAYS from the database."""
-        db = await self._get_db()
-        cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=WARN_EXPIRY_DAYS)).timestamp())
-        cursor = await db.execute(
-            "DELETE FROM warnings WHERE timestamp < ?", (cutoff,)
-        )
-        count = cursor.rowcount
-        await db.commit()
-        if count > 0:
-            logger.info(f"[FLIGHT] Expired {count} warning(s) older than {WARN_EXPIRY_DAYS} days.")
-        return count
+    status_code = 200 if is_healthy else 503
+    return jsonify(response), status_code
 
-    async def _execute_punishment_internal(self, interaction, target, action_type, reason_text, duration_str, original_view, log_message):
-        """Unified internal method for handling moderation actions."""
-        mod = interaction.user
-        guild = interaction.guild
-        
-        # 1. Determine action details
-        if action_type == "BAN":
-            final_duration = "Permanent"
-            action_verb = "BANNED"
-            color = COLOR_BAN
-        elif action_type == "KICK":
-            final_duration = "N/A"
-            action_verb = "KICKED"
-            color = COLOR_KICK
-        else: # WARN
-            final_duration = duration_str
-            action_verb = "WARNED"
-            color = COLOR_WARN
+# --- ITEM SEARCH ROUTES ---
 
-        # Generate unique case ID: FL- YYMM-RAND
-        now = discord.utils.utcnow()
-        case_id = f"FL-{now.strftime('%y%m')}-{hex(int(now.timestamp()))[2:][-4:].upper()}"
+@app.route('/find')
+def find_item():
+    """Text response for item search"""
+    user = request.args.get('user', 'User')
+    query = normalize_text(request.args.get('q', ''))
 
-        # 1.5 Role Removal (Warn Only)
-        if action_type == "WARN":
-            visitor_role = guild.get_role(Config.ISLAND_ACCESS_ROLE)
-            if visitor_role and visitor_role in target.roles:
-                try:
-                    await target.remove_roles(visitor_role, reason=f"FlightLog [{case_id}]: Warned - Role Removed")
-                    logger.info(f"[FLIGHT] Removed role {visitor_role.name} from {target.display_name}")
-                except discord.Forbidden:
-                    logger.error(f"[FLIGHT] Permission Denied: Cannot remove role from {target.display_name}")
-                except Exception as e:
-                    logger.error(f"[FLIGHT] Error removing role: {e}")
+    if not query:
+        return f"Hey {user}, type !find <item name> to search."
 
+    if data_manager is None:
+        return f"Hey {user}, the search service is not available right now. Please try again later."
+
+    with data_manager.lock:
+        cache = data_manager.cache
+
+    found_locs = cache.get(query)
+
+    if found_locs:
+        final_msg = format_locations_text(found_locs)
+        return f"Hey {user}, I found {query.upper()} {final_msg}"
+
+    matches = process.extract(query, list(cache.keys()), limit=5, scorer=fuzz.token_set_ratio)
+    valid_suggestions = list(set([m[0] for m in matches if m[1] > 75]))
+
+    if valid_suggestions:
+        suggestions_str = ", ".join(valid_suggestions)
+        return f"Hey {user}, I couldn't find \"{query}\" - Did you mean: {suggestions_str}? If not, try !orderbot."
+
+    return f"Hey {user}, I couldn't find \"{query}\" or anything similar. Please check spelling."
+
+
+@app.route('/api/find')
+def api_find_item():
+    """JSON response for item search"""
+    user = request.args.get('user', 'User')
+    query = normalize_text(request.args.get('q', ''))
+
+    if not query:
+        return jsonify({"found": False, "message": f"Hey {user}, type !find <item name> to search."})
+
+    if data_manager is None:
+        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
+
+    with data_manager.lock:
+        cache = data_manager.cache
+
+    found_locs = cache.get(query)
+
+    if found_locs:
+        free, sub = parse_locations_json(found_locs)
+        final_msg = format_locations_text(found_locs)
+        return jsonify({
+            "found": True,
+            "query": query,
+            "results": {"free": free, "sub": sub},
+            "suggestions": [],
+            "message": f"Hey {user}, I found {query.upper()} {final_msg}"
+        })
+
+    matches = process.extract(query, list(cache.keys()), limit=5, scorer=fuzz.token_set_ratio)
+    valid_suggestions = list(set([m[0] for m in matches if m[1] > 75]))
+
+    if valid_suggestions:
+        return jsonify({
+            "found": False,
+            "query": query,
+            "suggestions": valid_suggestions,
+            "message": f"Hey {user}, I couldn't find \"{query}\" - Did you mean: {', '.join(valid_suggestions)}?"
+        })
+
+    return jsonify({
+        "found": False,
+        "query": query,
+        "suggestions": [],
+        "message": f"Hey {user}, I couldn't find \"{query}\" or anything similar."
+    })
+
+
+# --- VILLAGER SEARCH ROUTES ---
+
+@app.route('/villager')
+def find_villager():
+    """Text response for villager search"""
+    user = request.args.get('user', 'User')
+    query = normalize_text(request.args.get('q', ''))
+
+    if not query:
+        return f"Hey {user}, type !villager <n> to search."
+
+    if data_manager is None:
+        return f"Hey {user}, the search service is not available right now. Please try again later."
+
+    villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
+    found_locs = villager_map.get(query)
+
+    if found_locs:
+        final_msg = format_locations_text(found_locs)
+        return f"Hey {user}, I found villager {query.upper()} {final_msg}"
+
+    matches = process.extract(query, list(villager_map.keys()), limit=3, scorer=fuzz.token_set_ratio)
+    valid_suggestions = list(set([m[0] for m in matches if m[1] > 75]))
+
+    if valid_suggestions:
+        suggestions_str = ", ".join(valid_suggestions)
+        return f"Hey {user}, I couldn't find villager \"{query}\" - Did you mean: {suggestions_str}?"
+
+    return f"Hey {user}, I couldn't find a villager named \"{query}\"."
+
+
+@app.route('/api/villager')
+def api_find_villager():
+    """JSON response for villager search"""
+    user = request.args.get('user', 'User')
+    query = normalize_text(request.args.get('q', ''))
+
+    if not query:
+        return jsonify({"found": False, "message": f"Hey {user}, type !villager <n> to search."})
+
+    if data_manager is None:
+        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
+
+    villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
+    found_locs = villager_map.get(query)
+
+    if found_locs:
+        free, sub = parse_locations_json(found_locs)
+        final_msg = format_locations_text(found_locs)
+        return jsonify({
+            "found": True,
+            "query": query,
+            "results": {"free": free, "sub": sub},
+            "suggestions": [],
+            "message": f"Hey {user}, I found villager {query.upper()} {final_msg}"
+        })
+
+    matches = process.extract(query, list(villager_map.keys()), limit=3, scorer=fuzz.token_set_ratio)
+    valid_suggestions = list(set([m[0] for m in matches if m[1] > 75]))
+
+    if valid_suggestions:
+        return jsonify({
+            "found": False,
+            "query": query,
+            "suggestions": valid_suggestions,
+            "message": f"Hey {user}, I couldn't find villager \"{query}\" - Did you mean: {', '.join(valid_suggestions)}?"
+        })
+
+    return jsonify({
+        "found": False,
+        "query": query,
+        "suggestions": [],
+        "message": f"Hey {user}, I couldn't find a villager named \"{query}\"."
+    })
+
+
+@app.route('/api/villagers/list')
+def api_list_villagers_by_island():
+    """List all villagers grouped by island"""
+    if data_manager is None:
+        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
+
+    villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
+    island_manifest = {}
+
+    for villager_name, locations in villager_map.items():
+        loc_list = locations.split(", ")
+        for loc in loc_list:
+            if loc not in island_manifest:
+                island_manifest[loc] = []
+            island_manifest[loc].append(villager_name.title())
+
+    for loc in island_manifest:
+        island_manifest[loc].sort()
+
+    return jsonify({
+        "timestamp": datetime.now().isoformat(),
+        "total_islands": len(island_manifest),
+        "islands": island_manifest
+    })
+
+
+# --- DODO CODE / ISLAND STATUS ROUTES ---
+
+@app.route('/api/islands', methods=['GET'])
+def get_islands():
+    """Get all island statuses and Dodo codes with full metadata."""
+    viewer = _current_auth_user()
+    viewer_roles = viewer.get("roles", []) if viewer else []
+    viewer_is_admin = bool(viewer and viewer.get("is_admin"))
+    viewer_is_mod = bool(viewer and (viewer.get("is_mod") or viewer_is_admin or _is_mod(viewer_roles)))
+
+    # Load island metadata from DB, keyed by uppercase name
+    db_map = {}
+    discord_status = {}
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, name, cat, description, items, map_url, seasonal, theme, type, updated_at, required_roles "
+            "FROM islands ORDER BY name"
+        ).fetchall()
+        for row in rows:
+            isl = row_to_island_dict(dict(row))
+            # Keep frontend gating aligned with reveal endpoint safety logic.
+            if (isl.get("cat") or "").strip().lower() == "member" and not (isl.get("required_roles") or []):
+                isl["required_roles"] = _configured_subscription_role_ids()
+            if isl.get("name"):
+                db_map[isl["name"].upper()] = isl
+        # Load Discord bot presence data
+        bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
+        for r in bot_rows:
+            discord_status[r["island_id"]] = bool(r["is_online"])
+    except sqlite3.Error:
+        logger.exception("Failed to load island metadata from DB for /api/islands")
+    finally:
+        db.close()
+
+    results = []
+
+    if os.path.exists(Config.DIR_FREE):
+        with os.scandir(Config.DIR_FREE) as entries:
+            for entry in entries:
+                if entry.is_dir():
+                    name = entry.name.upper()
+                    results.append(_build_island_response(
+                        entry, "Free", db_map.get(name, {}),
+                        discord_status.get(name.lower()),
+                        viewer_is_mod,
+                    ))
+
+    if os.path.exists(Config.DIR_VIP):
+        with os.scandir(Config.DIR_VIP) as entries:
+            for entry in entries:
+                if entry.is_dir():
+                    name = entry.name.upper()
+                    results.append(_build_island_response(
+                        entry, "VIP", db_map.get(name, {}),
+                        discord_status.get(name.lower()),
+                        viewer_is_mod,
+                    ))
+
+    results.sort(key=lambda x: x['name'])
+    return jsonify({
+        "meta": {
+            "timestamp": datetime.now().isoformat(),
+            "cache_ttl_seconds": _FILE_CACHE_TTL,
+            "note": (
+                f"Dodo codes and visitor counts are read directly from files written by "
+                f"the C# island bot. Each file read is cached for up to "
+                f"{_FILE_CACHE_TTL} seconds, so data is near-real-time."
+            ),
+        },
+        "data": results,
+    })
+
+
+# --- PATREON ROUTES ---
+
+
+@app.route('/api/islands/<name>/visitors', methods=['GET'])
+def get_island_visitors(name):
+    """Get the current visitor list for a single island by name.
+
+    Reads the live Visitors.txt file written by the C# island bot and returns
+    the parsed list of in-game names currently on the island.
+
+    Returns 404 if no island directory with that name is found.
+    """
+    target = name.upper()
+
+    # Load bot online status for all islands (same pattern as get_islands)
+    discord_status = {}
+    db = get_db()
+    try:
+        bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
+        for r in bot_rows:
+            discord_status[r["island_id"]] = bool(r["is_online"])
+    except sqlite3.Error:
+        pass
+    finally:
+        db.close()
+
+    # Search Free and VIP directories for a matching island folder
+    for base_dir, island_type in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP")]:
+        if not base_dir or not os.path.exists(base_dir):
+            continue
+        with os.scandir(base_dir) as entries:
+            for entry in entries:
+                if entry.is_dir() and entry.name.upper() == target:
+                    discord_bot_online = discord_status.get(target.lower())
+
+                    raw_content = get_file_content(entry.path, "Visitors.txt")
+                    visitor_count, visitor_list = _parse_visitor_list(raw_content)
+
+                    # Hide live data when the Discord bot is offline
+                    if not discord_bot_online:
+                        visitor_count = 0
+                        visitor_list = []
+
+                    return jsonify({
+                        "island":        target,
+                        "type":          island_type,
+                        "visitor_count": visitor_count,
+                        "visitor_list":  visitor_list,
+                        "bot_online":    discord_bot_online,
+                        "timestamp":     datetime.now().isoformat(),
+                    })
+
+    return jsonify({"error": f"Island '{name}' not found"}), 404
+
+
+@app.route("/api/patreon/posts", methods=["GET"])
+def get_patreon_posts():
+    """Get recent Patreon posts (cached 15 min)"""
+    now = datetime.now()
+    if patreon_cache["list"]["data"] and patreon_cache["list"]["timestamp"]:
+        if (now - patreon_cache["list"]["timestamp"]) < timedelta(minutes=15):
+            return jsonify(patreon_cache["list"]["data"])
+
+    url = f"https://www.patreon.com/api/oauth2/v2/campaigns/{Config.PATREON_CAMPAIGN_ID}/posts"
+    headers = {"Authorization": f"Bearer {Config.PATREON_TOKEN}"}
+    params = {
+        "fields[post]": "title,content,published_at,url,is_public,embed_data,embed_url",
+        "sort": "-published_at",
+        "page[count]": 10
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=20)
+        if not response.ok:
+            return jsonify({"error": "Patreon API Error", "details": response.text}), response.status_code
+
+        raw_data = response.json()
+        processed_data = [process_post_attributes(p["id"], p["attributes"]) for p in raw_data["data"]]
+
+        result = {"data": processed_data}
+        patreon_cache["list"] = {"data": result, "timestamp": now}
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": "Server error", "details": str(e)}), 500
+
+
+@app.route("/api/patreon/posts/<post_id>", methods=["GET"])
+def get_single_post(post_id):
+    """Get a specific Patreon post (cached 15 min)"""
+    now = datetime.now()
+
+    if post_id in patreon_cache["posts"]:
+        cached_post = patreon_cache["posts"][post_id]
+        if (now - cached_post["timestamp"]) < timedelta(minutes=15):
+            return jsonify(cached_post["data"])
+
+    url = f"https://www.patreon.com/api/oauth2/v2/posts/{post_id}"
+    headers = {"Authorization": f"Bearer {Config.PATREON_TOKEN}"}
+    params = {"fields[post]": "title,content,published_at,url,is_public,embed_data,embed_url"}
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=20)
+        if not response.ok:
+            return jsonify({"error": "Post not found or API error", "details": response.text}), response.status_code
+
+        raw_data = response.json()
+        processed_post = process_post_attributes(raw_data["data"]["id"], raw_data["data"]["attributes"])
+
+        result = {"data": processed_post}
+        patreon_cache["posts"][post_id] = {"data": result, "timestamp": now}
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": "Server error", "details": str(e)}), 500
+
+
+# --- STATUS ROUTE ---
+@app.route('/status')
+def status():
+    """Get bot status"""
+    if data_manager is None:
+        return "Service unavailable — data manager not initialised.", 503
+    with data_manager.lock:
+        count = len(data_manager.cache)
+        last_up = data_manager.last_update.strftime("%H:%M:%S") if data_manager.last_update else "Loading..."
+    return f"Items: {count} | Last Update: {last_up}"
+
+
+@app.route('/api/refresh', methods=['POST'])
+def api_refresh():
+    """Manually trigger a cache refresh from Google Sheets"""
+    if data_manager is None:
+        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
+
+    if not _refresh_lock.acquire(blocking=False):
+        return jsonify({"status": "refresh already in progress"}), 429
+
+    def _run():
         try:
-            # 2. DM Notification
-            try:
-                emoji = ""
-                if action_type == "BAN": emoji = "<:Cho_Ban:1473530840725061793> "
-                elif action_type == "KICK": emoji = "<:Cho_Kick:1456714701630214349> "
-                elif action_type == "WARN": emoji = "<:Cho_Warn:1456712416271405188> "
-
-                dm_embed = discord.Embed(
-                    title=f"{emoji} Chobot Notification",
-                    description=f"You have been **{action_verb.lower()}** from **{guild.name}**.",
-                    color=color,
-                    timestamp=discord.utils.utcnow()
-                )
-                dm_embed.add_field(name="Reason", value=reason_text, inline=False)
-                dm_embed.set_footer(text=f"Case ID: {case_id}")
-                if guild.icon:
-                    dm_embed.set_thumbnail(url=guild.icon.url)
-
-                await target.send(embed=dm_embed)
-            except discord.HTTPException:
-                pass # DM Closed
-
-            # 3. Discord Action
-            if action_type == "KICK":
-                await target.kick(reason=f"FlightLog [{case_id}]: {reason_text}")
-            elif action_type == "BAN":
-                await target.ban(reason=f"FlightLog [{case_id}]: {reason_text}")
-
-            # 4. Database Log — link to the island visit that triggered this alert if available
-            visit_id = getattr(original_view, 'visit_id', None) if original_view else None
-            if visit_id is None and original_view is not None:
-                # Fall back to IGN-based lookup (handles bot-restart case where visit_id wasn't in view)
-                ign = getattr(original_view, 'ign', None)
-                if not ign and log_message and log_message.embeds:
-                    for field in log_message.embeds[0].fields:
-                        if "Traveler (IGN)" in field.name:
-                            m = re.search(r"```(?:yaml)?\n(.*?)\n?```", field.value)
-                            if m:
-                                ign = m.group(1).strip()
-                            break
-                if ign:
-                    visit_id = await self._get_recent_visit_id_by_ign(ign)
-            if visit_id is not None:
-                # Identify the visitor in the island_visits record now that we know who they are
-                db = await self._get_db()
-                await db.execute(
-                    "UPDATE island_visits SET user_id = ? WHERE id = ? AND user_id IS NULL",
-                    (target.id, visit_id)
-                )
-                await db.commit()
-            await self.add_warning(target.id, guild.id, reason_text, mod.id, visit_id, action_type=action_type)
-            # Use small delay to ensure DB consistency (though commit is awaited)
-            new_count = await self.get_warn_count(target.id, guild.id, days=WARN_EXPIRY_DAYS)
-
-            # 5. Log to Sapphire Channel
-            log_embed = create_sapphire_log(target, mod, reason_text, case_id, new_count, final_duration, action_verb)
-            sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
-            
-            if sub_mod_channel:
-                sent_log = await sub_mod_channel.send(content=target.mention, embed=log_embed)
-                await interaction.followup.send(f"✅ Case `{case_id}` logged in {sub_mod_channel.mention}", ephemeral=True)
-            else:
-                sent_log = None
-                await interaction.followup.send(f"✅ Action executed (Case `{case_id}`), but log channel is missing.", ephemeral=True)
-
-            # 6. Update Original Alert
-            msg_to_mod = f"✅ **{target.display_name}** processed ({action_verb}). Case: `{case_id}`"
-            if original_view:
-                await original_view._resolve_alert(
-                    interaction, action_verb, color, msg_to_mod,
-                    target_user=target, log_message=log_message, reason=reason_text,
-                    mod_log_url=sent_log.jump_url if sent_log else None
-                )
-
-        except discord.Forbidden:
-            await interaction.followup.send("Permission Denied. Check bot role hierarchy.", ephemeral=True)
-        except Exception as e:
-            logger.error(f"Punishment Error: {e}")
-            await interaction.followup.send(f"System Error: {e}", ephemeral=True)
-
-    async def cog_load(self):
-        await init_db()
-        self.bot.add_view(TravelerActionView(bot=self.bot))
-        self.bot.add_view(VerifiedFlightFlagView(bot=self.bot))
-
-    def cog_unload(self):
-        self.fetch_islands_task.cancel()
-        self.cleanup_warnings_task.cancel()
-        if self._db_conn:
-            asyncio.create_task(self._db_conn.close())
-
-    @tasks.loop(hours=1)
-    async def fetch_islands_task(self):
-        await self.fetch_islands()
-
-    @fetch_islands_task.before_loop
-    async def before_fetch(self):
-        await self.bot.wait_until_ready()
-        await self.fetch_islands()
-
-    @tasks.loop(hours=6)
-    async def cleanup_warnings_task(self):
-        """Periodically remove warnings older than WARN_EXPIRY_DAYS."""
-        await self.cleanup_expired_warnings()
-
-    @cleanup_warnings_task.before_loop
-    async def before_cleanup(self):
-        await self.bot.wait_until_ready()
-
-    async def fetch_islands(self):
-        """Fetch island channels from Discord sub-category"""
-        guild = self.bot.get_guild(Config.GUILD_ID)
-        if not guild:
-            logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} not found.")
-            return
-
-        category = discord.utils.get(guild.categories, id=Config.CATEGORY_ID)
-        if not category:
-            logger.error(f"[FLIGHT] Category {Config.CATEGORY_ID} not found.")
-            return
-
-        temp_map = {}
-        count = 0
-        
-        for channel in category.channels:
-            if channel.id == Config.FLIGHT_LISTEN_CHANNEL_ID:
-                continue
-
-            # e.g. "🌴┆bituin" -> "bituin", "01-alapaap" -> "01alapaap"
-            chan_clean = clean_text(channel.name)
-            if not chan_clean:
-                continue
-
-            temp_map[chan_clean] = channel.id
-            count += 1
-
-            # Also map without leading digits for canonical name lookups
-            # e.g. "01alapaap" -> "alapaap"
-            island_clean = re.sub(r'^\d+', '', chan_clean)
-            if island_clean and island_clean != chan_clean:
-                temp_map[island_clean] = channel.id
-
-        self.island_map = temp_map
-        logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {len(temp_map)} keys.")
-
-    def get_island_channel_link(self, island_name):
-        """Get channel link with robust fallback search"""
-        island_clean = clean_text(island_name)
-        if not island_clean:
-            return island_name.title()
-
-        if island_clean in self.island_map:
-            return f"<#{self.island_map[island_clean]}>"
-
-        for key, channel_id in self.island_map.items():
-            if island_clean == key:
-                return f"<#{channel_id}>"
-            if island_clean in key:
-                return f"<#{channel_id}>"
-        guild = self.bot.get_guild(Config.GUILD_ID)
-        if guild:
-            for channel in guild.text_channels:
-                chan_clean = clean_text(channel.name)
-                if island_clean == chan_clean or island_clean in chan_clean:
-                    self.island_map[island_clean] = channel.id
-                    return channel.mention
-
-        return island_name.title()
-    def split_options(self, raw: str):
-        if not raw: return []
-        parts = [p.strip() for p in raw.split("/") if p.strip()]
-        out = []
-        for p in parts:
-            norm = self.normalize_identity_text(p)
-            if norm:
-                out.append(norm)
-        return out
-
-    def normalize_identity_text(self, text: str) -> str:
-        """Normalize IGN/island while preserving symbols for strict identity checks."""
-        if not text:
-            return ""
-        # Keep symbols (e.g. $$$, _, -), normalize Unicode width/compat forms,
-        # and collapse whitespace so cosmetic spacing differences do not break matches.
-        normalized = unicodedata.normalize("NFKC", text).casefold().strip()
-
-        # Canonicalize common punctuation variants without removing symbols.
-        quote_map = {
-            "\u2018": "'", "\u2019": "'", "\u02bc": "'", "\u2032": "'", "\uff07": "'",
-            "\u201c": '"', "\u201d": '"',
-            "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
-        }
-        normalized = "".join(quote_map.get(ch, ch) for ch in normalized)
-
-        # Normalize spaces around punctuation often introduced by mobile keyboards.
-        normalized = re.sub(r"\s*'\s*", "'", normalized)
-        normalized = re.sub(r'\s*"\s*', '"', normalized)
-        normalized = re.sub(r"\s*-\s*", "-", normalized)
-        normalized = re.sub(r"\s+", " ", normalized)
-        return normalized
-
-    def parse_member_nick(self, display_name: str):
-        if not display_name:
-            return [], []
-        # Support common nick separators: | (preferred), then , or -
-        # / is intentionally excluded here as it is used within a field for multiple options
-        if '|' in display_name:
-            raw_chunks = display_name.split('|')
-        else:
-            if not re.search(r'[,\-]', display_name):
-                return [], []
-            raw_chunks = re.split(r'[,\-]', display_name, maxsplit=1)
-        chunks = [c.strip() for c in raw_chunks if c.strip()]
-        if not chunks:
-            return [], []
-        ign_opts    = self.split_options(chunks[0])
-        island_opts = [opt for chunk in chunks[1:] for opt in self.split_options(chunk)]
-        return ign_opts, island_opts
-
-    def _is_strict_nick_match(self, ign_log_clean: str, island_log_clean: str, ign_opts: list[str], island_opts: list[str]) -> bool:
-        """Return True only when both IGN and island from nickname match the flight log.
-
-        Supports paired nick formats like "IGN1/IGN2 | Island1/Island2" by checking
-        index-aligned pairs first; otherwise falls back to set membership for both fields.
-        """
-        if not ign_opts or not island_opts:
-            return False
-
-        if len(ign_opts) == len(island_opts):
-            for ign_opt, island_opt in zip(ign_opts, island_opts):
-                if ign_log_clean == ign_opt and island_log_clean == island_opt:
-                    return True
-
-        return ign_log_clean in ign_opts and island_log_clean in island_opts
-
-    def find_matching_members(self, guild, ign_log_clean, island_log_clean):
-        exact_members = []
-        for member in guild.members:
-            ign_opts, island_opts = self.parse_member_nick(member.display_name)
-            if not ign_opts and not island_opts:
-                continue
-            if self._is_strict_nick_match(ign_log_clean, island_log_clean, ign_opts, island_opts):
-                exact_members.append(member)
-        return exact_members
-
-    def find_all_candidates(self, guild, ign_log_clean, island_log_clean):
-        """Return all registered members (those with '|' in nickname) with their match details.
-
-        Returns a list of dicts:
-            {member, ign_opts, island_opts, ign_match, island_match, full_match}
-        Sorted: IGN matches first, then no match.
-        """
-        candidates = []
-        for member in guild.members:
-            ign_opts, island_opts = self.parse_member_nick(member.display_name)
-            if not ign_opts and not island_opts:
-                continue
-            ign_match    = ign_log_clean in ign_opts
-            island_match = island_log_clean in island_opts if island_opts else False
-            full_match   = self._is_strict_nick_match(ign_log_clean, island_log_clean, ign_opts, island_opts)
-            candidates.append({
-                "member":       member,
-                "ign_opts":     ign_opts,
-                "island_opts":  island_opts,
-                "ign_match":    ign_match,
-                "island_match": island_match,
-                "full_match":   full_match,
-            })
-        candidates.sort(key=lambda c: (not c["full_match"], not c["ign_match"], not c["island_match"]))
-        return candidates
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.author == self.bot.user or message.channel.id != Config.FLIGHT_LISTEN_CHANNEL_ID:
-            return
-        match = self.join_pattern.search(message.content)
-        if match:
-            ign_raw    = match.group(1).strip()
-            island_raw = match.group(2).strip()
-            dest_raw   = match.group(3).strip()
-            ign_norm = self.normalize_identity_text(ign_raw)
-            isl_norm = self.normalize_identity_text(island_raw)
-            self.last_processed = discord.utils.utcnow()
-            asyncio.create_task(
-                self._process_flight_log(message.guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message.jump_url, message.content)
-            )
-
-    async def _process_flight_log(self, guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message_url=None, message_content=None):
-        """Background task: look up members then run the full log pipeline."""
-        try:
-            found = await asyncio.to_thread(
-                self.find_matching_members, guild, ign_norm, isl_norm
-            )
-            await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub', message_url=message_url, message_content=message_content)
-        except Exception as e:
-            logger.error(f"[FLIGHT] Pipeline error for {ign_raw}: {e}")
-
-    async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub', message_url=None, message_content=None):
-        output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
-        if not output_channel: return
-
-        embed_timestamp = timestamp or discord.utils.utcnow()
-        visit_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
-        guild = self.bot.get_guild(Config.GUILD_ID)
-        guild_id = guild.id if guild else None
-
-        ambiguous_members = found_members if len(found_members) > 1 else []
-
-        if len(found_members) == 1:
-            mentions = " ".join([m.mention for m in found_members])
-            logger.info(f"[FLIGHT] Match: {ign} | {mentions}")
-            visit_id = await self.record_island_visit(ign, island, destination, found_members, guild_id, visit_ts, island_type=island_type)
-
-            # Post authorized-traveler log to the xlog channel.
-            xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
-            if xlog_channel:
-                guild_icon = guild.icon.url if guild and guild.icon else None
-                member_line = "\n".join(
-                    f"{m.mention} ({m.display_name})" for m in found_members
-                )
-                destination_link = self.get_island_channel_link(destination)
-
-                desc_lines = []
-                if message_url:
-                    content_preview = message_content.strip() if message_content else "View original message"
-                    if len(content_preview) > 100:
-                        content_preview = content_preview[:97] + "..."
-                    desc_lines.append(f"[{content_preview}]({message_url})")
-                desc_lines.append(f"Member Linked: {member_line}")
-
-                # Add roles/subscription info for the matched member
-                member = found_members[0]
-                member_roles = [r for r in member.roles if r.name != "@everyone"]
-                has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in member_roles)
-                
-                sub_roles = {}
-                dest_clean = clean_text(destination)
-                channel_id = self.island_map.get(dest_clean)
-                dest_channel = guild.get_channel(channel_id) if channel_id else None
-                
-                if dest_channel:
-                    for target, overwrite in dest_channel.overwrites.items():
-                        if isinstance(target, discord.Role) and overwrite.read_messages is True:
-                            if target.name != "@everyone":
-                                sub_roles[target.id] = target.name
-                
-                highlight_present = [(sub_roles[r.id], r.mention) for r in member_roles if r.id in sub_roles]
-
-                # Design: Use a block with emoji and clear separation
-                if has_access:
-                    if highlight_present:
-                        sub_lines = [f"{mention}" for _, mention in highlight_present]
-                        desc_lines.append(
-                            f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
-                        )
-                    else:
-                        desc_lines.append(
-                            f"<a:CampWarning:1172346431542140961> **Subscription(s):**\n> None detected."
-                        )
-                    desc_lines.append(
-                        f"<a:starpink:784055540321091584> **Has Island Access?** Yes"
-                    )
-                else:
-                    desc_lines.append(
-                        f"<a:CampWarning:1172346431542140961> **No Island Access Role**"
-                    )
-
-                desc_lines.append("\nLog details matched with a member.")
-
-                embed = discord.Embed(
-                    title=f"<:Cho_Check:1456715827213504593> Verified Flight",
-                    description="\n".join(desc_lines),
-                    color=COLOR_SUCCESS,
-                    timestamp=embed_timestamp,
-                )
-                embed.add_field(name="IGN",         value=f"```yaml\n{ign}```",           inline=True)
-                embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
-                embed.add_field(name="Destination", value=destination_link,               inline=True)
-                if visit_id is not None:
-                    embed.add_field(name="Visit ID", value=f"`#{visit_id}`",              inline=True)
-
-                # Merge any pending dodo-code request from this member into the embed,
-                # suppressing the separate "Dodo Code Requested" xlog entry.
-                dodo_req = self.pop_pending_dodo_request(found_members[0].id)
-                if dodo_req is not None:
-                    embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
-
-                embed.set_image(url=Config.FOOTER_LINE)
-                embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
-
-                # Create view with flag button and optional view flight link
-                flag_view = VerifiedFlightFlagView(bot=self.bot)
-                if message_url:
-                    flag_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
-                if dodo_req is not None and dodo_req.get('reply_msg'):
-                    flag_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
-                
-                await xlog_channel.send(embed=embed, view=flag_view)
-        else:
-            destination_link = self.get_island_channel_link(destination)
-            alert_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
-
-            # Guard against a concurrent log_result call for the same IGN+destination.
-            # Register the key synchronously (before any await) so a second
-            # coroutine for the same island sees it immediately and returns without
-            # inserting a duplicate DB row or sending a duplicate embed.
-            ign_clean = clean_text(ign)
-            dest_clean = clean_text(destination)
-            alert_key = (ign_clean, dest_clean)
-            if alert_key in self._creating_alerts:
-                return
-            self._creating_alerts.add(alert_key)
-            try:
-                # If this IGN was already authorized and has a linked target within the last 24 hours,
-                # silently ignore the follow-up xlog — no new alert needed.
-                if await self._is_authorized_with_target(ign):
-                    logger.info(f"[FLIGHT] Ignoring xlog for {ign} — already authorized with a target.")
-                    return
-
-                visit_id = await self.record_island_visit(ign, island, destination, [], guild_id, alert_ts, island_type=island_type)
-
-                # Check if there is already a pending alert for this IGN+destination to avoid flooding the channel
-                existing_msg = None
-                existing_msg_id = self._pending_alerts.get(alert_key)
-                if existing_msg_id:
-                    try:
-                        existing_msg = await output_channel.fetch_message(existing_msg_id)
-                        # Only reuse the message if the alert is still pending (not yet resolved)
-                        if existing_msg.embeds:
-                            status_field = next(
-                                (f for f in existing_msg.embeds[0].fields if f.name == "Status"),
-                                None
-                            )
-                            if status_field is None or "PENDING REVIEW" not in status_field.value:
-                                existing_msg = None
-                    except discord.NotFound:
-                        existing_msg = None
-
-                xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
-                guild_icon = guild.icon.url if guild and guild.icon else None
-
-                if existing_msg:
-                    # Update the existing alert with a re-join counter instead of spamming a new message
-                    embed = existing_msg.embeds[0]
-                    rejoin_count = 1
-                    updated_fields = []
-                    has_rejoin_field = False
-                    for f in embed.fields:
-                        if f.name == "Re-join Attempts":
-                            has_rejoin_field = True
-                            m = re.search(r"\*\*(\d+)\*\*", f.value)
-                            if m:
-                                rejoin_count = int(m.group(1)) + 1
-                        else:
-                            updated_fields.append((f.name, f.value, f.inline))
-                    rejoin_field = ("Re-join Attempts", f"**{rejoin_count}** attempt(s)\nLast seen <t:{alert_ts}:R>", True)
-                    if has_rejoin_field:
-                        updated_fields.append(rejoin_field)
-                    else:
-                        # Insert the re-join field after "Detected"
-                        new_fields = []
-                        for name, value, inline in updated_fields:
-                            new_fields.append((name, value, inline))
-                            if name == "Detected":
-                                new_fields.append(rejoin_field)
-                        updated_fields = new_fields
-                    embed.clear_fields()
-                    for name, value, inline in updated_fields:
-                        embed.add_field(name=name, value=value, inline=inline)
-                    await existing_msg.edit(embed=embed)
-                    logger.info(f"[FLIGHT] Updated existing alert for {ign} (re-join attempt #{rejoin_count})")
-
-                    # Post re-join notification to xlog channel
-                    if xlog_channel:
-                        xlog_embed = discord.Embed(
-                            description=(
-                                f"### {Config.EMOJI_FAIL} Unverified Flight — Re-join Detected\n"
-                                f"An unregistered traveler re-joined **{destination_link}**."
-                            ),
-                            color=COLOR_INVESTIGATION,
-                            timestamp=embed_timestamp,
-                        )
-                        xlog_embed.add_field(name="IGN",          value=f"```yaml\n{ign}```",           inline=True)
-                        xlog_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
-                        xlog_embed.add_field(name="Destination",   value=destination_link,               inline=True)
-                        xlog_embed.add_field(name="Re-join #",     value=f"**{rejoin_count}**",           inline=True)
-                        xlog_embed.set_image(url=Config.FOOTER_LINE)
-                        xlog_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
-                        xlog_view = discord.ui.View()
-                        xlog_view.add_item(discord.ui.Button(label="View Alert", url=existing_msg.jump_url, style=discord.ButtonStyle.link))
-                        await xlog_channel.send(embed=xlog_embed, view=xlog_view)
-                else:
-                    is_ambiguous = bool(ambiguous_members)
-                    if is_ambiguous:
-                        description = (
-                            f"### {Config.EMOJI_FAIL} Ambiguous Traveler Match\n"
-                            f"Multiple members matched this flight for **{destination_link}**.\n"
-                            f"Manual review is required before admitting."
-                        )
-                        embed_color = COLOR_INVESTIGATION
-                    else:
-                        description = (
-                            f"### {Config.EMOJI_FAIL} Unknown Traveler Detected\n"
-                            f"An unregistered visitor is attempting to join **{destination_link}**.\n"
-                            f"Use the buttons below to take action."
-                        )
-                        embed_color = COLOR_ALERT
-
-                    embed = discord.Embed(
-                        description=description,
-                        color=embed_color,
-                        timestamp=embed_timestamp
-                    )
-                    embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
-                    embed.add_field(name="Origin Island",  value=f"```yaml\n{island.title()}```", inline=True)
-                    embed.add_field(name="Destination",    value=f"```yaml\n{destination.title()}```", inline=True)
-                    if is_ambiguous:
-                        candidate_lines = [
-                            f"{m.mention} ({m.display_name})"
-                            for m in ambiguous_members[:15]
-                        ]
-                        if len(ambiguous_members) > 15:
-                            candidate_lines.append(f"...and {len(ambiguous_members) - 15} more")
-                        embed.add_field(name="Possible Matches", value="\n".join(candidate_lines), inline=False)
-                    embed.add_field(name="Detected",       value=f"<t:{alert_ts}:R>", inline=True)
-                    embed.add_field(name="Status",         value="<:Cho_Investigate:1474310726381338666> **PENDING REVIEW**", inline=True)
-                    if visit_id is not None:
-                        embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
-                    embed.set_image(url=Config.FOOTER_LINE)
-                    guild      = self.bot.get_guild(Config.GUILD_ID)
-                    guild_icon = guild.icon.url if guild and guild.icon else None
-                    embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
-
-                    view = TravelerActionView(self.bot, ign, visit_id=visit_id)
-                    sent_msg = await output_channel.send(embed=embed, view=view)
-                    self._pending_alerts[alert_key] = sent_msg.id
-
-                    # Post unknown traveler notification to xlog channel
-                    if xlog_channel:
-                        if is_ambiguous:
-                            xlog_desc = (
-                                f"### {Config.EMOJI_FAIL} Ambiguous Flight Match\n"
-                                f"Multiple members matched this traveler for **{destination_link}**.\n"
-                                f"Flagged for manual review."
-                            )
-                            xlog_color = COLOR_INVESTIGATION
-                        else:
-                            xlog_desc = (
-                                f"### {Config.EMOJI_FAIL} Unverified Flight Detected\n"
-                                f"An unregistered traveler was detected attempting to join **{destination_link}**.\n"
-                                f"No matching member found."
-                            )
-                            xlog_color = COLOR_ALERT
-
-                        xlog_embed = discord.Embed(
-                            description=xlog_desc,
-                            color=xlog_color,
-                            timestamp=embed_timestamp,
-                        )
-                        xlog_embed.add_field(name="IGN",          value=f"```yaml\n{ign}```",           inline=True)
-                        xlog_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
-                        xlog_embed.add_field(name="Destination",   value=destination_link,               inline=True)
-                        if is_ambiguous:
-                            candidate_lines = [
-                                f"{m.mention} ({m.display_name})"
-                                for m in ambiguous_members[:10]
-                            ]
-                            if len(ambiguous_members) > 10:
-                                candidate_lines.append(f"...and {len(ambiguous_members) - 10} more")
-                            xlog_embed.add_field(name="Possible Matches", value="\n".join(candidate_lines), inline=False)
-                        xlog_embed.add_field(name="Detected",      value=f"<t:{alert_ts}:R>",            inline=True)
-                        if visit_id is not None:
-                            xlog_embed.add_field(name="Visit ID",  value=f"`#{visit_id}`",               inline=True)
-                        xlog_embed.set_image(url=Config.FOOTER_LINE)
-                        xlog_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
-                        xlog_view = discord.ui.View()
-                        if message_url:
-                            xlog_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
-                        xlog_view.add_item(discord.ui.Button(label="View Alert", url=sent_msg.jump_url, style=discord.ButtonStyle.link))
-                        await xlog_channel.send(embed=xlog_embed, view=xlog_view)
-            finally:
-                self._creating_alerts.discard(alert_key)
-
-    @commands.hybrid_command(name="recover_flights", aliases=["recoverflights"])
-    @app_commands.describe(hours="How many hours to scan back (default: 48)", mode="Execution mode: 'dry' or 'run'")
-    @commands.has_permissions(administrator=True)
-    async def recover_flights(self, ctx, hours: int = 48, mode: str = "dry"):
-        """
-        Scrapes past logs chronologically (Oldest -> Newest).
-        Usage: /recover_flights [hours_back] [dry/run] or !recover_flights [hours_back] [dry/run]
-        """
-        listen_channel = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
-        if not listen_channel:
-            return await ctx.send(f"[ERR] Listener channel {Config.FLIGHT_LISTEN_CHANNEL_ID} not found.")
-
-        dry_run = mode.lower() != "run"
-        status_header = f"Scanning history for the last **{hours} hours**..."
-        status_mode = "DRY RUN" if dry_run else "LIVE EXECUTION"
-        status_msg = await ctx.send(f"**{status_header}**\nMode: {status_mode}")
-
-        cutoff = discord.utils.utcnow() - datetime.timedelta(hours=hours)
-        found_count = 0
-        processed_count = 0
-
-        # oldest_first=True ensures logs are posted in the order they happened (Past -> Present)
-        async for message in listen_channel.history(after=cutoff, limit=None, oldest_first=True):
-            if message.author == self.bot.user:
-                continue
-
-            match = self.join_pattern.search(message.content)
-            if match:
-                found_count += 1
-
-                if not dry_run:
-                    try:
-                        ign_raw    = match.group(1).strip()
-                        island_raw = match.group(2).strip()
-                        dest_raw   = match.group(3).strip()
-
-                        ign_norm = self.normalize_identity_text(ign_raw)
-                        isl_norm = self.normalize_identity_text(island_raw)
-
-                        found = await asyncio.to_thread(self.find_matching_members, message.guild, ign_norm, isl_norm)
-
-                        # Trigger the log result
-                        await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, timestamp=message.created_at, message_url=message.jump_url, message_content=message.content)
-                        logger.info(f"[RECOVER] Processed item #{processed_count} - {ign_raw}")
-
-                        processed_count += 1
-                        await asyncio.sleep(1.5)
-                    except Exception as e:
-                        logger.error(f"[RECOVER] Failed to process message {message.id}: {e}")
-
-        if dry_run:
-            await status_msg.edit(content=f"**Scan Complete (Dry Run)**\nFound: {found_count} matches.\n\nCommand to execute:\n`!recover_flights {hours} run`")
-        else:
-            await status_msg.edit(content=f"**Recovery Complete**\nProcessed: {processed_count} flights.")
-
-    @commands.hybrid_command(name="flight_status", aliases=["flightstatus", "fstatus"])
-    @commands.has_permissions(manage_messages=True)
-    async def flight_status(self, ctx):
-        """Diagnose connection, channels, and last activity."""
-
-        listen_chan = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
-        log_chan = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
-
-        lines = []
-
-        # Listener Status
-        if listen_chan:
-            perms = listen_chan.permissions_for(ctx.guild.me)
-            if perms.read_messages:
-                lines.append(f"[OK] Listener Channel: {listen_chan.name}")
-            else:
-                lines.append(f"[WARN] Listener Channel: {listen_chan.name} (No Read Access)")
-        else:
-            lines.append(f"[ERR] Listener Channel: Missing (ID: {Config.FLIGHT_LISTEN_CHANNEL_ID})")
-
-        # Log Output Status
-        if log_chan:
-            perms = log_chan.permissions_for(ctx.guild.me)
-            if perms.send_messages:
-                lines.append(f"[OK] Log Channel: {log_chan.name}")
-            else:
-                lines.append(f"[WARN] Log Channel: {log_chan.name} (No Send Access)")
-        else:
-            lines.append(f"[ERR] Log Channel: Missing (ID: {Config.FLIGHT_LOG_CHANNEL_ID})")
-
-        # Database Status
-        if self._db_conn:
-            lines.append("[OK] Database: Connected")
-        else:
-            lines.append("[WARN] Database: Disconnected (Connects on write)")
-
-        # Last Activity
-        if self.last_processed:
-            ts = int(self.last_processed.timestamp())
-            lines.append(f"[INFO] Last Flight: <t:{ts}:R>")
-        else:
-            lines.append("[INFO] Last Flight: None since restart")
-
-        embed = discord.Embed(
-            title="System Status",
-            description="```ini\n" + "\n".join(lines) + "\n```",
-            color=0x2b2d31  # Dark/Neutral
-        )
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="flightdebug", aliases=["fdebug"])
-    @app_commands.describe(test_string="The message string to test against the regex")
-    @commands.has_permissions(manage_messages=True)
-    async def flight_debug(self, ctx, *, test_string: str = None):
-        """
-        Test the regex and member-matching against a raw log message string.
-        Usage: !fdebug [Flight Log Message]
-        """
-        if not test_string:
-            return await ctx.send("**Usage:** `!fdebug [Message Content]`")
-
-        match = self.join_pattern.search(test_string)
-
-        if not match:
-            embed = discord.Embed(title="Regex Match Failed", color=0xff0000)
-            embed.description = (
-                "Input did not match pattern.\n"
-                "**Check:** Format changes, hidden characters, or case sensitivity."
-            )
-            embed.add_field(name="Current Pattern", value=f"```regex\n{self.join_pattern.pattern}\n```", inline=False)
-            return await ctx.send(embed=embed)
-
-        ign = match.group(1).strip()
-        island = match.group(2).strip()
-        dest = match.group(3).strip()
-        ign_norm = self.normalize_identity_text(ign)
-        isl_norm = self.normalize_identity_text(island)
-
-        # Run member-matching in a thread (same as the live pipeline)
-        found = await asyncio.to_thread(
-            self.find_matching_members, ctx.guild, ign_norm, isl_norm
-        )
-        candidates = await asyncio.to_thread(
-            self.find_all_candidates, ctx.guild, ign_norm, isl_norm
-        )
-
-        destination_link = self.get_island_channel_link(dest)
-
-        if found:
-            member_line = "\n".join(f"{m.mention} (`{m.display_name}`)" for m in found)
-            embed = discord.Embed(
-                title="<:Cho_Check:1456715827213504593> Match Found",
-                description=f"This log entry **would be verified** as a known traveler.",
-                color=COLOR_SUCCESS,
-            )
-            embed.add_field(name="IGN",         value=f"`{ign}`",            inline=True)
-            embed.add_field(name="Island",      value=f"`{island}`",         inline=True)
-            embed.add_field(name="Destination", value=destination_link,      inline=True)
-            embed.add_field(name="Matched Member(s)", value=member_line,     inline=False)
-        else:
-            embed = discord.Embed(
-                title=f"{Config.EMOJI_FAIL} No Match",
-                description=f"This log entry **would trigger an unknown traveler alert**.",
-                color=COLOR_ALERT,
-            )
-            embed.add_field(name="IGN",         value=f"`{ign}`",            inline=True)
-            embed.add_field(name="Island",      value=f"`{island}`",         inline=True)
-            embed.add_field(name="Destination", value=destination_link,      inline=True)
-
-            # Show partial candidates (IGN-only or island-only matches) to help diagnose
-            partial = [c for c in candidates if c["ign_match"] or c["island_match"]][:MAX_DEBUG_CANDIDATES]
-            if partial:
-                cand_lines = []
-                for c in partial:
-                    flags = []
-                    if c["ign_match"]:    flags.append("IGN ✓")
-                    if c["island_match"]: flags.append("Island ✓")
-                    cand_lines.append(f"{c['member'].mention} (`{c['member'].display_name}`) — {', '.join(flags)}")
-                embed.add_field(name="Closest Candidates", value="\n".join(cand_lines), inline=False)
-            else:
-                embed.add_field(name="Closest Candidates", value="None found.", inline=False)
-
-        embed.set_footer(text="Debug only — no database writes or channel posts.")
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="flighttest", aliases=["ftest"])
-    @commands.has_permissions(manage_messages=True)
-    async def flight_test(self, ctx):
-        """
-        End-to-end test of the flight logger pipeline.
-        Sends a fake flight message, processes it through the full pipeline, then cleans up.
-        Usage: !flighttest
-        """
-        await ctx.defer()
-        logger.info(f"[FLIGHT-TEST] Debug flight test triggered by {ctx.author}")
-        
-        now = datetime.datetime.now()
-        timestamp = now.strftime("%Y-%m-%d %I:%M:%S %p").lower()
-
-        # Pick a random sub-island as the destination; fall back to a placeholder if none loaded yet
-        if self.island_map:
-            random_dest = random.choice(tuple(self.island_map.keys())).title()
-        else:
-            random_dest = "Aruga"
-
-        test_message_content = f"[{timestamp}] 🛬 ChoBot from Treasure Island is joining {random_dest}."
-        
-        # Get channels
-        listen_channel = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
-        log_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
-        
-        if not listen_channel:
-            embed = discord.Embed(
-                title="Flight Test Failed",
-                description="Could not find the flight listen channel.",
-                color=0xFF0000
-            )
-            return await ctx.send(embed=embed)
-        
-        test_msg = None
-        success = True
-        error_details = None
-        
-        try:
-            # Step 1: Send the test message to the listen channel
-            test_msg = await listen_channel.send(test_message_content)
-            
-            # Step 2: Parse the message and call log_result directly
-            # (since the bot ignores its own messages in on_message)
-            match = self.join_pattern.search(test_message_content)
-            if match:
-                ign_raw = match.group(1).strip()
-                island_raw = match.group(2).strip()
-                dest_raw = match.group(3).strip()
-                
-                # Clean and find matching members
-                ign_norm = self.normalize_identity_text(ign_raw)
-                isl_norm = self.normalize_identity_text(island_raw)
-                found = await asyncio.to_thread(
-                    self.find_matching_members, 
-                    ctx.guild, 
-                    ign_norm,
-                    isl_norm
-                )
-                
-                # Log the result (this simulates what on_message would do)
-                await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, message_url=test_msg.jump_url if test_msg else None, message_content=test_message_content)
-                
-            # Step 3: Wait 3 seconds to allow moderators to see the test message
-            # and verify the alert appears in the log channel
-            await asyncio.sleep(3)
-                
-        except discord.Forbidden:
-            success = False
-            error_details = "Permission denied. Bot may lack permissions to send/delete messages in the listen channel."
-        except Exception as e:
-            success = False
-            error_details = f"Unexpected error: {str(e)}"
-            logger.error(f"[FLIGHT-TEST] Error during flight test: {e}")
+            data_manager.update_cache()
         finally:
-            # Step 4: Clean up the test message from the listen channel
-            if test_msg:
-                try:
-                    await test_msg.delete()
-                except discord.NotFound:
-                    pass  # Message already deleted
-                except discord.Forbidden:
-                    logger.warning(f"[FLIGHT-TEST] Could not delete test message - permission denied")
-                except Exception as e:
-                    logger.warning(f"[FLIGHT-TEST] Could not delete test message: {e}")
-        
-        # Step 5: Send summary embed to the invoker
-        if success:
-            embed = discord.Embed(
-                title="Flight Test Complete",
-                description="The test flight message was sent, processed, and cleaned up successfully.",
-                color=0x2ECC71  # Green
-            )
-        else:
-            embed = discord.Embed(
-                title="Flight Test Failed",
-                description=error_details or "An error occurred during the test.",
-                color=0xFF0000  # Red
-            )
-        
-        embed.add_field(
-            name="<:Cho_Notes:1474311464688029817> Test Message",
-            value=f"```{test_message_content}```",
-            inline=False
-        )
-        embed.add_field(
-            name="Listen Channel",
-            value=listen_channel.mention if listen_channel else "Not found",
-            inline=True
-        )
-        embed.add_field(
-            name="Log Channel",
-            value=log_channel.mention if log_channel else "Not found",
-            inline=True
-        )
-        embed.add_field(
-            name="ℹ️ Note",
-            value=f"Check {log_channel.mention if log_channel else 'the log channel'} to verify the bot logged the test flight (should show 'UNKNOWN TRAVELER' alert for DebugUser).",
-            inline=False
-        )
-        embed.set_footer(text="🛠️ DEBUG ONLY — This message will be automatically deleted in 10 minutes.")
-        
-        await ctx.send(embed=embed, delete_after=600)
+            _refresh_lock.release()
 
-    @commands.hybrid_command(name="unwarn", aliases=["removewarn"])
-    @app_commands.describe(user="The user to unwarn", reason="Reason for removing the warning (optional)")
-    @commands.has_permissions(manage_messages=True)
-    async def unwarn(self, ctx, user: discord.Member, *, reason: str = None):
-        """Remove all warnings from a user."""
-        is_slash = ctx.interaction is not None
-        await self._unwarn_internal(ctx.interaction if is_slash else ctx, user, reason, is_slash=is_slash)
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"status": "refresh started"}), 202
 
-    async def _unwarn_internal(self, ctx_or_interaction, user: discord.Member, reason: str = None, is_slash: bool = True):
-        """Internal method for unwarn logic."""
-        # Handle both slash and prefix commands
-        if is_slash:
-            await ctx_or_interaction.response.defer(ephemeral=True)
-            guild = ctx_or_interaction.guild
-            mod = ctx_or_interaction.user
-        else:
-            guild = ctx_or_interaction.guild
-            mod = ctx_or_interaction.author
 
-        reason = reason or "No reason provided"
-
-        # Remove all warnings
-        removed_count = await self.remove_all_warnings(user.id, guild.id)
-        
-        if removed_count == 0:
-            msg = f"**{user.display_name}** has no warnings to remove."
-            if is_slash:
-                await ctx_or_interaction.followup.send(msg, ephemeral=True)
-            else:
-                await ctx_or_interaction.send(msg)
-            return
-
-        # Generate case ID
-        now = discord.utils.utcnow()
-        case_id = f"FL-{now.strftime('%y%m')}-{hex(int(now.timestamp()))[2:][-4:].upper()}"
-
-        # DM the user
+def run_flask_app(host='0.0.0.0', port=8100):
+    """Run Flask app with retry logic for port binding after OTA restart."""
+    logger.info(f"[FLASK] Starting API server on {host}:{port}...")
+    max_retries = 5
+    retry_delay = 3  # seconds between attempts
+    for attempt in range(1, max_retries + 1):
         try:
-            warning_text = "warning has" if removed_count == 1 else "warnings have"
-            dm_embed = discord.Embed(
-                title="<:Cho_Check:1456715827213504593> Chobot Notification",
-                description=f"{removed_count} {warning_text} been removed from your account in **{guild.name}**.",
-                color=COLOR_SUCCESS,
-                timestamp=discord.utils.utcnow()
-            )
-            dm_embed.add_field(name="Reason for Removal", value=reason, inline=False)
-            dm_embed.set_footer(text=f"Case ID: {case_id}")
-            if guild.icon:
-                dm_embed.set_thumbnail(url=guild.icon.url)
-            
-            await user.send(embed=dm_embed)
-        except discord.HTTPException:
-            pass  # DM closed
-
-        # Log to sub-mod channel (green embed similar to Sapphire style)
-        log_embed = self._create_unwarn_log(user, mod, reason, case_id, removed_count)
-        sub_mod_channel = guild.get_channel(Config.SUB_MOD_CHANNEL_ID)
-        
-        if sub_mod_channel:
-            await sub_mod_channel.send(content=user.mention, embed=log_embed)
-            msg = f"Case `{case_id}`: Removed {removed_count} warning(s), logged in {sub_mod_channel.mention}"
-        else:
-            msg = f"Removed {removed_count} warning(s) (Case `{case_id}`), but log channel is missing."
-
-        if is_slash:
-            await ctx_or_interaction.followup.send(msg, ephemeral=True)
-        else:
-            await ctx_or_interaction.send(msg)
-
-    def _create_unwarn_log(self, member: discord.Member, mod: discord.Member, reason: str, case_id: str, removed_count: int):
-        """Creates a green log embed for unwarn action.
-        
-        Args:
-            member: The member who was unwarned
-            mod: The moderator who performed the unwarn
-            reason: Reason for the unwarn
-            case_id: The case ID for this action
-            removed_count: Number of warnings removed
-        """
-        now = discord.utils.utcnow()
-        mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
-        
-        desc_lines = [
-            f"> **{member.mention} ({member.display_name})** has been unwarned!",
-            f"> **Reason:** {reason}",
-            f"> **Warnings Removed:** {removed_count}",
-            f"> **Remaining Count:** 0",
-            f"> **Responsible:** {mod.mention} ({mod_role_name})",
-        ]
-        
-        embed = discord.Embed(
-            title=f"**Unwarned Case ID: {case_id}**",
-            description="\n".join(desc_lines),
-            color=COLOR_SUCCESS,
-            timestamp=now
-        )
-        embed.set_thumbnail(url="https://i.ibb.co/HXyRH3R/2668-Siren.gif")
-        embed.set_footer(text=f"Mod: {mod.display_name}", icon_url=mod.display_avatar.url)
-        return embed
-
-    @commands.hybrid_command(name="warnings", aliases=["warnlist"])
-    @app_commands.describe(user="The user to check", days="Number of days to look back (default: 30)")
-    @commands.has_permissions(manage_messages=True)
-    async def warnings(self, ctx, user: discord.Member, days: int = 30):
-        """List recent warnings for a user."""
-        is_slash = ctx.interaction is not None
-        await self._warnings_internal(ctx.interaction if is_slash else ctx, user, days, is_slash=is_slash)
-
-    async def _warnings_internal(self, ctx_or_interaction, user: discord.Member, days: int = 30, is_slash: bool = True):
-        """Internal method for listing warnings."""
-        # Handle both slash and prefix commands
-        if is_slash:
-            await ctx_or_interaction.response.defer(ephemeral=True)
-            guild = ctx_or_interaction.guild
-        else:
-            guild = ctx_or_interaction.guild
-
-        # Get warnings
-        warnings = await self.get_warnings(user.id, guild.id, days)
-        
-        if not warnings:
-            msg = f"**{user.display_name}** has no warnings in the last {days} days."
-            if is_slash:
-                await ctx_or_interaction.followup.send(msg, ephemeral=True)
-            else:
-                await ctx_or_interaction.send(msg)
+            # ThreadedWSGIServer already sets SO_REUSEADDR before binding.
+            # Using it directly (instead of app.run) gives explicit control
+            # and allows retrying when the port is still in TIME_WAIT after
+            # an os.execv()-based OTA restart.
+            server = ThreadedWSGIServer(host, port, app)
+            logger.info(f"[FLASK] API server listening on {host}:{port}")
+            server.serve_forever()
             return
-
-        # Build embed
-        embed = discord.Embed(
-            title=f"Warnings for {user.display_name}",
-            description=f"Showing warnings from the last {days} days",
-            color=COLOR_WARN,
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_thumbnail(url=user.display_avatar.url)
-
-        for i, warn in enumerate(warnings, 1):
-            mod_id = warn['mod_id']
-            mod = guild.get_member(mod_id)
-            mod_text = mod.mention if mod else f"ID: {mod_id}"
-            
-            timestamp = warn['timestamp']
-            reason = warn['reason']
-
-            visit_line = ""
-            if warn.get('visit_id') and warn.get('visit_ign'):
-                visit_ts = warn['visit_ts']
-                origin = (warn.get('visit_origin') or '?').title()
-                dest = (warn.get('visit_destination') or '?').title()
-                visit_line = f"\n🏝️ **Linked Visit:** {warn['visit_ign']} · {origin} → {dest} (<t:{visit_ts}:R>)"
-
-            embed.add_field(
-                name=f"#{i} - <t:{timestamp}:R>",
-                value=f"**Moderator:** {mod_text}\n**Reason:** {reason}{visit_line}",
-                inline=False
-            )
-
-        if is_slash:
-            await ctx_or_interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await ctx_or_interaction.send(embed=embed)
-
-    @commands.hybrid_command(name="flighthistory", aliases=["fhistory"])
-    @app_commands.describe(user="The user to check", days="Number of days to look back (default: 30)")
-    @commands.has_permissions(manage_messages=True)
-    async def flight_history(self, ctx, user: discord.Member, days: int = 30):
-        """View a user's combined island visit and warning history."""
-        is_slash = ctx.interaction is not None
-        if is_slash:
-            await ctx.interaction.response.defer(ephemeral=True)
-            guild = ctx.interaction.guild
-        else:
-            guild = ctx.guild
-
-        visits = await self.get_island_visits(user.id, guild.id, days)
-        warnings = await self.get_warnings(user.id, guild.id, days)
-
-        embed = discord.Embed(
-            title=f"Flight History — {user.display_name}",
-            description=f"Showing the last **{days}** days",
-            color=COLOR_INVESTIGATION,
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_thumbnail(url=user.display_avatar.url)
-
-        # --- Island Visits ---
-        if visits:
-            lines = []
-            for v in visits[:MAX_HISTORY_ENTRIES]:
-                status_icon = "✅" if v['authorized'] else "🔴"
-                dest = (v.get('destination') or '?').title()
-                lines.append(f"{status_icon} **{dest}** (<t:{v['timestamp']}:R>)")
-            embed.add_field(
-                name=f"✈️ Island Visits ({len(visits)} in {days}d)",
-                value="\n".join(lines) + (f"\n…and {len(visits) - MAX_HISTORY_ENTRIES} more" if len(visits) > MAX_HISTORY_ENTRIES else ""),
-                inline=False
-            )
-        else:
-            embed.add_field(name="✈️ Island Visits", value=f"No visits recorded in the last {days} days.", inline=False)
-
-        # --- Warnings ---
-        if warnings:
-            lines = []
-            for w in warnings[:MAX_HISTORY_ENTRIES]:
-                mod = guild.get_member(w['mod_id'])
-                mod_text = mod.display_name if mod else f"ID: {w['mod_id']}"
-                visit_tag = f" · visit #{w['visit_id']}" if w.get('visit_id') else ""
-                lines.append(f"⚠️ <t:{w['timestamp']}:R> by **{mod_text}**{visit_tag}")
-            embed.add_field(
-                name=f"⚠️ Warnings ({len(warnings)} in {days}d)",
-                value="\n".join(lines) + (f"\n…and {len(warnings) - MAX_HISTORY_ENTRIES} more" if len(warnings) > MAX_HISTORY_ENTRIES else ""),
-                inline=False
-            )
-        else:
-            embed.add_field(name="⚠️ Warnings", value=f"No warnings recorded in the last {days} days.", inline=False)
-
-        if is_slash:
-            await ctx.interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await ctx.send(embed=embed)
-
-async def setup(bot):
-    await bot.add_cog(FlightLoggerCog(bot))
-    await bot.add_cog(FreeFlightCog(bot))
-
-
-# ===========================================================================
-# FREE ISLAND FLIGHT COG
-# A lightweight listener for the free-island flight channel.
-# Records visits to the database with island_type='free'.
-# Does NOT post any alerts or embeds to Discord — website tracking only.
-# ===========================================================================
-
-class FreeFlightCog(commands.Cog, name="FreeFlightLogger"):
-    """Silently records free-island flight arrivals into island_visits."""
-
-    def __init__(self, bot):
-        self.bot = bot
-
-    async def cog_load(self):
-        await init_db()
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        listen_id = Config.FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID
-        if not listen_id:
-            return
-        if message.author == self.bot.user or message.channel.id != listen_id:
-            return
-        match = JOIN_PATTERN.search(message.content)
-        if not match:
-            return
-
-        ign_raw    = match.group(1).strip()
-        island_raw = match.group(2).strip()
-        dest_raw   = match.group(3).strip()
-        visit_ts   = int(message.created_at.timestamp())
-        guild      = self.bot.get_guild(Config.GUILD_ID)
-        guild_id   = guild.id if guild else None
-
-        # Delegate to FlightLoggerCog.record_island_visit to avoid duplicating
-        # DB logic; fall back to a direct insert if the cog is not loaded.
-        flight_cog = self.bot.cogs.get("FlightLogger")
-        if flight_cog is not None:
-            await flight_cog.record_island_visit(
-                ign_raw, island_raw, dest_raw, [], guild_id, visit_ts,
-                island_type='free',
-            )
-        else:
-            async with aiosqlite.connect(DB_NAME) as db:
-                await db.execute(
-                    "INSERT INTO island_visits "
-                    "(ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) "
-                    "VALUES (?, ?, ?, NULL, ?, 1, ?, 'free')",
-                    (ign_raw, island_raw, dest_raw, guild_id, visit_ts),
+        except OSError as e:
+            if attempt < max_retries:
+                logger.warning(
+                    f"[FLASK] Port {port} not available (attempt {attempt}/{max_retries}): {e}. "
+                    f"Retrying in {retry_delay}s..."
                 )
-                await db.commit()
-        logger.info(f"[FREE-FLIGHT] Recorded visit: {ign_raw} → {dest_raw}")
+                time.sleep(retry_delay)
+            else:
+                logger.error(
+                    f"[FLASK] Failed to bind to port {port} after {max_retries} attempts: {e}"
+                )
+                raise
