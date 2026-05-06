@@ -311,6 +311,8 @@ class PunishmentBuilderView(discord.ui.View):
     def _update_components(self):
         """Clear and re-add components based on current state."""
         self.clear_items()
+        self._add_link_buttons()
+
 
         self.add_item(TargetSelect(self, default_member=self.selected_member))
 
@@ -556,11 +558,14 @@ class NoteBuilderView(discord.ui.View):
 
 
 class TravelerActionView(discord.ui.View):
-    def __init__(self, bot=None, ign=None, visit_id=None):
+    def __init__(self, bot=None, ign=None, visit_id=None, message_url=None, xlog_url=None):
         super().__init__(timeout=None)
         self.bot = bot
         self.ign = ign
         self.visit_id = visit_id
+        self.message_url = message_url   # "View Flight Standing" link
+        self.xlog_url = xlog_url         # "View Flight Log" link
+
 
     def _get_ign_from_embed(self, embed: discord.Embed):
         """Extracts IGN from the '👤 Traveler (IGN)' field in the alert embed."""
@@ -659,6 +664,8 @@ class TravelerActionView(discord.ui.View):
                 inline=False
             )
             self.clear_items()
+            self._add_link_buttons()
+
             await message_to_edit.edit(embed=embed, view=self)
 
             # Remove from pending alerts so future joins create a fresh alert
@@ -674,6 +681,23 @@ class TravelerActionView(discord.ui.View):
     def disable_all_items(self):
         for child in self.children:
             child.disabled = True
+
+    def _add_link_buttons(self):
+        """Re-attach persistent link buttons after any clear_items() call."""
+        if self.message_url:
+            self.add_item(discord.ui.Button(
+                label="View Flight Standing",
+                url=self.message_url,
+                style=discord.ButtonStyle.link,
+                row=3,
+            ))
+        if self.xlog_url:
+            self.add_item(discord.ui.Button(
+                label="View Flight Log",
+                url=self.xlog_url,
+                style=discord.ButtonStyle.link,
+                row=3,
+            ))
 
     @discord.ui.button(label="Investigate", style=discord.ButtonStyle.secondary, emoji="<:Cho_Investigate:1474310726381338666>", custom_id="fl_investigate", row=0)
     async def investigate_action(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -933,7 +957,7 @@ class VerifiedFlightFlagView(discord.ui.View):
 
             new_view = discord.ui.View()
             if msg_url:
-                new_view.add_item(discord.ui.Button(label="View Flight", url=msg_url, style=discord.ButtonStyle.link))
+                new_view.add_item(discord.ui.Button(label="View Flight Standing", url=msg_url, style=discord.ButtonStyle.link))
             if alert_msg:
                 new_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
 
@@ -1582,7 +1606,7 @@ class FlightLoggerCog(commands.Cog):
                 # Create view with flag button and optional view flight link
                 flag_view = VerifiedFlightFlagView(bot=self.bot)
                 if message_url:
-                    flag_view.add_item(discord.ui.Button(label="View Flight", url=message_url, style=discord.ButtonStyle.link))
+                    flag_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
                 if dodo_req is not None and dodo_req.get('reply_msg'):
                     flag_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
                 
@@ -1766,7 +1790,7 @@ class FlightLoggerCog(commands.Cog):
                         xlog_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
                         xlog_view = discord.ui.View()
                         if message_url:
-                            xlog_view.add_item(discord.ui.Button(label="View Flight", url=message_url, style=discord.ButtonStyle.link))
+                            xlog_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
                         xlog_view.add_item(discord.ui.Button(label="View Alert", url=sent_msg.jump_url, style=discord.ButtonStyle.link))
                         await xlog_channel.send(embed=xlog_embed, view=xlog_view)
             finally:

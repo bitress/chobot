@@ -6,8 +6,7 @@ New Horizons (ACNH) content creator and Twitch streamer based in the Philippines
 He hosts 24/7 treasure islands where community members collect items and meet
 villagers. ACNH is a life-simulation game by Nintendo for the Nintendo Switch
 where players manage an island, collect furniture and clothing, invite animal
-villagers, and visit other players' islands. The community (the "ChoPaeng
-family") includes Filipino and international ACNH fans.
+villagers, and visit other players' islands. The community includes Filipino and international ACNH fans.
 
 ## Official Links
 | Platform | URL |
@@ -39,7 +38,6 @@ prefix commands in Discord.
 | `!status` | Bot health, cache size, last update | Anywhere |
 | `!ping` | Bot response time | Anywhere |
 | `!help` | Full command list | Anywhere |
-| `!islandstatus` | Which sub-island bots are online | Anywhere |
 | `!senddodo` or `!sd` | Get the Dodo code (DM) | Island channel |
 | `!visitors` | Current visitors on a sub island | Island channel |
 | `!villagers` | Villagers currently on the island | Island channel |
@@ -52,7 +50,6 @@ prefix commands in Discord.
 | `!mvi <name1> <name2> ...` | Inject multiple villagers at once | Island channel |
 | `!gt` | Current in-game time on the island | Island channel |
 | `ac!lookup villager <name>` | Check villager personality | #villager-check |
-| `!refresh` | Refresh item cache (Admin only) | Anywhere |
 
 ## Getting a Dodo Code (!senddodo)
 A Dodo code is a 5-character code used in ACNH to visit a Chopaeng island via Dodo Airlines.
@@ -62,10 +59,10 @@ with anyone, including friends or family. If an island is offline, `!senddodo` w
 instead of sending a code.
 
 ## Islands Overview
-There are 47 islands total: 20 sub (subscriber/VIP) islands and 27 free islands.
+There are 47 islands total: 20 sub islands and 27 free islands.
 All island names are Filipino/Tagalog words with meaningful translations.
 
-### Sub Islands (20 — requires subscription or VIP role)
+### Sub Islands (20 — requires subscription)
 | Island | Meaning |
 |--------|---------|
 | Adhika | more/extra |
@@ -123,8 +120,8 @@ All island names are Filipino/Tagalog words with meaningful translations.
 Stock rotates regularly across all islands. Use `!find <item>` to check current
 availability.
 
-## Subscriber / VIP Perks
-Subscribe via Patreon (https://www.patreon.com/cw/chopaeng/membership) to unlock:
+## Subscriber Perks
+Subscribe via [Patreon](https://www.patreon.com/cw/chopaeng/membership) to unlock:
 - Unlimited access to the 20 sub islands whenever they are open.
 - Priority queue when islands are busy.
 - Item/villager requests — ask for specific stock on a sub island.
@@ -134,6 +131,14 @@ Subscribe via Patreon (https://www.patreon.com/cw/chopaeng/membership) to unlock
 After subscribing, link your membership in Discord (see <#1465428124937359481> to get started,
 then <#1081147108612124742> or <#762351782382141440>)
 to receive the sub role and unlock access.
+
+## Nitro Booster Perks
+Nitro Boosters on the Chopaeng Discord server receive exclusive access to two premium sub-islands:
+
+- **<#1050578366773862480> (Hiraya Island)** — A 1.0 island featuring classic ACNH items from the base game.
+- **<#1103147265163546644> (Alapaap Island)** — A 2.0 island showcasing new items from the Happy Home Paradise DLC.
+
+These islands provide boosters with curated item selections and exclusive trading opportunities.
 
 ## Community Rules (All Members)
 The Discord is a family-friendly community. All members must follow these rules:
@@ -145,11 +150,11 @@ The Discord is a family-friendly community. All members must follow these rules:
 5. For questions, DM Chopaeng or any Moderator.
 
 ### Island-Specific Rules (All Visitors)
-These apply on every treasure island (sub and free), in addition to the above:
+These apply on every treasure island, in addition to the above:
 1. **Dodo Code is confidential.** Do not share it with anyone — not other
    accounts, friends, or family. One character/island per membership.
 2. **Set your server nickname** to `ACNH Character Name | Your ACNH Island Name`
-   (e.g. `Kuya | Hiraya`) in the <#1081147108612124742> channel.
+   (e.g. `ChoPaeng | ChoPaeng Camp`) in the <#1081147108612124742> channel.
 3. **Leave via the airport.** Do not press "-" to close the game; this may
    cause lost items. No AFK on islands.
 4. **Check internet before flying.** NAT Type A or B required. NAT Type C or D
@@ -167,22 +172,23 @@ These apply on every treasure island (sub and free), in addition to the above:
 
 Breaking rules may result in a warning, mute, kick, or ban.
 
-### Chorder Bot (Order Bot) Rules
-Use Chorder Bot when an item is not on any island and you need to request it.
-Check the #ordering channel for instructions. Subscribers get priority.
-1. All Island-Specific Rules above apply.
-2. The #chorder-bot channel is for orders only — no chatting or lookups.
-3. The #chorder-item-lookup channel is for item/DIY code lookups only.
-4. Use #chorder-bot-help for questions. Read #chorder-bot-how before ordering.
-5. Order only what you need.
+### Gaining Access to Island Channels
+If you cannot type on island channels, simply read our island-specific rules in <#783677194576330792>. 
+Once you have read and acknowledged the rules, you will automatically gain access to all island channels.
+
+**Remember: Always follow our rules to maintain access!**
 
 ## How to Get Items (Step by Step)
-1. Type `!find <item>` in Discord or Twitch to search.
+
+### For Subscribers
+1. Type `!find <item>` in Discord to search.
 2. The bot shows which islands currently have it.
 3. Go to that island's Discord channel. Type `!senddodo` or `!sd` to get the
    Dodo code sent to your DMs.
 4. In ACNH, go to Dodo Airlines and fly using the code.
 5. Collect your items and leave via the airport.
+
+Alternatively, visit a sub island's Discord channel and use the **[Dropping Items with !drop](#dropping-items-with-drop)** section below to request specific items from ChoBot.
 
 ## Dropping Items with !drop
 You must be on the island before using drop commands.
@@ -278,7 +284,6 @@ prizes, and special island visits. Announced on Discord and Twitch.
 Check https://chopaeng.com for the latest info.
 
 ## Tips
-- "Chopaeng" is a playful Filipino term of endearment from "paeng."
 - If an island is offline, `!senddodo` tells you instead of sending a code.
 - Free islands are ideal for newcomers; sub islands have rarer stock.
 - Use `!villager` for animal residents; use `!find` for items.
@@ -300,3 +305,37 @@ Check https://chopaeng.com for the latest info.
 - **Internet dropped during a transaction?** Reconnect and fly back in using a
   fresh Dodo code (`!sd`). Items you already picked up before the drop may need
   to be re-collected.
+
+## How to Open a Support Ticket
+
+If you need assistance with anything in the community, you can create a support ticket
+in the <#943118146259284008> channel. Before opening a ticket, please note:
+
+### Before Opening a Ticket
+1. **Check the FAQ channel first** — <#1086127868863578132> may already have your answer.
+2. **Respond quickly** — Please respond ASAP once someone replies to your ticket.
+3. **Don't ask about islands** — Island information can be found in the FAQs channel.
+4. **Don't ask about drop bot usage** — Questions about @1218852297988112395 drop commands belong in <#782872507551055892>.
+5. **Check if you violated rules** — Do not open a ticket if you violated community or island rules 
+   (<#755522711492493342> / <#783677194576330792>).
+6. **English only** — This is an English server; please submit tickets in English.
+
+### How to Submit a Ticket
+1. Go to the <#943118146259284008> channel.
+2. Click **Sub Ticket** if your issue is related to your subscription.
+3. Click **General Ticket** for any other assistance.
+
+## How to File a Report
+
+If you believe someone has violated the community rules, you can file a report using ChoReport 
+in the <#1451664423637876848> channel. Reports are reviewed and investigated by the moderation team.
+
+### How to File a Report
+1. Type `/report` in the ChoReport channel.
+2. Select the option with the ChoBot icon.
+3. Enter the following information:
+   - **User** — The Discord username of the person you're reporting.
+   - **Reason** — The rule violation (e.g., toxicity, inappropriate content, rule-breaking behavior).
+   - **Comment** — A brief description of what happened.
+
+The moderation team will review your report and take appropriate action.

@@ -3465,6 +3465,41 @@ class DiscordCommandBot(commands.Bot):
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
             return
 
+        # Auto-reply on keywords (e.g., "question", "does anyone know", "anybody know")
+        auto_reply_keywords = [
+            "question",
+            "do you know",
+            "does anyone know",
+            "does anybody know",
+            "anyone know",
+            "anybody know",
+            "does someone know",
+            "someone know",
+            "is anyone",
+            "is anybody",
+        ]
+        content_lower = message.content.lower()
+        if any(keyword in content_lower for keyword in auto_reply_keywords):
+            question = message.content.strip()
+            if question and not message.author.bot:
+                conv_key = _discord_conv_key(message)
+                channel_name = getattr(message.channel, "name", None)
+                async with message.channel.typing():
+                    answer = await get_ai_answer(
+                        question,
+                        gemini_api_key=Config.GEMINI_API_KEY,
+                        openai_api_key=Config.OPENAI_API_KEY,
+                        openai_base_url=Config.OPENAI_BASE_URL,
+                        provider=Config.AI_PROVIDER,
+                        gemini_model=Config.GEMINI_MODEL,
+                        openai_model=Config.OPENAI_MODEL,
+                        conversation_key=conv_key,
+                        channel_context=channel_name,
+                    )
+                await message.reply(f"🤖: {answer}")
+                logger.info(f"[DISCORD] Keyword auto-reply by {message.author.name}: {question[:80]}")
+                return
+
         # Handle a plain reply to one of the bot's AI responses (no prefix/mention needed).
         # This lets users continue the conversation naturally by just replying.
         if (
