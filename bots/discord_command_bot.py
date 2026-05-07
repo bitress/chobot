@@ -508,6 +508,71 @@ class SuggestionView(discord.ui.View):
         return True
 
 
+class HelpfulnessView(discord.ui.View):
+    """View for AI response feedback buttons (like/dislike)"""
+
+    def __init__(self, user_id: int, question: str, answer: str):
+        super().__init__(timeout=None)  # Buttons persist indefinitely
+        self.user_id = user_id
+        self.question = question
+        self.answer = answer
+        self.feedback_given = False
+
+    @discord.ui.button(label="👍 Helpful", style=discord.ButtonStyle.green, custom_id="feedback_helpful")
+    async def helpful_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle like button"""
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("You can only rate responses to your own questions.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        self.feedback_given = True
+        
+        # Log feedback
+        logger.info(
+            f"[DISCORD] AI Response Feedback: HELPFUL | "
+            f"User: {interaction.user.name} | "
+            f"Question: {self.question[:60]}... | "
+            f"Answer: {self.answer[:60]}..."
+        )
+        
+        # Update button state
+        button.label = "👍 Thanks!"
+        button.disabled = True
+        # Disable the other button
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id == "feedback_not_helpful":
+                item.disabled = True
+        await interaction.message.edit(view=self)
+
+    @discord.ui.button(label="👎 Not Helpful", style=discord.ButtonStyle.red, custom_id="feedback_not_helpful")
+    async def dislike_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle dislike button"""
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("You can only rate responses to your own questions.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        self.feedback_given = True
+        
+        # Log feedback
+        logger.info(
+            f"[DISCORD] AI Response Feedback: NOT HELPFUL | "
+            f"User: {interaction.user.name} | "
+            f"Question: {self.question[:60]}... | "
+            f"Answer: {self.answer[:60]}..."
+        )
+        
+        # Update button state
+        button.label = "👎 Noted"
+        button.disabled = True
+        # Disable the other button
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id == "feedback_helpful":
+                item.disabled = True
+        await interaction.message.edit(view=self)
+
+
 class DiscordCommandCog(commands.Cog):
     """Cog for Discord treasure hunt commands"""
 
@@ -521,6 +586,7 @@ class DiscordCommandCog(commands.Cog):
         self.island_status_since: dict[str, tuple[bool, datetime]] = {}
         self.free_dodo_board_messages: list[discord.Message] = []
         self.free_dodo_board_startup_cleanup_done = False
+        self.autoreply_enabled = True  # Toggle for keyword auto-replies
 
         # island_clean -> True (down) / False (up); None = not yet initialized
         self.island_down_states: dict[str, bool | None] = {}
@@ -3205,6 +3271,34 @@ class DiscordCommandCog(commands.Cog):
         if isinstance(error, commands.MissingPermissions):
             await ctx.reply("You do not have permission to use this command.")
 
+    @commands.hybrid_group(name="autoreply", invoke_without_command=False)
+    @commands.has_permissions(administrator=True)
+    async def autoreply(self, ctx):
+        """Manage autoreply settings (Admin only)"""
+        pass
+
+    @autoreply.command(name="true")
+    @commands.has_permissions(administrator=True)
+    async def autoreply_enable(self, ctx):
+        """Enable keyword auto-replies"""
+        self.autoreply_enabled = True
+        await ctx.reply("Autoreply enabled. The bot will now respond to keyword triggers.")
+        logger.info(f"[DISCORD] Autoreply enabled by {ctx.author.name}")
+
+    @autoreply.command(name="false")
+    @commands.has_permissions(administrator=True)
+    async def autoreply_disable(self, ctx):
+        """Disable keyword auto-replies"""
+        self.autoreply_enabled = False
+        await ctx.reply("Autoreply disabled. The bot will no longer respond to keyword triggers.")
+        logger.info(f"[DISCORD] Autoreply disabled by {ctx.author.name}")
+
+    @autoreply.error
+    async def autoreply_error(self, ctx, error):
+        """Handle permission errors for autoreply command"""
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.reply("You do not have permission to use this command.")
+
 
 class DiscordCommandBot(commands.Bot):
     """Main Discord bot with command functionality"""
@@ -3439,7 +3533,8 @@ class DiscordCommandBot(commands.Bot):
                         conversation_key=conv_key,
                         channel_context=channel_name,
                     )
-                await message.reply(f"🤖: {answer}")
+                view = HelpfulnessView(message.author.id, question, answer)
+                await message.reply(f"{answer}", view=view)
                 logger.info(f"[DISCORD] DM auto-reply by {message.author.name}: {question[:80]}")
             return
 
@@ -3461,44 +3556,61 @@ class DiscordCommandBot(commands.Bot):
                     conversation_key=conv_key,
                     channel_context=channel_name,
                 )
-            await message.reply(f"🤖: {answer}")
+            view = HelpfulnessView(message.author.id, question, answer)
+            await message.reply(f"{answer}", view=view)
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
             return
 
         # Auto-reply on keywords (e.g., "question", "does anyone know", "anybody know")
-        auto_reply_keywords = [
-            "question",
-            "do you know",
-            "does anyone know",
-            "does anybody know",
-            "anyone know",
-            "anybody know",
-            "does someone know",
-            "someone know",
-            "is anyone",
-            "is anybody",
-        ]
-        content_lower = message.content.lower()
-        if any(keyword in content_lower for keyword in auto_reply_keywords):
-            question = message.content.strip()
-            if question and not message.author.bot:
-                conv_key = _discord_conv_key(message)
-                channel_name = getattr(message.channel, "name", None)
-                async with message.channel.typing():
-                    answer = await get_ai_answer(
-                        question,
-                        gemini_api_key=Config.GEMINI_API_KEY,
-                        openai_api_key=Config.OPENAI_API_KEY,
-                        openai_base_url=Config.OPENAI_BASE_URL,
-                        provider=Config.AI_PROVIDER,
-                        gemini_model=Config.GEMINI_MODEL,
-                        openai_model=Config.OPENAI_MODEL,
-                        conversation_key=conv_key,
-                        channel_context=channel_name,
-                    )
-                await message.reply(f"🤖: {answer}")
-                logger.info(f"[DISCORD] Keyword auto-reply by {message.author.name}: {question[:80]}")
-                return
+        # Check if autoreply is enabled
+        if self.autoreply_enabled:
+            auto_reply_keywords = [
+                # Questions about knowledge
+                "question", "i have a question", "do you know", "does anyone know", 
+                "does anybody know", "anyone know", "anybody know", "does someone know",
+                "someone know", "is anyone", "is anybody",
+                
+                # Help/Assistance requests
+                "help", "help me", "i need help", "need help", "can you help",
+                "can you help me", "i need assistance", "assist me", "assistance",
+                "support", "can anyone assist", "can someone assist", "anyone assist",
+                "somebody assist",
+                
+                # How-to/Where questions
+                "how do i", "how to", "how can i", "where can i", "where is",
+                "what is", "what are", "what should",
+                
+                # Problem/Advice seeking
+                "stuck", "lost", "confused", "problem", "issue", "error",
+                "trouble", "struggling", "tips", "advice", "recommend", 
+                "suggestion", "ideas", "best way", "fastest way",
+                
+                # Information requests
+                "what about", "can i", "should i", "is this", "does this",
+                "why", "what happens", "what if", "any tips", "any advice",
+            ]
+            content_lower = message.content.lower()
+            if any(keyword in content_lower for keyword in auto_reply_keywords):
+                question = message.content.strip()
+                if question and not message.author.bot:
+                    conv_key = _discord_conv_key(message)
+                    channel_name = getattr(message.channel, "name", None)
+                    async with message.channel.typing():
+                        answer = await get_ai_answer(
+                            question,
+                            gemini_api_key=Config.GEMINI_API_KEY,
+                            openai_api_key=Config.OPENAI_API_KEY,
+                            openai_base_url=Config.OPENAI_BASE_URL,
+                            provider=Config.AI_PROVIDER,
+                            gemini_model=Config.GEMINI_MODEL,
+                            openai_model=Config.OPENAI_MODEL,
+                            conversation_key=conv_key,
+                            channel_context=channel_name,
+                        )
+                    view = HelpfulnessView(message.author.id, question, answer)
+                    await message.reply(f"{answer}", view=view)
+                    logger.info(f"[DISCORD] Keyword auto-reply by {message.author.name}: {question[:80]}")
+                    return
 
         # Handle a plain reply to one of the bot's AI responses (no prefix/mention needed).
         # This lets users continue the conversation naturally by just replying.
@@ -3533,7 +3645,8 @@ class DiscordCommandBot(commands.Bot):
                             conversation_key=conv_key,
                             channel_context=channel_name,
                         )
-                    await message.reply(f"{answer}")
+                    view = HelpfulnessView(message.author.id, question, answer)
+                    await message.reply(f"{answer}", view=view)
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
                     return
 

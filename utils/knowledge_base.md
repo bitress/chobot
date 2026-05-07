@@ -121,16 +121,49 @@ Stock rotates regularly across all islands. Use `!find <item>` to check current
 availability.
 
 ## Subscriber Perks
-Subscribe via [Patreon](https://www.patreon.com/cw/chopaeng/membership) to unlock:
+Subscribe or become a member via one of these platforms to unlock:
 - Unlimited access to the 20 sub islands whenever they are open.
 - Priority queue when islands are busy.
 - Item/villager requests — ask for specific stock on a sub island.
 - Exclusive stock: rarer items, full DIY sets, curated villager selections.
 - Faster Dodo code delivery.
 
-After subscribing, link your membership in Discord (see <#1465428124937359481> to get started,
-then <#1081147108612124742> or <#762351782382141440>)
-to receive the sub role and unlock access.
+Supported platforms:
+- [Patreon](https://www.patreon.com/cw/chopaeng/membership)
+- YouTube Channel Membership
+- Twitch Subscription
+- TikTok Community (Basic Plan)
+
+### Getting Access to Sub Islands (Multiple Platforms)
+After subscribing/joining on any platform, link your account to Discord:
+
+**Patreon:**
+1. Connect your Patreon account to Discord: https://bit.ly/ConnectDiscordToPatreon
+2. You'll receive the membership role you purchased
+
+**YouTube:**
+1. Link your YouTube account: https://bit.ly/youtube2discord
+2. Takes 3-5 minutes to sync
+3. You'll receive the @1048323845771247678 role
+
+**Twitch:**
+1. Link your Twitch account: https://bit.ly/twitch2discord
+2. You'll receive the @898373041799696454 role
+
+**TikTok:**
+1. Link your TikTok account: https://bit.ly/linkyourtiktok
+2. You'll receive the @1302619772638461993 role
+
+### Completing Sub Island Access
+After linking your account and receiving your role:
+
+1. Go to <#783677194576330792> (Sub Rules channel)
+2. Read and follow each rule carefully
+3. Click the "I Understand" button to receive the subscriber access role
+4. Go to the sub-general-chat channel and type `/sub` to confirm your access
+5. You'll automatically gain access to all Sub Islands!
+
+**Note:** ChoBot sends all drops and Dodo codes. For questions or issues, create a ticket at <#943118146259284008> or DM ChoPaeng or a MOD team member.
 
 ## Nitro Booster Perks
 Nitro Boosters on the Chopaeng Discord server receive exclusive access to two premium sub-islands:
@@ -172,9 +205,9 @@ These apply on every treasure island, in addition to the above:
 
 Breaking rules may result in a warning, mute, kick, or ban.
 
-### Gaining Access to Island Channels
-If you cannot type on island channels, simply read our island-specific rules in <#783677194576330792>. 
-Once you have read and acknowledged the rules, you will automatically gain access to all island channels.
+### Gaining Access to Sub Island Channels
+Once you have completed the subscription verification steps above and clicked "I Understand" in <#783677194576330792>, 
+you will automatically gain access to all sub island channels. Make sure to read and follow all sub rules carefully to maintain your access!
 
 **Remember: Always follow our rules to maintain access!**
 
@@ -189,6 +222,19 @@ Once you have read and acknowledged the rules, you will automatically gain acces
 5. Collect your items and leave via the airport.
 
 Alternatively, visit a sub island's Discord channel and use the **[Dropping Items with !drop](#dropping-items-with-drop)** section below to request specific items from ChoBot.
+
+## Item Requests & Ordering
+Yes, you can order items multiple times! Subscribers can request items multiple times from sub islands.
+
+**How to request items:**
+- Use `!drop` commands while on a sub island to request specific items from ChoBot
+- You can request up to 9 items per line
+- You can place multiple requests across different islands or at different times
+
+**If an item isn't stocked:**
+- Use the orderbot to place a custom request in the <#782872507551055892> channel
+- Follow the ordering flow for non-stocked items
+- Multiple orders of the same item are allowed
 
 ## Dropping Items with !drop
 You must be on the island before using drop commands.
