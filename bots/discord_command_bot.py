@@ -586,7 +586,6 @@ class DiscordCommandCog(commands.Cog):
         self.island_status_since: dict[str, tuple[bool, datetime]] = {}
         self.free_dodo_board_messages: list[discord.Message] = []
         self.free_dodo_board_startup_cleanup_done = False
-        self.autoreply_enabled = True  # Toggle for keyword auto-replies
 
         # island_clean -> True (down) / False (up); None = not yet initialized
         self.island_down_states: dict[str, bool | None] = {}
@@ -3281,7 +3280,7 @@ class DiscordCommandCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def autoreply_enable(self, ctx):
         """Enable keyword auto-replies"""
-        self.autoreply_enabled = True
+        self.bot.autoreply_enabled = True
         await ctx.reply("Autoreply enabled. The bot will now respond to keyword triggers.")
         logger.info(f"[DISCORD] Autoreply enabled by {ctx.author.name}")
 
@@ -3289,7 +3288,7 @@ class DiscordCommandCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def autoreply_disable(self, ctx):
         """Disable keyword auto-replies"""
-        self.autoreply_enabled = False
+        self.bot.autoreply_enabled = False
         await ctx.reply("Autoreply disabled. The bot will no longer respond to keyword triggers.")
         logger.info(f"[DISCORD] Autoreply disabled by {ctx.author.name}")
 
@@ -3314,6 +3313,7 @@ class DiscordCommandBot(commands.Bot):
         self._load_command_cog = load_command_cog
         self.start_time = datetime.now()
         self.restart_requested = False
+        self.autoreply_enabled = True  # Toggle for keyword auto-replies
 
         self.status_list = cycle([
             discord.Activity(type=discord.ActivityType.watching, name="flights arrive ✈️ | !find"),
