@@ -58,6 +58,8 @@ or `!sd`. The bot will DM the code directly to you. Keep the code private — do
 with anyone, including friends or family. If an island is offline, `!senddodo` will tell you
 instead of sending a code.
 
+**For Free Islands:** You can also find Dodo codes and information about each free island in the <#1500493205672825056> (Dodo Board) channel. This channel displays current codes and details about all 27 free islands, making it easy to browse and choose which island to visit.
+
 ## Islands Overview
 There are 47 islands total: 20 sub islands and 27 free islands.
 All island names are Filipino/Tagalog words with meaningful translations.
@@ -224,17 +226,135 @@ you will automatically gain access to all sub island channels. Make sure to read
 Alternatively, visit a sub island's Discord channel and use the **[Dropping Items with !drop](#dropping-items-with-drop)** section below to request specific items from ChoBot.
 
 ## Item Requests & Ordering
-Yes, you can order items multiple times! Subscribers can request items multiple times from sub islands.
 
-**How to request items:**
+**For Subscribers:**
 - Use `!drop` commands while on a sub island to request specific items from ChoBot
 - You can request up to 9 items per line
 - You can place multiple requests across different islands or at different times
 
-**If an item isn't stocked:**
-- Use the orderbot to place a custom request in the <#782872507551055892> channel
-- Follow the ordering flow for non-stocked items
+**For Non-Subscribers:**
+- Use the Chorder Bot in the <#1175672083183829075> channel to request items
+- Follow the ordering flow to place custom requests
 - Multiple orders of the same item are allowed
+
+**If an item isn't currently stocked on any island:**
+- Both subscribers and non-subscribers can use the Chorder Bot in <#1175672083183829075> to request it
+- Follow the ordering flow for non-stocked items
+
+## Chorder Bot Ordering Guide (For Non-Subscribers)
+
+### How to Place an Order
+Submit your order using the command `!order <item names>` or `!order [nhi file]` in the designated order channels. Ensure item names are spelled correctly as they appear in-game. For complex orders, consider using ACNHMobileSpawner (tutorial in <#🌲┋acnhmobilespawner>).
+
+**Important:** Do not use plural forms of item names. For example, "blue ornament" is valid (and will automatically stack to the maximum quantity), but "blue ornaments" is not recognized by the bot.
+
+### Order Examples
+
+**40 max stacks of Nook Miles Tickets:**
+```
+!order nook miles ticket
+```
+
+**10 full stacks each of: gold nuggets, large star fragments, large snowflakes, cherry-blossom petals:**
+```
+!order gold nugget, large star fragment, large snowflake, cherry-blossom petal
+```
+
+**Every variation of puppy plushie:**
+```
+!order puppy plushie
+```
+
+**One of every variation of dollhouse, kids' tent, pop-up book, plus stacks of pearls:**
+```
+!order dollhouse, kids' tent, pop-up book, pearl
+```
+
+**Multiple items by hex/item IDs (separate by spaces):**
+```
+!order 14BB 16DB
+```
+*Note: You cannot combine IDs and item names in the same order command.*
+
+### Ordering in Other Languages
+Include the language code before the item name:
+```
+!order jp, マイルりょこうけん
+!order de, Meilenticket
+!order es, cupón de millas Nook
+!order fr, ticket Miles Nook
+!order it, coupon miglia di Nook
+!order ko, 마일 여행권
+!order zhs, 里数旅行券
+!order zht, 哩數旅行券
+```
+
+### Looking Up Items
+Use these commands in the <#🌲┋chorder-item-lookup> channel (NOT in chorder-bot):
+- `!lookup <item names>` — Example: `!lookup golden axe`
+- `!lookuplang <language code> <item names>` — Example: `!lookuplang fr bloupe`
+
+**Note:** Lookup commands are case-sensitive. Check [this link](https://raw.githubusercontent.com/berichan/ACNHMobileSpawner/master/ACNHMS_Source/Assets/Resources/NHSE/text/en/text_item_en.txt) for correct internal spelling.
+
+### Customizing Item Variations
+1. Use `!item <item id>` to see available variations. Example: `!item 14DA`
+2. Select your desired variation: `!customize <item id> <variation>`. Example: `!customize 14DA 1`
+3. Copy the resulting hex code and add it to your order command.
+
+### Ordering DIY Recipes
+1. Use `!recipe <recipe name>` to get the recipe code. Example: `!recipe golden axe`
+2. Or use `!recipelang <language code> <recipe name>` for other languages. Example: `!recipelang fr coiffe`
+3. Copy the long hex number (ending in `16A2`) and include it in your order. Example: `!order 00F0000016A2`
+4. Multiple recipes: `!order 00F0000016A2 02A000016A2`
+
+*For an easier way to order DIY recipes, use ACNHMobileSpawner (tutorial in <#🌲┋acnhmobilespawner>).*
+
+### Adding a Villager to Your Order
+Add `villager:<id>` to the end of your order command. Example: `!order nook miles ticket villager:tig06`
+
+You can also order ONLY a villager: `!order villager:tig06`
+
+**Important:** You must have an empty unsold plot available, otherwise you cannot invite the villager. If you order between 10:00 PM – 8:00 AM BST, the villager may be sleeping and unavailable. Check BST time by searching "time BST" or use `!gt` in the bot channel. See the spreadsheet link or bot lookup instructions for 5-character villager codes.
+
+### Queue Management
+- **Check your position:** Type `!position` in the order channel. Avoid excessive use; check every few minutes if needed.
+- **Remove yourself from queue:** Type `!remove` in the order channel. You won't be able to re-enter until your original turn would have passed.
+
+### When Your Turn Arrives
+1. The bot will notify you to clear your inventory and proceed to the airport.
+2. Act promptly when your Dodo code is ready — the bot won't wait indefinitely.
+3. Upon receiving "Your order is starting," interact with Orville until he prompts you for a Dodo code.
+4. Remain at the airport until the bot provides your Dodo code, then enter it immediately.
+5. **Do not send a substitute** — the alt detector may trigger and cause an automatic ban.
+6. Fly to the order island "Sinta" where ChoPaeng resides.
+7. Collect your items directly in front of the airport.
+8. Use the **-** button on your Joy-Con for the quickest exit.
+
+### How to Invite the Villager to Your Island
+1. Use the pipe near the entrance of the island to reach the villager's house.
+2. Have an empty and unsold plot available beforehand.
+
+### Chorder Bot Rules
+
+**Rule 1:** You MUST change your server nickname to `Your ACNH Character Name | Your ACNH Island Name` before using the orderbot. Change your nickname in the <#1081147108612124742> channel.
+
+**Rule 2:** DO NOT share the Dodo code with another person. This may result in a permanent ban. Only you who placed the order can visit the island.
+
+**Rule 3:** DO NOT litter on the island. Pick up only what you need.
+
+**Rule 4:** Order only what you need.
+
+**Rule 5:** Ensure you have a good internet connection — at least 15–25 Mbps.
+
+**Rule 6:** You MUST read everything in the <#1175704849409654804> channel to avoid asking questions and spamming the chorder-bot channel with incorrect commands.
+
+**Rule 7:** DO NOT chat or lookup items in the chorder-bot channel. That channel is for orders only. Use the <#1175875039954993306> channel for questions.
+
+**Rule 8:** DO NOT order or chat in the <#1175771830510948442> channel. That channel is for looking up item/DIY codes only.
+
+**Consequences:** If caught breaking these rules, you may face a mute, kick, or ban from the orderbot.
+
+Click "Done!" in the rules channel after understanding to gain orderbot access.
 
 ## Dropping Items with !drop
 You must be on the island before using drop commands.

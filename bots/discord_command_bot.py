@@ -518,7 +518,7 @@ class HelpfulnessView(discord.ui.View):
         self.answer = answer
         self.feedback_given = False
 
-    @discord.ui.button(label="👍 Helpful", style=discord.ButtonStyle.green, custom_id="feedback_helpful")
+    @discord.ui.button(label="👍", style=discord.ButtonStyle.green, custom_id="feedback_helpful")
     async def helpful_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Handle like button"""
         if interaction.user.id != self.user_id:
@@ -545,7 +545,7 @@ class HelpfulnessView(discord.ui.View):
                 item.disabled = True
         await interaction.message.edit(view=self)
 
-    @discord.ui.button(label="👎 Not Helpful", style=discord.ButtonStyle.red, custom_id="feedback_not_helpful")
+    @discord.ui.button(label="👎", style=discord.ButtonStyle.red, custom_id="feedback_not_helpful")
     async def dislike_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Handle dislike button"""
         if interaction.user.id != self.user_id:
