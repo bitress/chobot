@@ -21,6 +21,27 @@ from utils.helpers import clean_text
 
 logger = logging.getLogger("FlightLogger")
 
+
+def ign_matches_dodo_reveal(ign: str, username: str | None, nickname: str | None) -> bool:
+    """Heuristic: flight-list IGN vs Discord username/nickname from dodo reveal webhook."""
+    i = clean_text(ign)
+    if not i or len(i) < 2:
+        return False
+    for raw in (username, nickname):
+        if not raw:
+            continue
+        c = clean_text(raw)
+        if not c:
+            continue
+        if i == c:
+            return True
+        if len(i) >= 3 and (i in c or c in i):
+            return True
+        if c.startswith(i) or i.startswith(c):
+            return True
+    return False
+
+
 # --- CONSTANTS ---
 # Colors
 COLOR_SUCCESS = 0x2ECC71      # Green (for admits, unwarns)
@@ -86,6 +107,18 @@ async def init_db():
             await db.execute("ALTER TABLE island_visits ADD COLUMN has_island_access INTEGER NOT NULL DEFAULT 0")
         except aiosqlite.OperationalError:
             pass  # Column already exists
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS dodo_reveal_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                island_clean TEXT NOT NULL,
+                channel_id TEXT,
+                message_url TEXT NOT NULL,
+                username TEXT,
+                nickname TEXT,
+                created_at INTEGER NOT NULL
+            )
+        """)
         await db.commit()
 
 DEFAULT_REASON_TEXT = (
@@ -1102,6 +1135,34 @@ class FlightLoggerCog(commands.Cog):
             self.all_sub_roles = fallback
             logger.info(f"[FLIGHT] Loaded {len(fallback)} sub roles from DB fallback.")
 
+    async def lookup_dodo_reveal_jump_url(
+        self, ign: str, destination: str, max_age_seconds: int = 7200
+    ) -> str | None:
+        """Match recent dodo webhook message URL by island + IGN (from SQLite, written by Flask API)."""
+        dest_clean = clean_text(destination)
+        if not dest_clean:
+            return None
+        cutoff = int(discord.utils.utcnow().timestamp()) - max_age_seconds
+        try:
+            db = await self._get_db()
+            cur = await db.execute(
+                """
+                SELECT message_url, username, nickname FROM dodo_reveal_messages
+                WHERE island_clean = ? AND created_at >= ?
+                ORDER BY created_at DESC
+                LIMIT 40
+                """,
+                (dest_clean, cutoff),
+            )
+            rows = await cur.fetchall()
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] dodo_reveal_messages lookup failed: {exc}")
+            return None
+        for message_url, username, nickname in rows:
+            if ign_matches_dodo_reveal(ign, username, nickname):
+                return message_url
+        return None
+
     async def _get_db(self):
         if self._db_conn is None:
             self._db_conn = await aiosqlite.connect(DB_NAME)
@@ -1570,29 +1631,46 @@ class FlightLoggerCog(commands.Cog):
             await self._ensure_sub_roles_loaded()
         logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {len(temp_map)} keys, {len(sub_roles)} sub roles.")
 
-    def get_island_channel_link(self, island_name):
-        """Get channel link with robust fallback search"""
+    def _resolve_island_channel_id(self, island_name: str) -> int | None:
+        """Resolve Discord text channel id for an island name (same logic as mention link)."""
         island_clean = clean_text(island_name)
         if not island_clean:
-            return island_name.title()
-
+            return None
         if island_clean in self.island_map:
-            return f"<#{self.island_map[island_clean]}>"
-
+            return self.island_map[island_clean]
+        stripped = re.sub(r"^\d+", "", island_clean)
+        if stripped and stripped in self.island_map:
+            return self.island_map[stripped]
         for key, channel_id in self.island_map.items():
-            if island_clean == key:
-                return f"<#{channel_id}>"
-            if island_clean in key:
-                return f"<#{channel_id}>"
+            if island_clean == key or island_clean in key:
+                return channel_id
         guild = self.bot.get_guild(Config.GUILD_ID)
         if guild:
             for channel in guild.text_channels:
                 chan_clean = clean_text(channel.name)
                 if island_clean == chan_clean or island_clean in chan_clean:
                     self.island_map[island_clean] = channel.id
-                    return channel.mention
+                    return channel.id
+        return None
 
+    def get_island_channel_link(self, island_name):
+        """Get channel link with robust fallback search"""
+        island_clean = clean_text(island_name)
+        if not island_clean:
+            return island_name.title()
+        cid = self._resolve_island_channel_id(island_name)
+        if cid:
+            return f"<#{cid}>"
         return island_name.title()
+
+    def get_island_channel_browser_url(self, destination: str) -> str | None:
+        """Open in browser: https://discord.com/channels/GUILD/CHANNEL"""
+        if not Config.GUILD_ID:
+            return None
+        cid = self._resolve_island_channel_id(destination)
+        if not cid:
+            return None
+        return f"https://discord.com/channels/{Config.GUILD_ID}/{cid}"
     def split_options(self, raw: str):
         if not raw: return []
         parts = [p.strip() for p in raw.split("/") if p.strip()]
@@ -1961,6 +2039,16 @@ class FlightLoggerCog(commands.Cog):
                         xlog_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
                         xlog_view = discord.ui.View()
                         xlog_view.add_item(discord.ui.Button(label="View Alert", url=existing_msg.jump_url, style=discord.ButtonStyle.link))
+                        dodo_jump = await self.lookup_dodo_reveal_jump_url(ign, destination)
+                        if dodo_jump:
+                            xlog_view.add_item(
+                                discord.ui.Button(label="View Dodo Reveal", url=dodo_jump, style=discord.ButtonStyle.link)
+                            )
+                        island_jump = self.get_island_channel_browser_url(destination)
+                        if island_jump:
+                            xlog_view.add_item(
+                                discord.ui.Button(label="View Dodo Request", url=island_jump, style=discord.ButtonStyle.link)
+                            )
                         await xlog_channel.send(embed=xlog_embed, view=xlog_view)
                 else:
                     is_ambiguous = bool(ambiguous_members)
@@ -2050,6 +2138,16 @@ class FlightLoggerCog(commands.Cog):
                         if message_url:
                             xlog_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
                         xlog_view.add_item(discord.ui.Button(label="View Alert", url=sent_msg.jump_url, style=discord.ButtonStyle.link))
+                        dodo_jump = await self.lookup_dodo_reveal_jump_url(ign, destination)
+                        if dodo_jump:
+                            xlog_view.add_item(
+                                discord.ui.Button(label="View Dodo Reveal", url=dodo_jump, style=discord.ButtonStyle.link)
+                            )
+                        island_jump = self.get_island_channel_browser_url(destination)
+                        if island_jump:
+                            xlog_view.add_item(
+                                discord.ui.Button(label="View Dodo Request", url=island_jump, style=discord.ButtonStyle.link)
+                            )
                         await xlog_channel.send(embed=xlog_embed, view=xlog_view)
             finally:
                 self._creating_alerts.discard(alert_key)

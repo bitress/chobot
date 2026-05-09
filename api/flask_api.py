@@ -28,11 +28,66 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import ThreadedWSGIServer
 
 from utils.config import Config
-from utils.helpers import format_locations_text, parse_locations_json, normalize_text
+from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
 from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value, _parse_visitor_list
 
 
 logger = logging.getLogger("FlaskAPI")
+
+CHOBOT_SQLITE_DB = "chobot.db"
+
+
+def _persist_dodo_reveal_message(
+    user_id: str,
+    island_name: str,
+    channel_id: str | None,
+    message_url: str,
+    username: str,
+    nickname: str,
+) -> None:
+    """Store webhook message URL so Flight Logger can link unverified flights to dodo reveals."""
+    island_clean = clean_text(island_name)
+    if not island_clean:
+        island_clean = clean_text(island_name.lower())
+    try:
+        conn = sqlite3.connect(CHOBOT_SQLITE_DB)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dodo_reveal_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    island_clean TEXT NOT NULL,
+                    channel_id TEXT,
+                    message_url TEXT NOT NULL,
+                    username TEXT,
+                    nickname TEXT,
+                    created_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO dodo_reveal_messages
+                (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(user_id),
+                    island_clean,
+                    str(channel_id) if channel_id else None,
+                    message_url,
+                    username or "",
+                    nickname or "",
+                    int(time.time()),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("dodo_reveal_messages insert failed: %s", exc)
+
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -183,18 +238,40 @@ def _fire_dodo_webhook(
     }
 
     payload = json.dumps({"embeds": [embed]}).encode()
+    webhook_execute = url
+    sep = "&" if "?" in webhook_execute else "?"
+    webhook_execute = f"{webhook_execute}{sep}wait=true"
     try:
         req = urllib.request.Request(
-            url, data=payload,
+            webhook_execute, data=payload,
             headers={"Content-Type": "application/json", "User-Agent": _DISCORD_UA},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            # Discord commonly returns 204 No Content for webhook success.
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode(errors="replace")
             if resp.status not in (200, 204):
                 logger.warning("Dodo webhook unexpected HTTP status: %s", resp.status)
             else:
                 logger.debug("Dodo webhook delivered for island=%s user=%s", island_name, username)
+            message_url = None
+            if resp.status == 200 and body and Config.GUILD_ID:
+                try:
+                    data = json.loads(body)
+                    mid = data.get("id")
+                    cid = data.get("channel_id")
+                    if mid and cid:
+                        message_url = f"https://discord.com/channels/{Config.GUILD_ID}/{cid}/{mid}"
+                except (json.JSONDecodeError, TypeError) as exc:
+                    logger.debug("Dodo webhook response not JSON: %s", exc)
+            if message_url:
+                _persist_dodo_reveal_message(
+                    user_id=str(user_id),
+                    island_name=island_name,
+                    channel_id=channel_id,
+                    message_url=message_url,
+                    username=username or "",
+                    nickname=nickname or "",
+                )
     except urllib.error.HTTPError as exc:
         body = ""
         try:
