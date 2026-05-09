@@ -590,33 +590,22 @@ class NoteBuilderView(discord.ui.View):
 
 
 class TravelerActionView(discord.ui.View):
-    def __init__(self, bot=None, ign=None, visit_id=None, dodo_reveal_url=None, message_url=None, island_jump_url=None):
+    def __init__(self, bot=None, ign=None, visit_id=None):
         super().__init__(timeout=None)
         self.bot = bot
         self.ign = ign
         self.visit_id = visit_id
-        self.dodo_reveal_url = dodo_reveal_url
-        self.message_url = message_url
-        self.island_jump_url = island_jump_url
-
-        if message_url:
-            self.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link, row=2))
-        if dodo_reveal_url:
-            self.add_item(discord.ui.Button(label="View Dodo Reveal", url=dodo_reveal_url, style=discord.ButtonStyle.link, row=2))
-        if island_jump_url:
-            self.add_item(discord.ui.Button(label="View Dodo Request", url=island_jump_url, style=discord.ButtonStyle.link, row=2))
 
     def _get_ign_from_embed(self, embed: discord.Embed):
-        """Extracts IGN from the 'IGN' or '👤 Traveler (IGN)' field in the alert embed."""
+        """Extracts IGN from the '👤 Traveler (IGN)' field in the alert embed."""
         if not embed or not embed.fields:
             return None
         for field in embed.fields:
-            if "IGN" in field.name:
+            if "Traveler (IGN)" in field.name:
                 # Value is usually "```yaml\nIGN```"
                 match = re.search(r"```(?:yaml)?\n(.*?)\n?```", field.value)
                 if match:
                     return match.group(1).strip()
-                return field.value.strip()
         return None
 
     def _get_visit_id_from_embed(self, embed: discord.Embed) -> int | None:
@@ -629,47 +618,6 @@ class TravelerActionView(discord.ui.View):
                 if match:
                     return int(match.group(1))
         return None
-
-    async def _extract_links_from_embed(self, embed: discord.Embed):
-        """Recover links (Flight Standing, Dodo Reveal, Dodo Request) from embed data."""
-        links = {"standing": None, "reveal": None, "request": None}
-        if not embed: return links
-
-        # 1. Extract message_url (Flight Standing) from description or fields
-        if embed.description:
-            # Look for [View History](url) or [View Flight Standing](url)
-            m = re.search(r'\[(?:View History|View Flight Standing)\]\((https?://[^\s)]+)\)', embed.description)
-            if m: links["standing"] = m.group(1)
-            
-            # Look for Dodo Reveal link
-            m = re.search(r'\[View Reveal\]\((https?://[^\s)]+)\)', embed.description)
-            if m: links["reveal"] = m.group(1)
-
-            # Look for Dodo Request link
-            m = re.search(r'\[View Dodo Request\]\((https?://[^\s)]+)\)', embed.description)
-            if m: links["request"] = m.group(1)
-
-        # 2. Extract Destination and IGN for fallback lookups
-        ign = self.ign or self._get_ign_from_embed(embed)
-        destination = None
-        for field in embed.fields:
-            if "Destination" in field.name:
-                # Value might be "[Name](url)" or just "Name"
-                m = re.search(r'\[(.*?)\]\(', field.value)
-                destination = m.group(1) if m else field.value
-                break
-        
-        if ign and destination and self.bot:
-            cog = self.bot.get_cog("FlightLoggerCog")
-            if cog:
-                # 3. Dodo Reveal (fallback to DB if not in description)
-                if not links["reveal"]:
-                    links["reveal"] = await cog.lookup_dodo_reveal_jump_url(ign, destination)
-                # 4. Dodo Request (fallback to browser link)
-                if not links["request"]:
-                    links["request"] = cog.get_island_channel_browser_url(destination)
-
-        return links
 
     async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None, reason=None, mod_log_url=None):
         """Internal helper to update the alert embed state. Does NOT send interaction responses."""
@@ -765,16 +713,6 @@ class TravelerActionView(discord.ui.View):
             )
             # Remove all existing items first
             self.clear_items()
-            
-            # Re-add persistent links (recovered from embed)
-            links = await self._extract_links_from_embed(embed)
-            if links["standing"]:
-                self.add_item(discord.ui.Button(label="View Flight Standing", url=links["standing"], style=discord.ButtonStyle.link, row=2))
-            if links["reveal"]:
-                self.add_item(discord.ui.Button(label="View Dodo Reveal", url=links["reveal"], style=discord.ButtonStyle.link, row=2))
-            if links["request"]:
-                self.add_item(discord.ui.Button(label="View Dodo Request", url=links["request"], style=discord.ButtonStyle.link, row=2))
-
             await message_to_edit.edit(embed=embed, view=self)
 
             # Remove from pending alerts so future joins create a fresh alert
@@ -968,67 +906,24 @@ class VerifiedFlightFlagView(discord.ui.View):
     Once flagged the button is replaced by a static "View Alert (manual)" link.
     """
 
-    def __init__(self, bot=None, ign=None, visit_id=None, message_url=None, dodo_reveal_url=None, island_jump_url=None):
+    def __init__(self, bot=None, ign=None, visit_id=None, message_url=None):
         super().__init__(timeout=None)
         self.bot = bot
         self.ign = ign
         self.visit_id = visit_id
         self.message_url = message_url
-        self.dodo_reveal_url = dodo_reveal_url
-        self.island_jump_url = island_jump_url
-
-        if message_url:
-            self.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link, row=0))
-        if dodo_reveal_url:
-            self.add_item(discord.ui.Button(label="View Dodo Reveal", url=dodo_reveal_url, style=discord.ButtonStyle.link, row=0))
-        if island_jump_url:
-            self.add_item(discord.ui.Button(label="View Dodo Request", url=island_jump_url, style=discord.ButtonStyle.link, row=0))
 
     def _extract_field(self, embed: discord.Embed, field_name: str) -> str | None:
-        """Return the plain-text value of a named embed field (case-insensitive and partial match)."""
+        """Return the plain-text value of a named embed field."""
         if not embed or not embed.fields:
             return None
-        target = field_name.lower()
         for field in embed.fields:
-            if target in field.name.lower():
+            if field.name == field_name:
                 match = re.search(r"```(?:yaml)?\n(.*?)\n?```", field.value, re.DOTALL)
                 if match:
                     return match.group(1).strip()
-                return field.value.strip()
+                return field.value
         return None
-
-    async def _extract_links_from_embed(self, embed: discord.Embed):
-        """Recover links from embed data for xlog verified/flagged messages."""
-        links = {"standing": None, "reveal": None, "request": None}
-        if not embed: return links
-
-        # 1. Flight Standing
-        if embed.description:
-            m = re.search(r'\[(?:View History|View Flight Standing)\]\((https?://[^\s)]+)\)', embed.description)
-            if m: links["standing"] = m.group(1)
-            
-            m = re.search(r'\[View Reveal\]\((https?://[^\s)]+)\)', embed.description)
-            if m: links["reveal"] = m.group(1)
-
-            m = re.search(r'\[View Dodo Request\]\((https?://[^\s)]+)\)', embed.description)
-            if m: links["request"] = m.group(1)
-
-        # 2. Extract IGN and Destination
-        ign = self.ign or self._extract_field(embed, "IGN")
-        dest_raw = self._extract_field(embed, "Destination")
-        destination = None
-        if dest_raw:
-            # Handle "[Name](url)"
-            m = re.search(r'\[(.*?)\]\(', dest_raw)
-            destination = m.group(1) if m else dest_raw
-        
-        if ign and destination:
-            cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
-            if cog:
-                links["reveal"] = await cog.lookup_dodo_reveal_jump_url(ign, destination)
-                links["request"] = cog.get_island_channel_browser_url(destination)
-        
-        return links
 
     async def _execute_flag(self, interaction: discord.Interaction, xlog_message: discord.Message):
         """Execute the flag action: create alert and update xlog message. Also flag for xlog if multiple IGNs/islands and multiple subscriptions."""
@@ -1157,18 +1052,10 @@ class VerifiedFlightFlagView(discord.ui.View):
                     inline=False,
                 )
             new_view = discord.ui.View()
-            
-            # Recover all links
-            links = await self._extract_links_from_embed(embed)
-            if links["standing"] or msg_url:
-                new_view.add_item(discord.ui.Button(label="View Flight Standing", url=links["standing"] or msg_url, style=discord.ButtonStyle.link, row=0))
+            if msg_url:
+                new_view.add_item(discord.ui.Button(label="View Flight Standing", url=msg_url, style=discord.ButtonStyle.link))
             if alert_msg:
-                new_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link, row=0))
-            if links["reveal"] or self.dodo_reveal_url:
-                new_view.add_item(discord.ui.Button(label="View Dodo Reveal", url=links["reveal"] or self.dodo_reveal_url, style=discord.ButtonStyle.link, row=0))
-            if links["request"] or self.island_jump_url:
-                new_view.add_item(discord.ui.Button(label="View Dodo Request", url=links["request"] or self.island_jump_url, style=discord.ButtonStyle.link, row=0))
-            
+                new_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
             await xlog_message.edit(embed=embed, view=new_view)
         except (discord.NotFound, discord.HTTPException):
             logger.debug(f"[FLAG] Could not update old xlog message, but alert was created in flight log")
@@ -1818,6 +1705,52 @@ class FlightLoggerCog(commands.Cog):
         normalized = re.sub(r"\s+", " ", normalized)
         return normalized
 
+    def calculate_max_identities(self, display_name: str) -> int:
+        """Calculate the number of subscriptions required based on nickname slots and options.
+        
+        Rules:
+        - If a category (IGN or Island) has multiple | blocks, its count is the number of blocks.
+        - If it has only one | block, its count is the number of / options in that block.
+        - The total count is the maximum of the IGN count and Island count.
+        """
+        if not display_name or '|' not in display_name:
+            return 1
+            
+        chunks = [c.strip() for c in display_name.split('|') if c.strip()]
+        if chunks and chunks[0].upper() == "ACNH":
+            chunks = chunks[1:]
+        
+        if not chunks:
+            return 1
+
+        ign_blocks = []
+        island_blocks = []
+
+        if len(chunks) % 2 == 0:
+            # Even chunks: pairs of (IGN, Island)
+            for i in range(0, len(chunks), 2):
+                ign_blocks.append(chunks[i])
+                island_blocks.append(chunks[i+1])
+        else:
+            # Odd chunks: first is IGN, rest are Islands
+            ign_blocks.append(chunks[0])
+            for i in range(1, len(chunks)):
+                island_blocks.append(chunks[i])
+        
+        def get_category_count(blocks):
+            if not blocks:
+                return 0
+            if len(blocks) > 1:
+                # Multiple blocks: each block is an identity (ignore internal / splits)
+                return len(blocks)
+            # Single block: count / options
+            return len(self.split_options(blocks[0]))
+            
+        ign_count = get_category_count(ign_blocks)
+        island_count = get_category_count(island_blocks)
+        
+        return max(ign_count, island_count)
+
     def parse_member_nick(self, display_name: str):
         if not display_name:
             return [], []
@@ -1961,7 +1894,7 @@ class FlightLoggerCog(commands.Cog):
                     content_preview = message_content.strip() if message_content else "View original message"
                     if len(content_preview) > 100:
                         content_preview = content_preview[:97] + "..."
-                    desc_lines.append(f"> {content_preview}")
+                    desc_lines.append(f"[{content_preview}]({message_url})")
                 desc_lines.append(f"Member Linked: {member_line}")
 
                 # Add roles/subscription info for the matched member
@@ -1990,7 +1923,7 @@ class FlightLoggerCog(commands.Cog):
                 cog = self
                 await self._ensure_sub_roles_loaded()
                 ign_opts, island_opts = self.parse_member_nick(member.display_name)
-                max_identities = max(len(ign_opts), len(island_opts))
+                max_identities = self.calculate_max_identities(member.display_name)
 
                 all_member_subs = [r for r in member.roles if r.id in cog.all_sub_roles]
                 current_island_subs = [r for r in member.roles if r.id in sub_roles]
@@ -2051,27 +1984,14 @@ class FlightLoggerCog(commands.Cog):
                 if dodo_req is not None:
                     embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
 
-                # Search for a matching dodo reveal for this IGN + Destination
-                dodo_jump = await self.lookup_dodo_reveal_jump_url(ign, destination)
-                if dodo_jump:
-                    desc_lines.append(f"<:Cho_Check:1456715827213504593> **Dodo Reveal:** [View Reveal]({dodo_jump})")
-                
-                island_jump = self.get_island_channel_browser_url(destination)
-                if dodo_req is not None and dodo_req.get('reply_msg'):
-                    island_jump = dodo_req['reply_msg'].jump_url
-                
-
-                embed.description = "\n".join(desc_lines)
                 embed.set_image(url=Config.FOOTER_LINE)
                 embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
 
-                # Create view with flag button and optional view flight link
-                flag_view = VerifiedFlightFlagView(
-                    bot=self.bot, 
-                    message_url=message_url, 
-                    dodo_reveal_url=dodo_jump, 
-                    island_jump_url=island_jump
-                )
+                flag_view = VerifiedFlightFlagView(bot=self.bot)
+                if message_url:
+                    flag_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
+                if dodo_req is not None and dodo_req.get('reply_msg'):
+                    flag_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
                 
                 await xlog_channel.send(embed=embed, view=flag_view)
         else:
@@ -2199,15 +2119,6 @@ class FlightLoggerCog(commands.Cog):
                         color=embed_color,
                         timestamp=embed_timestamp
                     )
-                    
-
-                    dodo_jump = await self.lookup_dodo_reveal_jump_url(ign, destination)
-                    if dodo_jump:
-                        description += f"\n<:Cho_Check:1456715827213504593> **Dodo Reveal:** [View Reveal]({dodo_jump})"
-                    
-                    island_jump = self.get_island_channel_browser_url(destination)
-                    
-                    embed.description = description
                     embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
                     embed.add_field(name="Origin Island",  value=f"```yaml\n{island.title()}```", inline=True)
                     embed.add_field(name="Destination",    value=f"```yaml\n{destination.title()}```", inline=True)
@@ -2228,12 +2139,7 @@ class FlightLoggerCog(commands.Cog):
                     guild_icon = guild.icon.url if guild and guild.icon else None
                     embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
 
-                    view = TravelerActionView(
-                        self.bot, ign, visit_id=visit_id, 
-                        dodo_reveal_url=dodo_jump,
-                        message_url=message_url,
-                        island_jump_url=island_jump
-                    )
+                    view = TravelerActionView(self.bot, ign, visit_id=visit_id)
                     sent_msg = await output_channel.send(embed=embed, view=view)
                     self._pending_alerts[alert_key] = sent_msg.id
 
