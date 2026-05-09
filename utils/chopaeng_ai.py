@@ -471,8 +471,8 @@ _GREETINGS = {
 _GREETING_FILLERS = {'there', 'everyone', 'all', 'guys', 'folks', 'friends', 'po', 'ate', 'kuya'}
 
 _GREETING_RESPONSE = (
-    "Hello! Welcome to the Chopaeng community! 🌟 "
-    "How can I help you today? Are you looking for a specific item, need a Dodo code, "
+    "Hello! I am ChoBot! 🌟 "
+    "How can I help you today? Are you looking for a specific item, "
     "or have a question about the islands?"
 )
 
@@ -683,7 +683,7 @@ _AI_SYSTEM_PROMPT = (
     "7b. **Tickets & 'Am I doing the wrong thing?'** If they want to open a ticket, need "
     "staff/mod help, or are unsure about rules: answer calmly. Point to the support-ticket "
     "steps and channel <#943118146259284008>. Ordering/item requests belong in "
-    "<#782872507551055892> — not the same as a mod ticket.\n"
+    "<#1175672083183829075> — not the same as a mod ticket.\n"
     "8. **Point users to the request-help channel when relevant.** For request workflows "
     "such as item requests, villager requests, Sanrio villager requests, or orderbot "
     "guidance, include a short pointer to <#782872507551055892> for more help.\n"
@@ -691,12 +691,13 @@ _AI_SYSTEM_PROMPT = (
     "contacting an Admin or Moderator on Discord.\n"
     "10. **Never tell users you are using a 'knowledge base', 'KB', or 'internal docs'.** "
     "Say things like: community guides, FAQs, the linked channels, or 'here`s how it works'.\n\n"
+    "If you are unsure just check the knowledge base and answer based on that. If the question is vague, ask for clarification. "
 
     "# REQUEST-SPECIFIC BEHAVIOR\n"
     "- If the user asks how to get items:\n"
     "  * **For subscribers:** Explain using `!drop` on sub islands while on the island.\n"
     "  * **For non-subscribers or unstocked items:** Explain the Chorder Bot workflow: use "
-    "`!order <item names>` in <#782872507551055892>, check queue with `!position`, and follow "
+    "`!order <item names>` in <#1175672083183829075>, check queue with `!position`, and follow "
     "instructions when their turn arrives. Emphasize that only the person who placed the order "
     "can visit the island.\n"
     "- If the user asks how to request a villager, explain `!injectvillager <house#> <name>` "
@@ -769,7 +770,7 @@ def _build_prompt(question: str, history: Optional[list[dict]] = None, channel_c
         "User: how do I request an item\n"
         "AI: If the item isn't currently stocked on an island, use the ChoBot / ordering "
         "flow from the server's ordering instructions. For extra help with requests, check "
-        "channel <#782872507551055892>.\n\n"
+        "channel <#1175704849409654804>.\n\n"
         "User: how do I customize an item\n"
         "AI: Use `!lookup <item>` to find the HEX ID, `!item <HEX>` to see variants, then "
         "`!customize <HEX> <code>` to generate the customized code, and finally `!drop <code>` "

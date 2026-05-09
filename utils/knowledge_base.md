@@ -244,7 +244,7 @@ Alternatively, visit a sub island's Discord channel and use the **[Dropping Item
 ## Chorder Bot Ordering Guide (For Non-Subscribers)
 
 ### How to Place an Order
-Submit your order using the command `!order <item names>` or `!order [nhi file]` in the designated order channels. Ensure item names are spelled correctly as they appear in-game. For complex orders, consider using ACNHMobileSpawner (tutorial in <#🌲┋acnhmobilespawner>).
+Submit your order using the command `!order <item names>` or `!order [nhi file]` in the designated order channels. Ensure item names are spelled correctly as they appear in-game. For complex orders, consider using ACNHMobileSpawner (tutorial in <#1176749687554982008>).
 
 **Important:** Do not use plural forms of item names. For example, "blue ornament" is valid (and will automatically stack to the maximum quantity), but "blue ornaments" is not recognized by the bot.
 
@@ -290,7 +290,7 @@ Include the language code before the item name:
 ```
 
 ### Looking Up Items
-Use these commands in the <#🌲┋chorder-item-lookup> channel (NOT in chorder-bot):
+Use these commands in the <#1175771830510948442> channel (NOT in chorder-bot):
 - `!lookup <item names>` — Example: `!lookup golden axe`
 - `!lookuplang <language code> <item names>` — Example: `!lookuplang fr bloupe`
 
@@ -307,7 +307,7 @@ Use these commands in the <#🌲┋chorder-item-lookup> channel (NOT in chorder-
 3. Copy the long hex number (ending in `16A2`) and include it in your order. Example: `!order 00F0000016A2`
 4. Multiple recipes: `!order 00F0000016A2 02A000016A2`
 
-*For an easier way to order DIY recipes, use ACNHMobileSpawner (tutorial in <#🌲┋acnhmobilespawner>).*
+*For an easier way to order DIY recipes, use ACNHMobileSpawner (tutorial in <#1176749687554982008>).*
 
 ### Adding a Villager to Your Order
 Add `villager:<id>` to the end of your order command. Example: `!order nook miles ticket villager:tig06`
@@ -474,7 +474,7 @@ Check https://chopaeng.com for the latest info.
 
 ## How to Open a Support Ticket
 
-Questions like *How do I open a ticket?*, *I need help so I don’t break a rule*, or *who can I ask?* belong here — not in item search or ordering. For item requests, use the ordering flow in <#782872507551055892> instead.
+Questions like *How do I open a ticket?*, *I need help so I don’t break a rule*, or *who can I ask?* belong here — not in item search or ordering. For item requests, use the ordering flow in <#1175704849409654804> instead.
 
 If you need assistance with anything in the community, you can create a support ticket
 in the <#943118146259284008> channel. Before opening a ticket, please note:
