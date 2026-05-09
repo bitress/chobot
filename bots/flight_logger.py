@@ -2050,8 +2050,6 @@ class FlightLoggerCog(commands.Cog):
                 dodo_req = self.pop_pending_dodo_request(found_members[0].id)
                 if dodo_req is not None:
                     embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
-                    if dodo_req.get('reply_msg'):
-                        desc_lines.append(f"🎫 **Dodo Request:** [View Message]({dodo_req['reply_msg'].jump_url})")
 
                 # Search for a matching dodo reveal for this IGN + Destination
                 dodo_jump = await self.lookup_dodo_reveal_jump_url(ign, destination)
@@ -2062,8 +2060,6 @@ class FlightLoggerCog(commands.Cog):
                 if dodo_req is not None and dodo_req.get('reply_msg'):
                     island_jump = dodo_req['reply_msg'].jump_url
                 
-                if island_jump:
-                    desc_lines.append(f"🎫 **Dodo Request:** [View Dodo Request]({island_jump})")
 
                 embed.description = "\n".join(desc_lines)
                 embed.set_image(url=Config.FOOTER_LINE)
@@ -2210,8 +2206,6 @@ class FlightLoggerCog(commands.Cog):
                         description += f"\n<:Cho_Check:1456715827213504593> **Dodo Reveal:** [View Reveal]({dodo_jump})"
                     
                     island_jump = self.get_island_channel_browser_url(destination)
-                    if island_jump:
-                         description += f"\n🎫 **Dodo Request:** [View Dodo Request]({island_jump})"
                     
                     embed.description = description
                     embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
