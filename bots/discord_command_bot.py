@@ -3545,31 +3545,12 @@ class DiscordCommandBot(commands.Bot):
                         logger.warning(f"[DISCORD] Failed to delete dodo update message: {exc}")
                     return
 
-        # Auto-reply to direct messages (except explicit bot commands).
-        if message.guild is None and not message.content.startswith(self.command_prefix):
-            question = message.content.strip()
-            if question:
-                conv_key = _discord_conv_key(message)
-                channel_name = getattr(message.channel, "name", None) or "dm"
-                async with message.channel.typing():
-                    answer = await get_ai_answer(
-                        question,
-                        gemini_api_key=Config.GEMINI_API_KEY,
-                        openai_api_key=Config.OPENAI_API_KEY,
-                        openai_base_url=Config.OPENAI_BASE_URL,
-                        provider=Config.AI_PROVIDER,
-                        gemini_model=Config.GEMINI_MODEL,
-                        openai_model=Config.OPENAI_MODEL,
-                        conversation_key=conv_key,
-                        channel_context=channel_name,
-                    )
-                view = HelpfulnessView(message.author.id, question, answer)
-                await message.reply(f"{answer}", view=view)
-                logger.info(f"[DISCORD] DM auto-reply by {message.author.name}: {question[:80]}")
-            return
+        # Auto-reply to direct messages (DISABLED - only allowed in specific channels)
+        # if message.guild is None and not message.content.startswith(self.command_prefix):
+        #     ...
 
         # Handle bot mention as an implicit !ask
-        if self.user in message.mentions:
+        if self.user in message.mentions and message.channel.id in Config.AUTOREPLY_CHANNELS:
             # Strip all @mentions to extract the bare question
             question = MENTION_PATTERN.sub('', message.content).strip()
             conv_key = _discord_conv_key(message)
@@ -3592,8 +3573,8 @@ class DiscordCommandBot(commands.Bot):
             return
 
         # Auto-reply on keywords (e.g., "question", "does anyone know", "anybody know")
-        # Check if autoreply is enabled
-        if self.autoreply_enabled:
+        # Check if autoreply is enabled and in allowed channels
+        if self.autoreply_enabled and message.channel.id in Config.AUTOREPLY_CHANNELS:
             auto_reply_keywords = [
                 # Questions about knowledge
                 "question", "i have a question", "do you know", "does anyone know", 
@@ -3647,6 +3628,7 @@ class DiscordCommandBot(commands.Bot):
         if (
             message.reference is not None
             and not message.content.startswith(self.command_prefix)
+            and message.channel.id in Config.AUTOREPLY_CHANNELS
         ):
             ref = message.reference.resolved
             if ref is None:
