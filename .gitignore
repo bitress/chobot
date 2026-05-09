@@ -8,3 +8,4 @@ chobot.db
 .idea
 cache_dump.json
 chobot.pid
+.env.cho

@@ -1075,7 +1075,7 @@ class DiscordCommandCog(commands.Cog):
         visitors = self._parse_visitor_count(item.get("visitors"))
         map_url = str(item.get("map_url") or "").strip()
         description = str(item.get("description") or "").strip()
-        dodo_code = raw_code if DODO_CODE_PATTERN.fullmatch(raw_code) else None
+        dodo_code = raw_code if DODO_CODE_PATTERN.fullmatch(raw_code) else raw_code
 
         island_url = "https://www.chopaeng.com/island/"+raw_name.lower()    
 
@@ -1083,7 +1083,7 @@ class DiscordCommandCog(commands.Cog):
             color = discord.Color.green()
             code_line = f"```yaml\n{dodo_code}```"
             status_line = "Online"
-        elif status == "REFRESHING":
+        elif dodo_code == "GETTIN'":
             color = discord.Color.orange()
             code_line = "*Refreshing*"
             status_line = "Refreshing"
@@ -2771,7 +2771,7 @@ class DiscordCommandCog(commands.Cog):
         if sent:
             logger.info(f"[DISCORD] Notified {sent} subscriber(s) that {island_display} is {'back ONLINE' if online else 'OFFLINE'}")
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=300)
     async def island_monitor_loop(self):
         """Background task: detect island down/up transitions and notify in channel."""
         guild = self.bot.get_guild(Config.GUILD_ID)
