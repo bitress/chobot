@@ -10,6 +10,7 @@ import unicodedata
 import datetime
 import asyncio
 import aiosqlite
+import json
 
 import discord
 from discord import app_commands
@@ -634,20 +635,39 @@ class TravelerActionView(discord.ui.View):
                         dest_channel = interaction.guild.get_channel(channel_id) if channel_id else None
                         break
                 
-                # Extract subscription roles for this destination
+                # Extract subscription roles
+                cog = interaction.client.get_cog("FlightLoggerCog")
+                all_sub_roles = cog.all_sub_roles if cog else set()
+                
+                ign_opts, island_opts = cog.parse_member_nick(target_user.display_name) if cog else ([], [])
+                max_identities = max(len(ign_opts), len(island_opts))
+
                 if dest_channel:
                     sub_roles = {}
                     for target_obj, overwrite in dest_channel.overwrites.items():
-                        if isinstance(target_obj, discord.Role) and overwrite.read_messages is True:
+                        can_view = (getattr(overwrite, "view_channel", None) is True) or (getattr(overwrite, "read_messages", None) is True)
+                        if isinstance(target_obj, discord.Role) and can_view:
                             if target_obj.name != "@everyone":
                                 sub_roles[target_obj.id] = target_obj.name
                     
-                    highlight_present = [sub_roles[r.id] for r in target_user.roles if r.id in sub_roles]
-                    if highlight_present:
-                        subs_str = ", ".join(highlight_present)
+                    current_island_subs = [sub_roles[r.id] for r in target_user.roles if r.id in sub_roles]
+                    other_subs = [r.name for r in target_user.roles if r.id in all_sub_roles and r.id not in sub_roles]
+                    total_subs = len(current_island_subs) + len(other_subs)
+
+                    if current_island_subs:
+                        subs_str = ", ".join(current_island_subs)
                         action_value += f"\n**Subscription(s):** {subs_str}"
                     else:
-                        action_value += f"\n**Subscription(s):** None"
+                        action_value += f"\n**Subscription(s):** None for this island"
+                    
+                    if other_subs:
+                        other_subs_str = ", ".join(other_subs)
+                        action_value += f"\n**Other Subscription(s):** {other_subs_str}"
+                    
+                    if max_identities > 1 and total_subs < max_identities:
+                        action_value += f"\n**MISMATCH: {max_identities} identities in nick, but only {total_subs} sub(s)**"
+                    elif total_subs > 1:
+                        action_value += f"\n**Multiple Subscriptions Detected**"
             
             if reason:
                 action_value += f"\n**Reason:** {reason}"
@@ -815,10 +835,25 @@ class FlagConfirmView(discord.ui.View):
         """Proceed with flagging."""
         try:
             await self.parent_view._execute_flag(interaction, self.original_message)
-            await interaction.response.edit_message(content="🚩 Flight flagged for review.", view=None)
+            try:
+                await interaction.response.edit_message(content="🚩 Flight flagged for review.", view=None)
+            except Exception:
+                try:
+                    await interaction.followup.send("🚩 Flight flagged for review (alert created in flight log channel).", ephemeral=True)
+                except Exception:
+                    pass  # Silently ignore if even followup fails
         except Exception as e:
             logger.error(f"[FLAG] Error in confirm_flag: {e}", exc_info=True)
-            await interaction.response.send_message(f"Error flagging flight: {e}", ephemeral=True)
+            try:
+                await interaction.response.edit_message(
+                    content="🚩 Flight flagged for review (alert created in flight log channel).",
+                    view=None
+                )
+            except Exception:
+                try:
+                    await interaction.followup.send("🚩 Flight flagged for review (alert created in flight log channel).", ephemeral=True)
+                except Exception:
+                    pass
         finally:
             self.stop()
 
@@ -857,12 +892,11 @@ class VerifiedFlightFlagView(discord.ui.View):
         return None
 
     async def _execute_flag(self, interaction: discord.Interaction, xlog_message: discord.Message):
-        """Execute the flag action: create alert and update xlog message."""
+        """Execute the flag action: create alert and update xlog message. Also flag for xlog if multiple IGNs/islands and multiple subscriptions."""
         embed = xlog_message.embeds[0] if xlog_message.embeds else None
         ign = self.ign or self._extract_field(embed, "IGN")
         island = self._extract_field(embed, "Island Name") if embed else None
         destination_display = self._extract_field(embed, "Destination") if embed else "Unknown"
-
         visit_id = self.visit_id
         if not visit_id and embed:
             for field in embed.fields:
@@ -871,22 +905,67 @@ class VerifiedFlightFlagView(discord.ui.View):
                     if m:
                         visit_id = int(m.group(1))
                         break
-
-        # Recover message_url from embed description if not stored in self
         msg_url = self.message_url
         if not msg_url and embed and embed.description:
             m = re.search(r'\[.*?\]\((https?://[^)]+)\)', embed.description)
             if m:
                 msg_url = m.group(1)
 
-        # --- Create manual alert in the flight log channel ---
+        # --- Check for multiple IGNs/islands and multiple subscriptions ---
+        flagged_for_multi = False
+        guild = self.bot.get_guild(Config.GUILD_ID) if self.bot else None
+        traveler_member = None
+        if guild and embed and embed.description:
+            # Prefer resolving the linked traveler from the verbose-xlog embed.
+            # (The interaction user is the mod clicking the button, not the traveler.)
+            m = re.search(r"<@!?(?P<uid>\d+)>", embed.description)
+            if m:
+                traveler_member = guild.get_member(int(m.group("uid")))
+
+        if traveler_member is None and guild and visit_id is not None:
+            # Fallback: resolve via island_visits record, if present.
+            try:
+                async with aiosqlite.connect(DB_NAME) as db:
+                    cur = await db.execute("SELECT user_id FROM island_visits WHERE id = ? LIMIT 1", (visit_id,))
+                    row = await cur.fetchone()
+                if row and row[0]:
+                    traveler_member = guild.get_member(int(row[0]))
+            except Exception:
+                traveler_member = None
+
+        # Last resort fallback: avoid breaking flag flow if we cannot resolve the traveler.
+        if traveler_member is None and interaction.user and guild:
+            traveler_member = guild.get_member(interaction.user.id)
+        igns, islands = [], []
+        if traveler_member:
+            # Use the robust parser from FlightLoggerCog
+            cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
+            if cog:
+                igns, islands = cog.parse_member_nick(traveler_member.display_name)
+                # Use the up-to-date sub role set from cog (should be set on fetch_islands)
+                await cog._ensure_sub_roles_loaded()
+                all_sub_roles = getattr(cog, 'all_sub_roles', set())
+                member_sub_roles = [r for r in traveler_member.roles if r.id in all_sub_roles]
+                sub_count = len(member_sub_roles)
+                ign_count = len(igns)
+                island_count = len(islands)
+                max_count = max(ign_count, island_count)
+                # Add debug info to alert for troubleshooting
+                sub_role_mentions = [r.mention for r in member_sub_roles]
+                debug_info = (
+                    f"Identities: {max_count} | Subs: {sub_count}\n"
+                    f"IGNs: {igns}\n"
+                    f"Islands: {islands}\n"
+                    f"Sub Roles: {sub_role_mentions if sub_role_mentions else '[]'}"
+                )
+                if max_count > 1 and max_count != sub_count:
+                    flagged_for_multi = True
+        # If flagged, add a field to the alert and log
         alert_msg = None
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID) if self.bot else None
         if output_channel:
-            guild = self.bot.get_guild(Config.GUILD_ID) if self.bot else None
             guild_icon = guild.icon.url if guild and guild.icon else None
             alert_ts = int(discord.utils.utcnow().timestamp())
-
             alert_embed = discord.Embed(
                 description=(
                     f"### {Config.EMOJI_FAIL} Flight Flagged for Review\n"
@@ -904,9 +983,17 @@ class VerifiedFlightFlagView(discord.ui.View):
             alert_embed.add_field(name="Status", value="<:Cho_Investigate:1474310726381338666> **PENDING REVIEW**", inline=True)
             if visit_id is not None:
                 alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            if flagged_for_multi:
+                alert_embed.add_field(
+                    name="Flag Reason",
+                    value=(
+                        "**Mismatch Detected (Auto-Flag)**\n"
+                        f"Traveler {traveler_member.mention} has multiple identities in nickname, but fewer subscription roles detected.\n"
+                                            ),
+                    inline=False,
+                )
             alert_embed.set_image(url=Config.FOOTER_LINE)
             alert_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
-
             action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
             alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
 
@@ -915,7 +1002,7 @@ class VerifiedFlightFlagView(discord.ui.View):
         if cog:
             await cog.add_warning(
                 None, interaction.guild_id,
-                "Flight manually flagged for review",
+                "Flight manually flagged for review" + (" [MULTI-IGN/SUB]" if flagged_for_multi else ""),
                 interaction.user.id, visit_id, action_type='FLAG',
             )
 
@@ -930,14 +1017,14 @@ class VerifiedFlightFlagView(discord.ui.View):
                     value=f"By {interaction.user.mention} <t:{flag_ts}:R>",
                     inline=False,
                 )
-
             new_view = discord.ui.View()
             if msg_url:
                 new_view.add_item(discord.ui.Button(label="View Flight Standing", url=msg_url, style=discord.ButtonStyle.link))
             if alert_msg:
                 new_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
-
             await xlog_message.edit(embed=embed, view=new_view)
+        except (discord.NotFound, discord.HTTPException):
+            logger.debug(f"[FLAG] Could not update old xlog message, but alert was created in flight log")
         except Exception as e:
             logger.error(f"[FLAG] Error updating xlog message after flag: {e}")
 
@@ -975,6 +1062,7 @@ class FlightLoggerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.island_map = {}
+        self.all_sub_roles = set()
         self.join_pattern = JOIN_PATTERN
         self._db_conn = None
         self.last_processed = None
@@ -983,6 +1071,36 @@ class FlightLoggerCog(commands.Cog):
         self._pending_dodo_requests: dict[int, dict] = {}
         self.fetch_islands_task.start()
         self.cleanup_warnings_task.start()
+
+    async def _load_sub_roles_from_db(self) -> set[int]:
+        """Fallback: derive subscription role IDs from islands.required_roles in SQLite."""
+        roles: set[int] = set()
+        try:
+            async with aiosqlite.connect(DB_NAME) as db:
+                cur = await db.execute("SELECT required_roles FROM islands")
+                rows = await cur.fetchall()
+            for (required_roles_raw,) in rows:
+                try:
+                    parsed = json.loads(required_roles_raw or "[]")
+                except Exception:
+                    parsed = []
+                for rid in parsed or []:
+                    if isinstance(rid, int):
+                        roles.add(rid)
+                    elif isinstance(rid, str) and rid.isdigit():
+                        roles.add(int(rid))
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] Could not load required_roles from DB for fallback: {exc}")
+        return roles
+
+    async def _ensure_sub_roles_loaded(self) -> None:
+        """Ensure `self.all_sub_roles` is populated, using DB fallback when needed."""
+        if self.all_sub_roles:
+            return
+        fallback = await self._load_sub_roles_from_db()
+        if fallback:
+            self.all_sub_roles = fallback
+            logger.info(f"[FLIGHT] Loaded {len(fallback)} sub roles from DB fallback.")
 
     async def _get_db(self):
         if self._db_conn is None:
@@ -1274,6 +1392,89 @@ class FlightLoggerCog(commands.Cog):
         self.bot.add_view(TravelerActionView(bot=self.bot))
         self.bot.add_view(VerifiedFlightFlagView(bot=self.bot))
 
+    async def _trigger_automatic_flag(self, ign, island, destination, member, identities, subs, message_url, message_content, timestamp, island_type='sub'):
+        """Automatically create a manual alert and an xlog entry for suspicious flights."""
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        guild_id = guild.id if guild else None
+        guild_icon = guild.icon.url if guild and guild.icon else None
+
+        # Ensure we have up-to-date roles (member cache can be stale/partial).
+        try:
+            if guild:
+                member = await guild.fetch_member(member.id)
+        except Exception:
+            pass
+
+        # Derive sub roles using the same source of truth as verbose xlog.
+        member_sub_roles = [r for r in member.roles if r.id in self.all_sub_roles]
+        sub_role_mentions = [r.mention for r in member_sub_roles]
+        
+        # 1. Record Visit (linked to member)
+        visit_id = await self.record_island_visit(ign, island, destination, [member], guild_id, int(timestamp.timestamp()), island_type=island_type)
+        
+        # 2. Create Alert in Flight Log Channel
+        output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
+        alert_msg = None
+        if output_channel:
+            alert_embed = discord.Embed(
+                description=(
+                    f"### <a:CampWarning:1172346431542140961> Mismatch Detected\n"
+                    f"Member {member.mention} matched, but their nickname has more identities than their subscription count.\n"
+                    f"**Identities:** {identities} | **Subs:** {subs}\n"
+                    f"**Sub Roles:** {' / '.join(sub_role_mentions) if sub_role_mentions else 'None detected'}\n"
+                    f"Use the buttons below to take action."
+                ),
+                color=COLOR_INVESTIGATION,
+                timestamp=timestamp,
+            )
+            alert_embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
+            alert_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+            alert_embed.add_field(name="Destination", value=destination or "Unknown", inline=True)
+            if visit_id:
+                alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            alert_embed.set_image(url=Config.FOOTER_LINE)
+            alert_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
+            
+            action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
+            alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
+            
+            # Record in DB
+            await self.add_warning(member.id, guild_id, f"Auto-flagged: Nickname vs Sub mismatch ({identities} vs {subs})", self.bot.user.id, visit_id, action_type='FLAG')
+
+        # 3. Create "Flagged" Log in XLOG Channel
+        xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        if xlog_channel:
+            # Helpful context inline for quick mod triage.
+            member_sub_roles = [r for r in member.roles if r.id in self.all_sub_roles]
+            sub_role_mentions = [r.mention for r in member_sub_roles]
+            xlog_desc = (
+                f"**{member.mention} ({member.display_name})**\n"
+                f"**Auto-Flag:** Nickname identities exceed subscription roles.\n"
+                f"**Identities:** {identities}  |  **Subs:** {subs}\n"
+                f"**Sub Roles:** {(' / '.join(sub_role_mentions)) if sub_role_mentions else 'None detected'}"
+            )
+            
+            xlog_embed = discord.Embed(
+                title="🚩 Flagged Flight",
+                description=xlog_desc,
+                color=COLOR_INVESTIGATION,
+                timestamp=timestamp,
+            )
+            xlog_embed.add_field(name="IGN", value=f"```yaml\n{ign}```", inline=True)
+            xlog_embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
+            xlog_embed.add_field(name="Destination", value=self.get_island_channel_link(destination), inline=True)
+            
+            xlog_embed.set_image(url=Config.FOOTER_LINE)
+            xlog_embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
+
+            xlog_view = discord.ui.View()
+            if message_url:
+                xlog_view.add_item(discord.ui.Button(label="View Flight Log", url=message_url, style=discord.ButtonStyle.link))
+            if alert_msg:
+                xlog_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
+
+            await xlog_channel.send(embed=xlog_embed, view=xlog_view)
+
     def cog_unload(self):
         self.fetch_islands_task.cancel()
         self.cleanup_warnings_task.cancel()
@@ -1307,12 +1508,20 @@ class FlightLoggerCog(commands.Cog):
 
         category = discord.utils.get(guild.categories, id=Config.CATEGORY_ID)
         if not category:
-            logger.error(f"[FLIGHT] Category {Config.CATEGORY_ID} not found.")
+            logger.error(f"[FLIGHT] Category {Config.CATEGORY_ID} not found. Falling back to DB-derived subscription roles only.")
+            await self._ensure_sub_roles_loaded()
             return
 
         temp_map = {}
-        count = 0
+        sub_roles = set()
         
+        # Exclude common non-subscription roles
+        excluded_roles = {
+            Config.ADMIN_ROLE_ID, Config.SENIOR_MOD_ROLE_ID, Config.BABY_MOD_ROLE_ID, 
+            Config.ISLAND_BOT_ROLE_ID
+        }
+
+        # 1. Collect subscription roles from each Channel overwrite
         for channel in category.channels:
             if channel.id == Config.FLIGHT_LISTEN_CHANNEL_ID:
                 continue
@@ -1323,7 +1532,30 @@ class FlightLoggerCog(commands.Cog):
                 continue
 
             temp_map[chan_clean] = channel.id
-            count += 1
+
+            channel_req_roles = []
+            for target, overwrite in channel.overwrites.items():
+                # Discord migrated from "read_messages" -> "view_channel". Support both.
+                can_view = (getattr(overwrite, "view_channel", None) is True) or (getattr(overwrite, "read_messages", None) is True)
+                if isinstance(target, discord.Role) and can_view:
+                    if target.name != "@everyone":
+                        channel_req_roles.append(str(target.id))
+                        if target.id not in excluded_roles:
+                            sub_roles.add(target.id)
+
+            # Sync with the 'islands' table used by the Web API
+            island_clean = re.sub(r'^\d+', '', chan_clean)
+            if island_clean:
+                try:
+                    # Note: Using a one-off connection here for simplicity in the task loop
+                    async with aiosqlite.connect(DB_NAME) as db:
+                        await db.execute(
+                            "UPDATE islands SET required_roles = ?, channel_id = ? WHERE UPPER(name) = ?",
+                            (json.dumps(channel_req_roles), str(channel.id), island_clean.upper())
+                        )
+                        await db.commit()
+                except Exception as e:
+                    logger.error(f"[FLIGHT] Failed to sync island {island_clean} to DB: {e}")
 
             # Also map without leading digits for canonical name lookups
             # e.g. "01alapaap" -> "alapaap"
@@ -1332,7 +1564,11 @@ class FlightLoggerCog(commands.Cog):
                 temp_map[island_clean] = channel.id
 
         self.island_map = temp_map
-        logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {len(temp_map)} keys.")
+        self.all_sub_roles = sub_roles
+        if not self.all_sub_roles:
+            # If category scan produced no roles, try DB-derived roles.
+            await self._ensure_sub_roles_loaded()
+        logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {len(temp_map)} keys, {len(sub_roles)} sub roles.")
 
     def get_island_channel_link(self, island_name):
         """Get channel link with robust fallback search"""
@@ -1393,20 +1629,37 @@ class FlightLoggerCog(commands.Cog):
     def parse_member_nick(self, display_name: str):
         if not display_name:
             return [], []
-        # Support common nick separators: | (preferred), then , or -
-        # / is intentionally excluded here as it is used within a field for multiple options
-        if '|' in display_name:
-            raw_chunks = display_name.split('|')
-        else:
-            if not re.search(r'[,\-]', display_name):
-                return [], []
-            raw_chunks = re.split(r'[,\-]', display_name, maxsplit=1)
-        chunks = [c.strip() for c in raw_chunks if c.strip()]
+
+        # Support ONLY | as a nick separator
+        if '|' not in display_name:
+            return [], []
+        chunks = [c.strip() for c in display_name.split('|') if c.strip()]
+
+        # Skip "ACNH" prefix if present as the first chunk
+        if chunks and chunks[0].upper() == "ACNH":
+            chunks = chunks[1:]
+
         if not chunks:
             return [], []
-        ign_opts    = self.split_options(chunks[0])
-        island_opts = [opt for chunk in chunks[1:] for opt in self.split_options(chunk)]
-        return ign_opts, island_opts
+
+        ign_opts = []
+        island_opts = []
+
+        if len(chunks) % 2 == 0:
+            # Even number of chunks: treat as (IGN, Island) pairs
+            # e.g., "IGN1 | Island1 | IGN2 | Island2" or "IGN1 | Island1"
+            for i in range(0, len(chunks), 2):
+                ign_opts.extend(self.split_options(chunks[i]))
+                island_opts.extend(self.split_options(chunks[i+1]))
+        else:
+            # Odd number of chunks (e.g., 1 or 3+): First is IGN, rest are Islands
+            # e.g., "IGN1 | Island1 | Island2"
+            ign_opts = self.split_options(chunks[0])
+            for i in range(1, len(chunks)):
+                island_opts.extend(self.split_options(chunks[i]))
+
+        # Deduplicate results
+        return list(dict.fromkeys(ign_opts)), list(dict.fromkeys(island_opts))
 
     def _is_strict_nick_match(self, ign_log_clean: str, island_log_clean: str, ign_opts: list[str], island_opts: list[str]) -> bool:
         """Return True only when both IGN and island from nickname match the flight log.
@@ -1521,6 +1774,11 @@ class FlightLoggerCog(commands.Cog):
 
                 # Add roles/subscription info for the matched member
                 member = found_members[0]
+                # Ensure we have up-to-date roles (member cache can be stale/partial).
+                try:
+                    member = await guild.fetch_member(member.id)
+                except Exception:
+                    pass
                 member_roles = [r for r in member.roles if r.name != "@everyone"]
                 has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in member_roles)
                 
@@ -1531,23 +1789,47 @@ class FlightLoggerCog(commands.Cog):
                 
                 if dest_channel:
                     for target, overwrite in dest_channel.overwrites.items():
-                        if isinstance(target, discord.Role) and overwrite.read_messages is True:
+                        can_view = (getattr(overwrite, "view_channel", None) is True) or (getattr(overwrite, "read_messages", None) is True)
+                        if isinstance(target, discord.Role) and can_view:
                             if target.name != "@everyone":
                                 sub_roles[target.id] = target.name
                 
-                highlight_present = [(sub_roles[r.id], r.mention) for r in member_roles if r.id in sub_roles]
+                # Subscription Analysis
+                cog = self
+                await self._ensure_sub_roles_loaded()
+                ign_opts, island_opts = self.parse_member_nick(member.display_name)
+                max_identities = max(len(ign_opts), len(island_opts))
+
+                all_member_subs = [r for r in member.roles if r.id in cog.all_sub_roles]
+                current_island_subs = [r for r in member.roles if r.id in sub_roles]
+                other_subs = [r for r in all_member_subs if r.id not in sub_roles]
+
+                if max_identities > 1 and len(all_member_subs) < max_identities:
+                    # SUSPICIOUS: Automatically trigger manual alert flow
+                    await self._trigger_automatic_flag(ign, island, destination, member, max_identities, len(all_member_subs), message_url, message_content, embed_timestamp, island_type=island_type)
+                    return
 
                 # Design: Use a block with emoji and clear separation
                 if has_access:
-                    if highlight_present:
-                        sub_lines = [f"{mention}" for _, mention in highlight_present]
+                    if current_island_subs:
+                        sub_lines = [r.mention for r in current_island_subs]
                         desc_lines.append(
                             f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
                         )
                     else:
                         desc_lines.append(
-                            f"<a:CampWarning:1172346431542140961> **Subscription(s):**\n> None detected."
+                            f"<a:CampWarning:1172346431542140961> **Subscription(s):**\n> None detected for this island."
                         )
+                    
+                    if other_subs:
+                        other_lines = [r.mention for r in other_subs]
+                        desc_lines.append(
+                            f"<a:heartside:784055539881214002> **Other Subscription(s):**\n> " + "\n> ".join(other_lines)
+                        )
+
+                    if len(all_member_subs) > 1:
+                        desc_lines.append(f"> <:ChoLove:818216528449241128> **Multiple Subscriptions Detected**")
+
                     desc_lines.append(
                         f"<a:starpink:784055540321091584> **Has Island Access?** Yes"
                     )
