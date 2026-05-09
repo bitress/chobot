@@ -583,6 +583,19 @@ def _trim_to_sentences(text: str, n: int = 3) -> str:
     return trimmed
 
 
+def _auto_link_channels(text: str) -> str:
+    """Automatically convert raw 17-20 digit Discord channel IDs into <#ID> links.
+    
+    Skips IDs that are already part of a mention (<#ID>, <@ID>, etc.) or look like
+    part of a URL or path.
+    """
+    if not text:
+        return text
+    # Pattern: matches a 17-20 digit number that is not preceded by <#, <@, <@&, or /
+    # and not followed by >.
+    return re.sub(r'(?<![<#@&/])\b(\d{17,20})\b(?![>])', r'<#\1>', text)
+
+
 def _keyword_answer(question: str, history: Optional[list[dict]] = None) -> str:
     """Return a clean answer by matching knowledge base sections.
 
@@ -830,13 +843,13 @@ async def get_ai_answer(
     if _is_greeting(q):
         if conversation_key:
             conversation_store.add(conversation_key, q, _GREETING_RESPONSE)
-        return _GREETING_RESPONSE
+        return _auto_link_channels(_GREETING_RESPONSE)
 
     # Respond to vague help requests with a clarifying question.
     if _is_vague_request(q):
         if conversation_key:
             conversation_store.add(conversation_key, q, _VAGUE_RESPONSE)
-        return _VAGUE_RESPONSE
+        return _auto_link_channels(_VAGUE_RESPONSE)
 
     history = conversation_store.get(conversation_key) if conversation_key else []
 
@@ -848,7 +861,7 @@ async def get_ai_answer(
     if live_search_answer:
         if conversation_key:
             conversation_store.add(conversation_key, q, live_search_answer)
-        return live_search_answer
+        return _auto_link_channels(live_search_answer)
 
     selected = (provider or "").strip().lower()
     providers_to_try: list[tuple[str, Optional[str]]] = []
@@ -884,14 +897,14 @@ async def get_ai_answer(
 
             if conversation_key:
                 conversation_store.add(conversation_key, q, answer)
-            return answer
+            return _auto_link_channels(answer)
         except Exception as e:
             logger.warning(f"[ChopaengAI] {name} failed ({e}), trying next fallback.")
 
     answer = _keyword_answer(q, history=history)
     if conversation_key:
         conversation_store.add(conversation_key, q, answer)
-    return answer
+    return _auto_link_channels(answer)
 
 
 async def _gemini_answer(

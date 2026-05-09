@@ -146,15 +146,15 @@ After subscribing/joining on any platform, link your account to Discord:
 **YouTube:**
 1. Link your YouTube account: https://bit.ly/youtube2discord
 2. Takes 3-5 minutes to sync
-3. You'll receive the @1048323845771247678 role
+3. You'll receive the <@1048323845771247678> role
 
 **Twitch:**
 1. Link your Twitch account: https://bit.ly/twitch2discord
-2. You'll receive the @898373041799696454 role
+2. You'll receive the <@898373041799696454> role
 
 **TikTok:**
 1. Link your TikTok account: https://bit.ly/linkyourtiktok
-2. You'll receive the @1302619772638461993 role
+2. You'll receive the <@1302619772638461993> role
 
 ### Completing Sub Island Access
 After linking your account and receiving your role:
@@ -483,7 +483,7 @@ in the <#943118146259284008> channel. Before opening a ticket, please note:
 1. **Check the FAQ channel first** — <#1086127868863578132> may already have your answer.
 2. **Respond quickly** — Please respond ASAP once someone replies to your ticket.
 3. **Don't ask about islands** — Island information can be found in the FAQs channel.
-4. **Don't ask about drop bot usage** — Questions about @1218852297988112395 drop commands belong in <#782872507551055892>.
+4. **Don't ask about drop bot usage** — Questions about <@1218852297988112395> drop commands belong in <#782872507551055892>.
 5. **Check if you violated rules** — Do not open a ticket if you violated community or island rules 
    (<#755522711492493342> / <#783677194576330792>).
 6. **English only** — This is an English server; please submit tickets in English.
