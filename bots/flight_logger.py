@@ -1889,6 +1889,9 @@ class FlightLoggerCog(commands.Cog):
 
                 # Design: Use a block with emoji and clear separation
                 if has_access:
+                    desc_lines.append(
+                        f"<a:starpink:784055540321091584> **Has Island Access?** Yes"
+                    )
                     if current_island_subs:
                         sub_lines = [r.mention for r in current_island_subs]
                         desc_lines.append(
@@ -1908,9 +1911,7 @@ class FlightLoggerCog(commands.Cog):
                     if len(all_member_subs) > 1:
                         desc_lines.append(f"> <:ChoLove:818216528449241128> **Multiple Subscriptions Detected**")
 
-                    desc_lines.append(
-                        f"<a:starpink:784055540321091584> **Has Island Access?** Yes"
-                    )
+
                 else:
                     desc_lines.append(
                         f"<a:CampWarning:1172346431542140961> **No Island Access Role**"

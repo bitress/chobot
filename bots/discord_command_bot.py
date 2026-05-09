@@ -220,6 +220,44 @@ def _init_subscriptions_db() -> None:
         logger.error(f"[DISCORD] Failed to init island_subscriptions table: {exc}")
 
 
+def _init_settings_db() -> None:
+    """Create the settings table for general bot configuration."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )"""
+            )
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to init settings table: {exc}")
+
+
+def _get_setting(key: str, default: str = "") -> str:
+    """Retrieve a setting value from the DB."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+            return row[0] if row else default
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to get setting '{key}': {exc}")
+        return default
+
+
+def _set_setting(key: str, value: str) -> None:
+    """Save a setting value to the DB."""
+    try:
+        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to set setting '{key}': {exc}")
+
+
 def _add_subscription(user_id: int, island_clean: str, kind: str) -> bool:
     """Subscribe *user_id* to alerts for *island_clean*.
 
@@ -3270,27 +3308,17 @@ class DiscordCommandCog(commands.Cog):
         if isinstance(error, commands.MissingPermissions):
             await ctx.reply("You do not have permission to use this command.")
 
-    @commands.hybrid_group(name="autoreply", invoke_without_command=False)
+    @commands.hybrid_command(name="autoreply")
+    @app_commands.describe(enabled="Enable or disable keyword auto-replies")
     @commands.has_permissions(administrator=True)
-    async def autoreply(self, ctx):
+    async def autoreply(self, ctx, enabled: bool):
         """Manage autoreply settings (Admin only)"""
-        pass
-
-    @autoreply.command(name="true")
-    @commands.has_permissions(administrator=True)
-    async def autoreply_enable(self, ctx):
-        """Enable keyword auto-replies"""
-        self.bot.autoreply_enabled = True
-        await ctx.reply("Autoreply enabled. The bot will now respond to keyword triggers.")
-        logger.info(f"[DISCORD] Autoreply enabled by {ctx.author.name}")
-
-    @autoreply.command(name="false")
-    @commands.has_permissions(administrator=True)
-    async def autoreply_disable(self, ctx):
-        """Disable keyword auto-replies"""
-        self.bot.autoreply_enabled = False
-        await ctx.reply("Autoreply disabled. The bot will no longer respond to keyword triggers.")
-        logger.info(f"[DISCORD] Autoreply disabled by {ctx.author.name}")
+        self.bot.autoreply_enabled = enabled
+        _set_setting("autoreply_enabled", "1" if enabled else "0")
+        
+        status = "enabled" if enabled else "disabled"
+        await ctx.reply(f"Autoreply {status}. The bot will {'now' if enabled else 'no longer'} respond to keyword triggers.")
+        logger.info(f"[DISCORD] Autoreply {status} by {ctx.author.name}")
 
     @autoreply.error
     async def autoreply_error(self, ctx, error):
@@ -3313,7 +3341,8 @@ class DiscordCommandBot(commands.Bot):
         self._load_command_cog = load_command_cog
         self.start_time = datetime.now()
         self.restart_requested = False
-        self.autoreply_enabled = True  # Toggle for keyword auto-replies
+        # Toggle for keyword auto-replies (load from DB, default to True)
+        self.autoreply_enabled = _get_setting("autoreply_enabled", "1") == "1"
 
         self.status_list = cycle([
             discord.Activity(type=discord.ActivityType.watching, name="flights arrive ✈️ | !find"),
@@ -3369,6 +3398,7 @@ class DiscordCommandBot(commands.Bot):
         """Setup bot cogs and sync commands"""
         _init_command_claims_db()
         _init_subscriptions_db()
+        _init_settings_db()
 
         if self._load_command_cog:
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
