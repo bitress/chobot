@@ -474,6 +474,8 @@ Check https://chopaeng.com for the latest info.
 
 ## How to Open a Support Ticket
 
+Questions like *How do I open a ticket?*, *I need help so I don’t break a rule*, or *who can I ask?* belong here — not in item search or ordering. For item requests, use the ordering flow in <#782872507551055892> instead.
+
 If you need assistance with anything in the community, you can create a support ticket
 in the <#943118146259284008> channel. Before opening a ticket, please note:
 

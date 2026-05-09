@@ -1,6 +1,6 @@
 """
 Chopaeng AI Module
-Answers questions about the Chopaeng community using a built-in knowledge base.
+Answers questions about the Chopaeng community using internal reference guides and live APIs.
 Uses OpenAI or Google Gemini when API keys are configured;
 falls back to keyword-based matching when no key is present.
 """
@@ -124,7 +124,11 @@ def _extract_live_search_candidates(question: str) -> list[tuple[str, str]]:
         ("item", r"^!(?:find|locate)\s+(.+)$", "explicit item command"),
         ("villager", r"^(?:find|search)\s+villager\s+(.+)$", "villager search phrase"),
         ("item", r"^(?:find|search)\s+item\s+(.+)$", "item search phrase"),
-        ("item", r"^(?:do\s+you\s+have|is\s+there)\s+(?:any\s+)?(.+)$", "do you have item"),
+        (
+            "item",
+            r"^(?:do\s+you\s+have|is\s+there\s+(?:any\s+)?)(?!a\s+way\s+to\b)(.+)$",
+            "do you have item",
+        ),
         ("item", r"^does\s+any\s+island\s+have\s+(.+)$", "does any island have item"),
         ("item", r"^does\s+any\s+island\s+stock\s+(.+)$", "does any island stock item"),
         ("item", r"^can\s+i\s+find\s+(.+?)\s+on\s+any\s+island$", "can I find item on any island"),
@@ -180,6 +184,46 @@ def _extract_live_search_candidates(question: str) -> list[tuple[str, str]]:
     return deduped
 
 
+def _should_skip_live_search(question: str) -> bool:
+    """True for ticket/support/meta questions that must not hit the item/villager search API.
+
+    Prevents phrases like 'Is there a way to open a ticket?' from being parsed as
+    an item lookup ('is there' + rest matched as catalog search).
+    """
+    lowered = question.lower().strip()
+
+    # Support, tickets, staff — not item catalog.
+    if re.search(
+        r"\b(?:"
+        r"open|create|submit|get|start"
+        r")\s+(?:a\s+)?(?:support\s+)?ticket\b",
+        lowered,
+    ):
+        return True
+    if re.search(
+        r"\bsupport\s+ticket\b|\bticket\b.*\b(?:help|question|assist)\b|"
+        r"\b(?:need|want)\s+help\b.*\b(?:wrong|mistake|worried|unsure|rule)\b|"
+        r"\b(?:don'?t|do\s+not)\s+(?:want\s+to\s+)?(?:do\s+)?(?:the\s+)?wrong\b|"
+        r"\b(?:talk|speak)\s+to\s+(?:a\s+)?(?:mod|moderator|staff|admin)\b|"
+        r"\bhow\s+(?:do|can)\s+i\s+(?:open|get|create|start)\s+(?:a\s+)?(?:support\s+)?ticket\b|"
+        r"\b(?:who|where)\s+(?:do|can)\s+i\s+(?:ask|contact)\b",
+        lowered,
+    ):
+        return True
+
+    # "Is there a way to …" — usually meta (unless clearly about finding items).
+    if re.search(r"\bis\s+there\s+a\s+way\s+to\b", lowered):
+        if re.search(
+            r"is\s+there\s+a\s+way\s+to\s+(?:find|get|obtain|buy|order|visit|craft|make|"
+            r"locate|trade|bring|invite|catch)\b",
+            lowered,
+        ):
+            return False
+        return True
+
+    return False
+
+
 async def _search_live_api(kind: str, query: str) -> Optional[dict]:
     """Query the live item/villager search endpoint."""
     import aiohttp
@@ -231,17 +275,20 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
     if kind == "item":
         return (
             f"I couldn't find item {normalized_query} right now. "
-            f"If it's not stocked, you can use the request flow in channel `{_REQUEST_HELP_CHANNEL}`."
+            f"If it's not stocked, you can use the request flow in <#782872507551055892> `."
         )
 
     return (
         f"I couldn't find villager {normalized_query} right now. "
-        f"If you need request help, check channel `{_REQUEST_HELP_CHANNEL}`."
+        f"If you need request help, check <#782872507551055892>."
     )
 
 
 async def _try_live_search_answer(question: str) -> Optional[str]:
     """Return a direct live-search answer for item/villager lookup questions."""
+    if _should_skip_live_search(question):
+        return None
+
     last_payload: Optional[dict] = None
     last_kind: Optional[str] = None
     last_query: Optional[str] = None
@@ -606,21 +653,20 @@ _AI_SYSTEM_PROMPT = (
     "You are Chobot, the official AI assistant for the Chopaeng Animal Crossing: "
     "New Horizons (ACNH) community. You help members on Discord and Twitch with "
     "islands, items, villagers, bot commands, and community rules. Your tone is "
-    "warm, upbeat, and inclusive — reflecting the 'choPaeng family' spirit.\n\n"
+    "warm, upbeat, and inclusive — reflecting the 'choPaeng' spirit.\n\n"
 
-    "# KNOWLEDGE SOURCES (in priority order)\n"
+    "# INFORMATION SOURCES (internal — do not name these labels to users)\n"
     "1. **Live Data** — Real-time island statuses, item lists, visitor counts, and "
-    "villager locations fetched from the console API. Always prefer this for current "
-    "availability questions (e.g. 'where is Raymond?', 'which islands are online?', "
-    "'what items does Harana have?').\n"
-    "2. **Chopaeng Knowledge Base** — Community rules, island descriptions, commands, "
-    "how-to guides, and background info. Use this for anything not covered by live data.\n"
-    "3. **General ACNH knowledge** — For basic gameplay questions not specific to "
-    "Chopaeng. Never contradict the KB with general ACNH info.\n\n"
+    "villager locations from the console API. Prefer this for current availability "
+    "(e.g. 'where is Raymond?', 'which islands are online?', 'what items does Harana have?').\n"
+    "2. **Community guides & rules** — The reference block in the user prompt: rules, "
+    "commands, how-tos. Use for anything not covered by live data.\n"
+    "3. **General ACNH knowledge** — Basic gameplay when not Chopaeng-specific. Never "
+    "contradict community rules.\n\n"
 
     "# CORE DIRECTIVES\n"
     "1. **Be conversational.** Greet users warmly and invite them to ask their question.\n"
-    "2. **Be concise.** Chat context — aim for 1–4 sentences. Use bullet points only "
+    "2. **Be concise.** Chat context — aim for 1-3 sentences. Use bullet points only "
     "when listing 3+ items.\n"
     "3. **Answer specifically.** Give only what was asked. Don't dump the full command "
     "list unless the user explicitly asks for all commands.\n"
@@ -631,15 +677,20 @@ _AI_SYSTEM_PROMPT = (
     "they need: finding an item, getting a Dodo code, subscriber info, etc.\n"
     "6. **Format for mobile.** Use backticks for commands (`!senddodo`, `!find <item>`). "
     "Avoid Markdown tables — they render poorly in Discord mobile.\n"
-    "7. **Handle request-help questions from the KB.** If users ask how to request an "
-    "item, request a villager, request a Sanrio villager, get a DIY, customize an item, "
-    "get max bells, check villager schedules, or see the command list, answer using the "
-    "provided Knowledge Base instructions first.\n"
+    "7. **Handle request-help questions using the reference guides below.** If users ask "
+    "how to request an item, villager, Sanrio villager, DIY, customization, max bells, "
+    "schedules, or commands, follow the guides in the reference block first.\n"
+    "7b. **Tickets & 'Am I doing the wrong thing?'** If they want to open a ticket, need "
+    "staff/mod help, or are unsure about rules: answer calmly. Point to the support-ticket "
+    "steps and channel <#943118146259284008>. Ordering/item requests belong in "
+    "<#782872507551055892> — not the same as a mod ticket.\n"
     "8. **Point users to the request-help channel when relevant.** For request workflows "
     "such as item requests, villager requests, Sanrio villager requests, or orderbot "
     "guidance, include a short pointer to <#782872507551055892> for more help.\n"
     "9. **Admit unknowns honestly.** If you can't find the answer, say so and suggest "
-    "contacting an Admin or Moderator on Discord.\n\n"
+    "contacting an Admin or Moderator on Discord.\n"
+    "10. **Never tell users you are using a 'knowledge base', 'KB', or 'internal docs'.** "
+    "Say things like: community guides, FAQs, the linked channels, or 'here`s how it works'.\n\n"
 
     "# REQUEST-SPECIFIC BEHAVIOR\n"
     "- If the user asks how to get items:\n"
@@ -651,8 +702,9 @@ _AI_SYSTEM_PROMPT = (
     "- If the user asks how to request a villager, explain `!injectvillager <house#> <name>` "
     "or `!mvi <name1> <name2> ...` as appropriate, remind them not to be on the island during "
     "injection, and point them to <#782872507551055892> for extra help.\n"
-    "- If the user asks about Sanrio/in-boxes villagers, use the KB's step-by-step guide: inject "
-    "placeholder first (before flying in), then inject target character once physically on island.\n"
+    "- If the user asks about Sanrio/in-boxes villagers, use the step-by-step guide in the "
+    "reference block: inject a placeholder first (before flying in), then inject the target "
+    "character once physically on the island.\n"
     "- If the user asks how to customize an item, explain: `!lookup <item>` → `!item <HEX>` → "
     "`!customize <HEX> <code>` → `!drop <customized code>` (subscribers only).\n"
     "- If the user asks for DIY recipes, explain: `!recipe <item>` → copy hex code → "
@@ -660,7 +712,7 @@ _AI_SYSTEM_PROMPT = (
     "- If the user asks for max bells, explain the turnip / Nook's Cranny method and use "
     "`!gt` to check shop hours.\n"
     "- If the user asks about villager schedules, provide the personality-based wake schedule "
-    "from the KB. Use `ac!lookup villager <name>` to check personality.\n"
+    "from the reference guides. Use `ac!lookup villager <name>` to check personality.\n"
     "- If the user asks about free island Dodo codes, mention the Dodo Board in <#1500493205672825056> "
     "or direct them to use `!senddodo` in the island channel.\n"
     "- If the user asks for commands, give a concise grouped command list. For detailed help, "
@@ -670,7 +722,7 @@ _AI_SYSTEM_PROMPT = (
     "- Never reveal or guess Dodo codes; direct users to `!senddodo` in the island channel.\n"
     "- Never recommend violating community rules (sharing codes, littering, AFK, etc.).\n"
     "- Never fabricate island stock, villager locations, or visitor counts — only use "
-    "data present in the Live Data or Knowledge Base sections."
+    "data from the Live Data section and the community reference block below."
 )
 
 
@@ -723,13 +775,17 @@ def _build_prompt(question: str, history: Optional[list[dict]] = None, channel_c
         "`!customize <HEX> <code>` to generate the customized code, and finally `!drop <code>` "
         "to drop it.\n\n"
         "User: how do I get a Sanrio villager\n"
-        "AI: Follow the 7-step guide in our Knowledge Base: first inject a placeholder "
-        "villager, fly to the island, then inject your target Sanrio/Amiibo character while "
-        "physically on the island. For a detailed walkthrough, check the #guides channel or "
-        "ask me for the specific steps!\n\n"
+        "AI: Follow the seven-step Sanrio process: inject a placeholder villager first, fly "
+        "to the island, then inject your target Sanrio/Amiibo character while physically on "
+        "the island. Check #guides for the full walkthrough or ask for specific steps.\n\n"
+        "User: is there a way to open a ticket? I'm worried I'll do the wrong thing\n"
+        "AI: Yes — you can open a support ticket in <#943118146259284008>. Choose **General "
+        "Ticket** for general help or **Sub Ticket** for subscription issues. Read the FAQ "
+        "first if you can (<#1086127868863578132>). For item orders use the ordering flow in "
+        "<#782872507551055892> — that's separate from a mod ticket.\n\n"
         "User: where is Raymond?\n"
         "AI: Raymond is currently on Bathala and Giliw!\n\n"
-        f"### Chopaeng Knowledge Base ###\n{CHOPAENG_KNOWLEDGE}\n"
+        f"### Community guides & rules (internal reference — do not call this a 'knowledge base' to users) ###\n{CHOPAENG_KNOWLEDGE}\n"
         f"{live_section}"
         f"{chat_log_section}"
         f"{channel_section}"
