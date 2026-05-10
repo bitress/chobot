@@ -545,72 +545,6 @@ class SuggestionView(discord.ui.View):
             return False
         return True
 
-
-class HelpfulnessView(discord.ui.View):
-    """View for AI response feedback buttons (like/dislike)"""
-
-    def __init__(self, user_id: int, question: str, answer: str):
-        super().__init__(timeout=None)  # Buttons persist indefinitely
-        self.user_id = user_id
-        self.question = question
-        self.answer = answer
-        self.feedback_given = False
-
-    @discord.ui.button(label="👍", style=discord.ButtonStyle.green, custom_id="feedback_helpful")
-    async def helpful_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Handle like button"""
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("You can only rate responses to your own questions.", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        self.feedback_given = True
-        
-        # Log feedback
-        logger.info(
-            f"[DISCORD] AI Response Feedback: HELPFUL | "
-            f"User: {interaction.user.name} | "
-            f"Question: {self.question[:60]}... | "
-            f"Answer: {self.answer[:60]}..."
-        )
-        
-        # Update button state
-        button.label = "👍 Thanks!"
-        button.disabled = True
-        # Disable the other button
-        for item in self.children:
-            if isinstance(item, discord.ui.Button) and item.custom_id == "feedback_not_helpful":
-                item.disabled = True
-        await interaction.message.edit(view=self)
-
-    @discord.ui.button(label="👎", style=discord.ButtonStyle.red, custom_id="feedback_not_helpful")
-    async def dislike_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Handle dislike button"""
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("You can only rate responses to your own questions.", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        self.feedback_given = True
-        
-        # Log feedback
-        logger.info(
-            f"[DISCORD] AI Response Feedback: NOT HELPFUL | "
-            f"User: {interaction.user.name} | "
-            f"Question: {self.question[:60]}... | "
-            f"Answer: {self.answer[:60]}..."
-        )
-        
-        # Update button state
-        button.label = "👎 Noted"
-        button.disabled = True
-        # Disable the other button
-        for item in self.children:
-            if isinstance(item, discord.ui.Button) and item.custom_id == "feedback_helpful":
-                item.disabled = True
-        await interaction.message.edit(view=self)
-
-
 class DiscordCommandCog(commands.Cog):
     """Cog for Discord treasure hunt commands"""
 
@@ -632,6 +566,46 @@ class DiscordCommandCog(commands.Cog):
         self.island_monitor_loop.start()
         self.topic_sync_loop.start()
         self.free_dodo_board_loop.start()
+
+    @app_commands.command(name="nick", description="Set your ACNH nickname and island name")
+    @app_commands.describe(nickname="Format: Character Name | Island Name (e.g. ChoPaeng | ChoPaeng Camp)")
+    async def nick_command(self, interaction: discord.Interaction, nickname: str):
+        """Slash command to set nickname following the required format."""
+        
+        # Validate format
+        if not NICKNAME_FORMAT_PATTERN.match(nickname.strip()):
+            await interaction.response.send_message(
+                "❌ **Invalid Format!**\n"
+                "Please use: `Character Name | Island Name`\n"
+                "Example: `ChoPaeng | ChoPaeng Camp` (ensure you include the pipe `|` symbol)",
+                ephemeral=True
+            )
+            return
+
+        try:
+            # Change the user's nickname in the guild
+            await interaction.user.edit(nick=nickname.strip())
+            await interaction.response.send_message(
+                f"✅ Your nickname has been set to: `{nickname.strip()}`",
+                ephemeral=True
+            )
+            
+            # Log usage if in the submission channel
+            if interaction.channel_id == NICKNAME_SUBMISSION_CHANNEL_ID:
+                logger.info(f"[DISCORD] {interaction.user} updated their nickname via /nick: {nickname.strip()}")
+
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ **Error:** I don't have permission to change your nickname.\n"
+                "This usually happens if you are the Server Owner or have a higher role than the bot.",
+                ephemeral=True
+            )
+        except Exception as e:
+            logger.error(f"[DISCORD] Failed to set nickname for {interaction.user}: {e}")
+            await interaction.response.send_message(
+                "❌ **Error:** Something went wrong while updating your nickname. Please contact staff.",
+                ephemeral=True
+            )
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Filter items from cache for autocomplete"""
@@ -770,46 +744,40 @@ class DiscordCommandCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Validate nickname/island submissions and nuke improperly formatted messages."""
+        """Redirect users to /nick command in the designated channel."""
         
         # Ignore bots, DMs, and messages outside the designated channel
         if message.author.bot or message.guild is None or message.channel.id != NICKNAME_SUBMISSION_CHANNEL_ID:
             return
 
-        content = message.content.strip()
-        if not content:
-            return
-
-        # Evaluate each line against the regex
-        lines = [line.strip() for line in content.split('\n') if line.strip()]
-        
-        if not all(NICKNAME_FORMAT_PATTERN.match(line) for line in lines):
+        # Nuke all user messages in this channel and tell them to use /nick
+        try:
+            await message.delete()
+            logger.info(f"[DISCORD] Redirected {message.author} to /nick in {NICKNAME_SUBMISSION_CHANNEL_ID}")
+            
+            notice = (
+                "Please use the **/nick** command to set your nickname and island name.\n"
+                "**Format:** `Character Name | Island Name`\n"
+                "**Example:** `/nick nickname:ChoPaeng | ChoPaeng Camp`"
+            )
+            
             try:
-                await message.delete()
-                logger.info(f"[DISCORD] Purged invalid submission from {message.author}: {content[:100]}")
-                
-                # The format notice to send to the user
-                notice = (
-                    "Your recent submission was deleted due to incorrect formatting.\n"
-                    "**Format:** `ACNH Character Name | Your ACNH Island Name`\n"
-                    "**Sample:** `ChoPaeng | ChoPaeng Camp`\n"
-                )
-                
-                # Attempt to DM the user silently
-                try:
-                    await message.author.send(notice)
-                except discord.Forbidden:
-                    # Fallback: Send to channel, suppress ping notification, delete after 10 seconds
-                    await message.channel.send(
-                        f"{message.author.mention} {notice}", 
-                        delete_after=10.0, 
-                        silent=True 
-                    )
-
+                # Try to DM first to keep the channel clean
+                await message.author.send(notice)
             except discord.Forbidden:
-                logger.warning(f"[DISCORD] Missing permissions to smite message from {message.author} in {NICKNAME_SUBMISSION_CHANNEL_ID}")
-            except discord.NotFound:
-                pass # Already dead
+                # Fallback: Send to channel, delete after 10 seconds
+                await message.channel.send(
+                    f"{message.author.mention} {notice}", 
+                    delete_after=10.0, 
+                    silent=True 
+                )
+
+        except discord.Forbidden:
+            logger.warning(f"[DISCORD] Missing permissions to smite message from {message.author} in {NICKNAME_SUBMISSION_CHANNEL_ID}")
+        except discord.NotFound:
+            pass # Already dead
+        except Exception as e:
+            logger.warning(f"[DISCORD] Error handling message in {NICKNAME_SUBMISSION_CHANNEL_ID}: {e}")
 
     @staticmethod
     def _parse_iso8601(value: str | None) -> datetime | None:
@@ -2034,6 +2002,14 @@ class DiscordCommandCog(commands.Cog):
         # --- Build embed(s) ---
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
 
+        def format_channel(island_name: str, channel_id: int) -> str:
+            if not channel_id:
+                return f"**{island_name}**"
+            ch = guild.get_channel(channel_id)
+            if ch and ch.permissions_for(ctx.author).read_messages:
+                return f"<#{channel_id}>"
+            return f"**{island_name}**"
+
         if kind == "sub":
             total = len(Config.SUB_ISLANDS)
             embed = discord.Embed(
@@ -2044,8 +2020,8 @@ class DiscordCommandCog(commands.Cog):
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            on_lines  = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in sub_results if s == "✅"]
-            off_lines = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in sub_results if s != "✅"]
+            on_lines  = [format_channel(n, c) for n, s, _, c in sub_results if s == "✅"]
+            off_lines = [format_channel(n, c) for n, s, _, c in sub_results if s != "✅"]
             embed.add_field(name="🟢 ONLINE",  value="\n".join(on_lines)  or "*none*", inline=True)
             embed.add_field(name="🔴 OFFLINE", value="\n".join(off_lines) or "*none*", inline=True)
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
@@ -2063,8 +2039,8 @@ class DiscordCommandCog(commands.Cog):
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            on_lines  = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in free_results if s == "✅"]
-            off_lines = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in free_results if s != "✅"]
+            on_lines  = [format_channel(n, c) for n, s, _, c in free_results if s == "✅"]
+            off_lines = [format_channel(n, c) for n, s, _, c in free_results if s != "✅"]
             embed.add_field(name="🟢 ONLINE",  value="\n".join(on_lines)  or "*none*", inline=True)
             embed.add_field(name="🔴 OFFLINE", value="\n".join(off_lines) or "*none*", inline=True)
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
@@ -2086,10 +2062,10 @@ class DiscordCommandCog(commands.Cog):
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            sub_on  = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in sub_results  if s == "✅"]
-            sub_off = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in sub_results  if s != "✅"]
-            free_on  = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in free_results if s == "✅"]
-            free_off = [f"<#{c}>" if c else f"**{n}**" for n, s, _, c in free_results if s != "✅"]
+            sub_on  = [format_channel(n, c) for n, s, _, c in sub_results  if s == "✅"]
+            sub_off = [format_channel(n, c) for n, s, _, c in sub_results  if s != "✅"]
+            free_on  = [format_channel(n, c) for n, s, _, c in free_results if s == "✅"]
+            free_off = [format_channel(n, c) for n, s, _, c in free_results if s != "✅"]
             embed.add_field(
                 name=f"🏝️ Sub — {sub_online}/{sub_total}",
                 value=(
@@ -3563,8 +3539,7 @@ class DiscordCommandBot(commands.Bot):
                         conversation_key=conv_key,
                         channel_context=channel_name,
                     )
-                view = HelpfulnessView(message.author.id, question, answer)
-                await message.reply(f"{answer}", view=view)
+                await message.reply(f"{answer}")
                 logger.info(f"[DISCORD] DM auto-reply by {message.author.name}: {question[:80]}")
             return
 
@@ -3586,8 +3561,7 @@ class DiscordCommandBot(commands.Bot):
                     conversation_key=conv_key,
                     channel_context=channel_name,
                 )
-            view = HelpfulnessView(message.author.id, question, answer)
-            await message.reply(f"{answer}", view=view)
+            await message.reply(f"{answer}")
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
             return
 
@@ -3637,8 +3611,7 @@ class DiscordCommandBot(commands.Bot):
                             conversation_key=conv_key,
                             channel_context=channel_name,
                         )
-                    view = HelpfulnessView(message.author.id, question, answer)
-                    await message.reply(f"{answer}", view=view)
+                    await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Keyword auto-reply by {message.author.name}: {question[:80]}")
                     return
 
@@ -3675,8 +3648,7 @@ class DiscordCommandBot(commands.Bot):
                             conversation_key=conv_key,
                             channel_context=channel_name,
                         )
-                    view = HelpfulnessView(message.author.id, question, answer)
-                    await message.reply(f"{answer}", view=view)
+                    await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
                     return
 

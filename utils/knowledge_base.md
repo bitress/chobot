@@ -162,13 +162,13 @@ After linking your account and receiving your role:
 1. Go to <#783677194576330792> (Sub Rules channel)
 2. Read and follow each rule carefully
 3. Click the "I Understand" button to receive the subscriber access role
-4. Go to the sub-general-chat channel and type `/sub` to confirm your access
+4. Go to the <#907642922906845264> channel and type `/sub` to confirm your access
 5. You'll automatically gain access to all Sub Islands!
 
 **Note:** ChoBot sends all drops and Dodo codes. For questions or issues, create a ticket at <#943118146259284008> or DM ChoPaeng or a MOD team member.
 
-## Nitro Booster Perks
-Nitro Boosters on the Chopaeng Discord server receive exclusive access to two premium sub-islands:
+## Server Booster Perks
+Server Boosters on the Chopaeng Discord server receive exclusive access to two premium sub-islands:
 
 - **<#1050578366773862480> (Hiraya Island)** — A 1.0 island featuring classic ACNH items from the base game.
 - **<#1103147265163546644> (Alapaap Island)** — A 2.0 island showcasing new items from the Happy Home Paradise DLC.
@@ -231,11 +231,13 @@ Alternatively, visit a sub island's Discord channel and use the **[Dropping Item
 - Use `!drop` commands while on a sub island to request specific items from ChoBot
 - You can request up to 9 items per line
 - You can place multiple requests across different islands or at different times
+- Need help with commands? Check the <#782872507551055892> (chobot-how) channel
 
 **For Non-Subscribers:**
 - Use the Chorder Bot in the <#1175672083183829075> channel to request items
 - Follow the ordering flow to place custom requests
 - Multiple orders of the same item are allowed
+- Need help with ordering? Check the <#1175704849409654804> (chorder-bot-how) channel
 
 **If an item isn't currently stocked on any island:**
 - Both subscribers and non-subscribers can use the Chorder Bot in <#1175672083183829075> to request it

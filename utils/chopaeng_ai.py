@@ -275,12 +275,12 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
     if kind == "item":
         return (
             f"I couldn't find item {normalized_query} right now. "
-            f"If it's not stocked, you can use the request flow in <#782872507551055892> `."
+            f"If it's not stocked, you can use the Chorder Bot flow in <#1175672083183829075>."
         )
 
     return (
         f"I couldn't find villager {normalized_query} right now. "
-        f"If you need request help, check <#782872507551055892>."
+        f"If you need request help, check <#782872507551055892> (subs) or <#1175704849409654804> (non-subs)."
     )
 
 
@@ -327,7 +327,7 @@ class ConversationStore:
     Keys are arbitrary strings (e.g. ``"guild:channel:user"``).
     Each value is a list of ``{"role": "user"|"assistant", "content": str}``
     dicts stored in chronological order, capped at *_MAX_HISTORY_TURNS*
-    exchanges (2 × _MAX_HISTORY_TURNS messages).
+    exchanges (2 x _MAX_HISTORY_TURNS messages).
     """
 
     def __init__(self):
@@ -591,9 +591,17 @@ def _auto_link_channels(text: str) -> str:
     """
     if not text:
         return text
-    # Pattern: matches a 17-20 digit number that is not preceded by <#, <@, <@&, or /
-    # and not followed by >.
-    return re.sub(r'(?<![<#@&/])\b(\d{17,20})\b(?![>])', r'<#\1>', text)
+    
+    # Matches URLs, existing Discord tags <...>, or markdown links [text](url) to skip them.
+    # Group 2 matches the raw 17-20 digit channel ID we want to replace.
+    pattern = r'(https?://\S+|<[^>]+>|\[.*?\]\(.*?\))|(\b\d{17,20}\b)'
+    
+    def repl(m: re.Match) -> str:
+        if m.group(1):
+            return str(m.group(1))
+        return f"<#{m.group(2)}>"
+        
+    return re.sub(pattern, repl, text)
 
 
 def _keyword_answer(question: str, history: Optional[list[dict]] = None) -> str:
@@ -678,9 +686,10 @@ _AI_SYSTEM_PROMPT = (
     "contradict community rules.\n\n"
 
     "# CORE DIRECTIVES\n"
-    "1. **Be conversational.** Greet users warmly and invite them to ask their question.\n"
-    "2. **Be concise.** Chat context — aim for 1-3 sentences. Use bullet points only "
-    "when listing 3+ items.\n"
+    "1. **Direct and Concise.** Answer directly with a maximum of 1-5 sentences total. "
+    "Prefer exactly 1 short paragraph. But greet them warmly.\n"
+    "2. **No Fillers or Reassurances.** Do not add explanations unless asked. "
+    "Never end with 'let me know', 'I'm happy to help', or similar follow-up phrases.\n"
     "3. **Answer specifically.** Give only what was asked. Don't dump the full command "
     "list unless the user explicitly asks for all commands.\n"
     "4. **Use live data for availability.** When asked about an island's status, items, "
@@ -697,9 +706,9 @@ _AI_SYSTEM_PROMPT = (
     "staff/mod help, or are unsure about rules: answer calmly. Point to the support-ticket "
     "steps and channel <#943118146259284008>. Ordering/item requests belong in "
     "<#1175672083183829075> — not the same as a mod ticket.\n"
-    "8. **Point users to the request-help channel when relevant.** For request workflows "
-    "such as item requests, villager requests, Sanrio villager requests, or orderbot "
-    "guidance, include a short pointer to <#782872507551055892> for more help.\n"
+    "8. **Point users to the appropriate request-help channel when relevant.** For sub island commands "
+    "like !drop or villager injections, point to <#782872507551055892>. For Chorder Bot ordering help "
+    "(used by non-subs or for unstocked items), point to <#1175704849409654804>.\n"
     "9. **Admit unknowns honestly.** If you can't find the answer, say so and suggest "
     "contacting an Admin or Moderator on Discord.\n"
     "10. **Never tell users you are using a 'knowledge base', 'KB', or 'internal docs'.** "

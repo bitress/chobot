@@ -9,3 +9,4 @@ chobot.db
 cache_dump.json
 chobot.pid
 .env.cho
+.env.xx
