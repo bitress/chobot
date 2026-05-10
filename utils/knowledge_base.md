@@ -143,9 +143,9 @@ Subscribe or become a member via one of these platforms to unlock:
 
 Supported platforms:
 - [Patreon](https://www.patreon.com/cw/chopaeng/membership)
-- YouTube Channel Membership
-- Twitch Subscription
-- TikTok Community (Basic Plan)
+- [YouTube Channel Membership](https://www.youtube.com/@chopaeng)
+- [Twitch Subscription](https://twitch.tv/chopaeng)
+- [TikTok Community (Basic Plan)](https://www.tiktok.com/@chopaeng)
 
 ### Getting Access to Sub Islands (Multiple Platforms)
 After subscribing/joining on any platform, link your account to Discord:
@@ -157,15 +157,15 @@ After subscribing/joining on any platform, link your account to Discord:
 **YouTube:**
 1. Link your YouTube account: [Link here](https://bit.ly/youtube2discord)
 2. Takes 3-5 minutes to sync
-3. You'll receive the <@1048323845771247678> role
+3. You'll receive the <@&1048323845771247678> role
 
 **Twitch:**
 1. Link your Twitch account: [Link here](https://bit.ly/twitch2discord)
-2. You'll receive the <@898373041799696454> role
+2. You'll receive the <@&898373041799696454> role
 
 **TikTok:**
 1. Link your TikTok account: [Link here](https://bit.ly/linkyourtiktok)
-2. You'll receive the <@1302619772638461993> role
+2. You'll receive the <@&1302619772638461993> role
 
 ### Completing Sub Island Access
 After linking your account and receiving your role:

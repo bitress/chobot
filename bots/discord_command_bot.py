@@ -49,6 +49,31 @@ ISLAND_BOT_INTERCEPT_TIMEOUT = 10  # seconds to wait for island bot response
 GIT_OUTPUT_MAX_LENGTH = 1900  # max chars of git output to display in Discord
 DODO_XLOG_TIMEOUT = 1800  # seconds to wait for a verified flight before posting the dodo-request xlog
 
+AUTO_REPLY_PATTERNS = [
+    # Direct question/help intents
+    re.compile(r"\b(?:i\s+(?:have|got)\s+(?:a\s+)?question|quick\s+question)\b", re.IGNORECASE),
+    re.compile(r"\b(?:can|could|would)\s+you\s+(?:help|explain|tell|check)\b", re.IGNORECASE),
+    re.compile(r"\b(?:i\s+need|need|looking\s+for|want)\s+(?:help|assistance|support|advice|tips?)\b", re.IGNORECASE),
+    re.compile(r"^\s*(?:help|help\s+me|support|question)\s*[!.?]*\s*$", re.IGNORECASE),
+
+    # Asking the room
+    re.compile(r"\b(?:does|do|did|can|could|would|will|is|are)\s+(?:anyone|anybody|someone|somebody)\s+(?:know|help|explain|have|see)\b", re.IGNORECASE),
+    re.compile(r"\b(?:anyone|anybody|someone|somebody)\s+(?:know|help|able\s+to\s+help|have\s+an\s+idea)\b", re.IGNORECASE),
+
+    # How/where/what style questions
+    re.compile(r"\bhow\s+(?:do|can|to|should|would)\s+(?:i|we|you)\b", re.IGNORECASE),
+    re.compile(r"\bwhere\s+(?:can|do|is|are|should)\s+(?:i|we|you|get|find|go)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+(?:is|are|do|does|should|happens|if)\b", re.IGNORECASE),
+    re.compile(r"\b(?:can|should|do|does|is)\s+(?:i|this|that|it)\b", re.IGNORECASE),
+    re.compile(r"\bwhy\s+(?:is|are|do|does|did|can|can't|cant)\b", re.IGNORECASE),
+
+    # Problem/advice seeking
+    re.compile(r"\b(?:i'?m|i\s+am|im)\s+(?:stuck|lost|confused|struggling)\b", re.IGNORECASE),
+    re.compile(r"\b(?:having|have|got|getting|there'?s|there\s+is)\s+(?:a\s+)?(?:problem|issue|error|trouble)\b", re.IGNORECASE),
+    re.compile(r"\b(?:any|some)\s+(?:tips|advice|ideas|suggestions|recommendations)\b", re.IGNORECASE),
+    re.compile(r"\b(?:best|fastest|easiest)\s+way\s+to\b", re.IGNORECASE),
+]
+
 # Nickname submission channel validation
 NICKNAME_SUBMISSION_CHANNEL_ID = 1081147108612124742
 # Format: Nickname[/Nickname...] | Island Name[/Island Name...]
@@ -3443,36 +3468,11 @@ class DiscordCommandBot(commands.Bot):
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
             return
 
-        # Auto-reply on keywords (e.g., "question", "does anyone know", "anybody know")
+        # Auto-reply on clear help/question intents in configured channels.
         # Check if autoreply is enabled and in allowed channels
         if self.autoreply_enabled and message.channel.id in Config.AUTOREPLY_CHANNELS:
-            auto_reply_keywords = [
-                # Questions about knowledge
-                "question", "i have a question", "do you know", "does anyone know", 
-                "does anybody know", "anyone know", "anybody know", "does someone know",
-                "someone know", "is anyone", "is anybody",
-                
-                # Help/Assistance requests
-                "help", "help me", "i need help", "need help", "can you help",
-                "can you help me", "i need assistance", "assist me", "assistance",
-                "support", "can anyone assist", "can someone assist", "anyone assist",
-                "somebody assist",
-                
-                # How-to/Where questions
-                "how do i", "how to", "how can i", "where can i", "where is",
-                "what is", "what are", "what should",
-                
-                # Problem/Advice seeking
-                "stuck", "lost", "confused", "problem", "issue", "error",
-                "trouble", "struggling", "tips", "advice", "recommend", 
-                "suggestion", "ideas", "best way", "fastest way",
-                
-                # Information requests
-                "what about", "can i", "should i", "is this", "does this",
-                "why", "what happens", "what if", "any tips", "any advice",
-            ]
-            content_lower = message.content.lower()
-            if any(keyword in content_lower for keyword in auto_reply_keywords):
+            content = message.content.strip()
+            if any(pattern.search(content) for pattern in AUTO_REPLY_PATTERNS):
                 question = message.content.strip()
                 if question and not message.author.bot:
                     conv_key = _discord_conv_key(message)
@@ -3529,5 +3529,4 @@ class DiscordCommandBot(commands.Bot):
                     await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
                     return
-
         await self.process_commands(message)
