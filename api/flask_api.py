@@ -136,6 +136,8 @@ _auth_tokens_lock = threading.Lock()
 
 _DISCORD_UA = "DiscordBot (https://chopaeng.com, 1.0)"
 _ADMINISTRATOR_PERM = 0x8   # Discord Administrator permission bit
+_ROLE_NAME_CACHE: dict[str, tuple[dict[str, str], float]] = {}
+_ROLE_NAME_CACHE_TTL = 3600
 
 def _make_auth_token(user_data: dict) -> str:
     token = _secrets.token_urlsafe(32)
@@ -213,6 +215,59 @@ def _configured_subscription_role_ids() -> list[str]:
     return list(dict.fromkeys(role_ids))
 
 
+def _excluded_profile_role_ids() -> set[str]:
+    """Role IDs that should not appear as user subscription roles."""
+    excluded = {
+        str(Config.GUILD_ID or ""),
+        str(Config.ADMIN_ROLE_ID or ""),
+        str(Config.SENIOR_MOD_ROLE_ID or ""),
+        str(Config.BABY_MOD_ROLE_ID or ""),
+        str(Config.ISLAND_BOT_ROLE_ID or ""),
+        str(Config.ISLAND_ACCESS_ROLE or ""),
+    }
+    return {rid for rid in excluded if rid and rid not in {"0", "None"}}
+
+
+def _get_guild_role_names() -> dict[str, str]:
+    """Fetch guild role ID -> name mapping from Discord, cached briefly."""
+    guild_id = str(Config.GUILD_ID or "")
+    if not guild_id or not Config.DISCORD_TOKEN:
+        return {}
+
+    now = time.monotonic()
+    cached = _ROLE_NAME_CACHE.get(guild_id)
+    if cached and now - cached[1] < _ROLE_NAME_CACHE_TTL:
+        return cached[0]
+
+    token = str(Config.DISCORD_TOKEN).strip()
+    auth_value = token if token.lower().startswith("bot ") else f"Bot {token}"
+    try:
+        req = urllib.request.Request(
+            f"https://discord.com/api/v10/guilds/{guild_id}/roles",
+            headers={"Authorization": auth_value, "User-Agent": _DISCORD_UA},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            roles = json.loads(resp.read().decode())
+        role_names = {
+            str(role.get("id")): str(role.get("name") or role.get("id"))
+            for role in roles
+            if role.get("id") and role.get("name") != "@everyone"
+        }
+        _ROLE_NAME_CACHE[guild_id] = (role_names, now)
+        return role_names
+    except Exception as exc:
+        logger.warning("Failed to fetch Discord guild role names: %s", exc)
+        return cached[0] if cached else {}
+
+
+def _role_payload(role_id: str, role_names: dict[str, str]) -> dict:
+    """Small role object for profile responses."""
+    return {
+        "id": str(role_id),
+        "name": role_names.get(str(role_id), str(role_id)),
+    }
+
+
 def _iso_to_unix(value: str | None) -> int | None:
     """Convert a Discord ISO timestamp to Unix seconds when possible."""
     if not value:
@@ -231,23 +286,32 @@ def _user_id_param(user_id: str) -> int | str:
 
 def _load_profile_subscriptions(user: dict) -> dict:
     """Return subscription/access info inferred from Discord roles and local DB."""
-    role_ids = {str(r) for r in user.get("roles", [])}
+    user_role_ids = {str(r) for r in user.get("roles", [])}
     accessible_islands: list[dict] = []
     matched_role_ids: set[str] = set()
     configured_role_ids = set(_configured_subscription_role_ids())
+    excluded_role_ids = _excluded_profile_role_ids()
+    role_names = _get_guild_role_names()
     alert_subscriptions: list[dict] = []
 
     db = get_db()
     try:
+        all_required_role_ids: set[str] = set()
         rows = db.execute(
             "SELECT id, name, cat, type, required_roles FROM islands ORDER BY name"
         ).fetchall()
         for row in rows:
             island = row_to_island_dict(dict(row))
-            required_roles = [str(r) for r in island.get("required_roles", []) if str(r)]
+            required_roles = [
+                str(r)
+                for r in island.get("required_roles", [])
+                if str(r) and str(r) not in excluded_role_ids
+            ]
             if (island.get("cat") or "").strip().lower() == "member" and not required_roles:
-                required_roles = list(configured_role_ids)
-            matching_roles = sorted(role_ids & set(required_roles))
+                required_roles = [rid for rid in configured_role_ids if rid not in excluded_role_ids]
+
+            all_required_role_ids.update(required_roles)
+            matching_roles = sorted(user_role_ids & set(required_roles))
             if matching_roles or bool(user.get("is_mod")) or bool(user.get("is_admin")):
                 if (island.get("cat") or "").strip().lower() == "member" or required_roles:
                     matched_role_ids.update(matching_roles)
@@ -255,8 +319,8 @@ def _load_profile_subscriptions(user: dict) -> dict:
                         "id": island.get("id"),
                         "name": island.get("name"),
                         "type": island.get("type"),
-                        "required_roles": required_roles,
-                        "matched_roles": matching_roles,
+                        "required_roles": [_role_payload(rid, role_names) for rid in required_roles],
+                        "matched_roles": [_role_payload(rid, role_names) for rid in matching_roles],
                     })
 
         try:
@@ -279,10 +343,28 @@ def _load_profile_subscriptions(user: dict) -> dict:
     finally:
         db.close()
 
+    subscription_role_ids = sorted((user_role_ids & all_required_role_ids) - excluded_role_ids)
+    matched_subscription_role_ids = sorted(matched_role_ids - excluded_role_ids)
+    subscription_roles = [_role_payload(rid, role_names) for rid in subscription_role_ids]
+    configured_subscription_roles = [
+        _role_payload(rid, role_names)
+        for rid in sorted(configured_role_ids - excluded_role_ids)
+    ]
+    matched_subscription_roles = [
+        _role_payload(rid, role_names)
+        for rid in matched_subscription_role_ids
+    ]
+
     return {
-        "role_ids": sorted(role_ids),
-        "configured_subscription_role_ids": sorted(configured_role_ids),
-        "matched_subscription_role_ids": sorted(matched_role_ids),
+        "role_ids": subscription_role_ids,
+        "role_names": [role["name"] for role in subscription_roles],
+        "roles": subscription_roles,
+        "configured_subscription_role_ids": sorted(configured_role_ids - excluded_role_ids),
+        "configured_subscription_role_names": [role["name"] for role in configured_subscription_roles],
+        "configured_subscription_roles": configured_subscription_roles,
+        "matched_subscription_role_ids": matched_subscription_role_ids,
+        "matched_subscription_role_names": [role["name"] for role in matched_subscription_roles],
+        "matched_subscription_roles": matched_subscription_roles,
         "accessible_islands": accessible_islands,
         "alert_subscriptions": alert_subscriptions,
     }
