@@ -219,11 +219,7 @@ def _excluded_profile_role_ids() -> set[str]:
     """Role IDs that should not appear as user subscription roles."""
     excluded = {
         str(Config.GUILD_ID or ""),
-        str(Config.ADMIN_ROLE_ID or ""),
-        str(Config.SENIOR_MOD_ROLE_ID or ""),
-        str(Config.BABY_MOD_ROLE_ID or ""),
         str(Config.ISLAND_BOT_ROLE_ID or ""),
-        str(Config.ISLAND_ACCESS_ROLE or ""),
     }
     return {rid for rid in excluded if rid and rid not in {"0", "None"}}
 
@@ -302,26 +298,34 @@ def _load_profile_subscriptions(user: dict) -> dict:
         ).fetchall()
         for row in rows:
             island = row_to_island_dict(dict(row))
-            required_roles = [
+            raw_required_roles = [str(r) for r in island.get("required_roles", []) if str(r)]
+            profile_required_roles = [
                 str(r)
                 for r in island.get("required_roles", [])
                 if str(r) and str(r) not in excluded_role_ids
             ]
-            if (island.get("cat") or "").strip().lower() == "member" and not required_roles:
-                required_roles = [rid for rid in configured_role_ids if rid not in excluded_role_ids]
+            is_member_island = (island.get("cat") or "").strip().lower() == "member"
+            if is_member_island and not raw_required_roles:
+                raw_required_roles = list(configured_role_ids)
+                profile_required_roles = [rid for rid in configured_role_ids if rid not in excluded_role_ids]
 
-            all_required_role_ids.update(required_roles)
-            matching_roles = sorted(user_role_ids & set(required_roles))
-            if matching_roles or bool(user.get("is_mod")) or bool(user.get("is_admin")):
-                if (island.get("cat") or "").strip().lower() == "member" or required_roles:
-                    matched_role_ids.update(matching_roles)
-                    accessible_islands.append({
-                        "id": island.get("id"),
-                        "name": island.get("name"),
-                        "type": island.get("type"),
-                        "required_roles": [_role_payload(rid, role_names) for rid in required_roles],
-                        "matched_roles": [_role_payload(rid, role_names) for rid in matching_roles],
-                    })
+            # The raw channel overwrite roles decide access. The filtered profile roles
+            # are only for display so general access/mod roles do not show as subscriptions.
+            raw_matching_roles = sorted(user_role_ids & set(raw_required_roles))
+            display_matching_roles = sorted(set(raw_matching_roles) - excluded_role_ids)
+            all_required_role_ids.update(profile_required_roles)
+
+            has_channel_access = bool(raw_matching_roles) or bool(user.get("is_mod")) or bool(user.get("is_admin"))
+            looks_like_sub_island = is_member_island or bool(raw_required_roles)
+            if has_channel_access and looks_like_sub_island:
+                matched_role_ids.update(display_matching_roles)
+                accessible_islands.append({
+                    "id": island.get("id"),
+                    "name": island.get("name"),
+                    "type": island.get("type"),
+                    "required_roles": [_role_payload(rid, role_names) for rid in profile_required_roles],
+                    "matched_roles": [_role_payload(rid, role_names) for rid in display_matching_roles],
+                })
 
         try:
             sub_rows = db.execute(
