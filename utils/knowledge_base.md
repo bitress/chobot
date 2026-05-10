@@ -11,22 +11,30 @@ villagers, and visit other players' islands. The community includes Filipino and
 ## Official Links
 | Platform | URL |
 |----------|-----|
-| Website | https://chopaeng.com |
-| Twitch | https://twitch.tv/chopaeng |
-| YouTube | https://www.youtube.com/@chopaeng |
-| Facebook | https://www.facebook.com/ChoPaengTV |
-| TikTok | https://www.tiktok.com/@chopaeng |
-| Discord | https://discord.gg/chopaeng |
-| Patreon | https://www.patreon.com/cw/chopaeng/membership |
+| Website | [chopaeng.com](https://chopaeng.com) |
+| Twitch | [twitch.tv/chopaeng](https://twitch.tv/chopaeng) |
+| YouTube | [youtube.com/@chopaeng](https://www.youtube.com/@chopaeng) |
+| Facebook | [facebook.com/ChoPaengTV](https://www.facebook.com/ChoPaengTV) |
+| TikTok | [tiktok.com/@chopaeng](https://www.tiktok.com/@chopaeng) |
+| Discord | [discord.gg/chopaeng](https://discord.gg/chopaeng) |
+| Patreon | [patreon.com/chopaeng](https://www.patreon.com/cw/chopaeng/membership) |
 
 ## Chobot
-Chobot is the custom bot built by bitress.
-It runs on both Discord and Twitch simultaneously. It syncs with a Google Sheets
-database every hour to keep item and villager locations current across all 47 islands.
-It includes the Flight Logger, which automatically logs sub-island visitors and
-alerts staff about unrecognized users (staff can Admit, Warn, Kick, or Ban).
-Slash commands (e.g. `/find`, `/villager`, `/ask`) work as alternatives to
-prefix commands in Discord.
+Chobot is the community's custom-built assistant, operating seamlessly across both Discord and Twitch to provide a unified experience. It ensures that item and villager locations remain synchronized and up-to-date across all 47 treasure islands.
+
+Key features include:
+- **Real-time Synchronization**: Automatically keeps all island data current so you always know where to find your favorite items.
+- **Flight Logger**: A security system that monitors island visits to ensure a safe and orderly environment for everyone.
+- **Versatile Commands**: Supports both prefix commands and modern slash commands (e.g., `/find`, `/villager`, `/ask`) on Discord for ease of use.
+
+## Official Website (chopaeng.com)
+The official website for Chopaeng serves as a central hub for viewers and members of the community.
+
+**Core Functionality:**
+- **Treasure Island Management:** Provides real-time information about available treasure islands, including maps, item lists, and current status.
+- **Item Search:** A "Find Items" feature that allows users to search for specific items across different islands.
+- **Membership & Auth:** Integrates with Discord for user authentication. Access to certain islands or features is gated by Discord roles (e.g., for subscribers or "ChoTato Club" members).
+- **Community Resources:** Includes game guides, a blog section, and island maps to help players navigate the treasure islands efficiently.
 
 ## Commands
 | Command | Description | Where to use |
@@ -35,13 +43,13 @@ prefix commands in Discord.
 | `!villager <name>` | Find a villager across islands | Anywhere |
 | `!ask <question>` | Ask the AI about the community | Anywhere |
 | `!random` | Random item suggestion with location | Anywhere |
-| `!status` | Bot health, cache size, last update | Anywhere |
+| `!status` | Bot health and system status | Anywhere |
 | `!ping` | Bot response time | Anywhere |
 | `!help` | Full command list | Anywhere |
 | `!senddodo` or `!sd` | Get the Dodo code (DM) | Island channel |
 | `!visitors` | Current visitors on a sub island | Island channel |
 | `!villagers` | Villagers currently on the island | Island channel |
-| `!lookup <item>` or `!li <item>` | Look up an item's HEX ID | Island channel |
+| `!lookup <item>` or `!li <item>` | Look up an item's code | Island channel |
 | `!drop <HEX or name>` | Drop up to 9 items (must be on island) | Island channel |
 | `!recipe <item>` | Get DIY recipe order code for `!drop` | Island channel |
 | `!item <HEX>` | See color/variant options for an item | Island channel |
@@ -140,20 +148,20 @@ Supported platforms:
 After subscribing/joining on any platform, link your account to Discord:
 
 **Patreon:**
-1. Connect your Patreon account to Discord: https://bit.ly/ConnectDiscordToPatreon
+1. Connect your Patreon account to Discord: [Connect here](https://bit.ly/ConnectDiscordToPatreon)
 2. You'll receive the membership role you purchased
 
 **YouTube:**
-1. Link your YouTube account: https://bit.ly/youtube2discord
+1. Link your YouTube account: [Link here](https://bit.ly/youtube2discord)
 2. Takes 3-5 minutes to sync
 3. You'll receive the <@1048323845771247678> role
 
 **Twitch:**
-1. Link your Twitch account: https://bit.ly/twitch2discord
+1. Link your Twitch account: [Link here](https://bit.ly/twitch2discord)
 2. You'll receive the <@898373041799696454> role
 
 **TikTok:**
-1. Link your TikTok account: https://bit.ly/linkyourtiktok
+1. Link your TikTok account: [Link here](https://bit.ly/linkyourtiktok)
 2. You'll receive the <@1302619772638461993> role
 
 ### Completing Sub Island Access
@@ -272,7 +280,7 @@ Submit your order using the command `!order <item names>` or `!order [nhi file]`
 !order dollhouse, kids' tent, pop-up book, pearl
 ```
 
-**Multiple items by hex/item IDs (separate by spaces):**
+**Multiple items by item codes (separate by spaces):**
 ```
 !order 14BB 16DB
 ```
@@ -296,17 +304,17 @@ Use these commands in the <#1175771830510948442> channel (NOT in chorder-bot):
 - `!lookup <item names>` — Example: `!lookup golden axe`
 - `!lookuplang <language code> <item names>` — Example: `!lookuplang fr bloupe`
 
-**Note:** Lookup commands are case-sensitive. Check [this link](https://raw.githubusercontent.com/berichan/ACNHMobileSpawner/master/ACNHMS_Source/Assets/Resources/NHSE/text/en/text_item_en.txt) for correct internal spelling.
+**Note:** Lookup commands are case-sensitive. Check [this item list](https://raw.githubusercontent.com/berichan/ACNHMobileSpawner/master/ACNHMS_Source/Assets/Resources/NHSE/text/en/text_item_en.txt) for correct internal spelling.
 
 ### Customizing Item Variations
 1. Use `!item <item id>` to see available variations. Example: `!item 14DA`
 2. Select your desired variation: `!customize <item id> <variation>`. Example: `!customize 14DA 1`
-3. Copy the resulting hex code and add it to your order command.
+3. Copy the resulting item code and add it to your order command.
 
 ### Ordering DIY Recipes
 1. Use `!recipe <recipe name>` to get the recipe code. Example: `!recipe golden axe`
 2. Or use `!recipelang <language code> <recipe name>` for other languages. Example: `!recipelang fr coiffe`
-3. Copy the long hex number (ending in `16A2`) and include it in your order. Example: `!order 00F0000016A2`
+3. Copy the long item code (ending in `16A2`) and include it in your order. Example: `!order 00F0000016A2`
 4. Multiple recipes: `!order 00F0000016A2 02A000016A2`
 
 *For an easier way to order DIY recipes, use ACNHMobileSpawner (tutorial in <#1176749687554982008>).*
@@ -327,7 +335,7 @@ You can also order ONLY a villager: `!order villager:tig06`
 2. Act promptly when your Dodo code is ready — the bot won't wait indefinitely.
 3. Upon receiving "Your order is starting," interact with Orville until he prompts you for a Dodo code.
 4. Remain at the airport until the bot provides your Dodo code, then enter it immediately.
-5. **Do not send a substitute** — the alt detector may trigger and cause an automatic ban.
+5. **Do not send a substitute** — the security system may trigger and cause an automatic ban.
 6. Fly to the order island "Sinta" where ChoPaeng resides.
 7. Collect your items directly in front of the airport.
 8. Use the **-** button on your Joy-Con for the quickest exit.
@@ -348,9 +356,9 @@ You can also order ONLY a villager: `!order villager:tig06`
 
 **Rule 5:** Ensure you have a good internet connection — at least 15–25 Mbps.
 
-**Rule 6:** You MUST read everything in the <#1175704849409654804> channel to avoid asking questions and spamming the chorder-bot channel with incorrect commands.
+**Rule 6:** You MUST read everything in the <#1175704849409654804> channel to avoid asking questions and spamming the <#1175672083183829075> with incorrect commands.
 
-**Rule 7:** DO NOT chat or lookup items in the chorder-bot channel. That channel is for orders only. Use the <#1175875039954993306> channel for questions.
+**Rule 7:** DO NOT chat or lookup items in the <#1175672083183829075>. That channel is for orders only. Use the <#1175875039954993306> channel for questions.
 
 **Rule 8:** DO NOT order or chat in the <#1175771830510948442> channel. That channel is for looking up item/DIY codes only.
 
@@ -361,12 +369,12 @@ Click "Done!" in the rules channel after understanding to gain orderbot access.
 ## Dropping Items with !drop
 You must be on the island before using drop commands.
 
-**By HEX ID:** `!drop <HEX>` — e.g. `!drop 2656`. Use `!lookup <item>` to
-find the HEX ID. Up to 9 items per line: `!drop 2656 0EE8 074E`.
+**By item code:** `!drop <item code>` — e.g. `!drop 2656`. Use `!lookup <item>` to
+find the item code. Up to 9 items per line: `!drop 2656 0EE8 074E`.
 
 **By name:** `!drop <item name>` — e.g. `!drop Pagoda` or `!drop Pagoda, Golden Axe, Harp`.
 
-**Stacks:** Add a prefix before the HEX ID:
+**Stacks:** Add a prefix before the item code:
 | Stack Size | Prefix | Example |
 |------------|--------|---------|
 | 10 | `090000` | `!drop 0900002656` |
@@ -378,9 +386,9 @@ find the HEX ID. Up to 9 items per line: `!drop 2656 0EE8 074E`.
 2. `!drop <code>` — drop the recipe card. Up to 9 per line.
 
 ## Customizing Items
-1. `!lookup <item>` — find the HEX ID.
-2. `!item <HEX>` — see color/variant options (e.g. `!item 0EE8` → `0=Green, 1=Brown, 2=White, 3=Black`).
-3. `!customize <HEX> <code>` — generate customized code (e.g. `!customize 0EE8 2` → `0000000200000EE8`).
+1. `!lookup <item>` — find the item code.
+2. `!item <item code>` — see color/variant options (e.g. `!item 0EE8` → `0=Green, 1=Brown, 2=White, 3=Black`).
+3. `!customize <item code> <code>` — generate customized code (e.g. `!customize 0EE8 2` → `0000000200000EE8`).
 4. `!drop <customized code>` — drop the item.
 
 For items with both color AND design options, add both decimal codes together.
@@ -442,14 +450,14 @@ Use `!gt` to check island time, then refer to these schedules:
 Check a villager's personality: `ac!lookup villager <name>` in #villager-check.
 
 ## Support & Donations
-Donations fund server hosting (47 islands), stream upgrades, and giveaways.
-Ways to support: subscribe on Twitch, donate via https://chopaeng.com, or cheer with
+Support the community's growth and island maintenance.
+Ways to support: subscribe on Twitch, or cheer with
 Twitch Bits.
 
 ## Giveaways
 Regular community giveaways include rare ACNH items, DIY recipes, real-life
 prizes, and special island visits. Announced on Discord and Twitch.
-Check https://chopaeng.com for the latest info.
+Check [chopaeng.com](https://chopaeng.com) for the latest info.
 
 ## Tips
 - If an island is offline, `!senddodo` tells you instead of sending a code.
