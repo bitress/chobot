@@ -931,7 +931,9 @@ class VerifiedFlightFlagView(discord.ui.View):
         """Execute the flag action: create alert and update xlog message. Also flag for xlog if multiple IGNs/islands and multiple subscriptions."""
         embed = xlog_message.embeds[0] if xlog_message.embeds else None
         ign = self.ign or self._extract_field(embed, "IGN")
-        island = self._extract_field(embed, "Island Name") if embed else None
+        island = None
+        if embed:
+            island = self._extract_field(embed, "Island Name") or self._extract_field(embed, "Origin Island")
         destination_display = self._extract_field(embed, "Destination") if embed else "Unknown"
         visit_id = self.visit_id
         if not visit_id and embed:
@@ -1272,16 +1274,41 @@ class FlightLoggerCog(commands.Cog):
         row = await cursor.fetchone()
         return row[0] if row else None
 
-    async def _is_authorized_with_target(self, ign: str, hours: int = 24) -> bool:
-        """Return True if this IGN has a recent visit that was authorized AND has a linked target user."""
+    async def _get_recent_authorized_target(self, ign: str, hours: int = 24) -> dict | None:
+        """Return the recent authorized visit for this IGN when it has a linked target user."""
         db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(hours=hours)).timestamp())
         cursor = await db.execute(
-            "SELECT 1 FROM island_visits WHERE ign = ? AND timestamp > ? AND authorized = 1 AND user_id IS NOT NULL LIMIT 1",
+            """SELECT id, user_id, guild_id, destination, timestamp
+               FROM island_visits
+               WHERE ign = ? AND timestamp > ? AND authorized = 1 AND user_id IS NOT NULL
+               ORDER BY timestamp DESC LIMIT 1""",
             (ign, cutoff)
         )
         row = await cursor.fetchone()
-        return row is not None
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "guild_id": row[2],
+            "destination": row[3],
+            "timestamp": row[4],
+        }
+
+    async def _is_authorized_with_target(self, ign: str, hours: int = 24) -> bool:
+        """Return True if this IGN has a recent visit that was authorized AND has a linked target user."""
+        return await self._get_recent_authorized_target(ign, hours) is not None
+
+    async def record_authorized_followup_visit(self, ign: str, origin_island: str, destination: str, user_id: int, guild_id: int | None, timestamp: int, island_type: str = 'sub') -> int | None:
+        """Record an authorized follow-up visit linked to a previously identified traveler."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+            (ign, origin_island, destination, user_id, guild_id, timestamp, island_type)
+        )
+        await db.commit()
+        return cursor.lastrowid
 
     async def get_island_visits(self, user_id: int, guild_id: int, days: int = 30):
         """Get all island visits for a user within the specified number of days."""
@@ -2065,9 +2092,64 @@ class FlightLoggerCog(commands.Cog):
             self._creating_alerts.add(alert_key)
             try:
                 # If this IGN was already authorized and has a linked target within the last 24 hours,
-                # silently ignore the follow-up xlog — no new alert needed.
-                if await self._is_authorized_with_target(ign):
-                    logger.info(f"[FLIGHT] Ignoring xlog for {ign} — already authorized with a target.")
+                # keep the verbose audit trail but do not create a new manual-review alert.
+                authorized_target = await self._get_recent_authorized_target(ign)
+                if authorized_target:
+                    user_id = int(authorized_target["user_id"])
+                    visit_id = await self.record_authorized_followup_visit(
+                        ign,
+                        island,
+                        destination,
+                        user_id,
+                        guild_id,
+                        alert_ts,
+                        island_type=island_type,
+                    )
+                    xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+                    if xlog_channel:
+                        guild_icon = guild.icon.url if guild and guild.icon else None
+                        member_label = f"<@{user_id}>"
+                        try:
+                            if guild:
+                                member = await guild.fetch_member(user_id)
+                                member_label = f"{member.mention} ({member.display_name})"
+                        except Exception:
+                            pass
+
+                        xlog_embed = discord.Embed(
+                            title="<:Cho_Check:1456715827213504593> Authorized Flight",
+                            description=(
+                                f"Previously verified traveler detected for **{destination_link}**.\n"
+                                "No new alert was created."
+                            ),
+                            color=COLOR_SUCCESS,
+                            timestamp=embed_timestamp,
+                        )
+                        xlog_embed.add_field(name="Member Linked", value=member_label, inline=False)
+                        xlog_embed.add_field(name="IGN",           value=f"```yaml\n{ign}```",           inline=True)
+                        xlog_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+                        xlog_embed.add_field(name="Destination",   value=destination_link,               inline=True)
+                        if visit_id is not None:
+                            xlog_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+                        xlog_embed.add_field(name="Matched From", value=f"`#{authorized_target['id']}`", inline=True)
+                        xlog_embed.set_image(url=Config.FOOTER_LINE)
+                        xlog_embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
+
+                        xlog_view = VerifiedFlightFlagView(
+                            bot=self.bot,
+                            ign=ign,
+                            visit_id=visit_id,
+                            message_url=message_url,
+                        )
+                        if message_url:
+                            xlog_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
+                        dodo_req = self.pop_pending_dodo_request(user_id)
+                        if dodo_req is not None and dodo_req.get('reply_msg'):
+                            xlog_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+                            xlog_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
+                        await xlog_channel.send(embed=xlog_embed, view=xlog_view)
+
+                    logger.info(f"[FLIGHT] Logged authorized follow-up xlog for {ign} linked to user_id={user_id}.")
                     return
 
                 visit_id = await self.record_island_visit(ign, island, destination, [], guild_id, alert_ts, island_type=island_type)
