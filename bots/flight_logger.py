@@ -57,6 +57,8 @@ DB_NAME = "chobot.db"
 WARN_EXPIRY_DAYS = 3
 MAX_HISTORY_ENTRIES = 10  # Max entries shown per section in !flighthistory
 MAX_DEBUG_CANDIDATES = 5  # Max closest-candidate entries shown in !fdebug
+LEGACY_TWO_IDENTITY_CUTOFF_UTC = datetime.datetime(2022, 9, 1, tzinfo=datetime.timezone.utc)
+LEGACY_TWO_IDENTITY_LIMIT = 2
 
 # --- DATABASE HELPERS ---
 async def init_db():
@@ -1454,7 +1456,20 @@ class FlightLoggerCog(commands.Cog):
         self.bot.add_view(TravelerActionView(bot=self.bot))
         self.bot.add_view(VerifiedFlightFlagView(bot=self.bot))
 
-    async def _trigger_automatic_flag(self, ign, island, destination, member, identities, subs, message_url, message_content, timestamp, island_type='sub'):
+    async def _trigger_automatic_flag(
+        self,
+        ign,
+        island,
+        destination,
+        member,
+        identities,
+        subs,
+        allowed_identities,
+        message_url,
+        message_content,
+        timestamp,
+        island_type='sub',
+    ):
         """Automatically create a manual alert and an xlog entry for suspicious flights."""
         guild = self.bot.get_guild(Config.GUILD_ID)
         guild_id = guild.id if guild else None
@@ -1481,8 +1496,8 @@ class FlightLoggerCog(commands.Cog):
             alert_embed = discord.Embed(
                 description=(
                     f"### <a:CampWarning:1172346431542140961> Mismatch Detected\n"
-                    f"Member {member.mention} matched, but their nickname has more identities than their subscription count.\n"
-                    f"**Identities:** {identities} | **Subs:** {subs}\n"
+                    f"Member {member.mention} matched, but their nickname has more identities than their allowed count.\n"
+                    f"**Identities:** {identities} | **Subs:** {subs} | **Allowed:** {allowed_identities}\n"
                     f"**Sub Roles:** {' / '.join(sub_role_mentions) if sub_role_mentions else 'None detected'}\n"
                     f"Use the buttons below to take action."
                 ),
@@ -1501,7 +1516,14 @@ class FlightLoggerCog(commands.Cog):
             alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
             
             # Record in DB
-            await self.add_warning(member.id, guild_id, f"Auto-flagged: Nickname vs Sub mismatch ({identities} vs {subs})", self.bot.user.id, visit_id, action_type='FLAG')
+            await self.add_warning(
+                member.id,
+                guild_id,
+                f"Auto-flagged: Nickname identity mismatch ({identities} vs allowed {allowed_identities}; subs {subs})",
+                self.bot.user.id,
+                visit_id,
+                action_type='FLAG',
+            )
 
         # 3. Create "Flagged" Log in XLOG Channel
         xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
@@ -1511,8 +1533,8 @@ class FlightLoggerCog(commands.Cog):
             sub_role_mentions = [r.mention for r in member_sub_roles]
             xlog_desc = (
                 f"**{member.mention} ({member.display_name})**\n"
-                f"**Auto-Flag:** Nickname identities exceed subscription roles.\n"
-                f"**Identities:** {identities}  |  **Subs:** {subs}\n"
+                f"**Auto-Flag:** Nickname identities exceed allowed count.\n"
+                f"**Identities:** {identities}  |  **Subs:** {subs}  |  **Allowed:** {allowed_identities}\n"
                 f"**Sub Roles:** {(' / '.join(sub_role_mentions)) if sub_role_mentions else 'None detected'}"
             )
             
@@ -1751,6 +1773,26 @@ class FlightLoggerCog(commands.Cog):
         
         return max(ign_count, island_count)
 
+    def get_allowed_identity_count(self, member: discord.Member, sub_count: int) -> int:
+        """Return how many nickname identities a member may currently have.
+
+        Legacy members who joined before the one-character/island rule took effect
+        are allowed to keep up to two existing character/island identities.
+        """
+        allowed = max(1, sub_count)
+        joined_at = getattr(member, "joined_at", None)
+        if joined_at is None:
+            return allowed
+
+        if joined_at.tzinfo is None:
+            joined_at = joined_at.replace(tzinfo=datetime.timezone.utc)
+        else:
+            joined_at = joined_at.astimezone(datetime.timezone.utc)
+
+        if joined_at < LEGACY_TWO_IDENTITY_CUTOFF_UTC:
+            allowed = max(allowed, LEGACY_TWO_IDENTITY_LIMIT)
+        return allowed
+
     def parse_member_nick(self, display_name: str):
         if not display_name:
             return [], []
@@ -1928,10 +1970,23 @@ class FlightLoggerCog(commands.Cog):
                 all_member_subs = [r for r in member.roles if r.id in cog.all_sub_roles]
                 current_island_subs = [r for r in member.roles if r.id in sub_roles]
                 other_subs = [r for r in all_member_subs if r.id not in sub_roles]
+                allowed_identities = self.get_allowed_identity_count(member, len(all_member_subs))
 
-                if max_identities > 1 and len(all_member_subs) < max_identities:
+                if max_identities > allowed_identities:
                     # SUSPICIOUS: Automatically trigger manual alert flow
-                    await self._trigger_automatic_flag(ign, island, destination, member, max_identities, len(all_member_subs), message_url, message_content, embed_timestamp, island_type=island_type)
+                    await self._trigger_automatic_flag(
+                        ign,
+                        island,
+                        destination,
+                        member,
+                        max_identities,
+                        len(all_member_subs),
+                        allowed_identities,
+                        message_url,
+                        message_content,
+                        embed_timestamp,
+                        island_type=island_type,
+                    )
                     return
 
                 # Design: Use a block with emoji and clear separation

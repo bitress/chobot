@@ -68,6 +68,9 @@ instead of sending a code.
 
 **For Free Islands:** You can also find Dodo codes and information about each free island in the <#1500493205672825056> (Dodo Board) channel. This channel displays current codes and details about all 27 free islands, making it easy to browse and choose which island to visit.
 
+Free island questions should not be sent to the Chorder Bot help channel. The
+Chorder Bot help tab/channel is only for the free orderbot and ordering flow.
+
 ## Islands Overview
 There are 47 islands total: 20 sub islands and 27 free islands.
 All island names are Filipino/Tagalog words with meaningful translations.
@@ -198,6 +201,8 @@ These apply on every treasure island, in addition to the above:
    accounts, friends, or family. One character/island per membership.
 2. **Set your server nickname** to `ACNH Character Name | Your ACNH Island Name`
    (e.g. `ChoPaeng | ChoPaeng Camp`) in the <#1081147108612124742> channel.
+   You can right-click your name in the server member list and select
+   **Change Nickname**, or use Server Settings > Profile.
 3. **Leave via the airport.** Do not press "-" to close the game; this may
    cause lost items. No AFK on islands.
 4. **Check internet before flying.** NAT Type A or B required. NAT Type C or D
@@ -245,13 +250,17 @@ Alternatively, visit a sub island's Discord channel and use the **[Dropping Item
 - Use the Chorder Bot in the <#1175672083183829075> channel to request items
 - Follow the ordering flow to place custom requests
 - Multiple orders of the same item are allowed
-- Need help with ordering? Check the <#1175704849409654804> (chorder-bot-how) channel
+- Need help with free orderbot ordering? Check the <#1175704849409654804> (chorder-bot-how) channel
+- Do not use <#1175704849409654804> for free island questions; use the Dodo Board <#1500493205672825056> or the specific free island channel instead.
 
 **If an item isn't currently stocked on any island:**
 - Both subscribers and non-subscribers can use the Chorder Bot in <#1175672083183829075> to request it
 - Follow the ordering flow for non-stocked items
 
 ## Chorder Bot Ordering Guide (For Non-Subscribers)
+
+This guide and the <#1175704849409654804> chorder-bot-how channel are only for
+the free orderbot/ordering flow, not general free island questions.
 
 ### How to Place an Order
 Submit your order using the command `!order <item names>` or `!order [nhi file]` in the designated order channels. Ensure item names are spelled correctly as they appear in-game. For complex orders, consider using ACNHMobileSpawner (tutorial in <#1176749687554982008>).
@@ -307,9 +316,11 @@ Use these commands in the <#1175771830510948442> channel (NOT in chorder-bot):
 **Note:** Lookup commands are case-sensitive. Check [this item list](https://raw.githubusercontent.com/berichan/ACNHMobileSpawner/master/ACNHMS_Source/Assets/Resources/NHSE/text/en/text_item_en.txt) for correct internal spelling.
 
 ### Customizing Item Variations
-1. Use `!item <item id>` to see available variations. Example: `!item 14DA`
-2. Select your desired variation: `!customize <item id> <variation>`. Example: `!customize 14DA 1`
-3. Copy the resulting item code and add it to your order command.
+Use these commands in the lookup channel <#1175771830510948442>, not the order channel:
+1. `!lookup <clothing name>` - get the short HEX item ID. Example: `!lookup dreamy sweater`
+2. `!item <HEX>` - see the color/design variant numbers. Example: `!item 14DA`
+3. `!customize <HEX> <variant number>` - generate the long customized code. Example: `!customize 14DA 1`
+4. Copy the long code, then order it in <#1175672083183829075> with `!order <long code>`.
 
 ### Ordering DIY Recipes
 1. Use `!recipe <recipe name>` to get the recipe code. Example: `!recipe golden axe`
@@ -324,7 +335,7 @@ Add `villager:<id>` to the end of your order command. Example: `!order nook mile
 
 You can also order ONLY a villager: `!order villager:tig06`
 
-**Important:** You must have an empty unsold plot available, otherwise you cannot invite the villager. If you order between 10:00 PM – 8:00 AM BST, the villager may be sleeping and unavailable. Check BST time by searching "time BST" or use `!gt` in the bot channel. See the spreadsheet link or bot lookup instructions for 5-character villager codes.
+**Important:** You must have an empty unsold plot available, otherwise you cannot invite the villager. If you order between 10:00 PM – 8:00 AM BST, the villager may be sleeping and unavailable. Check BST time by searching "time BST" or use `!gt` in the bot channel. See the (spreadsheet link)[] or bot lookup instructions for 5-character villager codes.
 
 ### Queue Management
 - **Check your position:** Type `!position` in the order channel. Avoid excessive use; check every few minutes if needed.
@@ -405,8 +416,8 @@ For multiple villagers: `!mvi Judy Marshal Raymond`.
 ### Getting a Sanrio / In-Boxes Villager
 
 1. **Inject a Placeholder**
-   Before flying anywhere, use the bot to inject any standard villager into the first plot of land on the target island.
-   *Warning: Do not inject your desired Amiibo/Sanrio character at this stage. If you do it before flying, they will absolutely refuse to move to your island.*
+   Before flying anywhere, use the bot to inject any standard villager into the first plot of land on the target island. Choose a villager you would still be okay with getting in case the workaround does not succeed.
+   *Warning: Do not inject your desired Amiibo/Sanrio character at this stage. If you inject an Amiibo or Sanrio character before flying in, they will not move to your island.*
 
 2. **Fly to the Target Island**
    Travel to the island where you just injected the placeholder villager.
@@ -415,7 +426,7 @@ For multiple villagers: `!mvi Judy Marshal Raymond`.
    Once you are physically on the island, inject your desired Amiibo or Sanrio character.
 
 4. **Wait for Bot Confirmation**
-   Watch the bot logs. You must wait for it to explicitly say **VILLAGER INJECTED**. If you miss this step and proceed anyway, the villager is not coming with you.
+   Watch the bot logs. You must wait for it to explicitly say **VILLAGER INJECTED**. If you miss this step and proceed anyway, the villager will not come with you.
 
 5. **Visit the First Plot**
    Go into the house on the first plot of land.
@@ -466,6 +477,36 @@ Check [chopaeng.com](https://chopaeng.com) for the latest info.
 - Popular villagers (Raymond, Marshal, Judy, etc.) often appear on sub islands first.
 
 ## Troubleshooting
+- **Someone is on the phone / I cannot enter?** The Nook Phone message is only
+  a general in-game connection message. It can appear when someone is joining,
+  leaving, using their phone, using the trash can, selling, or doing another
+  action that blocks travel. Please be patient and keep trying.
+- **Island is down?** If the island channel is closed, the bot is not responding
+  to commands, or you see a message saying the island is down, then the island
+  is down. Use another island for now or wait for it to come back up.
+- **Bot crash?** Please be patient. Crashes can happen for many reasons, such as
+  unstable internet, someone leaving quietly, bot updates, or a visitor breaking
+  an island rule. Use another island if possible. If you know someone left
+  quietly or broke a rule during their visit, report it in <#1451664423637876848>
+  with as much evidence as possible.
+- **Someone left quietly?** If you know who it was or have evidence, report it in
+  <#1451664423637876848> with as much evidence as you can.
+- **Bot abuser ban on free islands?** This means the bot detected that a second
+  account was used to order from the bot and cut ahead of others instead of
+  waiting in line. Because this is detected automatically, staff cannot manually
+  unban it when the bot has flagged the behavior.
+- **Second warning for subscriber rule 2?** Change your nickname in
+  <#1081147108612124742> to the required format or you may be kicked from the
+  server: `Character name | Island name`.
+- **Cannot see 3.0 islands?** Some 3.0 islands are available. If you cannot see
+  them, go to the co-owners channel and follow the posted steps to unlock the new
+  island channels. Some islands may change by subscription tier so everyone has
+  at least one 3.0 island available.
+- **Last-resort account linking on phone?** Unlink your account first. Then go to
+  Discord settings, open Authorized Apps, choose the linked app name, and
+  deauthorize it. This may remove you from the server; if that happens, rejoin
+  and reopen a ticket. After deauthorizing, fully close Discord and the linked
+  app, then reopen them and connect again through the link.
 - **Disconnected while visiting?** Your items may not have saved. Fly back in
   and re-collect them. Always check your internet and NAT type before visiting.
 - **Bot not responding to commands?** Someone may be flying in (loading screen).
@@ -482,9 +523,16 @@ Check [chopaeng.com](https://chopaeng.com) for the latest info.
   fresh Dodo code (`!sd`). Items you already picked up before the drop may need
   to be re-collected.
 
+## Accepting Subscriber Rules
+Go to <#783677194576330792>, read the rules carefully, and accept each one until
+you see the palm tree reaction/confirmation. After that, you should be able to
+see the subscriber island channels. To get an island code, check the sticky
+message at the bottom of each island channel and use the command shown there;
+the bot will DM you the code.
+
 ## How to Open a Support Ticket
 
-Questions like *How do I open a ticket?*, *I need help so I don’t break a rule*, or *who can I ask?* belong here — not in item search or ordering. For item requests, use the ordering flow in <#1175704849409654804> instead.
+Questions like *How do I open a ticket?*, *I need help so I don’t break a rule*, or *who can I ask?* belong here — not in item search or ordering. For item requests, place orders in <#1175672083183829075>; use <#1175704849409654804> only for free orderbot help.
 
 If you need assistance with anything in the community, you can create a support ticket
 in the <#943118146259284008> channel. Before opening a ticket, please note:

@@ -191,6 +191,206 @@ def _has_island_access(roles: list[str], required_roles: list[str], is_mod: bool
     return bool(set(required_roles) & set(roles))
 
 
+def _configured_subscription_role_ids() -> list[str]:
+    """Return configured subscription role IDs for member-only islands."""
+    role_ids: list[str] = []
+    for attr_name in (
+        "ISLAND_ACCESS_ROLE",
+        "SUBSCRIPTION_ROLE_ID",
+        "SUBSCRIPTION_ROLE_IDS",
+        "MEMBER_ROLE_ID",
+        "MEMBER_ROLE_IDS",
+    ):
+        value = getattr(Config, attr_name, None)
+        if value in (None, "", "0", "None"):
+            continue
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                if item not in (None, "", "0", "None"):
+                    role_ids.append(str(item))
+        else:
+            role_ids.append(str(value))
+    return list(dict.fromkeys(role_ids))
+
+
+def _iso_to_unix(value: str | None) -> int | None:
+    """Convert a Discord ISO timestamp to Unix seconds when possible."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return int(parsed.timestamp())
+    except (TypeError, ValueError):
+        return None
+
+
+def _user_id_param(user_id: str) -> int | str:
+    """Use integer IDs for SQLite INTEGER comparisons, falling back to text."""
+    return int(user_id) if str(user_id).isdigit() else str(user_id)
+
+
+def _load_profile_subscriptions(user: dict) -> dict:
+    """Return subscription/access info inferred from Discord roles and local DB."""
+    role_ids = {str(r) for r in user.get("roles", [])}
+    accessible_islands: list[dict] = []
+    matched_role_ids: set[str] = set()
+    configured_role_ids = set(_configured_subscription_role_ids())
+    alert_subscriptions: list[dict] = []
+
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, name, cat, type, required_roles FROM islands ORDER BY name"
+        ).fetchall()
+        for row in rows:
+            island = row_to_island_dict(dict(row))
+            required_roles = [str(r) for r in island.get("required_roles", []) if str(r)]
+            if (island.get("cat") or "").strip().lower() == "member" and not required_roles:
+                required_roles = list(configured_role_ids)
+            matching_roles = sorted(role_ids & set(required_roles))
+            if matching_roles or bool(user.get("is_mod")) or bool(user.get("is_admin")):
+                if (island.get("cat") or "").strip().lower() == "member" or required_roles:
+                    matched_role_ids.update(matching_roles)
+                    accessible_islands.append({
+                        "id": island.get("id"),
+                        "name": island.get("name"),
+                        "type": island.get("type"),
+                        "required_roles": required_roles,
+                        "matched_roles": matching_roles,
+                    })
+
+        try:
+            sub_rows = db.execute(
+                "SELECT island_clean, kind, has_island_access "
+                "FROM island_subscriptions WHERE user_id = ? ORDER BY island_clean, kind",
+                (_user_id_param(user.get("user_id", "")),),
+            ).fetchall()
+            alert_subscriptions = [
+                {
+                    "island": row["island_clean"],
+                    "kind": row["kind"],
+                    "has_island_access": bool(row["has_island_access"]),
+                }
+                for row in sub_rows
+            ]
+        except sqlite3.Error:
+            # Older DBs may not have alert subscriptions yet.
+            alert_subscriptions = []
+    finally:
+        db.close()
+
+    return {
+        "role_ids": sorted(role_ids),
+        "configured_subscription_role_ids": sorted(configured_role_ids),
+        "matched_subscription_role_ids": sorted(matched_role_ids),
+        "accessible_islands": accessible_islands,
+        "alert_subscriptions": alert_subscriptions,
+    }
+
+
+def _load_profile_visit_stats(user_id: str) -> dict:
+    """Return visit totals, top destinations, recent visits, and warning summary."""
+    uid = _user_id_param(user_id)
+    guild_id = Config.GUILD_ID
+    empty = {
+        "total": 0,
+        "authorized": 0,
+        "unauthorized": 0,
+        "first_visit_at": None,
+        "last_visit_at": None,
+        "by_type": {},
+        "most_visited_islands": [],
+        "recent_visits": [],
+        "warnings": {"total": 0, "last_warning_at": None},
+    }
+
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN authorized = 1 THEN 1 ELSE 0 END) AS authorized, "
+            "SUM(CASE WHEN authorized = 0 THEN 1 ELSE 0 END) AS unauthorized, "
+            "MIN(timestamp) AS first_visit_at, MAX(timestamp) AS last_visit_at "
+            "FROM island_visits WHERE user_id = ? AND guild_id = ?",
+            (uid, guild_id),
+        ).fetchone()
+        if row:
+            empty.update({
+                "total": int(row["total"] or 0),
+                "authorized": int(row["authorized"] or 0),
+                "unauthorized": int(row["unauthorized"] or 0),
+                "first_visit_at": row["first_visit_at"],
+                "last_visit_at": row["last_visit_at"],
+            })
+
+        type_rows = db.execute(
+            "SELECT island_type, COUNT(*) AS visit_count "
+            "FROM island_visits WHERE user_id = ? AND guild_id = ? "
+            "GROUP BY island_type ORDER BY visit_count DESC",
+            (uid, guild_id),
+        ).fetchall()
+        empty["by_type"] = {
+            (row["island_type"] or "unknown"): int(row["visit_count"] or 0)
+            for row in type_rows
+        }
+
+        top_rows = db.execute(
+            "SELECT destination, island_type, COUNT(*) AS visit_count, MAX(timestamp) AS last_visit_at "
+            "FROM island_visits WHERE user_id = ? AND guild_id = ? "
+            "GROUP BY destination, island_type "
+            "ORDER BY visit_count DESC, last_visit_at DESC LIMIT 10",
+            (uid, guild_id),
+        ).fetchall()
+        empty["most_visited_islands"] = [
+            {
+                "name": row["destination"],
+                "type": row["island_type"],
+                "visits": int(row["visit_count"] or 0),
+                "last_visit_at": row["last_visit_at"],
+            }
+            for row in top_rows
+        ]
+
+        recent_rows = db.execute(
+            "SELECT id, ign, origin_island, destination, authorized, timestamp, island_type "
+            "FROM island_visits WHERE user_id = ? AND guild_id = ? "
+            "ORDER BY timestamp DESC LIMIT 10",
+            (uid, guild_id),
+        ).fetchall()
+        empty["recent_visits"] = [
+            {
+                "id": row["id"],
+                "ign": row["ign"],
+                "origin_island": row["origin_island"],
+                "destination": row["destination"],
+                "authorized": bool(row["authorized"]),
+                "timestamp": row["timestamp"],
+                "island_type": row["island_type"],
+            }
+            for row in recent_rows
+        ]
+
+        try:
+            warn_row = db.execute(
+                "SELECT COUNT(*) AS total, MAX(timestamp) AS last_warning_at "
+                "FROM warnings WHERE user_id = ? AND guild_id = ?",
+                (uid, guild_id),
+            ).fetchone()
+            if warn_row:
+                empty["warnings"] = {
+                    "total": int(warn_row["total"] or 0),
+                    "last_warning_at": warn_row["last_warning_at"],
+                }
+        except sqlite3.Error:
+            pass
+    except sqlite3.Error:
+        logger.exception("Failed to load profile visit stats for user_id=%s", user_id)
+    finally:
+        db.close()
+
+    return empty
+
+
 def _fire_dodo_webhook(
     username: str,
     nickname: str,
@@ -553,6 +753,7 @@ def auth_callback():
     # Fetch guild member record (roles + permissions)
     member_roles: list[str] = []
     member_nickname = ""
+    member_joined_at = ""
     member_perms = 0
     try:
         mem_req = urllib.request.Request(
@@ -563,6 +764,7 @@ def auth_callback():
             member_data = json.loads(resp.read().decode())
         member_roles = [str(r) for r in member_data.get("roles", [])]
         member_nickname = (member_data.get("nick") or "").strip()
+        member_joined_at = str(member_data.get("joined_at") or "")
         try:
             member_perms = int(member_data.get("permissions", "0") or 0)
         except (ValueError, TypeError):
@@ -576,6 +778,7 @@ def auth_callback():
 
     # Fetch basic user info
     discord_user_id = discord_username = discord_avatar_url = ""
+    discord_global_name = discord_account_name = ""
     try:
         user_req = urllib.request.Request(
             "https://discord.com/api/users/@me",
@@ -584,10 +787,12 @@ def auth_callback():
         with urllib.request.urlopen(user_req, timeout=10) as resp:
             user_data = json.loads(resp.read().decode())
         discord_user_id  = str(user_data.get("id", ""))
+        discord_global_name = str(user_data.get("global_name") or "")
+        discord_account_name = str(user_data.get("username") or "")
         discord_username = (
             member_nickname
-            or user_data.get("global_name")
-            or user_data.get("username", "")
+            or discord_global_name
+            or discord_account_name
         )
         avatar_hash = user_data.get("avatar") or ""
         if discord_user_id and avatar_hash and re.fullmatch(r"(?:a_)?[0-9a-f]{32}", avatar_hash):
@@ -601,7 +806,12 @@ def auth_callback():
     token = _make_auth_token({
         "user_id":   discord_user_id,
         "username":  discord_username,
+        "discord_name": discord_global_name or discord_account_name,
+        "global_name": discord_global_name,
+        "account_name": discord_account_name,
         "nickname":  member_nickname,
+        "joined_at": member_joined_at,
+        "joined_timestamp": _iso_to_unix(member_joined_at),
         "avatar":    discord_avatar_url,
         "roles":     member_roles,
         "is_admin":  is_admin,
@@ -622,11 +832,42 @@ def auth_me():
         "logged_in":  True,
         "user_id":    user["user_id"],
         "username":   user["username"],
+        "discord_name": user.get("discord_name", user["username"]),
         "nickname":   user.get("nickname", ""),
+        "joined_at":  user.get("joined_at", ""),
         "avatar":     user["avatar"],
         "roles":      user["roles"],
         "is_admin":   user.get("is_admin", False),
         "is_mod":     user["is_mod"],
+    })
+
+
+@app.route("/api/profile")
+def api_profile():
+    """Return the authenticated user's Discord profile and ChoPaeng activity."""
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    subscriptions = _load_profile_subscriptions(user)
+    visits = _load_profile_visit_stats(user.get("user_id", ""))
+
+    return jsonify({
+        "user": {
+            "id": user.get("user_id", ""),
+            "discord_name": user.get("discord_name") or user.get("username", ""),
+            "global_name": user.get("global_name", ""),
+            "account_name": user.get("account_name", ""),
+            "display_name": user.get("nickname") or user.get("discord_name") or user.get("username", ""),
+            "nickname": user.get("nickname", ""),
+            "avatar": user.get("avatar", ""),
+            "joined_at": user.get("joined_at", ""),
+            "joined_timestamp": user.get("joined_timestamp"),
+            "is_admin": bool(user.get("is_admin")),
+            "is_mod": bool(user.get("is_mod")),
+        },
+        "subscriptions": subscriptions,
+        "visits": visits,
     })
 
 
