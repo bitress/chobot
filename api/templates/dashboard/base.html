@@ -83,6 +83,14 @@
         <i class="bi bi-bar-chart-fill"></i>
         <span class="link-text">Analytics</span>
       </a>
+      {% if current_role == 'admin' %}
+      <a href="{{ url_for('dashboard.database') }}"
+         class="nav-pill-link {% if request.endpoint == 'dashboard.database' %}active{% endif %}"
+         title="Database">
+        <i class="bi bi-database-fill-gear"></i>
+        <span class="link-text">Database</span>
+      </a>
+      {% endif %}
       <!-- API links (admin only) -->
       {% if current_role == 'admin' %}
       <div class="sidebar-section-label mt-3">API</div>

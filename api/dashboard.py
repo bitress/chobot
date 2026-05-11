@@ -1572,6 +1572,17 @@ def analytics():
     )
 
 
+@dashboard.route("/database")
+@admin_required
+def database():
+    """Admin database tools: inspect DB backend and run SQLite -> MariaDB copy."""
+    return render_template(
+        "dashboard/database.html",
+        db_backend=get_backend(),
+        mariadb=_mariadb_settings_payload(),
+    )
+
+
 @dashboard.route("/analytics/export.csv")
 @admin_required
 def analytics_export_csv():
