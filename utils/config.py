@@ -96,7 +96,7 @@ class Config:
     R2_BUCKET_NAME      = os.getenv("R2_BUCKET_NAME", "chobot-maps")
     R2_PUBLIC_URL       = os.getenv("R2_PUBLIC_URL", "")
 
-    DB_BACKEND = os.getenv("DB_BACKEND", "sqlite").strip().lower()
+    DB_BACKEND = os.getenv("DB_BACKEND", "mysql").strip().lower()
     SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "")
     DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
