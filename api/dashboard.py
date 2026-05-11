@@ -10,7 +10,6 @@ import re
 import csv
 import io
 import secrets
-import sqlite3
 import logging
 import mimetypes
 import threading
@@ -31,6 +30,8 @@ from flask import (
 )
 
 from utils.config import Config
+from utils.database import connect_db, get_backend, get_engine
+from utils.db_migration import migrate_sqlite_to_mariadb
 
 logger = logging.getLogger("Dashboard")
 
@@ -81,6 +82,9 @@ _DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 # Max map upload size: 5 MB
 MAX_MAP_SIZE      = 5 * 1024 * 1024
 ALLOWED_MAP_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+_mariadb_migration_lock = threading.Lock()
+_mariadb_migration_last_result: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -160,10 +164,8 @@ def _resolve_discord_usernames(user_ids) -> dict[str, str]:
 # Database helpers
 # ---------------------------------------------------------------------------
 def get_db():
-    """Return a synchronous SQLite connection to chobot.db."""
-    conn = sqlite3.connect(_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Return a synchronous configured database connection."""
+    return connect_db()
 
 
 def init_dashboard_db():
@@ -196,13 +198,13 @@ def init_dashboard_db():
         try:
             conn.execute("ALTER TABLE islands ADD COLUMN required_roles TEXT NOT NULL DEFAULT '[]'")
             conn.commit()
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # Column already exists
 
         try:
             conn.execute("ALTER TABLE islands ADD COLUMN channel_id TEXT")
             conn.commit()
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # Column already exists
 
         # Live island bot presence, written by the Discord bot's monitor loop
@@ -229,7 +231,7 @@ def init_dashboard_db():
         conn.commit()
         conn.close()
         logger.info("Dashboard DB initialised")
-    except sqlite3.Error as exc:
+    except Exception as exc:
         logger.warning("Could not initialise dashboard DB: %s", exc)
 
 
@@ -481,7 +483,7 @@ def _load_bot_status_map(conn) -> dict:
     try:
         rows = conn.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
         return {r["island_id"]: bool(r["is_online"]) for r in rows}
-    except sqlite3.Error:
+    except Exception:
         return {}
 
 
@@ -794,7 +796,7 @@ def index():
             "WHERE timestamp > strftime('%s','now','-7 days') "
             "GROUP BY day ORDER BY day"
         ).fetchall()
-    except sqlite3.Error:
+    except Exception:
         total_visits = total_warnings = visits_today = visits_week = warnings_week = 0
         recent_raw = []
         top_islands_raw = []
@@ -837,7 +839,7 @@ def index():
         rows2        = db2.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands2  = [_row_to_island_dict(dict(r)) for r in rows2]
         bot_status2  = _load_bot_status_map(db2)
-    except sqlite3.Error:
+    except Exception:
         db_islands2 = []
         bot_status2 = {}
     finally:
@@ -880,7 +882,7 @@ def islands():
     try:
         rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
-    except sqlite3.Error:
+    except Exception:
         db_islands = []
     finally:
         db.close()
@@ -1037,7 +1039,7 @@ def island_detail(name):
                 (upper,),
             ).fetchall()
         ]
-    except sqlite3.Error:
+    except Exception:
         sparkline_7d = []
     finally:
         db_sp.close()
@@ -1189,7 +1191,7 @@ def logs():
             flight_name_map = _resolve_discord_usernames([r["user_id"] for r in rows if r["user_id"]])
             for e in entries:
                 e["user_name"] = flight_name_map.get(str(e["user_id"])) if e["user_id"] else None
-    except sqlite3.Error:
+    except Exception:
         total, entries, island_names = 0, [], []
     finally:
         db.close()
@@ -1221,7 +1223,7 @@ def island_status():
     try:
         rows = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
-    except sqlite3.Error:
+    except Exception:
         db_islands = []
     finally:
         db.close()
@@ -1232,7 +1234,7 @@ def island_status():
     db2 = get_db()
     try:
         bot_status = _load_bot_status_map(db2)
-    except sqlite3.Error:
+    except Exception:
         bot_status = {}
     finally:
         db2.close()
@@ -1497,7 +1499,7 @@ def analytics():
             it_params,
         ).fetchone()
         avg_visits_30d = round(avg_visits_30d_row["avg"] or 0, 1)
-    except sqlite3.Error:
+    except Exception:
         top_islands = top_travelers = visits_by_day = visits_by_day_30 = []
         visits_by_hour = []
         auth_raw = []
@@ -1591,7 +1593,7 @@ def analytics_export_csv():
             "ORDER BY timestamp DESC LIMIT 10000",
             it_params,
         ).fetchall()
-    except sqlite3.Error:
+    except Exception:
         rows = []
     finally:
         db.close()
@@ -1621,6 +1623,153 @@ def analytics_export_csv():
 # JSON CRUD API  (Bearer token OR active browser session)
 # ===========================================================================
 
+def _parse_bool(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _sqlite_table_counts() -> dict[str, int]:
+    db = get_db()
+    try:
+        if get_backend() == "mysql":
+            from sqlalchemy import inspect
+
+            table_names = sorted(inspect(get_engine()).get_table_names())
+        else:
+            table_names = [
+                row["name"] for row in db.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                    ORDER BY name
+                    """
+                ).fetchall()
+            ]
+        counts: dict[str, int] = {}
+        for table_name in table_names:
+            safe_table = str(table_name).replace('"', '""')
+            count = db.execute(f'SELECT COUNT(*) FROM "{safe_table}"').fetchone()[0]
+            counts[table_name] = int(count or 0)
+        return counts
+    finally:
+        db.close()
+
+
+def _mariadb_settings_payload() -> dict:
+    missing = []
+    if not Config.MYSQL_HOST:
+        missing.append("MYSQL_HOST")
+    if not Config.MYSQL_USER:
+        missing.append("MYSQL_USER")
+    if not Config.MYSQL_DATABASE:
+        missing.append("MYSQL_DATABASE")
+
+    return {
+        "configured": not missing,
+        "missing": missing,
+        "host": Config.MYSQL_HOST,
+        "port": Config.MYSQL_PORT,
+        "user": Config.MYSQL_USER,
+        "database": Config.MYSQL_DATABASE,
+        "default_truncate_before_import": Config.MARIADB_TRUNCATE_BEFORE_IMPORT,
+    }
+
+
+@dashboard.route("/api/mariadb-migration/status", methods=["GET"])
+@api_auth_required
+def api_mariadb_migration_status():
+    """Return SQLite source counts and MariaDB migration configuration status."""
+    try:
+        source_tables = _sqlite_table_counts()
+    except Exception as exc:
+        return jsonify({"error": f"Could not inspect SQLite database: {exc}"}), 500
+
+    return jsonify({
+        "runtime_database": get_backend(),
+        "sqlite_path": _DB_PATH,
+        "sqlite_exists": os.path.exists(_DB_PATH),
+        "source_tables": source_tables,
+        "source_total_rows": sum(source_tables.values()),
+        "mariadb": _mariadb_settings_payload(),
+        "migration_running": _mariadb_migration_lock.locked(),
+        "last_result": _mariadb_migration_last_result,
+        "note": "Use DB_BACKEND=mysql to run ChoBot against MariaDB/MySQL after migrating data.",
+    })
+
+
+@dashboard.route("/api/mariadb-migration", methods=["POST"])
+@api_auth_required
+def api_mariadb_migration_run():
+    """Copy existing SQLite data into MariaDB without changing the running SQLite flow."""
+    global _mariadb_migration_last_result
+
+    data = request.get_json(silent=True) or {}
+    dry_run = _parse_bool(data.get("dry_run"), False)
+    truncate_before_import = _parse_bool(
+        data.get("truncate_before_import"),
+        Config.MARIADB_TRUNCATE_BEFORE_IMPORT,
+    )
+
+    if not _mariadb_migration_lock.acquire(blocking=False):
+        return jsonify({"error": "MariaDB migration is already running"}), 409
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    try:
+        source_tables = _sqlite_table_counts()
+        if dry_run:
+            _mariadb_migration_last_result = {
+                "ok": True,
+                "dry_run": True,
+                "started_at": started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "source_tables": source_tables,
+                "source_total_rows": sum(source_tables.values()),
+                "mariadb": _mariadb_settings_payload(),
+            }
+            return jsonify(_mariadb_migration_last_result)
+
+        summary = migrate_sqlite_to_mariadb(
+            sqlite_path=_DB_PATH,
+            host=Config.MARIADB_HOST,
+            port=Config.MARIADB_PORT,
+            user=Config.MARIADB_USER,
+            password=Config.MARIADB_PASSWORD,
+            database=Config.MARIADB_DATABASE,
+            truncate_before_import=truncate_before_import,
+        )
+        _mariadb_migration_last_result = {
+            "ok": True,
+            "dry_run": False,
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "truncate_before_import": truncate_before_import,
+            "tables": summary,
+            "total_rows_copied": sum(summary.values()),
+            "runtime_database": get_backend(),
+            "sqlite_preserved": True,
+            "note": "Migration copied data to MariaDB. Set DB_BACKEND=mysql to use it as the app database.",
+        }
+        return jsonify(_mariadb_migration_last_result)
+    except Exception as exc:
+        logger.exception("MariaDB migration failed")
+        _mariadb_migration_last_result = {
+            "ok": False,
+            "dry_run": dry_run,
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "error": str(exc),
+        }
+        return jsonify(_mariadb_migration_last_result), 500
+    finally:
+        _mariadb_migration_lock.release()
+
+
 @dashboard.route("/api/status-summary", methods=["GET"])
 @api_auth_required
 def api_status_summary():
@@ -1630,7 +1779,7 @@ def api_status_summary():
         rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
         bot_status = _load_bot_status_map(db)
-    except sqlite3.Error:
+    except Exception:
         db_islands = []
         bot_status = {}
     finally:
@@ -1677,7 +1826,7 @@ def api_islands_list():
         rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
         bot_status = _load_bot_status_map(db)
-    except sqlite3.Error:
+    except Exception:
         db_islands = []
         bot_status = {}
     finally:
@@ -1953,7 +2102,7 @@ def api_sync_maps():
                         (island_id, island_id.upper(), map_url, now),
                     )
                 synced += 1
-            except sqlite3.Error as exc:
+            except Exception as exc:
                 errors.append(f"{island_id}: {exc}")
         db.commit()
     finally:
@@ -2175,7 +2324,7 @@ def api_analytics():
             f"{' WHERE island_type = ?' if island_type_filter else ''}",
             it_params,
         ).fetchone()[0]
-    except sqlite3.Error:
+    except Exception:
         top_islands = top_travelers = visits_by_day = visits_by_day_30 = []
         visits_by_hour = dow_raw = []
         auth_raw = []
@@ -2386,7 +2535,7 @@ def api_logs():
             flight_name_map = _resolve_discord_usernames([r["user_id"] for r in rows if r["user_id"]])
             for e in entries:
                 e["user_name"] = flight_name_map.get(str(e["user_id"])) if e["user_id"] else None
-    except sqlite3.Error:
+    except Exception:
         total, entries, island_names = 0, [], []
     finally:
         db.close()
@@ -2442,7 +2591,7 @@ def api_overview():
             "WHERE timestamp > strftime('%s','now','-7 days') "
             "GROUP BY day ORDER BY day"
         ).fetchall()
-    except sqlite3.Error:
+    except Exception:
         total_visits = total_warnings = visits_today = visits_week = warnings_week = 0
         recent_raw = []
         top_islands_raw = []
@@ -2483,7 +2632,7 @@ def api_overview():
         rows2       = db2.execute("SELECT * FROM islands ORDER BY name").fetchall()
         db_islands2 = [_row_to_island_dict(dict(r)) for r in rows2]
         bot_status2 = _load_bot_status_map(db2)
-    except sqlite3.Error:
+    except Exception:
         db_islands2 = []
         bot_status2 = {}
     finally:

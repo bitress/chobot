@@ -9,7 +9,6 @@ import logging
 import unicodedata
 import datetime
 import asyncio
-import aiosqlite
 import json
 
 import discord
@@ -17,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, UserSelect, Select, button
 from utils.config import Config
+from utils.database import connect_async_db
 from utils.helpers import clean_text
 
 logger = logging.getLogger("FlightLogger")
@@ -63,7 +63,7 @@ LEGACY_TWO_IDENTITY_LIMIT = 2
 # --- DATABASE HELPERS ---
 async def init_db():
     """Initializes the database schema."""
-    async with aiosqlite.connect(DB_NAME) as db:
+    async with connect_async_db() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS island_visits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,22 +92,22 @@ async def init_db():
         # Migrate existing databases: add visit_id column if it doesn't exist
         try:
             await db.execute("ALTER TABLE warnings ADD COLUMN visit_id INTEGER REFERENCES island_visits(id)")
-        except aiosqlite.OperationalError:
+        except Exception:
             pass  # Column already exists
         # Migrate existing databases: add action_type column if it doesn't exist
         try:
             await db.execute("ALTER TABLE warnings ADD COLUMN action_type TEXT NOT NULL DEFAULT 'WARN'")
-        except aiosqlite.OperationalError:
+        except Exception:
             pass  # Column already exists
         # Migrate existing databases: add island_type column if it doesn't exist
         try:
             await db.execute("ALTER TABLE island_visits ADD COLUMN island_type TEXT NOT NULL DEFAULT 'sub'")
-        except aiosqlite.OperationalError:
+        except Exception:
             pass  # Column already exists
         # Migrate existing databases: add has_island_access column if it doesn't exist
         try:
             await db.execute("ALTER TABLE island_visits ADD COLUMN has_island_access INTEGER NOT NULL DEFAULT 0")
-        except aiosqlite.OperationalError:
+        except Exception:
             pass  # Column already exists
         await db.execute("""
             CREATE TABLE IF NOT EXISTS dodo_reveal_messages (
@@ -963,7 +963,7 @@ class VerifiedFlightFlagView(discord.ui.View):
         if traveler_member is None and guild and visit_id is not None:
             # Fallback: resolve via island_visits record, if present.
             try:
-                async with aiosqlite.connect(DB_NAME) as db:
+                async with connect_async_db() as db:
                     cur = await db.execute("SELECT user_id FROM island_visits WHERE id = ? LIMIT 1", (visit_id,))
                     row = await cur.fetchone()
                 if row and row[0]:
@@ -1114,7 +1114,7 @@ class FlightLoggerCog(commands.Cog):
         """Fallback: derive subscription role IDs from islands.required_roles in SQLite."""
         roles: set[int] = set()
         try:
-            async with aiosqlite.connect(DB_NAME) as db:
+            async with connect_async_db() as db:
                 cur = await db.execute("SELECT required_roles FROM islands")
                 rows = await cur.fetchall()
             for (required_roles_raw,) in rows:
@@ -1170,7 +1170,7 @@ class FlightLoggerCog(commands.Cog):
 
     async def _get_db(self):
         if self._db_conn is None:
-            self._db_conn = await aiosqlite.connect(DB_NAME)
+            self._db_conn = connect_async_db()
         return self._db_conn
 
     async def add_warning(self, user_id, guild_id, reason, mod_id, visit_id=None, action_type='WARN'):
@@ -1659,7 +1659,7 @@ class FlightLoggerCog(commands.Cog):
             if island_clean:
                 try:
                     # Note: Using a one-off connection here for simplicity in the task loop
-                    async with aiosqlite.connect(DB_NAME) as db:
+                    async with connect_async_db() as db:
                         await db.execute(
                             "UPDATE islands SET required_roles = ?, channel_id = ? WHERE UPPER(name) = ?",
                             (json.dumps(channel_req_roles), str(channel.id), island_clean.upper())
@@ -2910,7 +2910,7 @@ class FreeFlightCog(commands.Cog, name="FreeFlightLogger"):
                 island_type='free',
             )
         else:
-            async with aiosqlite.connect(DB_NAME) as db:
+            async with connect_async_db() as db:
                 await db.execute(
                     "INSERT INTO island_visits "
                     "(ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) "

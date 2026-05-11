@@ -5,7 +5,6 @@ Handles Discord commands for item and villager search with rich embeds
 
 import asyncio
 import os
-import sqlite3
 import subprocess
 import time
 import re
@@ -21,6 +20,7 @@ from discord.ext import commands, tasks
 from thefuzz import process, fuzz
 
 from utils.config import Config
+from utils.database import connect_db
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
@@ -179,7 +179,7 @@ ACNH_TRIVIA_QUESTIONS: list[dict] = [
      "c": ["!dodo", "!senddodo", "!code", "!sd — same as !senddodo"], "a": 3},
 ]
 
-# Shared SQLite database path (project root)
+# Shared database path (project root, used when DB_BACKEND=sqlite)
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chobot.db")
 
 
@@ -190,7 +190,7 @@ def _upsert_bot_status(island_id: str, island_name: str, is_online: bool) -> Non
     live Discord presence data without making Discord API calls itself.
     """
     try:
-        conn = sqlite3.connect(_DB_PATH)
+        conn = connect_db()
         try:
             conn.execute(
                 """INSERT INTO island_bot_status (island_id, island_name, is_online, updated_at)
@@ -211,7 +211,7 @@ def _upsert_bot_status(island_id: str, island_name: str, is_online: bool) -> Non
 def _init_command_claims_db() -> None:
     """Create the command_claims table used for cross-instance deduplication."""
     try:
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS command_claims (
                     message_id INTEGER PRIMARY KEY,
@@ -225,7 +225,7 @@ def _init_command_claims_db() -> None:
 def _init_subscriptions_db() -> None:
     """Create the island_subscriptions table for online/offline alert opt-ins."""
     try:
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS island_subscriptions (
                     user_id INTEGER NOT NULL,
@@ -238,7 +238,7 @@ def _init_subscriptions_db() -> None:
             # Migrate existing databases: add has_island_access column if it doesn't exist
             try:
                 conn.execute("ALTER TABLE island_subscriptions ADD COLUMN has_island_access INTEGER NOT NULL DEFAULT 0")
-            except sqlite3.OperationalError:
+            except Exception:
                 pass  # Column already exists
     except Exception as exc:
         logger.error(f"[DISCORD] Failed to init island_subscriptions table: {exc}")
@@ -247,7 +247,7 @@ def _init_subscriptions_db() -> None:
 def _init_settings_db() -> None:
     """Create the settings table for general bot configuration."""
     try:
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -261,7 +261,7 @@ def _init_settings_db() -> None:
 def _get_setting(key: str, default: str = "") -> str:
     """Retrieve a setting value from the DB."""
     try:
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
             return row[0] if row else default
     except Exception as exc:
@@ -272,7 +272,7 @@ def _get_setting(key: str, default: str = "") -> str:
 def _set_setting(key: str, value: str) -> None:
     """Save a setting value to the DB."""
     try:
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (key, value),
@@ -288,7 +288,7 @@ def _add_subscription(user_id: int, island_clean: str, kind: str) -> bool:
     Returns True if a new row was inserted, False if it already existed.
     """
     try:
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO island_subscriptions (user_id, island_clean, kind) VALUES (?, ?, ?)",
                 (user_id, island_clean, kind),
@@ -306,7 +306,7 @@ def _remove_subscription(user_id: int, island_clean: str | None) -> int:
     Returns the number of rows deleted.
     """
     try:
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             if island_clean is None:
                 cursor = conn.execute(
                     "DELETE FROM island_subscriptions WHERE user_id = ?",
@@ -326,7 +326,7 @@ def _remove_subscription(user_id: int, island_clean: str | None) -> int:
 def _get_user_subscriptions(user_id: int) -> list[tuple[str, str]]:
     """Return a list of (island_clean, kind) tuples the user is subscribed to."""
     try:
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             rows = conn.execute(
                 "SELECT island_clean, kind FROM island_subscriptions WHERE user_id = ? ORDER BY island_clean",
                 (user_id,),
@@ -340,7 +340,7 @@ def _get_user_subscriptions(user_id: int) -> list[tuple[str, str]]:
 def _get_island_subscribers(island_clean: str) -> list[int]:
     """Return a list of user_ids subscribed to alerts for *island_clean*."""
     try:
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             rows = conn.execute(
                 "SELECT user_id FROM island_subscriptions WHERE island_clean = ?",
                 (island_clean,),
@@ -363,7 +363,7 @@ def _try_claim_command(message_id: int) -> bool:
     """
     try:
         now = time.time()
-        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+        with connect_db() as conn:
             conn.execute(
                 "DELETE FROM command_claims WHERE claimed_at < ?",
                 (now - COMMAND_CLAIM_EXPIRY_SECONDS,),
@@ -701,7 +701,7 @@ class DiscordCommandCog(commands.Cog):
                 if req_roles:
                     try:
                         import json
-                        with sqlite3.connect(_DB_PATH, timeout=5) as conn:
+                        with connect_db() as conn:
                             conn.execute(
                                 "UPDATE islands SET required_roles = ?, channel_id = ? WHERE UPPER(name) = ?",
                                 (json.dumps(req_roles), str(channel.id), island_clean.upper())
@@ -2837,8 +2837,7 @@ class DiscordCommandCog(commands.Cog):
             loop = asyncio.get_event_loop()
 
             def _query():
-                with sqlite3.connect(_DB_PATH, timeout=5) as conn:
-                    conn.row_factory = sqlite3.Row
+                with connect_db() as conn:
                     clauses, params = [], []
                     if kind:
                         clauses.append("island_type = ?")
@@ -2929,8 +2928,7 @@ class DiscordCommandCog(commands.Cog):
             loop = asyncio.get_event_loop()
 
             def _query():
-                with sqlite3.connect(_DB_PATH, timeout=5) as conn:
-                    conn.row_factory = sqlite3.Row
+                with connect_db() as conn:
                     clauses, params = [], []
                     if kind:
                         clauses.append("island_type = ?")

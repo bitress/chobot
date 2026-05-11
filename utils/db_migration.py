@@ -9,8 +9,14 @@ from typing import Any
 logger = logging.getLogger("DBMigration")
 
 
-def _map_sqlite_type(sqlite_decl: str) -> str:
+def _quote_identifier(name: str) -> str:
+    return f"`{str(name).replace('`', '``')}`"
+
+
+def _map_sqlite_type(sqlite_decl: str, *, is_primary_key: bool = False) -> str:
     t = (sqlite_decl or "").strip().upper()
+    if is_primary_key and any(x in t for x in ("CHAR", "CLOB", "TEXT")):
+        return "VARCHAR(255)"
     if "INT" in t:
         return "BIGINT"
     if any(x in t for x in ("CHAR", "CLOB", "TEXT")):
@@ -26,6 +32,12 @@ def _map_sqlite_type(sqlite_decl: str) -> str:
     if any(x in t for x in ("DATE", "TIME")):
         return "DATETIME"
     return "LONGTEXT"
+
+
+def _supports_default(mysql_type: str) -> bool:
+    """MariaDB cannot use defaults for BLOB/TEXT columns on many deployments."""
+    normalized = mysql_type.upper()
+    return not any(x in normalized for x in ("TEXT", "BLOB"))
 
 
 def _translate_default(default_value: Any) -> str:
@@ -62,15 +74,17 @@ def _build_create_table_sql(table_name: str, columns: list[dict], sqlite_table_s
     for col in columns:
         name = col["name"]
         sqlite_type = col["type"] or ""
-        mysql_type = _map_sqlite_type(sqlite_type)
+        is_single_pk_col = single_pk and name == single_pk_name
+        mysql_type = _map_sqlite_type(sqlite_type, is_primary_key=bool(col["pk"]))
         not_null = " NOT NULL" if col["notnull"] else ""
 
-        is_single_pk_col = single_pk and name == single_pk_name
         is_int_pk = "INT" in sqlite_type.upper()
 
         pk_suffix = ""
         auto_suffix = ""
         default_clause = _translate_default(col["dflt_value"])
+        if default_clause and not _supports_default(mysql_type):
+            default_clause = ""
 
         if is_single_pk_col:
             pk_suffix = " PRIMARY KEY"
@@ -81,16 +95,19 @@ def _build_create_table_sql(table_name: str, columns: list[dict], sqlite_table_s
             default_clause = ""
 
         lines.append(
-            f"  `{name}` {mysql_type}{not_null}{default_clause}{pk_suffix}{auto_suffix}"
+            f"  {_quote_identifier(name)} {mysql_type}{not_null}{default_clause}{pk_suffix}{auto_suffix}"
         )
 
     if not single_pk and pk_columns:
-        pk_cols_sql = ", ".join(f"`{c['name']}`" for c in pk_columns)
+        pk_cols_sql = ", ".join(_quote_identifier(c["name"]) for c in pk_columns)
         lines.append(f"  PRIMARY KEY ({pk_cols_sql})")
+
+    if table_name == "warnings" and not any(c["name"] == "id" for c in columns):
+        lines.insert(0, "  `id` BIGINT PRIMARY KEY AUTO_INCREMENT")
 
     cols_sql = ",\n".join(lines)
     return (
-        f"CREATE TABLE IF NOT EXISTS `{table_name}` (\n"
+        f"CREATE TABLE IF NOT EXISTS {_quote_identifier(table_name)} (\n"
         f"{cols_sql}\n"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     )
@@ -133,7 +150,7 @@ def migrate_sqlite_to_mariadb(
             charset="utf8mb4",
         )
         with root_conn.cursor() as cur:
-            cur.execute(f"CREATE DATABASE IF NOT EXISTS `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+            cur.execute(f"CREATE DATABASE IF NOT EXISTS {_quote_identifier(database)} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 
         maria_conn = pymysql.connect(
             host=host,
@@ -187,7 +204,7 @@ def migrate_sqlite_to_mariadb(
                 cur.execute(create_sql)
 
                 if truncate_before_import:
-                    cur.execute(f"TRUNCATE TABLE `{table_name}`")
+                    cur.execute(f"TRUNCATE TABLE {_quote_identifier(table_name)}")
 
                 src_rows = sqlite_conn.execute(f'SELECT * FROM "{table_name}"').fetchall()
                 if not src_rows:
@@ -196,9 +213,9 @@ def migrate_sqlite_to_mariadb(
                     continue
 
                 col_names = [c["name"] for c in columns]
-                col_sql = ", ".join(f"`{name}`" for name in col_names)
+                col_sql = ", ".join(_quote_identifier(name) for name in col_names)
                 placeholders = ", ".join(["%s"] * len(col_names))
-                insert_sql = f"INSERT INTO `{table_name}` ({col_sql}) VALUES ({placeholders})"
+                insert_sql = f"INSERT INTO {_quote_identifier(table_name)} ({col_sql}) VALUES ({placeholders})"
 
                 payload = [tuple(r[name] for name in col_names) for r in src_rows]
                 cur.executemany(insert_sql, payload)

@@ -96,11 +96,21 @@ class Config:
     R2_BUCKET_NAME      = os.getenv("R2_BUCKET_NAME", "chobot-maps")
     R2_PUBLIC_URL       = os.getenv("R2_PUBLIC_URL", "")
 
-    MARIADB_HOST = os.getenv("MARIADB_HOST", "")
-    MARIADB_PORT = _get_int("MARIADB_PORT", 3306)
-    MARIADB_USER = os.getenv("MARIADB_USER", "")
-    MARIADB_PASSWORD = os.getenv("MARIADB_PASSWORD", "")
-    MARIADB_DATABASE = os.getenv("MARIADB_DATABASE", "chobot")
+    DB_BACKEND = os.getenv("DB_BACKEND", "sqlite").strip().lower()
+    SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "")
+    DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+    MYSQL_HOST = os.getenv("MYSQL_HOST") or os.getenv("MARIADB_HOST", "localhost")
+    MYSQL_PORT = _get_int("MYSQL_PORT", _get_int("MARIADB_PORT", 3306))
+    MYSQL_USER = os.getenv("MYSQL_USER") or os.getenv("MARIADB_USER", "chobot")
+    MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD") or os.getenv("MARIADB_PASSWORD", "")
+    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE") or os.getenv("MARIADB_DATABASE", "chobot")
+
+    MARIADB_HOST = MYSQL_HOST
+    MARIADB_PORT = MYSQL_PORT
+    MARIADB_USER = MYSQL_USER
+    MARIADB_PASSWORD = MYSQL_PASSWORD
+    MARIADB_DATABASE = MYSQL_DATABASE
     MARIADB_TRUNCATE_BEFORE_IMPORT = os.getenv("MARIADB_TRUNCATE_BEFORE_IMPORT", "true").strip().lower() == "true"
 
     # Google Sheets
@@ -169,6 +179,21 @@ class Config:
 
         if missing:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+
+        if cls.DB_BACKEND not in {"sqlite", "mysql", "mariadb"}:
+            raise ValueError("DB_BACKEND must be one of: sqlite, mysql, mariadb")
+
+        if cls.DB_BACKEND in {"mysql", "mariadb"} and not cls.DATABASE_URL:
+            mysql_missing = [
+                name for name, value in {
+                    "MYSQL_HOST": cls.MYSQL_HOST,
+                    "MYSQL_USER": cls.MYSQL_USER,
+                    "MYSQL_DATABASE": cls.MYSQL_DATABASE,
+                }.items()
+                if not value
+            ]
+            if mysql_missing:
+                raise ValueError(f"Missing MySQL database settings: {', '.join(mysql_missing)}")
 
         return True
 

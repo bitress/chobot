@@ -12,7 +12,6 @@ import time
 import json
 import secrets as _secrets
 import logging
-import sqlite3
 import threading
 import urllib.parse
 import urllib.error
@@ -28,6 +27,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import ThreadedWSGIServer
 
 from utils.config import Config
+from utils.database import connect_db
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
 from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value, _parse_visitor_list
 
@@ -50,7 +50,7 @@ def _persist_dodo_reveal_message(
     if not island_clean:
         island_clean = clean_text(island_name.lower())
     try:
-        conn = sqlite3.connect(CHOBOT_SQLITE_DB)
+        conn = connect_db()
         try:
             conn.execute(
                 """
@@ -85,7 +85,7 @@ def _persist_dodo_reveal_message(
             conn.commit()
         finally:
             conn.close()
-    except sqlite3.Error as exc:
+    except Exception as exc:
         logger.warning("dodo_reveal_messages insert failed: %s", exc)
 
 
@@ -341,7 +341,7 @@ def _load_profile_subscriptions(user: dict) -> dict:
                 }
                 for row in sub_rows
             ]
-        except sqlite3.Error:
+        except Exception:
             # Older DBs may not have alert subscriptions yet.
             alert_subscriptions = []
     finally:
@@ -467,9 +467,9 @@ def _load_profile_visit_stats(user_id: str) -> dict:
                     "total": int(warn_row["total"] or 0),
                     "last_warning_at": warn_row["last_warning_at"],
                 }
-        except sqlite3.Error:
+        except Exception:
             pass
-    except sqlite3.Error:
+    except Exception:
         logger.exception("Failed to load profile visit stats for user_id=%s", user_id)
     finally:
         db.close()
@@ -1360,7 +1360,7 @@ def get_islands():
         bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
         for r in bot_rows:
             discord_status[r["island_id"]] = bool(r["is_online"])
-    except sqlite3.Error:
+    except Exception:
         logger.exception("Failed to load island metadata from DB for /api/islands")
     finally:
         db.close()
@@ -1425,7 +1425,7 @@ def get_island_visitors(name):
         bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
         for r in bot_rows:
             discord_status[r["island_id"]] = bool(r["is_online"])
-    except sqlite3.Error:
+    except Exception:
         pass
     finally:
         db.close()

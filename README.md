@@ -164,8 +164,19 @@ OPENAI_MODEL=gpt-4o-mini
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-1.5-flash
 
-# --- MARIADB MIGRATION (optional) ---
-# Used by: python main.py migrate-mariadb
+# --- DATABASE ---
+# sqlite is the default. Use mysql for MySQL/MariaDB after migrating data.
+DB_BACKEND=sqlite
+SQLITE_DB_PATH=
+DATABASE_URL=
+
+MYSQL_HOST=
+MYSQL_PORT=3306
+MYSQL_USER=
+MYSQL_PASSWORD=
+MYSQL_DATABASE=chobot
+
+# Backward-compatible MariaDB aliases also work.
 MARIADB_HOST=
 MARIADB_PORT=3306
 MARIADB_USER=
@@ -177,7 +188,7 @@ MARIADB_TRUNCATE_BEFORE_IMPORT=true
 
 ### Migrating SQLite data to MariaDB
 
-1. Set the `MARIADB_*` values in your `.env` file.
+1. Set the `MYSQL_*` values in your `.env` file. Existing `MARIADB_*` values still work.
 2. Run:
     ```bash
     python main.py migrate-mariadb
@@ -185,6 +196,20 @@ MARIADB_TRUNCATE_BEFORE_IMPORT=true
 3. Check logs for per-table row counts and final success summary.
 
 This migrates all user tables from `chobot.db` into MariaDB. By default it truncates target tables first (`MARIADB_TRUNCATE_BEFORE_IMPORT=true`).
+
+The same copy-only migration is also available through the authenticated dashboard API:
+
+```bash
+curl -H "Authorization: Bearer $DASHBOARD_SECRET" \
+  https://your-domain/dashboard/api/mariadb-migration/status
+
+curl -X POST -H "Authorization: Bearer $DASHBOARD_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"dry_run": false, "truncate_before_import": true}' \
+  https://your-domain/dashboard/api/mariadb-migration
+```
+
+After migration, set `DB_BACKEND=mysql` and restart ChoBot to run the Flask API and bots from MySQL/MariaDB. Leave `DB_BACKEND=sqlite` to keep the current SQLite flow.
 
 ### Setting up Discord OAuth login for the Dashboard
 
