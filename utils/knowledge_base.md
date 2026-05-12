@@ -210,6 +210,10 @@ These apply on every treasure island, in addition to the above:
    - Multiple characters on one island: `Character Name 1/Character Name 2 | Island Name`
    - One character with multiple islands: `Character Name | Island Name 1/Island Name 2`
    - Multiple characters with multiple islands: `Character Name 1/Character Name 2 | Island Name 1/Island Name 2`
+   If you only have one active subscription, your nickname should list only one
+   character/island identity. Mods may flag your nickname and ask you to remove
+   any extra character or island names that are not covered by an active
+   subscription.
    You can right-click your name in the server member list and select
    **Change Nickname**, or use Server Settings > Profile.
 3. **Leave via the airport.** Do not press "-" to close the game; this may
