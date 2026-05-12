@@ -198,9 +198,18 @@ The Discord is a family-friendly community. All members must follow these rules:
 ### Island-Specific Rules (All Visitors)
 These apply on every treasure island, in addition to the above:
 1. **Dodo Code is confidential.** Do not share it with anyone — not other
-   accounts, friends, or family. One character/island per membership.
-2. **Set your server nickname** to `ACNH Character Name | Your ACNH Island Name`
-   (e.g. `ChoPaeng | ChoPaeng Camp`) in the <#1081147108612124742> channel.
+   accounts, friends, or family. A membership/subscription should only be used
+   by the subscribed member.
+2. **Set your server nickname** in <#1081147108612124742> so staff and ChoBot can
+   identify the ACNH character(s) and island(s) connected to your access.
+   Use this format: `Character Name | Island Name`
+   Example: `ChoPaeng | ChoPaeng Camp`
+   If you have multiple subscriptions across supported platforms, include every
+   linked character/island in the same nickname. Each listed character/island
+   identity must be covered by its own active subscription or membership:
+   - Multiple characters on one island: `Character Name 1/Character Name 2 | Island Name`
+   - One character with multiple islands: `Character Name | Island Name 1/Island Name 2`
+   - Multiple characters with multiple islands: `Character Name 1/Character Name 2 | Island Name 1/Island Name 2`
    You can right-click your name in the server member list and select
    **Change Nickname**, or use Server Settings > Profile.
 3. **Leave via the airport.** Do not press "-" to close the game; this may
@@ -497,7 +506,10 @@ Check [chopaeng.com](https://chopaeng.com) for the latest info.
   unban it when the bot has flagged the behavior.
 - **Second warning for subscriber rule 2?** Change your nickname in
   <#1081147108612124742> to the required format or you may be kicked from the
-  server: `Character name | Island name`.
+  server. Standard format: `Character name | Island name`. If you have multiple
+  subscribed memberships/platforms, use `Nickname1/Nickname2 | Island` for
+  multiple characters on one island, or `Nickname | Island1 Island2` for one
+  character with multiple islands.
 - **Cannot see 3.0 islands?** Some 3.0 islands are available. If you cannot see
   them, go to the co-owners channel and follow the posted steps to unlock the new
   island channels. Some islands may change by subscription tier so everyone has
