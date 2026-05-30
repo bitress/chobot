@@ -28,6 +28,9 @@ class Config:
 
     # General Config
     IS_PRODUCTION = os.getenv('IS_PRODUCTION', 'true').lower() == 'true'
+    DEFAULT_TENANT_ID = os.getenv("DEFAULT_TENANT_ID", "chopaeng").strip() or "chopaeng"
+    DEFAULT_TENANT_NAME = os.getenv("DEFAULT_TENANT_NAME", "ChoPaeng").strip() or "ChoPaeng"
+    DEFAULT_TENANT_SLUG = os.getenv("DEFAULT_TENANT_SLUG", DEFAULT_TENANT_ID).strip() or DEFAULT_TENANT_ID
 
     # Auth Tokens
     TWITCH_TOKEN = os.getenv('TWITCH_TOKEN')
@@ -158,13 +161,16 @@ class Config:
     DEFAULT_PFP = "https://static-cdn.jtvnw.net/jtv_user_pictures/cf6b6d6c-f9b6-4bad-b034-391d7d32b9c3-profile_image-70x70.png"
 
     @classmethod
-    def validate(cls):
+    def validate(cls, require_twitch: bool = True, require_discord: bool = True):
         """Validate required environment variables exist and are not empty"""
         required_vars = [
-            'TWITCH_TOKEN', 'TWITCH_CHANNEL', 'DISCORD_TOKEN',
-            'WORKBOOK_NAME', 'GUILD_ID', 'CATEGORY_ID',
+            'WORKBOOK_NAME',
             'PATREON_TOKEN', 'PATREON_CAMPAIGN_ID'
         ]
+        if require_twitch:
+            required_vars.extend(['TWITCH_TOKEN', 'TWITCH_CHANNEL'])
+        if require_discord:
+            required_vars.extend(['DISCORD_TOKEN', 'GUILD_ID', 'CATEGORY_ID'])
 
         missing = []
         for var in required_vars:

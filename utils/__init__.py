@@ -11,6 +11,7 @@ from .helpers import (
     get_best_suggestions
 )
 from .chopaeng_ai import get_ai_answer
+from .tenant_config import TenantRuntimeConfig, load_tenant_runtime_config
 
 __all__ = [
     'Config',
@@ -22,4 +23,6 @@ __all__ = [
     'parse_locations_json',
     'get_best_suggestions',
     'get_ai_answer',
+    'TenantRuntimeConfig',
+    'load_tenant_runtime_config',
 ]

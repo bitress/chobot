@@ -24,6 +24,7 @@ from utils.database import connect_db
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
+from utils.tenant_config import TenantRuntimeConfig, load_tenant_runtime_config
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -3225,7 +3226,12 @@ class DiscordCommandCog(commands.Cog):
 class DiscordCommandBot(commands.Bot):
     """Main Discord bot with command functionality"""
 
-    def __init__(self, data_manager, load_command_cog: bool = True):
+    def __init__(
+        self,
+        data_manager,
+        load_command_cog: bool = True,
+        tenant_config: TenantRuntimeConfig | None = None,
+    ):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
@@ -3233,6 +3239,7 @@ class DiscordCommandBot(commands.Bot):
         super().__init__(command_prefix='!', intents=intents, help_command=None)
 
         self.data_manager = data_manager
+        self.tenant_config = tenant_config or load_tenant_runtime_config()
         self._load_command_cog = load_command_cog
         self.start_time = datetime.now()
         self.restart_requested = False
@@ -3329,11 +3336,12 @@ class DiscordCommandBot(commands.Bot):
         
         self.tree.interaction_check = check_find_channel_restriction
 
-        if Config.GUILD_ID:
-            guild_obj = discord.Object(id=Config.GUILD_ID)
+        guild_id = self.tenant_config.guild_id or Config.GUILD_ID
+        if guild_id:
+            guild_obj = discord.Object(id=guild_id)
             self.tree.copy_global_to(guild=guild_obj)
             await self.tree.sync(guild=guild_obj)
-            logger.info(f"[DISCORD] Slash commands synced to Guild ID: {Config.GUILD_ID}")
+            logger.info(f"[DISCORD] Slash commands synced to Guild ID: {guild_id}")
         else:
             await self.tree.sync()
             logger.info("[DISCORD] Slash commands synced globally")
@@ -3362,7 +3370,8 @@ class DiscordCommandBot(commands.Bot):
 
         # Auto-delete Dodo code update notification messages (only in SUB_CATEGORY channels)
         if DODO_UPDATE_NOTIFICATION_PATTERN.search(message.content):
-            if hasattr(message.channel, 'category_id') and message.channel.category_id == Config.CATEGORY_ID:
+            member_category_id = self.tenant_config.member_category_id or Config.CATEGORY_ID
+            if hasattr(message.channel, 'category_id') and message.channel.category_id == member_category_id:
                 try:
                     await message.delete()
                     logger.info(f"[DISCORD] Auto-deleted Dodo code update notification from {message.author}: {message.content[:100]}")

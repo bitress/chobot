@@ -12,6 +12,7 @@ from thefuzz import process, fuzz
 from utils.config import Config
 from utils.helpers import normalize_text, get_best_suggestions, clean_text, format_locations_text
 from utils.chopaeng_ai import get_ai_answer
+from utils.tenant_config import TenantRuntimeConfig, load_tenant_runtime_config
 
 logger = logging.getLogger("TwitchBot")
 
@@ -23,11 +24,13 @@ TWITCH_TRUNCATE_AT = TWITCH_MESSAGE_LIMIT - 3  # room for "..."
 class TwitchBot(commands.Bot):
     """Twitch bot for treasure hunt commands"""
 
-    def __init__(self, data_manager):
+    def __init__(self, data_manager, tenant_config: TenantRuntimeConfig | None = None):
+        self.tenant_config = tenant_config or load_tenant_runtime_config()
+        initial_channels = [self.tenant_config.twitch_channel] if self.tenant_config.twitch_channel else []
         super().__init__(
             token=Config.TWITCH_TOKEN,
             prefix='!',
-            initial_channels=[Config.TWITCH_CHANNEL]
+            initial_channels=initial_channels
         )
         self.data_manager = data_manager
         self.cooldowns = {}
@@ -36,7 +39,10 @@ class TwitchBot(commands.Bot):
     async def event_ready(self):
         """Called when bot is connected"""
         logger.info(f"[TWITCH] Logged in as: {self.nick}")
-        logger.info(f"[TWITCH] Monitoring channel: {Config.TWITCH_CHANNEL}")
+        logger.info(f"[TWITCH] Monitoring channel: {self.tenant_config.twitch_channel}")
+
+    def allowed_islands(self) -> list[str]:
+        return self.tenant_config.all_islands or (Config.SUB_ISLANDS + Config.FREE_ISLANDS)
 
     async def event_message(self, message):
         """Called on every message"""
@@ -88,7 +94,7 @@ class TwitchBot(commands.Bot):
         if found_locs_raw:
             # Filter: SUB_ISLANDS + FREE_ISLANDS for items
             loc_list = found_locs_raw.split(", ")
-            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+            allowed_islands = self.allowed_islands()
             all_found = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
             
             display_name = display_map.get(search_term, search_term_raw.title())
@@ -141,7 +147,7 @@ class TwitchBot(commands.Bot):
         if found_locs_raw:
             # Filter: only SUB_ISLANDS
             loc_list = found_locs_raw.split(", ")
-            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+            allowed_islands = self.allowed_islands()
             sub_only = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
             
             display_name = search_term.title()
@@ -202,7 +208,7 @@ class TwitchBot(commands.Bot):
         if found_locs_raw:
             # Filter: SUB_ISLANDS + FREE_ISLANDS
             loc_list = found_locs_raw.split(", ")
-            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+            allowed_islands = self.allowed_islands()
             all_found = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
             
             if all_found:

@@ -27,7 +27,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import ThreadedWSGIServer
 
 from utils.config import Config
-from utils.database import connect_db
+from utils.database import connect_db, get_default_tenant_id
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
 from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value, _parse_visitor_list
 
@@ -56,6 +56,7 @@ def _persist_dodo_reveal_message(
                 """
                 CREATE TABLE IF NOT EXISTS dodo_reveal_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL DEFAULT 'chopaeng',
                     user_id TEXT NOT NULL,
                     island_clean TEXT NOT NULL,
                     channel_id TEXT,
@@ -69,10 +70,11 @@ def _persist_dodo_reveal_message(
             conn.execute(
                 """
                 INSERT INTO dodo_reveal_messages
-                (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (tenant_id, user_id, island_clean, channel_id, message_url, username, nickname, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    get_default_tenant_id(),
                     str(user_id),
                     island_clean,
                     str(channel_id) if channel_id else None,
@@ -280,6 +282,11 @@ def _user_id_param(user_id: str) -> int | str:
     return int(user_id) if str(user_id).isdigit() else str(user_id)
 
 
+def _current_tenant_id() -> str:
+    """Return the tenant used by legacy public API requests."""
+    return get_default_tenant_id()
+
+
 def _load_profile_subscriptions(user: dict) -> dict:
     """Return subscription/access info inferred from Discord roles and local DB."""
     user_role_ids = {str(r) for r in user.get("roles", [])}
@@ -289,12 +296,14 @@ def _load_profile_subscriptions(user: dict) -> dict:
     excluded_role_ids = _excluded_profile_role_ids()
     role_names = _get_guild_role_names()
     alert_subscriptions: list[dict] = []
+    tenant_id = _current_tenant_id()
 
     db = get_db()
     try:
         all_required_role_ids: set[str] = set()
         rows = db.execute(
-            "SELECT id, name, cat, type, required_roles FROM islands ORDER BY name"
+            "SELECT id, name, cat, type, required_roles FROM islands WHERE tenant_id = ? ORDER BY name",
+            (tenant_id,),
         ).fetchall()
         for row in rows:
             island = row_to_island_dict(dict(row))
@@ -330,8 +339,8 @@ def _load_profile_subscriptions(user: dict) -> dict:
         try:
             sub_rows = db.execute(
                 "SELECT island_clean, kind, has_island_access "
-                "FROM island_subscriptions WHERE user_id = ? ORDER BY island_clean, kind",
-                (_user_id_param(user.get("user_id", "")),),
+                "FROM island_subscriptions WHERE tenant_id = ? AND user_id = ? ORDER BY island_clean, kind",
+                (tenant_id, _user_id_param(user.get("user_id", ""))),
             ).fetchall()
             alert_subscriptions = [
                 {
@@ -378,6 +387,7 @@ def _load_profile_visit_stats(user_id: str) -> dict:
     """Return visit totals, top destinations, recent visits, and warning summary."""
     uid = _user_id_param(user_id)
     guild_id = Config.GUILD_ID
+    tenant_id = _current_tenant_id()
     empty = {
         "total": 0,
         "authorized": 0,
@@ -397,8 +407,8 @@ def _load_profile_visit_stats(user_id: str) -> dict:
             "SUM(CASE WHEN authorized = 1 THEN 1 ELSE 0 END) AS authorized, "
             "SUM(CASE WHEN authorized = 0 THEN 1 ELSE 0 END) AS unauthorized, "
             "MIN(timestamp) AS first_visit_at, MAX(timestamp) AS last_visit_at "
-            "FROM island_visits WHERE user_id = ? AND guild_id = ?",
-            (uid, guild_id),
+            "FROM island_visits WHERE tenant_id = ? AND user_id = ? AND guild_id = ?",
+            (tenant_id, uid, guild_id),
         ).fetchone()
         if row:
             empty.update({
@@ -411,9 +421,9 @@ def _load_profile_visit_stats(user_id: str) -> dict:
 
         type_rows = db.execute(
             "SELECT island_type, COUNT(*) AS visit_count "
-            "FROM island_visits WHERE user_id = ? AND guild_id = ? "
+            "FROM island_visits WHERE tenant_id = ? AND user_id = ? AND guild_id = ? "
             "GROUP BY island_type ORDER BY visit_count DESC",
-            (uid, guild_id),
+            (tenant_id, uid, guild_id),
         ).fetchall()
         empty["by_type"] = {
             (row["island_type"] or "unknown"): int(row["visit_count"] or 0)
@@ -422,10 +432,10 @@ def _load_profile_visit_stats(user_id: str) -> dict:
 
         top_rows = db.execute(
             "SELECT destination, island_type, COUNT(*) AS visit_count, MAX(timestamp) AS last_visit_at "
-            "FROM island_visits WHERE user_id = ? AND guild_id = ? "
+            "FROM island_visits WHERE tenant_id = ? AND user_id = ? AND guild_id = ? "
             "GROUP BY destination, island_type "
             "ORDER BY visit_count DESC, last_visit_at DESC LIMIT 10",
-            (uid, guild_id),
+            (tenant_id, uid, guild_id),
         ).fetchall()
         empty["most_visited_islands"] = [
             {
@@ -439,9 +449,9 @@ def _load_profile_visit_stats(user_id: str) -> dict:
 
         recent_rows = db.execute(
             "SELECT id, ign, origin_island, destination, authorized, timestamp, island_type "
-            "FROM island_visits WHERE user_id = ? AND guild_id = ? "
+            "FROM island_visits WHERE tenant_id = ? AND user_id = ? AND guild_id = ? "
             "ORDER BY timestamp DESC LIMIT 10",
-            (uid, guild_id),
+            (tenant_id, uid, guild_id),
         ).fetchall()
         empty["recent_visits"] = [
             {
@@ -459,8 +469,8 @@ def _load_profile_visit_stats(user_id: str) -> dict:
         try:
             warn_row = db.execute(
                 "SELECT COUNT(*) AS total, MAX(timestamp) AS last_warning_at "
-                "FROM warnings WHERE user_id = ? AND guild_id = ?",
-                (uid, guild_id),
+                "FROM warnings WHERE tenant_id = ? AND user_id = ? AND guild_id = ?",
+                (tenant_id, uid, guild_id),
             ).fetchone()
             if warn_row:
                 empty["warnings"] = {
@@ -984,12 +994,14 @@ def reveal_dodo(name):
         return jsonify({"error": "Authentication required"}), 401
 
     target = name.upper()
+    tenant_id = _current_tenant_id()
 
     # Load island metadata (cat + required_roles)
     db = get_db()
     try:
         row = db.execute(
-            "SELECT cat, required_roles, channel_id FROM islands WHERE UPPER(name) = ?", (target,)
+            "SELECT cat, required_roles, channel_id FROM islands WHERE tenant_id = ? AND UPPER(name) = ?",
+            (tenant_id, target),
         ).fetchone()
     finally:
         db.close()
@@ -1341,13 +1353,15 @@ def get_islands():
     viewer_is_mod = bool(viewer and (viewer.get("is_mod") or viewer_is_admin or _is_mod(viewer_roles)))
 
     # Load island metadata from DB, keyed by uppercase name
+    tenant_id = _current_tenant_id()
     db_map = {}
     discord_status = {}
     db = get_db()
     try:
         rows = db.execute(
             "SELECT id, name, cat, description, items, map_url, seasonal, theme, type, updated_at, required_roles "
-            "FROM islands ORDER BY name"
+            "FROM islands WHERE tenant_id = ? ORDER BY name",
+            (tenant_id,),
         ).fetchall()
         for row in rows:
             isl = row_to_island_dict(dict(row))
@@ -1357,7 +1371,10 @@ def get_islands():
             if isl.get("name"):
                 db_map[isl["name"].upper()] = isl
         # Load Discord bot presence data
-        bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
+        bot_rows = db.execute(
+            "SELECT island_id, is_online FROM island_bot_status WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchall()
         for r in bot_rows:
             discord_status[r["island_id"]] = bool(r["is_online"])
     except Exception:
@@ -1417,12 +1434,16 @@ def get_island_visitors(name):
     Returns 404 if no island directory with that name is found.
     """
     target = name.upper()
+    tenant_id = _current_tenant_id()
 
     # Load bot online status for all islands (same pattern as get_islands)
     discord_status = {}
     db = get_db()
     try:
-        bot_rows = db.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
+        bot_rows = db.execute(
+            "SELECT island_id, is_online FROM island_bot_status WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchall()
         for r in bot_rows:
             discord_status[r["island_id"]] = bool(r["is_online"])
     except Exception:

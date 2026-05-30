@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils import Config, DataManager
 from utils.db_migration import migrate_sqlite_to_mariadb
+from utils.tenant_config import TenantRuntimeConfig, load_tenant_runtime_config
 from bots import TwitchBot, DiscordCommandBot
 from bots.flight_logger import FlightLoggerCog, FreeFlightCog
 from api import run_flask_app, set_data_manager
@@ -274,7 +275,11 @@ async def _run_twitch_lifecycle(twitch_bot: TwitchBot) -> None:
             await task
 
 
-def run_twitch(data_manager: DataManager, find_only: bool = False):
+def run_twitch(
+    data_manager: DataManager,
+    find_only: bool = False,
+    tenant_config: TenantRuntimeConfig | None = None,
+):
     """Run Twitch bot in a thread with its own event loop."""
     loop: Optional[asyncio.AbstractEventLoop] = None
     twitch_bot: Optional[TwitchBot] = None
@@ -285,7 +290,12 @@ def run_twitch(data_manager: DataManager, find_only: bool = False):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        twitch_bot = TwitchBot(data_manager)
+        tenant_config = tenant_config or load_tenant_runtime_config()
+        if not tenant_config.twitch_bot_enabled:
+            logger.info(f"[TWITCH] Tenant '{tenant_config.tenant_id}' has Twitch disabled; skipping bot startup.")
+            return
+
+        twitch_bot = TwitchBot(data_manager, tenant_config=tenant_config)
         loop.run_until_complete(_run_twitch_lifecycle(twitch_bot))
 
     except Exception as e:
@@ -310,6 +320,7 @@ async def run_discord(
         data_manager: DataManager,
         flight_logger_only: bool = False,
         find_only: bool = False,
+        tenant_config: TenantRuntimeConfig | None = None,
 ) -> bool:
     """Run Discord bot on the main asyncio loop.
 
@@ -326,7 +337,16 @@ async def run_discord(
             mode = "full"
         logger.info(f"[DISCORD] Starting Discord bot ({mode} mode)...")
 
-        discord_bot = DiscordCommandBot(data_manager, load_command_cog=not flight_logger_only)
+        tenant_config = tenant_config or load_tenant_runtime_config()
+        if not tenant_config.discord_bot_enabled:
+            logger.info(f"[DISCORD] Tenant '{tenant_config.tenant_id}' has Discord disabled; skipping bot startup.")
+            return False
+
+        discord_bot = DiscordCommandBot(
+            data_manager,
+            load_command_cog=not flight_logger_only,
+            tenant_config=tenant_config,
+        )
 
         if flight_logger_only:
             await discord_bot.add_cog(FlightLoggerCog(discord_bot))
@@ -367,6 +387,23 @@ async def run_discord(
                 pass
 
     return bool(discord_bot and discord_bot.restart_requested)
+
+
+def _validate_enabled_integrations(
+    needs_discord: bool,
+    needs_twitch: bool,
+    tenant_config: TenantRuntimeConfig,
+) -> None:
+    missing: list[str] = []
+    if needs_discord and tenant_config.discord_bot_enabled:
+        if not Config.DISCORD_TOKEN:
+            missing.append("DISCORD_TOKEN")
+        if not tenant_config.guild_id:
+            missing.append("tenant Discord guild_id")
+    if needs_twitch and tenant_config.twitch_bot_enabled and not Config.TWITCH_TOKEN:
+        missing.append("TWITCH_TOKEN")
+    if missing:
+        raise ValueError(f"Missing required integration settings: {', '.join(missing)}")
 
 
 # ============================================================================
@@ -413,10 +450,24 @@ def main():
 
     # ---- Validate config ---------------------------------------------------
     try:
-        Config.validate()
-        logger.info("[CONFIG] All environment variables validated ✓")
+        Config.validate(require_twitch=False, require_discord=False)
+        logger.info("[CONFIG] Base environment variables validated")
     except ValueError as e:
         logger.critical(f"[CONFIG] Configuration error: {e}")
+        sys.exit(1)
+
+    tenant_config = load_tenant_runtime_config()
+    logger.info(
+        "[TENANT] Runtime tenant: %s (%s), Discord guild=%s, Twitch channel=%s",
+        tenant_config.name,
+        tenant_config.tenant_id,
+        tenant_config.guild_id or "not configured",
+        tenant_config.twitch_channel or "disabled",
+    )
+    try:
+        _validate_enabled_integrations(needs_discord, needs_twitch, tenant_config)
+    except ValueError as e:
+        logger.critical(f"[CONFIG] Integration configuration error: {e}")
         sys.exit(1)
 
     # ---- Init shared data manager ------------------------------------------
@@ -464,7 +515,7 @@ def main():
         twitch_find_only = flags["twitch_find_only"]
         twitch_thread = threading.Thread(
             target=run_twitch,
-            args=(data_manager, twitch_find_only),
+            args=(data_manager, twitch_find_only, tenant_config),
             name="TwitchThread",
         )
         twitch_thread.start()
@@ -481,6 +532,7 @@ def main():
                     data_manager,
                     flight_logger_only=flags["flight_logger_only"],
                     find_only=flags["discord_find_only"],
+                    tenant_config=tenant_config,
                 )
             )
         except KeyboardInterrupt:

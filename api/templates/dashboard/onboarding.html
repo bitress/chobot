@@ -1,0 +1,282 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Onboarding - ChoBot Dashboard{% endblock %}
+{% block header %}Customer Onboarding{% endblock %}
+
+{% block content %}
+{% set settings = tenant.settings if tenant and tenant.settings else {} %}
+{% set brand_logo = settings.get('brand.logo_url', '') %}
+{% set brand_color = settings.get('brand.theme_color', 'teal') %}
+{% set brand_slug = settings.get('brand.public_slug', tenant.slug if tenant else '') %}
+
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
+  <div>
+    <div class="fw-black" style="color:#444;font-size:1rem;">Setup wizard</div>
+    <div class="x-small fw-bold" style="color:#aaa;">Create a tenant, connect Discord, import islands, and save branding.</div>
+  </div>
+  <a href="https://discord.com/oauth2/authorize?client_id={{ discord_client_id }}&permissions=8&scope=bot%20applications.commands"
+     target="_blank"
+     class="btn btn-sm fw-bold d-flex align-items-center gap-1"
+     style="background:#5865F2;color:#fff;border-radius:50px;border:none;">
+    <i class="bi bi-discord"></i> Add Bot
+  </a>
+</div>
+
+<div class="section-card mb-4">
+  <div class="row g-3">
+    <div class="col-lg-3">
+      <label class="db-label">Tenant Name</label>
+      <input id="tenantName" class="db-input" value="{{ tenant.name if tenant else '' }}" placeholder="Sunny Islands">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Public Slug</label>
+      <input id="tenantSlug" class="db-input" value="{{ brand_slug }}" placeholder="sunny-islands">
+    </div>
+    <div class="col-lg-2">
+      <label class="db-label">Plan</label>
+      <select id="tenantPlan" class="db-input">
+        {% for plan in ['trial','starter','pro','premium'] %}
+        <option value="{{ plan }}" {% if tenant and tenant.plan == plan %}selected{% endif %}>{{ plan|title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-lg-2">
+      <label class="db-label">Theme Color</label>
+      <select id="themeColor" class="db-input">
+        {% for theme in allowed_themes %}
+        <option value="{{ theme }}" {% if brand_color == theme %}selected{% endif %}>{{ theme|title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-lg-2">
+      <label class="db-label">Logo URL</label>
+      <input id="logoUrl" class="db-input" value="{{ brand_logo }}" placeholder="https://...">
+    </div>
+  </div>
+</div>
+
+<div class="section-card mb-4">
+  <div class="fw-black mb-3" style="color:#444;">Discord Configuration</div>
+  <div class="row g-3">
+    <div class="col-lg-3">
+      <label class="db-label">Guild ID</label>
+      <input id="guildId" class="db-input" value="{{ discord_cfg.get('guild_id', '') }}" placeholder="Discord server ID">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Free Category ID</label>
+      <input id="freeCategoryId" class="db-input" value="{{ discord_cfg.get('free_category_id', '') }}" placeholder="Free island category">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Member Category ID</label>
+      <input id="memberCategoryId" class="db-input" value="{{ discord_cfg.get('member_category_id', '') }}" placeholder="Sub/member category">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Island Access Role ID</label>
+      <input id="islandAccessRoleId" class="db-input" value="{{ discord_cfg.get('island_access_role_id', '') }}" placeholder="Subscriber/access role">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Mod Role ID</label>
+      <input id="modRoleId" class="db-input" value="{{ discord_cfg.get('mod_role_id', '') }}" placeholder="Moderator role">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Log Channel ID</label>
+      <input id="logChannelId" class="db-input" value="{{ discord_cfg.get('log_channel_id', '') }}" placeholder="Logs channel">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Flight Listen Channel ID</label>
+      <input id="flightListenChannelId" class="db-input" value="{{ discord_cfg.get('flight_listen_channel_id', '') }}" placeholder="Flight log input">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Free Flight Listen Channel ID</label>
+      <input id="freeFlightListenChannelId" class="db-input" value="{{ discord_cfg.get('free_flight_listen_channel_id', '') }}" placeholder="Optional">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Flight Log Channel ID</label>
+      <input id="flightLogChannelId" class="db-input" value="{{ discord_cfg.get('flight_log_channel_id', '') }}" placeholder="Output channel">
+    </div>
+    <div class="col-lg-3">
+      <label class="db-label">Twitch Channel</label>
+      <input id="twitchChannel" class="db-input" value="{{ twitch_cfg.get('channel_name', '') }}" placeholder="Optional">
+    </div>
+    <div class="col-lg-3 d-flex align-items-end">
+      <button id="scanDiscordBtn" class="btn btn-nook-primary w-100 fw-bold" type="button">
+        <i class="bi bi-search me-1"></i>Scan Categories
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="section-card mb-4">
+  <div class="d-flex align-items-center justify-content-between gap-2 mb-3">
+    <div>
+      <div class="fw-black" style="color:#444;">Initial Islands</div>
+      <div class="x-small fw-bold" style="color:#aaa;">Scan Discord first, then edit or add rows before completing setup.</div>
+    </div>
+    <button id="addIslandBtn" class="btn btn-sm fw-bold" type="button"
+            style="background:var(--nook-cream);border:2px solid #e1e6d3;border-radius:50px;color:#666;">
+      <i class="bi bi-plus-lg me-1"></i>Add Island
+    </button>
+  </div>
+  <div class="table-responsive">
+    <table class="db-table" id="onboardingIslandsTable">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Category</th>
+          <th>Items</th>
+          <th>Channel ID</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="d-flex align-items-center gap-2 justify-content-end">
+  <div id="onboardingStatus" class="x-small fw-bold me-auto" style="color:#888;"></div>
+  <button id="completeOnboardingBtn" class="btn btn-nook-primary fw-bold px-4" type="button">
+    <i class="bi bi-check-circle-fill me-1"></i>Complete Setup
+  </button>
+</div>
+
+<script>
+(function () {
+  const statusEl = document.getElementById('onboardingStatus');
+  const tbody = document.querySelector('#onboardingIslandsTable tbody');
+
+  function val(id) {
+    const el = document.getElementById(id);
+    return el ? el.value.trim() : '';
+  }
+
+  function setStatus(msg, danger) {
+    statusEl.textContent = msg || '';
+    statusEl.style.color = danger ? '#dc3545' : '#198754';
+  }
+
+  function slugify(value) {
+    return (value || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^[-_]+|[-_]+$/g, '');
+  }
+
+  function rowHtml(island) {
+    island = island || {};
+    const cat = island.cat || 'public';
+    return `
+      <tr>
+        <td><input class="db-input ob-name" value="${island.name || ''}" placeholder="TALA"></td>
+        <td><input class="db-input ob-type" value="${island.type || ''}" placeholder="Free / VIP"></td>
+        <td>
+          <select class="db-input ob-cat">
+            <option value="public" ${cat === 'public' ? 'selected' : ''}>Public</option>
+            <option value="member" ${cat === 'member' ? 'selected' : ''}>Member</option>
+          </select>
+        </td>
+        <td><input class="db-input ob-items" value="${(island.items || []).join ? (island.items || []).join(', ') : (island.items || '')}" placeholder="bells, materials"></td>
+        <td><input class="db-input ob-channel" value="${island.channel_id || ''}" placeholder="Discord channel"></td>
+        <td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger ob-remove"><i class="bi bi-trash"></i></button></td>
+      </tr>`;
+  }
+
+  function addIsland(island) {
+    tbody.insertAdjacentHTML('beforeend', rowHtml(island));
+  }
+
+  function collectIslands() {
+    return Array.from(tbody.querySelectorAll('tr')).map((tr) => {
+      const name = tr.querySelector('.ob-name').value.trim();
+      return {
+        id: slugify(name),
+        name: name,
+        type: tr.querySelector('.ob-type').value.trim(),
+        cat: tr.querySelector('.ob-cat').value,
+        items: tr.querySelector('.ob-items').value.split(',').map((s) => s.trim()).filter(Boolean),
+        channel_id: tr.querySelector('.ob-channel').value.trim(),
+        theme: val('themeColor') || 'teal',
+        description: '',
+        seasonal: '',
+        required_roles: []
+      };
+    }).filter((island) => island.name);
+  }
+
+  document.getElementById('addIslandBtn').addEventListener('click', () => addIsland({cat: 'public'}));
+  tbody.addEventListener('click', (e) => {
+    const btn = e.target.closest('.ob-remove');
+    if (btn) btn.closest('tr').remove();
+  });
+
+  document.getElementById('scanDiscordBtn').addEventListener('click', async () => {
+    setStatus('Scanning Discord categories...');
+    try {
+      const resp = await fetch('{{ url_for("dashboard.api_onboarding_discord_scan") }}', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          guild_id: val('guildId'),
+          free_category_id: val('freeCategoryId'),
+          member_category_id: val('memberCategoryId')
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Scan failed');
+      tbody.innerHTML = '';
+      (data.islands || []).forEach(addIsland);
+      setStatus(`Found ${data.count || 0} island candidate(s).`);
+    } catch (err) {
+      setStatus(err.message || 'Discord scan failed', true);
+    }
+  });
+
+  document.getElementById('completeOnboardingBtn').addEventListener('click', async () => {
+    const name = val('tenantName');
+    const slug = slugify(val('tenantSlug') || name);
+    if (!name || !slug || !val('guildId')) {
+      setStatus('Tenant name, slug, and guild ID are required.', true);
+      return;
+    }
+    setStatus('Saving onboarding...');
+    try {
+      const payload = {
+        tenant: {name, slug, id: slug, plan: val('tenantPlan') || 'trial'},
+        branding: {
+          logo_url: val('logoUrl'),
+          theme_color: val('themeColor') || 'teal',
+          public_slug: slug
+        },
+        discord: {
+          guild_id: val('guildId'),
+          free_category_id: val('freeCategoryId'),
+          member_category_id: val('memberCategoryId'),
+          island_access_role_id: val('islandAccessRoleId'),
+          mod_role_id: val('modRoleId'),
+          log_channel_id: val('logChannelId'),
+          flight_listen_channel_id: val('flightListenChannelId'),
+          free_flight_listen_channel_id: val('freeFlightListenChannelId'),
+          flight_log_channel_id: val('flightLogChannelId'),
+          bot_enabled: true
+        },
+        twitch: val('twitchChannel') ? {channel_name: val('twitchChannel'), bot_enabled: true} : {},
+        islands: collectIslands()
+      };
+      const resp = await fetch('{{ url_for("dashboard.api_onboarding_complete") }}', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Could not complete setup');
+      setStatus(`Setup complete. Saved ${data.island_count || 0} island(s).`);
+      window.location.href = data.redirect || '{{ url_for("dashboard.index") }}';
+    } catch (err) {
+      setStatus(err.message || 'Could not complete setup', true);
+    }
+  });
+
+  if (!tbody.children.length) addIsland({cat: 'public'});
+})();
+</script>
+{% endblock %}

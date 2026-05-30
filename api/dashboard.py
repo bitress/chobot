@@ -30,7 +30,7 @@ from flask import (
 )
 
 from utils.config import Config
-from utils.database import connect_db, get_backend, get_engine
+from utils.database import connect_db, get_backend, get_engine, get_default_tenant_id
 from utils.db_migration import migrate_sqlite_to_mariadb
 
 logger = logging.getLogger("Dashboard")
@@ -168,6 +168,261 @@ def get_db():
     return connect_db()
 
 
+def current_tenant_id() -> str:
+    """Return the tenant scoped to this dashboard request.
+
+    The app is still running in legacy single-tenant mode, so this defaults to
+    the configured ChoPaeng tenant. Future onboarding can set this from the
+    authenticated dashboard session.
+    """
+    if session.get("tenant_id"):
+        return session["tenant_id"]
+    if _check_bearer():
+        requested = request.headers.get("X-Tenant-ID") or request.args.get("tenant_id")
+        if requested:
+            return _normalize_tenant_id(requested)
+    return get_default_tenant_id()
+
+
+def _normalize_tenant_id(value: str) -> str:
+    """Normalize a user-facing tenant id/slug into a stable database key."""
+    cleaned = re.sub(r"[^a-z0-9_-]+", "-", (value or "").strip().lower())
+    cleaned = re.sub(r"-+", "-", cleaned).strip("-_")
+    return cleaned[:64]
+
+
+def _tenant_exists(tenant_id: str) -> bool:
+    if not tenant_id:
+        return False
+    db = get_db()
+    try:
+        return db.execute("SELECT 1 FROM tenants WHERE id = ? LIMIT 1", (tenant_id,)).fetchone() is not None
+    finally:
+        db.close()
+
+
+def _tenant_row_to_dict(row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "slug": row["slug"],
+        "status": row["status"],
+        "plan": row["plan"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _get_tenant_row(tenant_id: str):
+    db = get_db()
+    try:
+        return db.execute(
+            "SELECT id, name, slug, status, plan, created_at, updated_at FROM tenants WHERE id = ?",
+            (tenant_id,),
+        ).fetchone()
+    finally:
+        db.close()
+
+
+def _load_tenant_settings(conn, tenant_id: str) -> dict[str, str]:
+    rows = conn.execute(
+        "SELECT key, value FROM tenant_settings WHERE tenant_id = ?",
+        (tenant_id,),
+    ).fetchall()
+    return {row["key"]: row["value"] for row in rows}
+
+
+def _set_tenant_setting(conn, tenant_id: str, key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO tenant_settings (tenant_id, key, value)
+        VALUES (?, ?, ?)
+        ON CONFLICT(tenant_id, key) DO UPDATE SET value=excluded.value
+        """,
+        (tenant_id, key, value or ""),
+    )
+
+
+def _tenant_setup_complete(settings: dict[str, str], tenant: dict | None = None) -> bool:
+    if tenant and tenant.get("id") == get_default_tenant_id():
+        return True
+    return bool(settings.get("onboarding.completed_at"))
+
+
+def _parse_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _string_id(value) -> str:
+    return str(value or "").strip()
+
+
+def _tenant_select_payload() -> list[dict]:
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, name, slug, status, plan, created_at, updated_at FROM tenants ORDER BY name"
+        ).fetchall()
+        return [_tenant_row_to_dict(row) for row in rows]
+    finally:
+        db.close()
+
+
+def _current_tenant_payload() -> dict | None:
+    tenant_id = current_tenant_id()
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, name, slug, status, plan, created_at, updated_at FROM tenants WHERE id = ?",
+            (tenant_id,),
+        ).fetchone()
+        if not row:
+            return None
+        tenant = _tenant_row_to_dict(row)
+        tenant["settings"] = _load_tenant_settings(db, tenant_id)
+        return tenant
+    finally:
+        db.close()
+
+
+def _require_dashboard_admin():
+    if not _check_bearer() and _get_session_role() != "admin":
+        abort(403)
+
+
+def _upsert_tenant_configs(
+    conn,
+    tenant_id: str,
+    discord_cfg: dict,
+    twitch_cfg: dict | None,
+    now: int,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO tenant_discord_configs (
+            tenant_id, guild_id, member_category_id, free_category_id, log_channel_id,
+            flight_listen_channel_id, free_flight_listen_channel_id, flight_log_channel_id,
+            mod_role_id, island_access_role_id, bot_enabled, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tenant_id) DO UPDATE SET
+            guild_id=excluded.guild_id,
+            member_category_id=excluded.member_category_id,
+            free_category_id=excluded.free_category_id,
+            log_channel_id=excluded.log_channel_id,
+            flight_listen_channel_id=excluded.flight_listen_channel_id,
+            free_flight_listen_channel_id=excluded.free_flight_listen_channel_id,
+            flight_log_channel_id=excluded.flight_log_channel_id,
+            mod_role_id=excluded.mod_role_id,
+            island_access_role_id=excluded.island_access_role_id,
+            bot_enabled=excluded.bot_enabled,
+            updated_at=excluded.updated_at
+        """,
+        (
+            tenant_id,
+            _string_id(discord_cfg.get("guild_id")),
+            _string_id(discord_cfg.get("member_category_id")),
+            _string_id(discord_cfg.get("free_category_id")),
+            _string_id(discord_cfg.get("log_channel_id")),
+            _string_id(discord_cfg.get("flight_listen_channel_id")),
+            _string_id(discord_cfg.get("free_flight_listen_channel_id")),
+            _string_id(discord_cfg.get("flight_log_channel_id")),
+            _string_id(discord_cfg.get("mod_role_id")),
+            _string_id(discord_cfg.get("island_access_role_id")),
+            1 if _parse_bool(discord_cfg.get("bot_enabled"), True) else 0,
+            now,
+        ),
+    )
+
+    if twitch_cfg is not None:
+        conn.execute(
+            """
+            INSERT INTO tenant_twitch_configs (tenant_id, channel_name, bot_enabled, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(tenant_id) DO UPDATE SET
+                channel_name=excluded.channel_name,
+                bot_enabled=excluded.bot_enabled,
+                updated_at=excluded.updated_at
+            """,
+            (
+                tenant_id,
+                _string_id(twitch_cfg.get("channel_name")),
+                1 if _parse_bool(twitch_cfg.get("bot_enabled"), bool(twitch_cfg.get("channel_name"))) else 0,
+                now,
+            ),
+        )
+
+
+def _save_onboarding_islands(conn, tenant_id: str, islands: list[dict]) -> int:
+    saved = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for item in islands or []:
+        raw_name = _string_id(item.get("name") or item.get("id"))
+        island_id = _normalize_tenant_id(item.get("id") or raw_name)
+        if not island_id or not raw_name:
+            continue
+        storage_id = _storage_island_id(tenant_id, island_id)
+        cat = item.get("cat") if item.get("cat") in ALLOWED_CATEGORIES else "public"
+        theme = item.get("theme") if item.get("theme") in ALLOWED_THEMES else "teal"
+        status = item.get("status") if item.get("status") in ALLOWED_STATUSES else "OFFLINE"
+        items = item.get("items") or []
+        if isinstance(items, str):
+            items = [part.strip() for part in items.split(",") if part.strip()]
+        required_roles = item.get("required_roles") or []
+        if isinstance(required_roles, str):
+            required_roles = [part.strip() for part in required_roles.split(",") if part.strip()]
+        conn.execute(
+            """
+            INSERT INTO islands
+                (id, tenant_id, name, type, items, theme, cat, description, seasonal,
+                 status, visitors, dodo_code, map_url, updated_at, required_roles, channel_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                tenant_id=excluded.tenant_id,
+                name=excluded.name,
+                type=excluded.type,
+                items=excluded.items,
+                theme=excluded.theme,
+                cat=excluded.cat,
+                description=excluded.description,
+                seasonal=excluded.seasonal,
+                status=excluded.status,
+                visitors=excluded.visitors,
+                dodo_code=excluded.dodo_code,
+                map_url=excluded.map_url,
+                updated_at=excluded.updated_at,
+                required_roles=excluded.required_roles,
+                channel_id=excluded.channel_id
+            """,
+            (
+                storage_id,
+                tenant_id,
+                raw_name.upper(),
+                _string_id(item.get("type")),
+                json.dumps(items),
+                theme,
+                cat,
+                _string_id(item.get("description")),
+                _string_id(item.get("seasonal")),
+                status,
+                int(item.get("visitors") or 0),
+                item.get("dodo_code"),
+                item.get("map_url"),
+                now_iso,
+                json.dumps([str(role) for role in required_roles if str(role)]),
+                _string_id(item.get("channel_id")) or None,
+            ),
+        )
+        saved += 1
+    return saved
+
+
 def init_dashboard_db():
     """Create dashboard-specific tables if they do not already exist."""
     try:
@@ -177,6 +432,7 @@ def init_dashboard_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS islands (
                 id             TEXT PRIMARY KEY,
+                tenant_id      TEXT NOT NULL DEFAULT 'chopaeng',
                 name           TEXT NOT NULL,
                 type           TEXT NOT NULL DEFAULT '',
                 items          TEXT NOT NULL DEFAULT '[]',
@@ -193,6 +449,11 @@ def init_dashboard_db():
                 channel_id     TEXT
             )
         """)
+        try:
+            conn.execute("ALTER TABLE islands ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'chopaeng'")
+            conn.commit()
+        except Exception:
+            pass
 
         # Migrate: add required_roles column if it was created without it
         try:
@@ -211,16 +472,23 @@ def init_dashboard_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS island_bot_status (
                 island_id   TEXT PRIMARY KEY,
+                tenant_id   TEXT NOT NULL DEFAULT 'chopaeng',
                 island_name TEXT NOT NULL,
                 is_online   INTEGER NOT NULL DEFAULT 0,
                 updated_at  TEXT
             )
         """)
+        try:
+            conn.execute("ALTER TABLE island_bot_status ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'chopaeng'")
+            conn.commit()
+        except Exception:
+            pass
 
         # Legacy table kept for backward compatibility
         conn.execute("""
             CREATE TABLE IF NOT EXISTS island_metadata (
                 name       TEXT PRIMARY KEY,
+                tenant_id  TEXT NOT NULL DEFAULT 'chopaeng',
                 category   TEXT NOT NULL DEFAULT 'public',
                 theme      TEXT NOT NULL DEFAULT 'teal',
                 notes      TEXT NOT NULL DEFAULT '',
@@ -341,12 +609,22 @@ def api_auth_required(f):
 # ---------------------------------------------------------------------------
 @dashboard.context_processor
 def _inject_user():
+    try:
+        available_tenants = _tenant_select_payload() if _check_session() else []
+        current_tenant = _current_tenant_payload() if _check_session() else None
+    except Exception:
+        available_tenants = []
+        current_tenant = None
     return {
         "current_role":       session.get("mod_role", "admin"),
+        "current_tenant_id":  current_tenant_id(),
+        "current_tenant":     current_tenant,
+        "available_tenants":  available_tenants,
         "discord_username":   session.get("discord_username", ""),
         "discord_user_id":    session.get("discord_user_id", ""),
         "discord_avatar_url": session.get("discord_avatar_url", ""),
         "oauth_configured":   bool(Config.DISCORD_CLIENT_ID),
+        "discord_client_id":  Config.DISCORD_CLIENT_ID,
     }
 
 
@@ -465,8 +743,26 @@ def _where_clause(conditions: list) -> str:
     return ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
 
+def _public_island_id(stored_id: str | None) -> str:
+    """Return the tenant-local island id exposed to dashboards and APIs."""
+    value = str(stored_id or "")
+    if ":" in value:
+        return value.split(":", 1)[1]
+    return value
+
+
+def _storage_island_id(tenant_id: str, island_id: str) -> str:
+    """Return the globally unique island id used by the current legacy schema."""
+    local_id = _normalize_tenant_id(island_id)
+    if tenant_id == get_default_tenant_id():
+        return local_id
+    return f"{tenant_id}:{local_id}"
+
+
 def row_to_island_dict(row: dict) -> dict:
     """Decode JSON columns and return a plain dict."""
+    row["_storage_id"] = row.get("id")
+    row["id"] = _public_island_id(row.get("id"))
     try:
         row["items"] = json.loads(row.get("items") or "[]")
     except (ValueError, TypeError):
@@ -481,7 +777,10 @@ def row_to_island_dict(row: dict) -> dict:
 def _load_bot_status_map(conn) -> dict:
     """Return a dict of island_id → bool (is_online) from island_bot_status."""
     try:
-        rows = conn.execute("SELECT island_id, is_online FROM island_bot_status").fetchall()
+        rows = conn.execute(
+            "SELECT island_id, is_online FROM island_bot_status WHERE tenant_id = ?",
+            (current_tenant_id(),),
+        ).fetchall()
         return {r["island_id"]: bool(r["is_online"]) for r in rows}
     except Exception:
         return {}
@@ -564,6 +863,7 @@ def login():
         if secret and Config.DASHBOARD_SECRET and secret == Config.DASHBOARD_SECRET:
             session["mod_logged_in"] = True
             session["mod_role"]      = "admin"
+            session["tenant_id"]     = get_default_tenant_id()
             session.permanent        = True
             return redirect(url_for("dashboard.index"))
         flash("Invalid secret key. Please try again.", "error")
@@ -578,6 +878,7 @@ def logout():
     session.pop("discord_username",    None)
     session.pop("discord_avatar_url",  None)
     session.pop("oauth_state",         None)
+    session.pop("tenant_id",           None)
     return redirect(url_for("dashboard.login"))
 
 
@@ -750,14 +1051,21 @@ def oauth2_callback():
     session["discord_user_id"]    = discord_user_id
     session["discord_username"]   = discord_username
     session["discord_avatar_url"] = discord_avatar_url
+    session["tenant_id"]          = get_default_tenant_id()
     session.permanent          = True
     logger.info("OAuth login: user=%s role=%s", discord_username, role)
+    tenant = _current_tenant_payload()
+    if tenant and not _tenant_setup_complete(tenant.get("settings", {}), tenant):
+        return redirect(url_for("dashboard.onboarding"))
     return redirect(url_for("dashboard.index"))
 
 
 @dashboard.route("/")
 @admin_required
 def index():
+    tenant = _current_tenant_payload()
+    if tenant and not _tenant_setup_complete(tenant.get("settings", {}), tenant):
+        return redirect(url_for("dashboard.onboarding"))
     db = get_db()
     try:
         total_visits   = db.execute("SELECT COUNT(*) FROM island_visits").fetchone()[0]
@@ -836,7 +1144,10 @@ def index():
 
     db2 = get_db()
     try:
-        rows2        = db2.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        rows2        = db2.execute(
+            "SELECT * FROM islands WHERE tenant_id = ? ORDER BY name",
+            (current_tenant_id(),),
+        ).fetchall()
         db_islands2  = [_row_to_island_dict(dict(r)) for r in rows2]
         bot_status2  = _load_bot_status_map(db2)
     except Exception:
@@ -846,7 +1157,7 @@ def index():
         db2.close()
 
     for isl in db_islands2:
-        isl["discord_bot_online"] = bot_status2.get(isl.get("id", ""))
+        isl["discord_bot_online"] = bot_status2.get(isl.get("_storage_id", ""), bot_status2.get(isl.get("id", "")))
 
     island_count = len(db_islands2)
     status_map: dict[str, int] = {STATUS_ONLINE: 0, STATUS_REFRESHING: 0, STATUS_OFFLINE: 0}
@@ -875,12 +1186,45 @@ def index():
     )
 
 
+@dashboard.route("/onboarding")
+@admin_required
+def onboarding():
+    """Tenant setup wizard for SaaS customer onboarding."""
+    tenant = _current_tenant_payload()
+    tenant_id = current_tenant_id()
+    db = get_db()
+    try:
+        discord_cfg = db.execute(
+            "SELECT * FROM tenant_discord_configs WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchone()
+        twitch_cfg = db.execute(
+            "SELECT * FROM tenant_twitch_configs WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchone()
+    finally:
+        db.close()
+    return render_template(
+        "dashboard/onboarding.html",
+        tenant=tenant,
+        discord_cfg=dict(discord_cfg) if discord_cfg else {},
+        twitch_cfg=dict(twitch_cfg) if twitch_cfg else {},
+        allowed_categories=ALLOWED_CATEGORIES,
+        allowed_themes=ALLOWED_THEMES,
+        default_tenant_id=get_default_tenant_id(),
+    )
+
+
 @dashboard.route("/islands")
 @admin_required
 def islands():
+    tenant_id = current_tenant_id()
     db = get_db()
     try:
-        rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        rows       = db.execute(
+            "SELECT * FROM islands WHERE tenant_id = ? ORDER BY name",
+            (tenant_id,),
+        ).fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
     except Exception:
         db_islands = []
@@ -915,11 +1259,16 @@ def islands():
 @admin_required
 def island_detail(name):
     island_id = name.lower()
+    storage_id = _storage_island_id(current_tenant_id(), island_id)
     upper     = name.upper()
+    tenant_id = current_tenant_id()
 
     db = get_db()
     try:
-        row  = db.execute("SELECT * FROM islands WHERE id = ?", (island_id,)).fetchone()
+        row  = db.execute(
+            "SELECT * FROM islands WHERE tenant_id = ? AND id = ?",
+            (tenant_id, storage_id),
+        ).fetchone()
         meta = _row_to_island_dict(dict(row)) if row else None
     finally:
         db.close()
@@ -988,9 +1337,9 @@ def island_detail(name):
                 # It is included in INSERT so that new records get the default '[]'.
                 db2.execute(
                     """INSERT INTO islands
-                           (id, name, type, items, theme, cat, description, seasonal,
+                           (id, tenant_id, name, type, items, theme, cat, description, seasonal,
                             status, visitors, dodo_code, map_url, updated_at, required_roles)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(id) DO UPDATE SET
                            name=excluded.name, type=excluded.type, items=excluded.items,
                            theme=excluded.theme, cat=excluded.cat,
@@ -998,7 +1347,7 @@ def island_detail(name):
                            status=excluded.status, visitors=excluded.visitors,
                            dodo_code=excluded.dodo_code, updated_at=excluded.updated_at""",
                     (
-                        island_id, upper, isl_type, json.dumps(items_list),
+                        storage_id, tenant_id, upper, isl_type, json.dumps(items_list),
                         isl_theme, isl_cat, isl_desc, isl_seasonal,
                         isl_status, isl_visitors, isl_dodo,
                         meta["map_url"] if meta else None,
@@ -1033,10 +1382,10 @@ def island_detail(name):
             dict(r) for r in db_sp.execute(
                 "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
                 "FROM island_visits "
-                "WHERE LOWER(destination) = LOWER(?) "
+                "WHERE tenant_id = ? AND LOWER(destination) = LOWER(?) "
                 "AND timestamp > strftime('%s','now','-7 days') "
                 "GROUP BY day ORDER BY day",
-                (upper,),
+                (tenant_id, upper),
             ).fetchall()
         ]
     except Exception:
@@ -1086,7 +1435,8 @@ def logs():
         # Fetch island list for dropdown (used in flights filter UI)
         island_names = [
             r[0] for r in db.execute(
-                "SELECT name FROM islands ORDER BY name"
+                "SELECT name FROM islands WHERE tenant_id = ? ORDER BY name",
+                (current_tenant_id(),),
             ).fetchall()
         ]
 
@@ -1221,7 +1571,10 @@ def island_status():
     """Dedicated Island Status Breakdown page."""
     db = get_db()
     try:
-        rows = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        rows = db.execute(
+            "SELECT * FROM islands WHERE tenant_id = ? ORDER BY name",
+            (current_tenant_id(),),
+        ).fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
     except Exception:
         db_islands = []
@@ -1240,7 +1593,7 @@ def island_status():
         db2.close()
 
     for isl in db_islands:
-        isl["discord_bot_online"] = bot_status.get(isl.get("id", ""))
+        isl["discord_bot_online"] = bot_status.get(isl.get("_storage_id", ""), bot_status.get(isl.get("id", "")))
 
     # Derive counts from live fields (discord_bot_online / dodo_code)
     online_count    = 0
@@ -1634,16 +1987,6 @@ def analytics_export_csv():
 # JSON CRUD API  (Bearer token OR active browser session)
 # ===========================================================================
 
-def _parse_bool(value, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-    return bool(value)
-
-
 def _sqlite_table_counts() -> dict[str, int]:
     db = get_db()
     try:
@@ -1690,6 +2033,381 @@ def _mariadb_settings_payload() -> dict:
         "database": Config.MYSQL_DATABASE,
         "default_truncate_before_import": Config.MARIADB_TRUNCATE_BEFORE_IMPORT,
     }
+
+
+@dashboard.route("/api/tenants", methods=["GET"])
+@api_auth_required
+def api_tenants_list():
+    """List tenant accounts available to this ChoBot deployment."""
+    db = get_db()
+    try:
+        tenant_rows = db.execute(
+            "SELECT id, name, slug, status, plan, created_at, updated_at FROM tenants ORDER BY name"
+        ).fetchall()
+        island_counts = {
+            row["tenant_id"]: int(row["count"] or 0)
+            for row in db.execute(
+                "SELECT tenant_id, COUNT(*) AS count FROM islands GROUP BY tenant_id"
+            ).fetchall()
+        }
+        tenants = []
+        for row in tenant_rows:
+            tenant = _tenant_row_to_dict(row)
+            tenant["island_count"] = island_counts.get(tenant["id"], 0)
+            tenant["current"] = tenant["id"] == current_tenant_id()
+            tenants.append(tenant)
+    finally:
+        db.close()
+    return jsonify({"current_tenant_id": current_tenant_id(), "tenants": tenants})
+
+
+@dashboard.route("/api/tenants/current", methods=["GET", "PATCH"])
+@api_auth_required
+def api_tenant_current():
+    """Return the tenant currently selected for dashboard/API operations."""
+    if request.method == "PATCH":
+        _require_dashboard_admin()
+        data = request.get_json(silent=True) or {}
+        tenant_id = current_tenant_id()
+        name = (data.get("name") or "").strip()
+        slug = _normalize_tenant_id(data.get("slug") or data.get("public_slug") or "")
+        plan = (data.get("plan") or "").strip().lower()[:64]
+        status = (data.get("status") or "").strip().lower()[:64]
+        settings = data.get("settings") or {}
+        branding = data.get("branding") or {}
+        now = int(time.time())
+
+        db = get_db()
+        try:
+            row = db.execute("SELECT id FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+            if not row:
+                return jsonify({"error": f'Tenant "{tenant_id}" not found'}), 404
+            if name or slug or plan or status:
+                current = db.execute(
+                    "SELECT name, slug, plan, status FROM tenants WHERE id = ?",
+                    (tenant_id,),
+                ).fetchone()
+                db.execute(
+                    "UPDATE tenants SET name = ?, slug = ?, plan = ?, status = ?, updated_at = ? WHERE id = ?",
+                    (
+                        name or current["name"],
+                        slug or current["slug"],
+                        plan or current["plan"],
+                        status or current["status"],
+                        now,
+                        tenant_id,
+                    ),
+                )
+            merged_settings = {
+                "brand.logo_url": branding.get("logo_url", settings.get("brand.logo_url", "")),
+                "brand.theme_color": branding.get("theme_color", settings.get("brand.theme_color", "")),
+                "brand.public_slug": branding.get("public_slug", settings.get("brand.public_slug", slug or "")),
+            }
+            for key, value in merged_settings.items():
+                if value not in (None, ""):
+                    _set_tenant_setting(db, tenant_id, key, str(value))
+            db.commit()
+        finally:
+            db.close()
+        return jsonify({"status": "updated", "tenant_id": tenant_id})
+
+    tenant_id = current_tenant_id()
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, name, slug, status, plan, created_at, updated_at FROM tenants WHERE id = ?",
+            (tenant_id,),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": f'Tenant "{tenant_id}" not found'}), 404
+        tenant = _tenant_row_to_dict(row)
+        discord = db.execute(
+            "SELECT * FROM tenant_discord_configs WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchone()
+        twitch = db.execute(
+            "SELECT * FROM tenant_twitch_configs WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchone()
+        settings = _load_tenant_settings(db, tenant_id)
+    finally:
+        db.close()
+    return jsonify({
+        "tenant": tenant,
+        "settings": settings,
+        "discord": dict(discord) if discord else None,
+        "twitch": dict(twitch) if twitch else None,
+    })
+
+
+@dashboard.route("/api/tenants/current/discord", methods=["PATCH"])
+@api_auth_required
+def api_tenant_current_discord():
+    """Update Discord configuration for the selected tenant."""
+    _require_dashboard_admin()
+    data = request.get_json(silent=True) or {}
+    tenant_id = current_tenant_id()
+    now = int(time.time())
+    db = get_db()
+    try:
+        if not db.execute("SELECT 1 FROM tenants WHERE id = ?", (tenant_id,)).fetchone():
+            return jsonify({"error": f'Tenant "{tenant_id}" not found'}), 404
+        current = db.execute("SELECT * FROM tenant_twitch_configs WHERE tenant_id = ?", (tenant_id,)).fetchone()
+        _upsert_tenant_configs(db, tenant_id, data, dict(current) if current else None, now)
+        db.commit()
+    finally:
+        db.close()
+    return jsonify({"status": "updated", "tenant_id": tenant_id})
+
+
+@dashboard.route("/api/tenants/current/twitch", methods=["PATCH"])
+@api_auth_required
+def api_tenant_current_twitch():
+    """Update optional Twitch configuration for the selected tenant."""
+    _require_dashboard_admin()
+    data = request.get_json(silent=True) or {}
+    tenant_id = current_tenant_id()
+    now = int(time.time())
+    db = get_db()
+    try:
+        if not db.execute("SELECT 1 FROM tenants WHERE id = ?", (tenant_id,)).fetchone():
+            return jsonify({"error": f'Tenant "{tenant_id}" not found'}), 404
+        discord = db.execute("SELECT * FROM tenant_discord_configs WHERE tenant_id = ?", (tenant_id,)).fetchone()
+        _upsert_tenant_configs(db, tenant_id, dict(discord) if discord else {}, data, now)
+        db.commit()
+    finally:
+        db.close()
+    return jsonify({"status": "updated", "tenant_id": tenant_id})
+
+
+@dashboard.route("/api/tenants", methods=["POST"])
+@api_auth_required
+def api_tenant_create():
+    """Create a tenant shell for a future customer/community."""
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    tenant_id = _normalize_tenant_id(data.get("id") or data.get("slug") or name)
+    slug = _normalize_tenant_id(data.get("slug") or tenant_id)
+    plan = (data.get("plan") or "trial").strip().lower()[:64] or "trial"
+    status = (data.get("status") or "setup").strip().lower()[:64] or "setup"
+
+    if not tenant_id or not name:
+        return jsonify({"error": "name and a valid id/slug are required"}), 400
+
+    now = int(time.time())
+    discord_cfg = data.get("discord") or {}
+    twitch_cfg = data.get("twitch") or {}
+
+    db = get_db()
+    try:
+        existing = db.execute("SELECT id FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+        if existing:
+            return jsonify({"error": f'Tenant "{tenant_id}" already exists'}), 409
+
+        db.execute(
+            """
+            INSERT INTO tenants (id, name, slug, status, plan, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (tenant_id, name, slug, status, plan, now, now),
+        )
+        db.execute(
+            """
+            INSERT INTO tenant_discord_configs (
+                tenant_id, guild_id, member_category_id, free_category_id, log_channel_id,
+                flight_listen_channel_id, free_flight_listen_channel_id, flight_log_channel_id,
+                mod_role_id, island_access_role_id, bot_enabled, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tenant_id,
+                str(discord_cfg.get("guild_id") or ""),
+                str(discord_cfg.get("member_category_id") or ""),
+                str(discord_cfg.get("free_category_id") or ""),
+                str(discord_cfg.get("log_channel_id") or ""),
+                str(discord_cfg.get("flight_listen_channel_id") or ""),
+                str(discord_cfg.get("free_flight_listen_channel_id") or ""),
+                str(discord_cfg.get("flight_log_channel_id") or ""),
+                str(discord_cfg.get("mod_role_id") or ""),
+                str(discord_cfg.get("island_access_role_id") or ""),
+                1 if discord_cfg.get("bot_enabled", True) else 0,
+                now,
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO tenant_twitch_configs (tenant_id, channel_name, bot_enabled, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                tenant_id,
+                str(twitch_cfg.get("channel_name") or ""),
+                1 if twitch_cfg.get("bot_enabled", True) else 0,
+                now,
+            ),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return jsonify({"status": "created", "tenant_id": tenant_id}), 201
+
+
+@dashboard.route("/api/tenants/switch", methods=["POST"])
+@api_auth_required
+def api_tenant_switch():
+    """Switch the active dashboard tenant for the current session."""
+    data = request.get_json(silent=True) or {}
+    tenant_id = _normalize_tenant_id(data.get("tenant_id") or data.get("id") or "")
+    if not tenant_id:
+        return jsonify({"error": "tenant_id is required"}), 400
+    if not _tenant_exists(tenant_id):
+        return jsonify({"error": f'Tenant "{tenant_id}" not found'}), 404
+    session["tenant_id"] = tenant_id
+    session.permanent = True
+    return jsonify({"status": "switched", "tenant_id": tenant_id})
+
+
+def _discord_bot_auth_header() -> str:
+    token = str(Config.DISCORD_TOKEN or "").strip()
+    if not token:
+        return ""
+    return token if token.lower().startswith("bot ") else f"Bot {token}"
+
+
+@dashboard.route("/api/onboarding/discord-scan", methods=["POST"])
+@api_auth_required
+def api_onboarding_discord_scan():
+    """Scan Discord category channels and return island import candidates."""
+    _require_dashboard_admin()
+    data = request.get_json(silent=True) or {}
+    guild_id = _string_id(data.get("guild_id") or Config.GUILD_ID)
+    free_category_id = _string_id(data.get("free_category_id"))
+    member_category_id = _string_id(data.get("member_category_id") or data.get("category_id"))
+
+    # Test/dev fallback: allow callers to pass channel objects directly.
+    provided_channels = data.get("channels")
+    if isinstance(provided_channels, list):
+        channels = provided_channels
+    else:
+        auth = _discord_bot_auth_header()
+        if not guild_id or not auth:
+            return jsonify({"error": "guild_id and DISCORD_TOKEN are required for Discord scan"}), 400
+        try:
+            req = urllib.request.Request(
+                f"https://discord.com/api/v10/guilds/{guild_id}/channels",
+                headers={"Authorization": auth, "User-Agent": _DISCORD_USER_AGENT},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                channels = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode(errors="replace")
+            except Exception:
+                pass
+            return jsonify({"error": f"Discord channel scan failed: HTTP {exc.code}", "details": body}), 502
+        except Exception as exc:
+            return jsonify({"error": f"Discord channel scan failed: {exc}"}), 502
+
+    candidates = []
+    for channel in channels:
+        if str(channel.get("type", "")) not in {"0", "5", "15"}:
+            continue
+        parent_id = _string_id(channel.get("parent_id"))
+        cat = None
+        if free_category_id and parent_id == free_category_id:
+            cat = "public"
+        elif member_category_id and parent_id == member_category_id:
+            cat = "member"
+        if not cat:
+            continue
+        name = _string_id(channel.get("name")).replace("-", " ").replace("_", " ").strip()
+        if not name:
+            continue
+        candidates.append({
+            "id": _normalize_tenant_id(name),
+            "name": name.upper(),
+            "cat": cat,
+            "type": "Free" if cat == "public" else "VIP",
+            "theme": "teal",
+            "items": [],
+            "description": "",
+            "seasonal": "",
+            "required_roles": [],
+            "channel_id": _string_id(channel.get("id")),
+        })
+
+    return jsonify({"guild_id": guild_id, "islands": candidates, "count": len(candidates)})
+
+
+@dashboard.route("/api/onboarding/complete", methods=["POST"])
+@api_auth_required
+def api_onboarding_complete():
+    """Create/update a tenant from the onboarding wizard and mark setup complete."""
+    _require_dashboard_admin()
+    data = request.get_json(silent=True) or {}
+    tenant_data = data.get("tenant") or data.get("basics") or {}
+    branding = data.get("branding") or {}
+    discord_cfg = data.get("discord") or {}
+    twitch_cfg = data.get("twitch") or {}
+    islands = data.get("islands") or []
+
+    name = _string_id(tenant_data.get("name") or data.get("name"))
+    tenant_id = _normalize_tenant_id(tenant_data.get("id") or tenant_data.get("slug") or data.get("tenant_id") or name)
+    slug = _normalize_tenant_id(tenant_data.get("slug") or branding.get("public_slug") or tenant_id)
+    plan = _string_id(tenant_data.get("plan") or data.get("plan") or "trial").lower()[:64] or "trial"
+
+    if not name or not tenant_id:
+        return jsonify({"error": "Tenant name and slug are required"}), 400
+    if not _string_id(discord_cfg.get("guild_id")):
+        return jsonify({"error": "Discord guild_id is required"}), 400
+
+    now = int(time.time())
+    completed_at = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    try:
+        existing = db.execute("SELECT id FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+        if existing:
+            db.execute(
+                "UPDATE tenants SET name = ?, slug = ?, status = 'active', plan = ?, updated_at = ? WHERE id = ?",
+                (name, slug, plan, now, tenant_id),
+            )
+        else:
+            db.execute(
+                """
+                INSERT INTO tenants (id, name, slug, status, plan, created_at, updated_at)
+                VALUES (?, ?, ?, 'active', ?, ?, ?)
+                """,
+                (tenant_id, name, slug, plan, now, now),
+            )
+
+        _upsert_tenant_configs(
+            db,
+            tenant_id,
+            discord_cfg,
+            twitch_cfg if twitch_cfg else None,
+            now,
+        )
+        _set_tenant_setting(db, tenant_id, "brand.logo_url", _string_id(branding.get("logo_url")))
+        _set_tenant_setting(db, tenant_id, "brand.theme_color", _string_id(branding.get("theme_color") or "teal"))
+        _set_tenant_setting(db, tenant_id, "brand.public_slug", slug)
+        _set_tenant_setting(db, tenant_id, "onboarding.completed_at", completed_at)
+        _set_tenant_setting(db, tenant_id, "onboarding.source", "discord_oauth")
+        island_count = _save_onboarding_islands(db, tenant_id, islands)
+        db.commit()
+    finally:
+        db.close()
+
+    session["tenant_id"] = tenant_id
+    session.permanent = True
+    return jsonify({
+        "status": "completed",
+        "tenant_id": tenant_id,
+        "island_count": island_count,
+        "redirect": url_for("dashboard.index"),
+    })
 
 
 @dashboard.route("/api/mariadb-migration/status", methods=["GET"])
@@ -1785,9 +2503,13 @@ def api_mariadb_migration_run():
 @api_auth_required
 def api_status_summary():
     """Return live island status counts and per-island effective statuses."""
+    tenant_id = current_tenant_id()
     db = get_db()
     try:
-        rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        rows       = db.execute(
+            "SELECT * FROM islands WHERE tenant_id = ? ORDER BY name",
+            (tenant_id,),
+        ).fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
         bot_status = _load_bot_status_map(db)
     except Exception:
@@ -1803,7 +2525,7 @@ def api_status_summary():
     islands_out      = []
 
     for isl in db_islands:
-        isl["discord_bot_online"] = bot_status.get(isl.get("id", ""))
+        isl["discord_bot_online"] = bot_status.get(isl.get("_storage_id", ""), bot_status.get(isl.get("id", "")))
         s = _effective_status(isl)
         islands_out.append({"id": isl.get("id", ""), "name": isl.get("name", ""), "status": s})
         if s == STATUS_ONLINE:
@@ -1832,9 +2554,13 @@ def api_status_summary():
 @api_auth_required
 def api_islands_list():
     """List all islands."""
+    tenant_id = current_tenant_id()
     db = get_db()
     try:
-        rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        rows       = db.execute(
+            "SELECT * FROM islands WHERE tenant_id = ? ORDER BY name",
+            (tenant_id,),
+        ).fetchall()
         db_islands = [_row_to_island_dict(dict(r)) for r in rows]
         bot_status = _load_bot_status_map(db)
     except Exception:
@@ -1845,7 +2571,7 @@ def api_islands_list():
 
     result = []
     for isl in db_islands:
-        isl["discord_bot_online"] = bot_status.get(isl.get("id", ""))
+        isl["discord_bot_online"] = bot_status.get(isl.get("_storage_id", ""), bot_status.get(isl.get("id", "")))
         result.append(_island_api_dict(isl))
     return jsonify(result)
 
@@ -1854,8 +2580,10 @@ def api_islands_list():
 @api_auth_required
 def api_island_create():
     """Create or upsert a full island record."""
+    tenant_id = current_tenant_id()
     data      = request.get_json(silent=True) or {}
     island_id = (data.get("id") or data.get("name", "")).strip().lower()
+    storage_id = _storage_island_id(tenant_id, island_id)
     name      = (data.get("name") or island_id).strip().upper()
     isl_type  = data.get("type", "")
     items     = data.get("items", [])
@@ -1881,16 +2609,16 @@ def api_island_create():
     try:
         db.execute(
             """INSERT INTO islands
-                   (id, name, type, items, theme, cat, description, seasonal,
+                   (id, tenant_id, name, type, items, theme, cat, description, seasonal,
                     status, visitors, dodo_code, map_url, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name, type=excluded.type, items=excluded.items,
                    theme=excluded.theme, cat=excluded.cat, description=excluded.description,
                    seasonal=excluded.seasonal, status=excluded.status,
                    visitors=excluded.visitors, dodo_code=excluded.dodo_code,
                    updated_at=excluded.updated_at""",
-            (island_id, name, isl_type, json.dumps(items),
+            (storage_id, tenant_id, name, isl_type, json.dumps(items),
              theme, cat, desc, seasonal, status, visitors, dodo_code, map_url,
              datetime.now(timezone.utc).isoformat()),
         )
@@ -1905,9 +2633,14 @@ def api_island_create():
 def api_island_get(name):
     """Get a single island record."""
     island_id = name.lower()
+    tenant_id = current_tenant_id()
+    storage_id = _storage_island_id(tenant_id, island_id)
     db = get_db()
     try:
-        row = db.execute("SELECT * FROM islands WHERE id = ?", (island_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM islands WHERE tenant_id = ? AND id = ?",
+            (tenant_id, storage_id),
+        ).fetchone()
     finally:
         db.close()
     if not row:
@@ -1920,11 +2653,16 @@ def api_island_get(name):
 def api_island_update(name):
     """Update a single island record (partial or full)."""
     island_id = name.lower()
+    tenant_id = current_tenant_id()
+    storage_id = _storage_island_id(tenant_id, island_id)
     data      = request.get_json(silent=True) or {}
 
     db = get_db()
     try:
-        row      = db.execute("SELECT * FROM islands WHERE id = ?", (island_id,)).fetchone()
+        row      = db.execute(
+            "SELECT * FROM islands WHERE tenant_id = ? AND id = ?",
+            (tenant_id, storage_id),
+        ).fetchone()
         existing = _row_to_island_dict(dict(row)) if row else {}
     finally:
         db.close()
@@ -1952,9 +2690,9 @@ def api_island_update(name):
     try:
         db2.execute(
             """INSERT INTO islands
-                   (id, name, type, items, theme, cat, description, seasonal,
+                   (id, tenant_id, name, type, items, theme, cat, description, seasonal,
                     status, visitors, dodo_code, map_url, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name, type=excluded.type, items=excluded.items,
                    theme=excluded.theme, cat=excluded.cat, description=excluded.description,
@@ -1962,7 +2700,8 @@ def api_island_update(name):
                    visitors=excluded.visitors, dodo_code=excluded.dodo_code,
                    updated_at=excluded.updated_at""",
             (
-                island_id,
+                storage_id,
+                tenant_id,
                 data.get("name", existing.get("name", island_id.upper())).upper(),
                 data.get("type",        existing.get("type",        "")),
                 json.dumps(items_in),
@@ -1987,9 +2726,11 @@ def api_island_update(name):
 def api_island_delete(name):
     """Delete stored metadata for an island (does not touch the filesystem)."""
     island_id = name.lower()
+    tenant_id = current_tenant_id()
+    storage_id = _storage_island_id(tenant_id, island_id)
     db = get_db()
     try:
-        db.execute("DELETE FROM islands WHERE id = ?", (island_id,))
+        db.execute("DELETE FROM islands WHERE tenant_id = ? AND id = ?", (tenant_id, storage_id))
         db.commit()
     finally:
         db.close()
@@ -2001,6 +2742,8 @@ def api_island_delete(name):
 def api_island_upload_map(name):
     """Upload an island map image to Cloudflare R2 and store the URL."""
     island_id = name.lower()
+    tenant_id = current_tenant_id()
+    storage_id = _storage_island_id(tenant_id, island_id)
 
     if "map" not in request.files:
         return jsonify({"error": "No file part named 'map'"}), 400
@@ -2027,13 +2770,13 @@ def api_island_upload_map(name):
     db = get_db()
     try:
         db.execute(
-            "UPDATE islands SET map_url = ?, updated_at = ? WHERE id = ?",
-            (map_url, datetime.now(timezone.utc).isoformat(), island_id),
+            "UPDATE islands SET map_url = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+            (map_url, datetime.now(timezone.utc).isoformat(), tenant_id, storage_id),
         )
         if db.execute("SELECT changes()").fetchone()[0] == 0:
             db.execute(
-                "INSERT INTO islands (id, name, map_url, updated_at) VALUES (?,?,?,?)",
-                (island_id, island_id.upper(), map_url, datetime.now(timezone.utc).isoformat()),
+                "INSERT INTO islands (id, tenant_id, name, map_url, updated_at) VALUES (?,?,?,?,?)",
+                (storage_id, tenant_id, island_id.upper(), map_url, datetime.now(timezone.utc).isoformat()),
             )
         db.commit()
     finally:
@@ -2081,6 +2824,7 @@ def api_sync_maps():
     skipped = 0
     errors: list[str] = []
     now = datetime.now(timezone.utc).isoformat()
+    tenant_id = current_tenant_id()
 
     db = get_db()
     try:
@@ -2099,18 +2843,19 @@ def api_sync_maps():
             if not island_id:
                 skipped += 1
                 continue
+            storage_id = _storage_island_id(tenant_id, island_id)
             map_url = f"{base}/{key}"
             try:
                 db.execute(
-                    "UPDATE islands SET map_url = ?, updated_at = ? WHERE id = ?",
-                    (map_url, now, island_id),
+                    "UPDATE islands SET map_url = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+                    (map_url, now, tenant_id, storage_id),
                 )
                 if db.execute("SELECT changes()").fetchone()[0] == 0:
                     # Island row doesn't exist yet — create a minimal one
                     db.execute(
-                        "INSERT OR IGNORE INTO islands (id, name, map_url, updated_at) "
-                        "VALUES (?, ?, ?, ?)",
-                        (island_id, island_id.upper(), map_url, now),
+                        "INSERT OR IGNORE INTO islands (id, tenant_id, name, map_url, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (storage_id, tenant_id, island_id.upper(), map_url, now),
                     )
                 synced += 1
             except Exception as exc:
@@ -2445,7 +3190,10 @@ def api_logs():
     db = get_db()
     try:
         island_names = [
-            r[0] for r in db.execute("SELECT name FROM islands ORDER BY name").fetchall()
+            r[0] for r in db.execute(
+                "SELECT name FROM islands WHERE tenant_id = ? ORDER BY name",
+                (current_tenant_id(),),
+            ).fetchall()
         ]
         if log_type == "warnings":
             conditions, params = [], []
@@ -2640,7 +3388,10 @@ def api_overview():
 
     db2 = get_db()
     try:
-        rows2       = db2.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        rows2       = db2.execute(
+            "SELECT * FROM islands WHERE tenant_id = ? ORDER BY name",
+            (current_tenant_id(),),
+        ).fetchall()
         db_islands2 = [_row_to_island_dict(dict(r)) for r in rows2]
         bot_status2 = _load_bot_status_map(db2)
     except Exception:
@@ -2650,7 +3401,7 @@ def api_overview():
         db2.close()
 
     for isl in db_islands2:
-        isl["discord_bot_online"] = bot_status2.get(isl.get("id", ""))
+        isl["discord_bot_online"] = bot_status2.get(isl.get("_storage_id", ""), bot_status2.get(isl.get("id", "")))
 
     island_count = len(db_islands2)
     status_map: dict[str, int] = {STATUS_ONLINE: 0, STATUS_REFRESHING: 0, STATUS_OFFLINE: 0}

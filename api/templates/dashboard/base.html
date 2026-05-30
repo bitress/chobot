@@ -84,6 +84,12 @@
         <span class="link-text">Analytics</span>
       </a>
       {% if current_role == 'admin' %}
+      <a href="{{ url_for('dashboard.onboarding') }}"
+         class="nav-pill-link {% if request.endpoint == 'dashboard.onboarding' %}active{% endif %}"
+         title="Onboarding">
+        <i class="bi bi-magic"></i>
+        <span class="link-text">Onboarding</span>
+      </a>
       <a href="{{ url_for('dashboard.database') }}"
          class="nav-pill-link {% if request.endpoint == 'dashboard.database' %}active{% endif %}"
          title="Database">
@@ -136,6 +142,21 @@
         </span>
       </div>
       <div class="d-flex align-items-center gap-2">
+        {% if current_role == 'admin' and available_tenants %}
+        <div class="d-flex align-items-center gap-1"
+             style="background:#fff;border:2px solid #e1e6d3;border-radius:999px;padding:2px 8px;">
+          <i class="bi bi-buildings-fill" style="color:var(--nook-green);font-size:.85rem;"></i>
+          <select id="tenantSwitchSelect"
+                  class="form-select form-select-sm border-0 shadow-none"
+                  style="width:auto;min-width:140px;background:transparent;font-weight:800;color:#555;font-size:.78rem;padding-right:1.75rem;">
+            {% for tenant in available_tenants %}
+            <option value="{{ tenant.id }}" {% if tenant.id == current_tenant_id %}selected{% endif %}>
+              {{ tenant.name }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endif %}
         {% if current_role == 'admin' %}
         <button id="apiRefreshBtn"
                 class="sb-toggle-btn"
@@ -308,6 +329,26 @@
       toast.style.opacity = '0';
       setTimeout(function() { toast.remove(); }, 420);
     }, 3000);
+  }
+
+  var tenantSelect = document.getElementById('tenantSwitchSelect');
+  if (tenantSelect) {
+    tenantSelect.addEventListener('change', function () {
+      fetch('{{ url_for("dashboard.api_tenant_switch") }}', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tenant_id: tenantSelect.value})
+      })
+      .then(function (r) { return r.json().then(function (d) { return {ok: r.ok, data: d}; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || 'Could not switch tenant');
+        window.location.href = '{{ url_for("dashboard.index") }}';
+      })
+      .catch(function (err) {
+        _showRefreshToast('danger', err.message || 'Could not switch tenant');
+      });
+    });
   }
 </script>
 

@@ -11,6 +11,7 @@ import asyncio
 import os
 import re
 import threading
+import time
 from functools import lru_cache
 from typing import Any, Iterable
 from urllib.parse import quote_plus
@@ -252,6 +253,7 @@ def ensure_schema() -> None:
         from utils.db_models import Base
 
         Base.metadata.create_all(get_engine())
+        _ensure_tenant_foundation()
         _schema_ready = True
 
 
@@ -262,6 +264,163 @@ def connect_db(*_, **__) -> Connection:
 
 def connect_async_db(*_, **__) -> AsyncConnection:
     return AsyncConnection(connect_db())
+
+
+def get_default_tenant_id() -> str:
+    """Return the tenant used by legacy single-community code paths."""
+    return Config.DEFAULT_TENANT_ID
+
+
+def _execute_bootstrap(raw_conn, dialect: str, sql: str, params: Iterable[Any] | None = None):
+    adapted_sql, adapted_params = _adapt_sql(sql, params or (), dialect)
+    cur = raw_conn.cursor()
+    cur.execute(adapted_sql, tuple(adapted_params or ()))
+    return cur
+
+
+def _try_bootstrap(raw_conn, dialect: str, sql: str, params: Iterable[Any] | None = None) -> None:
+    try:
+        _execute_bootstrap(raw_conn, dialect, sql, params)
+    except Exception:
+        # Bootstrap DDL is intentionally idempotent across SQLite/MySQL versions.
+        # Existing columns/indexes can raise dialect-specific errors; those are safe.
+        pass
+
+
+def _ensure_tenant_column(raw_conn, dialect: str, table_name: str, default_tenant_id: str) -> None:
+    quoted_table = f"`{table_name}`" if dialect == "mysql" else table_name
+    _try_bootstrap(
+        raw_conn,
+        dialect,
+        f"ALTER TABLE {quoted_table} ADD COLUMN tenant_id VARCHAR(64) NOT NULL DEFAULT '{default_tenant_id}'",
+    )
+    _try_bootstrap(
+        raw_conn,
+        dialect,
+        f"UPDATE {quoted_table} SET tenant_id = ? WHERE tenant_id IS NULL OR tenant_id = ''",
+        (default_tenant_id,),
+    )
+    _try_bootstrap(
+        raw_conn,
+        dialect,
+        f"CREATE INDEX ix_{table_name}_tenant_id ON {quoted_table} (tenant_id)",
+    )
+
+
+def _seed_default_tenant(raw_conn, dialect: str) -> None:
+    now = int(time.time())
+    tenant_id = Config.DEFAULT_TENANT_ID
+    tenant_name = Config.DEFAULT_TENANT_NAME
+    tenant_slug = Config.DEFAULT_TENANT_SLUG
+
+    _execute_bootstrap(
+        raw_conn,
+        dialect,
+        """
+        INSERT OR IGNORE INTO tenants (id, name, slug, status, plan, created_at, updated_at)
+        VALUES (?, ?, ?, 'active', 'legacy', ?, ?)
+        """,
+        (tenant_id, tenant_name, tenant_slug, now, now),
+    )
+    _execute_bootstrap(
+        raw_conn,
+        dialect,
+        "UPDATE tenants SET name = ?, slug = ?, updated_at = ? WHERE id = ?",
+        (tenant_name, tenant_slug, now, tenant_id),
+    )
+
+    _execute_bootstrap(
+        raw_conn,
+        dialect,
+        """
+        INSERT OR IGNORE INTO tenant_discord_configs (
+            tenant_id, guild_id, member_category_id, free_category_id, log_channel_id,
+            flight_listen_channel_id, free_flight_listen_channel_id, flight_log_channel_id,
+            mod_role_id, island_access_role_id, bot_enabled, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        """,
+        (
+            tenant_id,
+            str(Config.GUILD_ID or ""),
+            str(Config.CATEGORY_ID or ""),
+            str(Config.FREE_CATEGORY_ID or ""),
+            str(Config.LOG_CHANNEL_ID or ""),
+            str(Config.FLIGHT_LISTEN_CHANNEL_ID or ""),
+            str(Config.FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID or ""),
+            str(Config.FLIGHT_LOG_CHANNEL_ID or ""),
+            str(Config.ADMIN_ROLE_ID or ""),
+            str(Config.ISLAND_ACCESS_ROLE or ""),
+            now,
+        ),
+    )
+    _execute_bootstrap(
+        raw_conn,
+        dialect,
+        """
+        UPDATE tenant_discord_configs
+        SET guild_id = ?, member_category_id = ?, free_category_id = ?, log_channel_id = ?,
+            flight_listen_channel_id = ?, free_flight_listen_channel_id = ?,
+            flight_log_channel_id = ?, mod_role_id = ?, island_access_role_id = ?,
+            updated_at = ?
+        WHERE tenant_id = ?
+        """,
+        (
+            str(Config.GUILD_ID or ""),
+            str(Config.CATEGORY_ID or ""),
+            str(Config.FREE_CATEGORY_ID or ""),
+            str(Config.LOG_CHANNEL_ID or ""),
+            str(Config.FLIGHT_LISTEN_CHANNEL_ID or ""),
+            str(Config.FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID or ""),
+            str(Config.FLIGHT_LOG_CHANNEL_ID or ""),
+            str(Config.ADMIN_ROLE_ID or ""),
+            str(Config.ISLAND_ACCESS_ROLE or ""),
+            now,
+            tenant_id,
+        ),
+    )
+
+    _execute_bootstrap(
+        raw_conn,
+        dialect,
+        """
+        INSERT OR IGNORE INTO tenant_twitch_configs (tenant_id, channel_name, bot_enabled, updated_at)
+        VALUES (?, ?, 1, ?)
+        """,
+        (tenant_id, Config.TWITCH_CHANNEL or "", now),
+    )
+    _execute_bootstrap(
+        raw_conn,
+        dialect,
+        "UPDATE tenant_twitch_configs SET channel_name = ?, updated_at = ? WHERE tenant_id = ?",
+        (Config.TWITCH_CHANNEL or "", now, tenant_id),
+    )
+
+
+def _ensure_tenant_foundation() -> None:
+    raw_conn = get_engine().raw_connection()
+    dialect = get_backend()
+    try:
+        default_tenant_id = Config.DEFAULT_TENANT_ID.replace("'", "''")
+        for table_name in (
+            "command_claims",
+            "island_subscriptions",
+            "settings",
+            "islands",
+            "island_bot_status",
+            "island_metadata",
+            "island_visits",
+            "warnings",
+            "dodo_reveal_messages",
+        ):
+            _ensure_tenant_column(raw_conn, dialect, table_name, default_tenant_id)
+        _seed_default_tenant(raw_conn, dialect)
+        raw_conn.commit()
+    except Exception:
+        raw_conn.rollback()
+        raise
+    finally:
+        raw_conn.close()
 
 
 def _is_select_changes(sql: str) -> bool:
@@ -373,9 +532,12 @@ def _adapt_mysql_upsert(sql: str) -> str:
 
 
 def _quote_settings_key(sql: str) -> str:
-    if not re.search(r"\bsettings\b", sql, re.I):
+    if not re.search(r"\b(?:settings|tenant_settings)\b", sql, re.I):
         return sql
     sql = re.sub(r"\bWHERE\s+key\s*=", "WHERE `key` =", sql, flags=re.I)
     sql = re.sub(r"\bON\s+CONFLICT\s*\(\s*key\s*\)", "ON CONFLICT(`key`)", sql, flags=re.I)
+    sql = re.sub(r"\bON\s+CONFLICT\s*\(\s*tenant_id\s*,\s*key\s*\)", "ON CONFLICT(tenant_id, `key`)", sql, flags=re.I)
     sql = re.sub(r"\(\s*key\s*,", "(`key`,", sql, flags=re.I)
+    sql = re.sub(r",\s*key\s*,", ", `key`,", sql, flags=re.I)
+    sql = re.sub(r"SELECT\s+key\s*,", "SELECT `key`,", sql, flags=re.I)
     return sql
