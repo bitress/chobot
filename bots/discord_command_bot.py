@@ -1613,7 +1613,8 @@ class DiscordCommandCog(commands.Cog):
             name=f"{Config.STAR_PINK} Admin Commands",
             value=(
                 "`!refresh` - Manually refresh cache (Admin only)\n"
-                "`!update` - Pull latest code from git and restart the bot (Admin only)"
+                "`!update` - Pull latest code from git and restart the bot (Admin only)\n"
+                "`!restart` - Restart the bot without pulling updates (Admin only)"
             ),
             inline=False
         )
@@ -3182,6 +3183,23 @@ class DiscordCommandCog(commands.Cog):
     @update.error
     async def update_error(self, ctx, error):
         """Handle permission errors for update command"""
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.reply("You do not have permission to use this command.")
+
+    @commands.hybrid_command(name="restart")
+    @commands.has_permissions(administrator=True)
+    async def restart(self, ctx):
+        """Restart the bot without pulling updates (Admin only)"""
+        await ctx.reply("Restarting bot now...")
+        logger.info("[DISCORD] Restart requested by %s. Restarting process...", ctx.author)
+
+        # Reuse the same main-thread restart path as the OTA update command.
+        self.bot.restart_requested = True
+        await self.bot.close()
+
+    @restart.error
+    async def restart_error(self, ctx, error):
+        """Handle permission errors for restart command"""
         if isinstance(error, commands.MissingPermissions):
             await ctx.reply("You do not have permission to use this command.")
 
