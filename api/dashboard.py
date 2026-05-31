@@ -31,6 +31,12 @@ from flask import (
 
 from utils.config import Config
 from utils.database import connect_db, get_backend, get_engine
+from utils.dodo_parser import parse_dodo_message
+from utils.dodo_store import persist_dodo_update
+from utils.discord_setup import fetch_guild_channels, summarize_guild_channels
+from utils.embed_templates import save_free_dodo_embed_template
+from utils.local_config import read_local_setup_config, write_local_setup_config
+from utils.setup_health import get_self_hosted_setup_status
 from utils.db_migration import migrate_sqlite_to_mariadb
 
 logger = logging.getLogger("Dashboard")
@@ -909,6 +915,114 @@ def islands():
 
     merged.sort(key=lambda x: x["name"])
     return render_template("dashboard/islands.html", islands=merged)
+
+
+@dashboard.route("/setup")
+@admin_required
+def setup():
+    return render_template("dashboard/setup.html", setup_status=get_self_hosted_setup_status())
+
+
+@dashboard.route("/setup/wizard")
+@admin_required
+def setup_wizard():
+    return render_template(
+        "dashboard/setup_wizard.html",
+        setup_status=get_self_hosted_setup_status(),
+        local_config=read_local_setup_config(mask_secrets=True),
+    )
+
+
+@dashboard.route("/api/setup/status")
+@admin_required
+def api_setup_status():
+    return jsonify(get_self_hosted_setup_status())
+
+
+@dashboard.route("/api/setup/local-config", methods=["GET"])
+@admin_required
+def api_setup_local_config():
+    return jsonify({"config": read_local_setup_config(mask_secrets=True)})
+
+
+@dashboard.route("/api/setup/local-config", methods=["PATCH"])
+@admin_required
+def api_update_setup_local_config():
+    data = request.get_json(silent=True) or {}
+    try:
+        result = write_local_setup_config(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({
+        "status": "updated",
+        "path": result.path,
+        "backup_path": result.backup_path,
+        "config": read_local_setup_config(mask_secrets=True),
+        "restart_required": True,
+    })
+
+
+@dashboard.route("/api/setup/discord-scan", methods=["POST"])
+@admin_required
+def api_setup_discord_scan():
+    data = request.get_json(silent=True) or {}
+    raw_config = read_local_setup_config(mask_secrets=False)
+    token = str(data.get("DISCORD_TOKEN") or raw_config.get("DISCORD_TOKEN") or Config.DISCORD_TOKEN or "").strip()
+    guild_id = str(data.get("GUILD_ID") or raw_config.get("GUILD_ID") or Config.GUILD_ID or "").strip()
+    try:
+        channels = fetch_guild_channels(token, guild_id)
+        summary = summarize_guild_channels(channels)
+    except (ValueError, RuntimeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(summary)
+
+
+@dashboard.route("/api/setup/dodo-preview", methods=["POST"])
+@admin_required
+def api_setup_dodo_preview():
+    data = request.get_json(silent=True) or {}
+    parsed = parse_dodo_message(
+        data.get("message", ""),
+        channel_name=data.get("channel_name") or None,
+        embeds=data.get("embeds") if isinstance(data.get("embeds"), list) else None,
+    )
+    if not parsed:
+        return jsonify({"matched": False, "error": "No Dodo code and island could be parsed."})
+    return jsonify({
+        "matched": True,
+        "island_name": parsed.island_name,
+        "dodo_code": parsed.dodo_code,
+        "status": parsed.status,
+        "source": parsed.source,
+    })
+
+
+@dashboard.route("/api/setup/free-dodo-embed-template", methods=["PATCH"])
+@admin_required
+def api_setup_free_dodo_embed_template():
+    data = request.get_json(silent=True) or {}
+    template = save_free_dodo_embed_template(data)
+    return jsonify({"status": "updated", "template": template})
+
+
+@dashboard.route("/api/islands/<name>/manual-status", methods=["PATCH"])
+@admin_required
+def api_manual_island_status(name):
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status") or "UNKNOWN").strip().upper()
+    dodo_code = str(data.get("dodo_code") or "").strip().upper()
+    if status not in {"ONLINE", "OFFLINE", "REFRESHING", "ORDER_STARTING"}:
+        return jsonify({"error": "status must be ONLINE, OFFLINE, REFRESHING, or ORDER_STARTING"}), 400
+    saved = persist_dodo_update(
+        name,
+        dodo_code=dodo_code,
+        status=status,
+        source="manual",
+        raw_excerpt="Manual dashboard override",
+    )
+    if not saved:
+        return jsonify({"error": "Could not save manual island status"}), 400
+    return jsonify({"status": "updated", "island": name.upper()})
 
 
 @dashboard.route("/islands/<name>", methods=["GET", "POST"])

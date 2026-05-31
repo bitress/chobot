@@ -21,6 +21,13 @@ from thefuzz import process, fuzz
 
 from utils.config import Config
 from utils.database import connect_db
+from utils.dodo_parser import parse_dodo_message
+from utils.dodo_store import mark_stale_dodo_codes, persist_dodo_update
+from utils.embed_templates import (
+    load_free_dodo_embed_template,
+    parse_hex_color,
+    render_template_string,
+)
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
@@ -949,20 +956,34 @@ class DiscordCommandCog(commands.Cog):
         dodo_code = raw_code if DODO_CODE_PATTERN.fullmatch(raw_code) else raw_code
 
         island_url = "https://www.chopaeng.com/island/"+raw_name.lower()    
+        template = load_free_dodo_embed_template()
 
         if dodo_code:
-            color = discord.Color.green()
+            color = discord.Color(parse_hex_color(template.get("online_color", ""), 0x2ECC71))
             code_line = f"```yaml\n{dodo_code}```"
             status_line = "Online"
         elif dodo_code == "GETTIN'":
-            color = discord.Color.orange()
+            color = discord.Color(parse_hex_color(template.get("refreshing_color", ""), 0xF1C40F))
             code_line = "*Refreshing*"
             status_line = "Refreshing"
         else:
-            color = discord.Color.red()
+            color = discord.Color(parse_hex_color(template.get("offline_color", ""), 0xE74C3C))
             code_line = "*Unavailable*"
             status_line = "Offline"
 
+        placeholders = {
+            "island": display_name,
+            "island_raw": raw_name,
+            "dodo_code": dodo_code or "Unavailable",
+            "status": status_line,
+            "visitors": visitors,
+            "description": description[:300],
+            "island_url": island_url,
+            "map_url": map_url,
+        }
+        embed_description = render_template_string(template.get("description", ""), placeholders)
+        if map_url and "{map_url}" not in template.get("description", ""):
+            embed_description = (embed_description + f"\n[View Map]({map_url})").strip()
         details = []
         if description:
             details.append(description[:180])
@@ -973,9 +994,9 @@ class DiscordCommandCog(commands.Cog):
         details.append(" • ".join(links))
 
         embed = discord.Embed(
-            title=f"{display_name}",
+            title=render_template_string(template.get("title", ""), placeholders) or display_name,
             url=island_url or None,
-            description="\n".join(details),
+            description=embed_description or "\n".join(details),
             color=color,
             timestamp=checked_at,
         )
@@ -984,11 +1005,16 @@ class DiscordCommandCog(commands.Cog):
         embed.add_field(name="Status", value=status_line, inline=True)
         if map_url:
             embed.set_thumbnail(url=map_url)
-        embed.set_image(url=Config.FOOTER_LINE)
+        image_url = render_template_string(template.get("image_url", ""), placeholders)
+        if image_url:
+            embed.set_image(url=image_url)
         embed.set_footer(
             text=f"{FREE_DODO_BOARD_MARKER} • {raw_name}",
             icon_url=footer_icon_url,
         )
+        custom_footer = render_template_string(template.get("footer", ""), placeholders)
+        if custom_footer:
+            embed.set_footer(text=f"{FREE_DODO_BOARD_MARKER} - {custom_footer}", icon_url=footer_icon_url)
         return embed
 
     def _build_free_dodo_empty_embed(
@@ -3339,6 +3365,7 @@ class DiscordCommandBot(commands.Bot):
             logger.info("[DISCORD] Slash commands synced globally")
 
         self.change_status_loop.start()
+        self.dodo_stale_cleanup_loop.start()
 
     async def on_ready(self):
         """Called when bot is ready"""
@@ -3355,9 +3382,23 @@ class DiscordCommandBot(commands.Bot):
         """Wait until ready"""
         await self.wait_until_ready()
 
+    @tasks.loop(minutes=5)
+    async def dodo_stale_cleanup_loop(self):
+        """Clear stale locally captured Dodo codes."""
+        updated = await asyncio.to_thread(mark_stale_dodo_codes, Config.DODO_STALE_MINUTES, "OFFLINE")
+        if updated:
+            logger.info("[DISCORD] Cleared %s stale Dodo code(s)", updated)
+
+    @dodo_stale_cleanup_loop.before_loop
+    async def before_dodo_stale_cleanup_loop(self):
+        await self.wait_until_ready()
+
     async def on_message(self, message):
         """Handle messages"""
         if message.author == self.user:
+            return
+
+        if self._maybe_capture_orderbot_dodo(message):
             return
 
         # Auto-delete Dodo code update notification messages (only in SUB_CATEGORY channels)
@@ -3546,3 +3587,38 @@ class DiscordCommandBot(commands.Bot):
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
                     return
         await self.process_commands(message)
+
+    def _maybe_capture_orderbot_dodo(self, message) -> bool:
+        """Capture Dodo announcements from the streamer's configured OrderBot channels."""
+        if not Config.ORDERBOT_CHANNEL_IDS:
+            return False
+        if getattr(message.channel, "id", None) not in Config.ORDERBOT_CHANNEL_IDS:
+            return False
+        if Config.ORDERBOT_AUTHOR_IDS and getattr(message.author, "id", None) not in Config.ORDERBOT_AUTHOR_IDS:
+            return False
+
+        parsed = parse_dodo_message(
+            message.content or "",
+            channel_name=getattr(message.channel, "name", None),
+            embeds=getattr(message, "embeds", None),
+        )
+        if not parsed:
+            return False
+
+        saved = persist_dodo_update(
+            parsed.island_name,
+            parsed.dodo_code,
+            status=parsed.status,
+            channel_id=getattr(message.channel, "id", None),
+            message_id=getattr(message, "id", None),
+            message_url=getattr(message, "jump_url", None),
+            source=parsed.source,
+            raw_excerpt=parsed.raw_text,
+        )
+        if saved:
+            logger.info(
+                "[DISCORD] Captured OrderBot Dodo update: island=%s channel=%s",
+                parsed.island_name,
+                getattr(message.channel, "id", None),
+            )
+        return saved

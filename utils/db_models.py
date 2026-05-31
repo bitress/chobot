@@ -120,3 +120,18 @@ class DodoRevealMessage(Base):
     username: Mapped[str | None] = mapped_column(String(255))
     nickname: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+
+class DodoCapture(Base):
+    __tablename__ = "dodo_captures"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    island_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    dodo_code: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(64), nullable=False, default="UNKNOWN", index=True)
+    channel_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    message_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    message_url: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="orderbot")
+    raw_excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)

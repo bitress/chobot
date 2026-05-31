@@ -8,6 +8,7 @@ import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+load_dotenv(".env.local", override=True)
 
 if not os.getenv('TWITCH_TOKEN') and os.getenv('\ufeffTWITCH_TOKEN'):
     for key in list(os.environ.keys()):
@@ -26,6 +27,17 @@ class Config:
             return int(val)
         return default
 
+    @staticmethod
+    def _get_int_list(key, default=None):
+        """Parse a comma-separated env var into integer IDs."""
+        raw = os.getenv(key, "")
+        ids = []
+        for part in raw.replace("\n", ",").split(","):
+            part = part.strip()
+            if part.isdigit():
+                ids.append(int(part))
+        return ids or (default or [])
+
     # General Config
     IS_PRODUCTION = os.getenv('IS_PRODUCTION', 'true').lower() == 'true'
 
@@ -43,6 +55,9 @@ class Config:
     FIND_BOT_CHANNEL_ID = _get_int('FIND_BOT_CHANNEL_ID', 1450554092626903232)
     AI_LEARN_CHANNEL_ID = _get_int('AI_LEARN_CHANNEL_ID', 907642922906845264)
     FREE_DODO_BOARD_CHANNEL_ID = _get_int('FREE_DODO_BOARD_CHANNEL_ID', 1500493205672825056)
+    ORDERBOT_CHANNEL_IDS = _get_int_list('ORDERBOT_CHANNEL_IDS') or _get_int_list('BERICHAN_ORDERBOT_CHANNEL_IDS')
+    ORDERBOT_AUTHOR_IDS = _get_int_list('ORDERBOT_AUTHOR_IDS') or _get_int_list('BERICHAN_ORDERBOT_AUTHOR_IDS')
+    DODO_STALE_MINUTES = _get_int('DODO_STALE_MINUTES', 120)
     AUTOREPLY_CHANNELS = [907642922906845264, 1175875039954993306]
 
     # Environment Specific Channels
@@ -102,7 +117,7 @@ class Config:
 
     MYSQL_HOST = os.getenv("MYSQL_HOST") or os.getenv("MARIADB_HOST", "localhost")
     MYSQL_PORT = _get_int("MYSQL_PORT", _get_int("MARIADB_PORT", 3306))
-    MYSQL_USER = os.getenv("MYSQL_USER") or os.getenv("MARIADB_USER", "chobot")
+    MYSQL_USER = os.getenv("MYSQL_USER") or os.getenv("MARIADB_USER", "root")
     MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD") or os.getenv("MARIADB_PASSWORD", "")
     MYSQL_DATABASE = os.getenv("MYSQL_DATABASE") or os.getenv("MARIADB_DATABASE", "chobot")
 

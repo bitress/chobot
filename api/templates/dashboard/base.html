@@ -84,6 +84,12 @@
         <span class="link-text">Analytics</span>
       </a>
       {% if current_role == 'admin' %}
+      <a href="{{ url_for('dashboard.setup') }}"
+         class="nav-pill-link {% if request.endpoint == 'dashboard.setup' %}active{% endif %}"
+         title="Setup">
+        <i class="bi bi-sliders"></i>
+        <span class="link-text">Setup</span>
+      </a>
       <a href="{{ url_for('dashboard.database') }}"
          class="nav-pill-link {% if request.endpoint == 'dashboard.database' %}active{% endif %}"
          title="Database">

@@ -1,0 +1,361 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Setup Wizard - ChoBot{% endblock %}
+{% block header %}Setup Wizard{% endblock %}
+
+{% block head %}
+<style>
+  .wizard-shell{display:grid;grid-template-columns:260px minmax(0,1fr);gap:1.25rem}
+  .wizard-steps{position:sticky;top:86px;align-self:start}
+  .wizard-step-btn{width:100%;border:0;background:transparent;text-align:left;padding:.85rem 1rem;border-radius:8px;font-weight:800;color:#5d6b58;display:flex;gap:.75rem;align-items:center}
+  .wizard-step-btn.active{background:var(--nook-green);color:white}
+  .wizard-step-btn.done{background:#e8f5e9;color:#23652d}
+  .wizard-step-btn .num{width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:#00000012;font-size:.8rem;flex:0 0 auto}
+  .wizard-panel{display:none}
+  .wizard-panel.active{display:block}
+  .field-hint{font-size:.78rem;color:#7b8377;font-weight:700}
+  .scan-box{max-height:320px;overflow:auto}
+  .picker-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}
+  .review-grid{display:grid;grid-template-columns:220px minmax(0,1fr);gap:.45rem .9rem}
+  .masked-note{font-size:.78rem;color:#856404;background:#fff3cd;border-radius:8px;padding:.5rem .75rem;font-weight:800}
+  @media (max-width: 900px){.wizard-shell{grid-template-columns:1fr}.wizard-steps{position:static}.picker-grid,.review-grid{grid-template-columns:1fr}}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-0">
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+    <div>
+      <h1 class="h3 fw-black mb-1" style="color:var(--nook-green);">Self-Hosted Setup Wizard</h1>
+      <p class="text-muted mb-0 fw-bold">Configure the streamer-owned dashboard, Discord bot, Dodo capture, flight logs, and optional Twitch tools.</p>
+    </div>
+    <a href="{{ url_for('dashboard.setup') }}" class="btn btn-outline-secondary fw-bold">
+      <i class="bi bi-arrow-left me-1"></i>Back to Setup
+    </a>
+  </div>
+
+  <div class="alert alert-warning border-0 rounded-3 fw-bold">
+    Saved values go to <code>.env.local</code>, which overrides <code>.env</code>. Restart ChoBot after changing tokens or channel IDs. Masked secrets are preserved and will not overwrite real tokens.
+  </div>
+
+  <form id="setupWizardForm" class="wizard-shell">
+    <aside class="wizard-steps bg-white rounded-3 shadow-sm border p-2">
+      <button type="button" class="wizard-step-btn active" data-step-target="0"><span class="num">1</span><span>Dashboard</span></button>
+      <button type="button" class="wizard-step-btn" data-step-target="1"><span class="num">2</span><span>Discord</span></button>
+      <button type="button" class="wizard-step-btn" data-step-target="2"><span class="num">3</span><span>Dodo Capture</span></button>
+      <button type="button" class="wizard-step-btn" data-step-target="3"><span class="num">4</span><span>Flight Logs</span></button>
+      <button type="button" class="wizard-step-btn" data-step-target="4"><span class="num">5</span><span>Twitch</span></button>
+      <button type="button" class="wizard-step-btn" data-step-target="5"><span class="num">6</span><span>Review</span></button>
+    </aside>
+
+    <section class="min-width-0">
+      <div class="wizard-panel active bg-white rounded-3 shadow-sm border p-4" data-step="0">
+        <h2 class="h5 fw-black mb-3">Dashboard Access</h2>
+        <div class="masked-note mb-3">Use a strong local password. This is what streamers enter to open the dashboard.</div>
+        <label class="form-label fw-bold">Dashboard Secret</label>
+        <input name="DASHBOARD_SECRET" class="form-control" value="{{ local_config.DASHBOARD_SECRET }}" placeholder="Strong local dashboard password" autocomplete="new-password">
+        <div class="field-hint mt-2">Leave a masked value unchanged if it is already configured.</div>
+      </div>
+
+      <div class="wizard-panel bg-white rounded-3 shadow-sm border p-4" data-step="1">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+          <div>
+            <h2 class="h5 fw-black mb-1">Discord Bot</h2>
+            <div class="field-hint">Paste the bot token and guild ID, then scan channels to fill the rest faster.</div>
+          </div>
+          <button type="button" class="btn btn-outline-primary fw-bold" onclick="scanDiscordSetup()">
+            <i class="bi bi-search me-1"></i>Scan Discord
+          </button>
+        </div>
+        <label class="form-label fw-bold">Discord Bot Token</label>
+        <input name="DISCORD_TOKEN" class="form-control mb-3" value="{{ local_config.DISCORD_TOKEN }}" placeholder="Paste token or leave masked value unchanged" autocomplete="new-password">
+        <label class="form-label fw-bold">Guild / Server ID</label>
+        <input name="GUILD_ID" class="form-control mb-3" value="{{ local_config.GUILD_ID }}">
+
+        <div id="scanPicker" class="d-none mt-3">
+          <h3 class="h6 fw-black mb-2">Choose From Scan</h3>
+          <div class="picker-grid">
+            <div>
+              <label class="form-label fw-bold small">Member Category</label>
+              <select class="form-select" data-fill-target="SUB_CATEGORY_ID"></select>
+            </div>
+            <div>
+              <label class="form-label fw-bold small">Free Category</label>
+              <select class="form-select" data-fill-target="FREE_CATEGORY_ID"></select>
+            </div>
+            <div>
+              <label class="form-label fw-bold small">Free Dodo Board</label>
+              <select class="form-select" data-fill-target="FREE_DODO_BOARD_CHANNEL_ID"></select>
+            </div>
+            <div>
+              <label class="form-label fw-bold small">OrderBot Channels</label>
+              <select class="form-select" data-fill-target="ORDERBOT_CHANNEL_IDS"></select>
+            </div>
+          </div>
+        </div>
+
+        <pre id="scanResult" class="scan-box mt-3 mb-0 p-3 rounded-3 bg-light small" style="white-space:pre-wrap;">No scan run yet.</pre>
+
+        <div class="row g-2 mt-3">
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Member Category ID</label>
+            <input name="SUB_CATEGORY_ID" class="form-control" value="{{ local_config.SUB_CATEGORY_ID }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Free Category ID</label>
+            <input name="FREE_CATEGORY_ID" class="form-control" value="{{ local_config.FREE_CATEGORY_ID }}">
+          </div>
+        </div>
+        <div class="row g-2 mt-2">
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Island Access Role ID</label>
+            <input name="ISLAND_ACCESS_ROLE" class="form-control" value="{{ local_config.ISLAND_ACCESS_ROLE }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Admin Role ID</label>
+            <input name="ADMIN_ROLE_ID" class="form-control" value="{{ local_config.ADMIN_ROLE_ID }}">
+          </div>
+        </div>
+      </div>
+
+      <div class="wizard-panel bg-white rounded-3 shadow-sm border p-4" data-step="2">
+        <h2 class="h5 fw-black mb-3">OrderBot / Berichan Dodo Capture</h2>
+        <label class="form-label fw-bold">OrderBot Channel IDs</label>
+        <input name="ORDERBOT_CHANNEL_IDS" class="form-control mb-3" value="{{ local_config.ORDERBOT_CHANNEL_IDS }}" placeholder="123,456">
+        <div class="field-hint mb-3">ChoBot watches these channels for Berichan/OrderBot messages and embeds.</div>
+        <label class="form-label fw-bold">Allowed OrderBot Author IDs</label>
+        <input name="ORDERBOT_AUTHOR_IDS" class="form-control mb-3" value="{{ local_config.ORDERBOT_AUTHOR_IDS }}" placeholder="Optional bot user IDs">
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Dodo Stale Minutes</label>
+            <input name="DODO_STALE_MINUTES" class="form-control" value="{{ local_config.DODO_STALE_MINUTES or 120 }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label fw-bold">Free Dodo Board Channel ID</label>
+            <input name="FREE_DODO_BOARD_CHANNEL_ID" class="form-control" value="{{ local_config.FREE_DODO_BOARD_CHANNEL_ID }}">
+          </div>
+        </div>
+      </div>
+
+      <div class="wizard-panel bg-white rounded-3 shadow-sm border p-4" data-step="3">
+        <h2 class="h5 fw-black mb-3">Flight Logs</h2>
+        <div class="picker-grid mb-3">
+          <div>
+            <label class="form-label fw-bold small">Flight Listen From Scan</label>
+            <select class="form-select" data-fill-target="FLIGHT_LISTEN_CHANNEL_ID"></select>
+          </div>
+          <div>
+            <label class="form-label fw-bold small">Free Flight Listen From Scan</label>
+            <select class="form-select" data-fill-target="FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID"></select>
+          </div>
+          <div>
+            <label class="form-label fw-bold small">Flight Log From Scan</label>
+            <select class="form-select" data-fill-target="FLIGHT_LOG_CHANNEL_ID"></select>
+          </div>
+        </div>
+        <label class="form-label fw-bold">Flight Listen Channel ID</label>
+        <input name="FLIGHT_LISTEN_CHANNEL_ID" class="form-control mb-3" value="{{ local_config.FLIGHT_LISTEN_CHANNEL_ID }}">
+        <label class="form-label fw-bold">Free Island Flight Listen Channel ID</label>
+        <input name="FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID" class="form-control mb-3" value="{{ local_config.FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID }}">
+        <label class="form-label fw-bold">Flight Log Channel ID</label>
+        <input name="FLIGHT_LOG_CHANNEL_ID" class="form-control" value="{{ local_config.FLIGHT_LOG_CHANNEL_ID }}">
+      </div>
+
+      <div class="wizard-panel bg-white rounded-3 shadow-sm border p-4" data-step="4">
+        <h2 class="h5 fw-black mb-3">Twitch Optional</h2>
+        <div class="field-hint mb-3">Leave this blank if the streamer only wants Discord and dashboard tools.</div>
+        <label class="form-label fw-bold">Twitch Token</label>
+        <input name="TWITCH_TOKEN" class="form-control mb-3" value="{{ local_config.TWITCH_TOKEN }}" placeholder="Optional" autocomplete="new-password">
+        <label class="form-label fw-bold">Twitch Channel</label>
+        <input name="TWITCH_CHANNEL" class="form-control" value="{{ local_config.TWITCH_CHANNEL }}" placeholder="Optional">
+      </div>
+
+      <div class="wizard-panel bg-white rounded-3 shadow-sm border p-4" data-step="5">
+        <h2 class="h5 fw-black mb-3">Review & Save</h2>
+        <div id="reviewGrid" class="review-grid mb-4"></div>
+        <button type="submit" class="btn btn-nook-primary fw-black px-4">
+          <i class="bi bi-save me-1"></i>Save .env.local
+        </button>
+        <pre id="wizardResult" class="mt-3 mb-0 p-3 rounded-3 bg-light small" style="white-space:pre-wrap;">Ready.</pre>
+      </div>
+
+      <div class="d-flex justify-content-between align-items-center mt-3">
+        <button type="button" id="prevStepBtn" class="btn btn-outline-secondary fw-bold" onclick="moveStep(-1)" disabled>
+          <i class="bi bi-arrow-left me-1"></i>Back
+        </button>
+        <button type="button" id="nextStepBtn" class="btn btn-nook-primary fw-black" onclick="moveStep(1)">
+          Next<i class="bi bi-arrow-right ms-1"></i>
+        </button>
+      </div>
+    </section>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var currentStep = 0;
+var stepCount = 6;
+var requiredByStep = {
+  0: ['DASHBOARD_SECRET'],
+  1: ['DISCORD_TOKEN', 'GUILD_ID'],
+  2: ['ORDERBOT_CHANNEL_IDS'],
+  3: ['FLIGHT_LISTEN_CHANNEL_ID', 'FLIGHT_LOG_CHANNEL_ID']
+};
+
+document.querySelectorAll('[data-step-target]').forEach(function (btn) {
+  btn.addEventListener('click', function () { goStep(Number(btn.dataset.stepTarget)); });
+});
+
+document.querySelectorAll('[data-fill-target]').forEach(function (select) {
+  select.addEventListener('change', function () {
+    var target = document.getElementById('setupWizardForm').elements[select.dataset.fillTarget];
+    if (target && select.value) target.value = select.value;
+    refreshReview();
+  });
+});
+
+document.getElementById('setupWizardForm').addEventListener('input', refreshReview);
+document.getElementById('setupWizardForm').addEventListener('submit', function (event) {
+  event.preventDefault();
+  var result = document.getElementById('wizardResult');
+  var data = collectWizardData();
+  result.textContent = 'Saving...';
+  fetch('{{ url_for("dashboard.api_update_setup_local_config") }}', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data)
+  })
+    .then(function (r) { return r.json().then(function (body) { return {ok: r.ok, body: body}; }); })
+    .then(function (res) {
+      result.textContent = JSON.stringify(res.body, null, 2);
+      if (!res.ok) return;
+      if (res.body.config) {
+        Object.keys(res.body.config).forEach(function (key) {
+          var input = event.target.elements[key];
+          if (input) input.value = res.body.config[key] || '';
+        });
+      }
+      refreshReview();
+    })
+    .catch(function (err) { result.textContent = 'Save failed: ' + err; });
+});
+
+function collectWizardData() {
+  var data = {};
+  Array.from(document.getElementById('setupWizardForm').elements).forEach(function (el) {
+    if (el.name) data[el.name] = el.value.trim();
+  });
+  return data;
+}
+
+function moveStep(delta) {
+  if (delta > 0 && !validateStep(currentStep)) return;
+  goStep(currentStep + delta);
+}
+
+function goStep(step) {
+  currentStep = Math.max(0, Math.min(stepCount - 1, step));
+  document.querySelectorAll('.wizard-panel').forEach(function (panel) {
+    panel.classList.toggle('active', Number(panel.dataset.step) === currentStep);
+  });
+  document.querySelectorAll('[data-step-target]').forEach(function (btn) {
+    var idx = Number(btn.dataset.stepTarget);
+    btn.classList.toggle('active', idx === currentStep);
+    btn.classList.toggle('done', idx < currentStep);
+  });
+  document.getElementById('prevStepBtn').disabled = currentStep === 0;
+  document.getElementById('nextStepBtn').classList.toggle('d-none', currentStep === stepCount - 1);
+  if (currentStep === stepCount - 1) refreshReview();
+}
+
+function validateStep(step) {
+  var form = document.getElementById('setupWizardForm');
+  var missing = (requiredByStep[step] || []).filter(function (name) {
+    var value = form.elements[name] ? form.elements[name].value.trim() : '';
+    return !value;
+  });
+  if (!missing.length) return true;
+  alert('Please fill required fields: ' + missing.join(', '));
+  return false;
+}
+
+function refreshReview() {
+  var data = collectWizardData();
+  var review = document.getElementById('reviewGrid');
+  if (!review) return;
+  var fields = [
+    'DASHBOARD_SECRET', 'GUILD_ID', 'SUB_CATEGORY_ID', 'FREE_CATEGORY_ID',
+    'ORDERBOT_CHANNEL_IDS', 'ORDERBOT_AUTHOR_IDS', 'DODO_STALE_MINUTES',
+    'FREE_DODO_BOARD_CHANNEL_ID', 'FLIGHT_LISTEN_CHANNEL_ID',
+    'FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID', 'FLIGHT_LOG_CHANNEL_ID',
+    'ISLAND_ACCESS_ROLE', 'ADMIN_ROLE_ID', 'TWITCH_CHANNEL'
+  ];
+  review.innerHTML = fields.map(function (key) {
+    var value = data[key] ? escapeHtml(data[key]) : '<span class="text-muted">not set</span>';
+    if (key === 'DASHBOARD_SECRET') value = data[key] ? 'configured' : '<span class="text-muted">not set</span>';
+    return '<div class="fw-black">' + escapeHtml(key) + '</div><div>' + value + '</div>';
+  }).join('');
+}
+
+function scanDiscordSetup() {
+  var result = document.getElementById('scanResult');
+  var form = document.getElementById('setupWizardForm');
+  result.textContent = 'Scanning Discord server...';
+  fetch('{{ url_for("dashboard.api_setup_discord_scan") }}', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      DISCORD_TOKEN: form.elements.DISCORD_TOKEN.value,
+      GUILD_ID: form.elements.GUILD_ID.value
+    })
+  })
+    .then(function (r) { return r.json().then(function (body) { return {ok: r.ok, body: body}; }); })
+    .then(function (res) {
+      result.textContent = JSON.stringify(res.body, null, 2);
+      if (!res.ok) return;
+      populateScanPickers(res.body);
+      if (res.body.suggestions) {
+        Object.keys(res.body.suggestions).forEach(function (key) {
+          var input = form.elements[key];
+          if (input && !input.value) input.value = res.body.suggestions[key];
+        });
+      }
+      refreshReview();
+    })
+    .catch(function (err) { result.textContent = 'Discord scan failed: ' + err; });
+}
+
+function populateScanPickers(scan) {
+  document.getElementById('scanPicker').classList.remove('d-none');
+  var categories = scan.categories || [];
+  var textChannels = scan.text_channels || [];
+  setPickerOptions('SUB_CATEGORY_ID', categories);
+  setPickerOptions('FREE_CATEGORY_ID', categories);
+  setPickerOptions('FREE_DODO_BOARD_CHANNEL_ID', textChannels);
+  setPickerOptions('ORDERBOT_CHANNEL_IDS', textChannels);
+  setPickerOptions('FLIGHT_LISTEN_CHANNEL_ID', textChannels);
+  setPickerOptions('FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID', textChannels);
+  setPickerOptions('FLIGHT_LOG_CHANNEL_ID', textChannels);
+}
+
+function setPickerOptions(target, rows) {
+  document.querySelectorAll('[data-fill-target="' + target + '"]').forEach(function (select) {
+    var current = document.getElementById('setupWizardForm').elements[target].value;
+    select.innerHTML = '<option value="">Choose...</option>' + rows.map(function (row) {
+      var label = '#' + row.name + ' (' + row.id + ')';
+      var selected = current === row.id ? ' selected' : '';
+      return '<option value="' + escapeHtml(row.id) + '"' + selected + '>' + escapeHtml(label) + '</option>';
+    }).join('');
+  });
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, function (ch) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+  });
+}
+
+refreshReview();
+</script>
+{% endblock %}

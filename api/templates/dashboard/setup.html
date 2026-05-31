@@ -1,0 +1,238 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Self-Hosted Setup - ChoBot{% endblock %}
+{% block header %}Self-Hosted Setup{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-0">
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+    <div>
+      <h1 class="h3 fw-black mb-1" style="color:var(--nook-green);">Streamer Setup</h1>
+      <p class="text-muted mb-0 fw-bold">
+        Local configuration for your Discord server, Berichan/OrderBot Dodo capture, dashboard, and optional Twitch chat.
+      </p>
+    </div>
+    <span class="badge rounded-pill px-3 py-2 {% if setup_status.ready %}text-bg-success{% else %}text-bg-warning{% endif %}">
+      {{ setup_status.summary }}
+    </span>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-lg-7">
+      <div class="bg-white rounded-3 shadow-sm border p-4">
+        <div class="d-flex align-items-center justify-content-between mb-3">
+          <h2 class="h5 fw-black mb-0">Configuration Checks</h2>
+          <div class="d-flex gap-2">
+            <a class="btn btn-sm btn-nook-primary fw-bold" href="{{ url_for('dashboard.setup_wizard') }}">
+              <i class="bi bi-magic me-1"></i>Open Wizard
+            </a>
+            <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="refreshSetupStatus()">
+              <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+            </button>
+          </div>
+        </div>
+        <div id="setupChecks" class="vstack gap-2">
+          {% for check in setup_status.checks %}
+          <div class="d-flex gap-3 align-items-start p-3 rounded-3 border {% if check.ok %}border-success-subtle{% else %}border-warning-subtle{% endif %}">
+            <i class="bi {% if check.ok %}bi-check-circle-fill text-success{% else %}bi-exclamation-triangle-fill text-warning{% endif %} fs-5"></i>
+            <div>
+              <div class="fw-black">{{ check.name }}{% if check.optional %}<span class="badge text-bg-light ms-2">optional</span>{% endif %}</div>
+              <div class="text-muted small fw-bold">{{ check.detail }}</div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-5">
+      <div class="bg-white rounded-3 shadow-sm border p-4 mb-4">
+        <h2 class="h5 fw-black mb-3">OrderBot Watch</h2>
+        <div class="small text-muted fw-bold mb-3">
+          ChoBot watches these Discord channel IDs for Berichan/OrderBot Dodo messages and updates the local island dashboard.
+        </div>
+        <div class="mb-2">
+          <div class="x-small text-uppercase fw-black text-muted">Channels</div>
+          <div class="fw-bold">{{ setup_status.orderbot_channel_ids|join(", ") if setup_status.orderbot_channel_ids else "Not configured" }}</div>
+        </div>
+        <div>
+          <div class="x-small text-uppercase fw-black text-muted">Allowed Bot Authors</div>
+          <div class="fw-bold">{{ setup_status.orderbot_author_ids|join(", ") if setup_status.orderbot_author_ids else "Any author in watched channels" }}</div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-3 shadow-sm border p-4">
+        <h2 class="h5 fw-black mb-3">Dodo Parser Test</h2>
+        <label class="form-label fw-bold">Channel name fallback</label>
+        <input id="previewChannel" class="form-control mb-3" placeholder="tala or free-tala-dodo">
+        <label class="form-label fw-bold">Paste OrderBot/Berichan message</label>
+        <textarea id="previewMessage" class="form-control mb-3" rows="5" placeholder="The Dodo code for Tala is ABC12"></textarea>
+        <button class="btn btn-nook-primary fw-black" onclick="previewDodoParse()">
+          <i class="bi bi-search me-1"></i>Preview Parse
+        </button>
+        <pre id="previewResult" class="mt-3 mb-0 p-3 rounded-3 bg-light small" style="white-space:pre-wrap;">Waiting for a sample...</pre>
+      </div>
+
+      <div class="bg-white rounded-3 shadow-sm border p-4 mt-4">
+        <h2 class="h5 fw-black mb-3">Manual Island Override</h2>
+        <input id="manualIsland" class="form-control mb-2" placeholder="Island name">
+        <div class="row g-2 mb-2">
+          <div class="col-6">
+            <select id="manualStatus" class="form-select">
+              <option value="ONLINE">Online</option>
+              <option value="REFRESHING">Refreshing</option>
+              <option value="OFFLINE">Offline</option>
+            </select>
+          </div>
+          <div class="col-6">
+            <input id="manualDodo" class="form-control" placeholder="Dodo code">
+          </div>
+        </div>
+        <button class="btn btn-outline-primary fw-black" onclick="saveManualStatus()">
+          <i class="bi bi-save me-1"></i>Save Override
+        </button>
+        <pre id="manualResult" class="mt-3 mb-0 p-3 rounded-3 bg-light small" style="white-space:pre-wrap;">No manual override saved yet.</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-4 mt-1">
+    <div class="col-lg-7">
+      <div class="bg-white rounded-3 shadow-sm border p-4">
+        <h2 class="h5 fw-black mb-3">Recent Dodo Captures</h2>
+        {% if setup_status.recent_dodo_captures %}
+          <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+              <thead>
+                <tr>
+                  <th>Island</th>
+                  <th>Status</th>
+                  <th>Dodo</th>
+                  <th>Channel</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for capture in setup_status.recent_dodo_captures %}
+                <tr>
+                  <td class="fw-bold">{{ capture.island_name }}</td>
+                  <td><span class="badge text-bg-light">{{ capture.status }}</span></td>
+                  <td class="font-monospace">{{ capture.dodo_code or "—" }}</td>
+                  <td>{{ capture.channel_id or "—" }}</td>
+                  <td>{{ capture.source }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="text-muted fw-bold">No OrderBot/Berichan captures yet.</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="col-lg-5">
+      <div class="bg-white rounded-3 shadow-sm border p-4">
+        <h2 class="h5 fw-black mb-3">Free Dodo Board Embed</h2>
+        {% set tpl = setup_status.free_dodo_embed_template %}
+        <label class="form-label fw-bold">Title</label>
+        <input id="tplTitle" class="form-control mb-2" value="{{ tpl.title }}">
+        <label class="form-label fw-bold">Description</label>
+        <textarea id="tplDescription" class="form-control mb-2" rows="4">{{ tpl.description }}</textarea>
+        <label class="form-label fw-bold">Footer</label>
+        <input id="tplFooter" class="form-control mb-2" value="{{ tpl.footer }}">
+        <label class="form-label fw-bold">Banner/Image URL</label>
+        <input id="tplImageUrl" class="form-control mb-2" value="{{ tpl.image_url }}">
+        <div class="row g-2 mb-3">
+          <div class="col-4">
+            <label class="form-label fw-bold small">Online</label>
+            <input id="tplOnlineColor" class="form-control" value="{{ tpl.online_color }}">
+          </div>
+          <div class="col-4">
+            <label class="form-label fw-bold small">Refresh</label>
+            <input id="tplRefreshingColor" class="form-control" value="{{ tpl.refreshing_color }}">
+          </div>
+          <div class="col-4">
+            <label class="form-label fw-bold small">Offline</label>
+            <input id="tplOfflineColor" class="form-control" value="{{ tpl.offline_color }}">
+          </div>
+        </div>
+        <div class="small text-muted fw-bold mb-3">
+          Placeholders: <code>{island}</code>, <code>{dodo_code}</code>, <code>{status}</code>, <code>{visitors}</code>, <code>{description}</code>, <code>{island_url}</code>, <code>{map_url}</code>
+        </div>
+        <button class="btn btn-nook-primary fw-black" onclick="saveEmbedTemplate()">
+          <i class="bi bi-palette me-1"></i>Save Embed Template
+        </button>
+        <pre id="templateResult" class="mt-3 mb-0 p-3 rounded-3 bg-light small" style="white-space:pre-wrap;">Template loaded.</pre>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function refreshSetupStatus() {
+  fetch('{{ url_for("dashboard.api_setup_status") }}')
+    .then(r => r.json())
+    .then(data => location.reload())
+    .catch(err => alert('Setup refresh failed: ' + err));
+}
+
+function previewDodoParse() {
+  var result = document.getElementById('previewResult');
+  result.textContent = 'Parsing...';
+  fetch('{{ url_for("dashboard.api_setup_dodo_preview") }}', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      channel_name: document.getElementById('previewChannel').value,
+      message: document.getElementById('previewMessage').value
+    })
+  })
+    .then(r => r.json())
+    .then(data => { result.textContent = JSON.stringify(data, null, 2); })
+    .catch(err => { result.textContent = 'Parser preview failed: ' + err; });
+}
+
+function saveManualStatus() {
+  var island = document.getElementById('manualIsland').value.trim();
+  var result = document.getElementById('manualResult');
+  if (!island) {
+    result.textContent = 'Island name is required.';
+    return;
+  }
+  fetch('/dashboard/api/islands/' + encodeURIComponent(island) + '/manual-status', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      status: document.getElementById('manualStatus').value,
+      dodo_code: document.getElementById('manualDodo').value
+    })
+  })
+    .then(r => r.json())
+    .then(data => { result.textContent = JSON.stringify(data, null, 2); })
+    .catch(err => { result.textContent = 'Manual override failed: ' + err; });
+}
+
+function saveEmbedTemplate() {
+  var result = document.getElementById('templateResult');
+  fetch('{{ url_for("dashboard.api_setup_free_dodo_embed_template") }}', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      title: document.getElementById('tplTitle').value,
+      description: document.getElementById('tplDescription').value,
+      footer: document.getElementById('tplFooter').value,
+      image_url: document.getElementById('tplImageUrl').value,
+      online_color: document.getElementById('tplOnlineColor').value,
+      refreshing_color: document.getElementById('tplRefreshingColor').value,
+      offline_color: document.getElementById('tplOfflineColor').value
+    })
+  })
+    .then(r => r.json())
+    .then(data => { result.textContent = JSON.stringify(data, null, 2); })
+    .catch(err => { result.textContent = 'Template save failed: ' + err; });
+}
+</script>
+{% endblock %}
