@@ -566,6 +566,68 @@ def _island_api_dict(isl: dict) -> dict:
     return {field: isl.get(field) for field in _API_ISLAND_FIELDS}
 
 
+def _find_island_filesystem_meta(island_id: str, display_name: str | None = None) -> dict:
+    """Return filesystem metadata used by the legacy island detail page."""
+    upper = (display_name or island_id).upper()
+    fs_path = fs_type = None
+    for directory, itype in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP")]:
+        if not directory:
+            continue
+        for candidate_name in [upper, island_id]:
+            candidate = os.path.join(directory, candidate_name)
+            if os.path.isdir(candidate):
+                fs_path, fs_type = candidate, itype
+                break
+        if fs_path:
+            break
+    return {
+        "fs_path": fs_path,
+        "fs_type": fs_type,
+        "fs_dodo": _read_file(fs_path, "Dodo.txt") if fs_path else None,
+        "fs_visitors": _parse_visitor_value(_read_file(fs_path, "Visitors.txt")) if fs_path else None,
+    }
+
+
+def _island_sparkline_7d(destination: str) -> list[dict]:
+    """Return per-island visit counts for the last seven days."""
+    db_sp = get_db()
+    try:
+        return [
+            dict(r) for r in db_sp.execute(
+                "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
+                "FROM island_visits "
+                "WHERE LOWER(destination) = LOWER(?) "
+                "AND timestamp > strftime('%s','now','-7 days') "
+                "GROUP BY day ORDER BY day",
+                (destination,),
+            ).fetchall()
+        ]
+    except Exception:
+        return []
+    finally:
+        db_sp.close()
+
+
+def _island_detail_api_dict(isl: dict) -> dict:
+    """Return the React dashboard island editor payload."""
+    payload = _island_api_dict(isl)
+    payload.update(_find_island_filesystem_meta(isl.get("id", ""), isl.get("name")))
+    payload.update({
+        "allowed_categories": list(ALLOWED_CATEGORIES),
+        "allowed_themes": list(ALLOWED_THEMES),
+        "allowed_statuses": list(ALLOWED_STATUSES),
+        "r2_configured": bool(
+            Config.R2_ACCOUNT_ID
+            and Config.R2_ACCESS_KEY_ID
+            and Config.R2_SECRET_ACCESS_KEY
+            and Config.R2_BUCKET_NAME
+            and Config.R2_PUBLIC_URL
+        ),
+        "sparkline_7d": _island_sparkline_7d(isl.get("name") or isl.get("id", "")),
+    })
+    return payload
+
+
 def _merge_island(db_row: dict, fs: dict | None) -> dict:
     """Overlay live filesystem data (Dodo / Visitors) onto a DB island record."""
     db_row["fs_dodo"]     = fs["fs_dodo"]     if fs else None
@@ -975,18 +1037,9 @@ def island_detail(name):
     finally:
         db.close()
 
-    # Locate filesystem path
-    fs_path = fs_type = None
-    for directory, itype in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP")]:
-        if not directory:
-            continue
-        for candidate_name in [upper, name]:
-            candidate = os.path.join(directory, candidate_name)
-            if os.path.isdir(candidate):
-                fs_path, fs_type = candidate, itype
-                break
-        if fs_path:
-            break
+    fs_meta = _find_island_filesystem_meta(island_id, upper)
+    fs_path = fs_meta["fs_path"]
+    fs_type = fs_meta["fs_type"]
 
     if request.method == "POST":
         isl_type         = request.form.get("type", "").strip()
@@ -1076,25 +1129,6 @@ def island_detail(name):
     island["fs_visitors"] = _parse_visitor_value(_read_file(fs_path, "Visitors.txt")) if fs_path else None
     island["items_text"]  = ", ".join(island["items"]) if isinstance(island.get("items"), list) else ""
 
-    # Per-island 7-day visit sparkline
-    sparkline_7d = []
-    db_sp = get_db()
-    try:
-        sparkline_7d = [
-            dict(r) for r in db_sp.execute(
-                "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
-                "FROM island_visits "
-                "WHERE LOWER(destination) = LOWER(?) "
-                "AND timestamp > strftime('%s','now','-7 days') "
-                "GROUP BY day ORDER BY day",
-                (upper,),
-            ).fetchall()
-        ]
-    except Exception:
-        sparkline_7d = []
-    finally:
-        db_sp.close()
-
     r2_configured = bool(Config.R2_ACCOUNT_ID and Config.R2_ACCESS_KEY_ID and Config.R2_SECRET_ACCESS_KEY)
 
     return render_template(
@@ -1104,7 +1138,7 @@ def island_detail(name):
         allowed_themes=ALLOWED_THEMES,
         allowed_statuses=ALLOWED_STATUSES,
         r2_configured=r2_configured,
-        sparkline_7d=sparkline_7d,
+        sparkline_7d=_island_sparkline_7d(upper),
     )
 
 
@@ -1638,6 +1672,18 @@ def database():
 @admin_required
 def analytics_export_csv():
     """Export visit log data as a CSV download."""
+    return _analytics_csv_response()
+
+
+@dashboard.route("/api/analytics/export.csv")
+@api_auth_required
+def api_analytics_export_csv():
+    """Export visit log data as CSV for the React dashboard."""
+    return _analytics_csv_response()
+
+
+def _analytics_csv_response():
+    """Build a CSV export response for dashboard analytics."""
     island_type_filter = request.args.get("island_type", "").lower()
     if island_type_filter not in ("free", "sub"):
         island_type_filter = ""
@@ -1963,7 +2009,7 @@ def api_island_get(name):
         db.close()
     if not row:
         return jsonify({"error": f'Island "{name}" not found'}), 404
-    return jsonify(_island_api_dict(_row_to_island_dict(dict(row))))
+    return jsonify(_island_detail_api_dict(_row_to_island_dict(dict(row))))
 
 
 @dashboard.route("/api/islands/<name>", methods=["PUT"])
