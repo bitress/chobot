@@ -28,6 +28,7 @@ class DataManager:
         self.last_update = None
         self.gc = None
         self.lock = threading.Lock()
+        self.stop_event = threading.Event()
         self.image_cache = {}
         self._villager_cache = {}     # {frozenset(dirs): data}
         self._villager_cache_time = None
@@ -195,10 +196,14 @@ class DataManager:
 
     def auto_refresh_loop(self):
         """Background thread to auto-refresh cache"""
-        while True:
-            # Wait for the interval (hours * 3600 seconds)
-            time.sleep(3600 * self.cache_refresh_hours)
+        while not self.stop_event.wait(3600 * self.cache_refresh_hours):
             self.update_cache()
+
+    def stop_auto_refresh(self, timeout: float = 5.0):
+        """Signal the background refresh loop to stop and wait briefly."""
+        self.stop_event.set()
+        if self.refresh_thread.is_alive():
+            self.refresh_thread.join(timeout=timeout)
 
     def get_villagers(self, villagers_dirs):
         """Scan villager text files from provided directories (cached for 5 min)"""

@@ -374,6 +374,7 @@ async def run_discord(
 # ============================================================================
 def main():
     configure_ssl_cert_bundle()
+    data_manager: Optional[DataManager] = None
 
     # One-shot utility mode: migrate sqlite data into MariaDB and exit.
     if len(sys.argv) > 1 and sys.argv[1].strip().lower() == "migrate-mariadb":
@@ -502,6 +503,9 @@ def main():
 
     # ---- Shutdown ----------------------------------------------------------
     STOP_EVENT.set()
+
+    if data_manager is not None:
+        data_manager.stop_auto_refresh()
 
     for t in threads:
         try:

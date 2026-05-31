@@ -29,6 +29,7 @@ from werkzeug.serving import ThreadedWSGIServer
 from utils.config import Config
 from utils.database import connect_db
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
+from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token
 from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value, _parse_visitor_list
 
 
@@ -98,12 +99,15 @@ app.secret_key = Config.FLASK_SECRET_KEY
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
-CORS(app, resources={r"/*": {"origins": [
-    "https://www.chopaeng.com",
-    "https://chopaeng.com",
-    "http://localhost:5173",
-    "http://localhost:3000",
-]}}, supports_credentials=True)
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "FRONTEND_ORIGINS",
+        "https://www.chopaeng.com,https://chopaeng.com,http://localhost:5173,http://localhost:3000",
+    ).split(",")
+    if origin.strip()
+]
+CORS(app, resources={r"/*": {"origins": _cors_origins}}, supports_credentials=True)
 
 # Register the mod-only web dashboard
 app.register_blueprint(dashboard, url_prefix="/dashboard")
@@ -130,41 +134,16 @@ _refresh_lock = threading.Lock()
 # Works cross-domain: frontend stores the token in localStorage and sends it
 # as "Authorization: Bearer <token>" on every authenticated request.
 # ---------------------------------------------------------------------------
-_AUTH_TOKEN_TTL = 86400  # 24 hours
-_auth_tokens: dict[str, dict] = {}   # token → {user_data, expires_at}
-_auth_tokens_lock = threading.Lock()
-
 _DISCORD_UA = "DiscordBot (https://chopaeng.com, 1.0)"
 _ADMINISTRATOR_PERM = 0x8   # Discord Administrator permission bit
 _ROLE_NAME_CACHE: dict[str, tuple[dict[str, str], float]] = {}
 _ROLE_NAME_CACHE_TTL = 3600
 
-def _make_auth_token(user_data: dict) -> str:
-    token = _secrets.token_urlsafe(32)
-    expires_at = time.monotonic() + _AUTH_TOKEN_TTL
-    with _auth_tokens_lock:
-        _auth_tokens[token] = {"user": user_data, "expires_at": expires_at}
-    return token
-
-def _get_auth_user(token: str) -> dict | None:
-    """Return user dict if token is valid and not expired, else None."""
-    if not token:
-        return None
-    with _auth_tokens_lock:
-        entry = _auth_tokens.get(token)
-    if not entry:
-        return None
-    if time.monotonic() > entry["expires_at"]:
-        with _auth_tokens_lock:
-            _auth_tokens.pop(token, None)
-        return None
-    return entry["user"]
-
 def _current_auth_user() -> dict | None:
     """Extract Bearer token from request and return user dict, or None."""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
-        return _get_auth_user(auth[len("Bearer "):])
+        return get_auth_user(auth[len("Bearer "):])
     return None
 
 def _is_mod(roles: list[str]) -> bool:
@@ -889,7 +868,7 @@ def auth_callback():
         pass
 
     is_admin = bool(member_perms & _ADMINISTRATOR_PERM)
-    token = _make_auth_token({
+    token = make_auth_token({
         "user_id":   discord_user_id,
         "username":  discord_username,
         "discord_name": discord_global_name or discord_account_name,
@@ -963,8 +942,7 @@ def auth_logout():
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         token = auth[len("Bearer "):]
-        with _auth_tokens_lock:
-            _auth_tokens.pop(token, None)
+        revoke_auth_token(token)
     return jsonify({"logged_out": True})
 
 
@@ -1536,6 +1514,25 @@ def status():
 @app.route('/api/refresh', methods=['POST'])
 def api_refresh():
     """Manually trigger a cache refresh from Google Sheets"""
+    auth = request.headers.get("Authorization", "")
+    secret_bearer_ok = (
+        auth.startswith("Bearer ")
+        and Config.DASHBOARD_SECRET
+        and _secrets.compare_digest(auth[len("Bearer "):], Config.DASHBOARD_SECRET)
+    )
+    token_user = get_auth_user(auth[len("Bearer "):]) if auth.startswith("Bearer ") else None
+    mod_bearer_ok = bool(
+        token_user
+        and (
+            token_user.get("is_admin")
+            or token_user.get("is_mod")
+            or _is_mod(token_user.get("roles", []))
+        )
+    )
+    session_ok = bool(session.get("mod_logged_in"))
+    if not secret_bearer_ok and not mod_bearer_ok and not session_ok:
+        return jsonify({"error": "Unauthorized"}), 401
+
     if data_manager is None:
         return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
 

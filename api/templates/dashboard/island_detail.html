@@ -44,6 +44,7 @@
                 <form id="islandForm" method="POST"
                       action="{{ url_for('dashboard.island_detail', name=island.id) }}"
                       class="p-4">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
                     <!-- Row 1: Type + Seasonal -->
                     <div class="row g-3 mb-3">

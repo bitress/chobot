@@ -5,6 +5,7 @@ Loads and validates all environment variables
 
 import os
 import logging
+import secrets
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -83,7 +84,8 @@ class Config:
     # Discord webhook for logging dodo code reveals on the website
     DODO_LOG_WEBHOOK_URL = os.getenv("DODO_LOG_WEBHOOK_URL", "")
 
-    FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY") or __import__("secrets").token_hex(32)
+    _FLASK_SECRET_ENV = os.getenv("FLASK_SECRET_KEY", "").strip()
+    FLASK_SECRET_KEY: str = _FLASK_SECRET_ENV or DASHBOARD_SECRET or secrets.token_hex(32)
 
     DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID", "")
     DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
@@ -96,7 +98,7 @@ class Config:
     R2_BUCKET_NAME      = os.getenv("R2_BUCKET_NAME", "chobot-maps")
     R2_PUBLIC_URL       = os.getenv("R2_PUBLIC_URL", "")
 
-    DB_BACKEND = os.getenv("DB_BACKEND", "mysql").strip().lower()
+    DB_BACKEND = os.getenv("DB_BACKEND", "sqlite").strip().lower()
     SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "")
     DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
@@ -179,6 +181,12 @@ class Config:
 
         if missing:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+
+        if cls.IS_PRODUCTION and not cls.DASHBOARD_SECRET:
+            raise ValueError("DASHBOARD_SECRET is required in production")
+
+        if cls.IS_PRODUCTION and not (cls._FLASK_SECRET_ENV or cls.DASHBOARD_SECRET):
+            raise ValueError("FLASK_SECRET_KEY or DASHBOARD_SECRET is required in production")
 
         if cls.DB_BACKEND not in {"sqlite", "mysql", "mariadb"}:
             raise ValueError("DB_BACKEND must be one of: sqlite, mysql, mariadb")

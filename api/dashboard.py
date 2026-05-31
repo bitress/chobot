@@ -30,6 +30,7 @@ from flask import (
 )
 
 from utils.config import Config
+from utils.auth_tokens import get_auth_user
 from utils.database import connect_db, get_backend, get_engine
 from utils.db_migration import migrate_sqlite_to_mariadb
 
@@ -299,8 +300,29 @@ def _get_session_role():
 def _check_bearer():
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer ") and Config.DASHBOARD_SECRET:
-        return auth[len("Bearer "):] == Config.DASHBOARD_SECRET
+        return secrets.compare_digest(auth[len("Bearer "):], Config.DASHBOARD_SECRET)
     return False
+
+
+def _dashboard_bearer_user() -> dict | None:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    return get_auth_user(auth[len("Bearer "):])
+
+
+def _is_dashboard_mod_user(user: dict | None) -> bool:
+    if not user:
+        return False
+    if user.get("is_admin") or user.get("is_mod"):
+        return True
+    roles = {str(role) for role in user.get("roles", [])}
+    mod_role_ids = {
+        str(Config.ADMIN_ROLE_ID or ""),
+        str(Config.SENIOR_MOD_ROLE_ID or ""),
+        str(Config.BABY_MOD_ROLE_ID or ""),
+    } - {"", "0", "None"}
+    return bool(roles & mod_role_ids)
 
 
 def login_required(f):
@@ -327,13 +349,38 @@ def admin_required(f):
 
 
 def api_auth_required(f):
-    """Decorator for JSON API routes — returns 401 when token/session is missing."""
+    """Decorator for JSON API routes; accepts dashboard secret, session, or mod bearer token."""
     @wraps(f)
     def _decorated(*args, **kwargs):
-        if not _check_bearer() and not _check_session():
-            return jsonify({"error": "Unauthorized — send 'Authorization: Bearer <DASHBOARD_SECRET>'"}), 401
+        if _check_bearer() or _check_session():
+            return f(*args, **kwargs)
+
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return jsonify({"error": "Unauthorized"}), 401
+
+        user = _dashboard_bearer_user()
+        if not user:
+            return jsonify({"error": "Unauthorized"}), 401
+        if not _is_dashboard_mod_user(user):
+            return jsonify({"error": "Forbidden"}), 403
         return f(*args, **kwargs)
     return _decorated
+
+
+def _csrf_token() -> str:
+    """Return the current CSRF token, creating one for this browser session."""
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def _csrf_is_valid() -> bool:
+    expected = session.get("csrf_token", "")
+    provided = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token", "")
+    return bool(expected and provided and secrets.compare_digest(expected, provided))
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +394,7 @@ def _inject_user():
         "discord_user_id":    session.get("discord_user_id", ""),
         "discord_avatar_url": session.get("discord_avatar_url", ""),
         "oauth_configured":   bool(Config.DISCORD_CLIENT_ID),
+        "csrf_token":         _csrf_token(),
     }
 
 
@@ -544,6 +592,9 @@ def _restrict_to_console_domain():
     host = request.host.split(":")[0]  # strip optional port
     if host not in _ALLOWED_DASHBOARD_HOSTS:
         abort(404)
+    if request.method in {"POST", "PUT", "DELETE"} and not request.path.startswith("/dashboard/api/"):
+        if not _csrf_is_valid():
+            abort(403)
 
 
 @dashboard.errorhandler(403)

@@ -67,6 +67,7 @@
 
     <!-- Secret key fallback form -->
     <form method="POST" action="{{ url_for('dashboard.login') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label class="db-label">Secret Key</label>
       <div class="input-group mb-3" style="border:2px solid #e1e6d3;border-radius:12px;overflow:hidden;background:var(--nook-cream);">
         <span class="input-group-text border-0" style="background:transparent;color:#aaa;">
