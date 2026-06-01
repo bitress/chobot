@@ -136,8 +136,13 @@ _refresh_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 _DISCORD_UA = "DiscordBot (https://chopaeng.com, 1.0)"
 _ADMINISTRATOR_PERM = 0x8   # Discord Administrator permission bit
+_VIEW_CHANNEL_PERM = 1 << 10
 _ROLE_NAME_CACHE: dict[str, tuple[dict[str, str], float]] = {}
 _ROLE_NAME_CACHE_TTL = 3600
+_CHANNEL_OVERWRITE_CACHE: dict[str, tuple[list[str] | None, str | None, float]] = {}
+_GUILD_CHANNELS_CACHE: tuple[list[dict], float] | None = None
+_CHANNEL_OVERWRITE_CACHE_TTL = 300
+_GUILD_CHANNELS_CACHE_TTL = 300
 
 def _current_auth_user() -> dict | None:
     """Extract Bearer token from request and return user dict, or None."""
@@ -194,6 +199,146 @@ def _configured_subscription_role_ids() -> list[str]:
     return list(dict.fromkeys(role_ids))
 
 
+def _discord_bot_auth_value() -> str | None:
+    token = str(Config.DISCORD_TOKEN or "").strip()
+    if not token:
+        return None
+    return token if token.lower().startswith("bot ") else f"Bot {token}"
+
+
+def _discord_api_json(path: str, timeout: int = 10) -> dict | list | None:
+    auth_value = _discord_bot_auth_value()
+    if not auth_value:
+        return None
+    try:
+        req = urllib.request.Request(
+            f"https://discord.com/api/v10{path}",
+            headers={"Authorization": auth_value, "User-Agent": _DISCORD_UA},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:
+        logger.warning("Discord API request failed for %s: %s", path, exc)
+        return None
+
+
+def _discord_channel_overwrite_roles(channel_id: str | None) -> tuple[list[str] | None, str | None]:
+    """Return role IDs allowed to view a channel from Discord, or None when unavailable."""
+    if not channel_id:
+        return None, None
+
+    channel_key = str(channel_id)
+    now = time.monotonic()
+    cached = _CHANNEL_OVERWRITE_CACHE.get(channel_key)
+    if cached and now - cached[2] < _CHANNEL_OVERWRITE_CACHE_TTL:
+        return cached[0], cached[1]
+
+    payload = _discord_api_json(f"/channels/{channel_key}")
+    if not isinstance(payload, dict):
+        _CHANNEL_OVERWRITE_CACHE[channel_key] = (None, None, now)
+        return None, None
+
+    role_ids: list[str] = []
+    for overwrite in payload.get("permission_overwrites") or []:
+        if str(overwrite.get("type")) not in {"0", "role"}:
+            continue
+        role_id = str(overwrite.get("id") or "")
+        if not role_id or role_id == str(Config.GUILD_ID or ""):
+            continue
+        try:
+            allow_bits = int(overwrite.get("allow") or 0)
+        except (TypeError, ValueError):
+            allow_bits = 0
+        if allow_bits & _VIEW_CHANNEL_PERM:
+            role_ids.append(role_id)
+
+    resolved = list(dict.fromkeys(role_ids))
+    resolved_channel_id = str(payload.get("id") or channel_key)
+    _CHANNEL_OVERWRITE_CACHE[channel_key] = (resolved, resolved_channel_id, now)
+    return resolved, resolved_channel_id
+
+
+def _discord_guild_channels() -> list[dict] | None:
+    global _GUILD_CHANNELS_CACHE
+    guild_id = str(Config.GUILD_ID or "")
+    if not guild_id:
+        return None
+
+    now = time.monotonic()
+    if _GUILD_CHANNELS_CACHE and now - _GUILD_CHANNELS_CACHE[1] < _GUILD_CHANNELS_CACHE_TTL:
+        return _GUILD_CHANNELS_CACHE[0]
+
+    payload = _discord_api_json(f"/guilds/{guild_id}/channels")
+    if not isinstance(payload, list):
+        return None
+
+    channels = [channel for channel in payload if isinstance(channel, dict)]
+    _GUILD_CHANNELS_CACHE = (channels, now)
+    return channels
+
+
+def _find_discord_island_channel_id(island_name: str | None) -> str | None:
+    """Find a member island channel by normalized island name in the configured sub category."""
+    island_clean = re.sub(r"^\d+", "", clean_text(island_name or ""))
+    if not island_clean:
+        return None
+
+    category_id = str(Config.CATEGORY_ID or "")
+    channels = _discord_guild_channels()
+    if not channels:
+        return None
+
+    for channel in channels:
+        if category_id and str(channel.get("parent_id") or "") != category_id:
+            continue
+        channel_clean = re.sub(r"^\d+", "", clean_text(str(channel.get("name") or "")))
+        if channel_clean == island_clean:
+            return str(channel.get("id") or "")
+    return None
+
+
+def _is_member_island(cat: str | None, island_type: str | None = None) -> bool:
+    """Return whether an island should be gated behind member roles."""
+    return (cat or "").strip().lower() == "member" or (island_type or "").strip().upper() == "VIP"
+
+
+def _effective_island_required_roles(
+    cat: str | None,
+    required_roles: list[str] | None,
+    island_type: str | None = None,
+) -> list[str]:
+    """Return explicit island roles, or configured member roles for member/VIP islands."""
+    roles = [str(role_id) for role_id in (required_roles or []) if str(role_id)]
+    if _is_member_island(cat, island_type) and not roles:
+        roles = _configured_subscription_role_ids()
+    return roles
+
+
+def _resolved_island_required_roles(
+    island_name: str | None,
+    cat: str | None,
+    required_roles: list[str] | None,
+    island_type: str | None = None,
+    channel_id: str | None = None,
+) -> tuple[list[str], str | None, str]:
+    """Resolve island access roles using live Discord channel overwrites first."""
+    if _is_member_island(cat, island_type):
+        resolved_channel_id = str(channel_id) if channel_id else None
+        dynamic_roles: list[str] | None = None
+        if resolved_channel_id:
+            dynamic_roles, fetched_channel_id = _discord_channel_overwrite_roles(resolved_channel_id)
+            resolved_channel_id = fetched_channel_id or resolved_channel_id
+        if dynamic_roles is None:
+            found_channel_id = _find_discord_island_channel_id(island_name)
+            if found_channel_id:
+                dynamic_roles, fetched_channel_id = _discord_channel_overwrite_roles(found_channel_id)
+                resolved_channel_id = fetched_channel_id or found_channel_id
+        if dynamic_roles is not None:
+            return dynamic_roles, resolved_channel_id, "discord_channel"
+
+    return _effective_island_required_roles(cat, required_roles, island_type), channel_id, "database"
+
+
 def _excluded_profile_role_ids() -> set[str]:
     """Role IDs that should not appear as user subscription roles."""
     excluded = {
@@ -214,8 +359,9 @@ def _get_guild_role_names() -> dict[str, str]:
     if cached and now - cached[1] < _ROLE_NAME_CACHE_TTL:
         return cached[0]
 
-    token = str(Config.DISCORD_TOKEN).strip()
-    auth_value = token if token.lower().startswith("bot ") else f"Bot {token}"
+    auth_value = _discord_bot_auth_value()
+    if not auth_value:
+        return {}
     try:
         req = urllib.request.Request(
             f"https://discord.com/api/v10/guilds/{guild_id}/roles",
@@ -273,20 +419,23 @@ def _load_profile_subscriptions(user: dict) -> dict:
     try:
         all_required_role_ids: set[str] = set()
         rows = db.execute(
-            "SELECT id, name, cat, type, required_roles FROM islands ORDER BY name"
+            "SELECT id, name, cat, type, required_roles, channel_id FROM islands ORDER BY name"
         ).fetchall()
         for row in rows:
             island = row_to_island_dict(dict(row))
-            raw_required_roles = [str(r) for r in island.get("required_roles", []) if str(r)]
+            raw_required_roles, resolved_channel_id, access_source = _resolved_island_required_roles(
+                island.get("name"),
+                island.get("cat"),
+                island.get("required_roles", []),
+                island.get("type"),
+                island.get("channel_id"),
+            )
             profile_required_roles = [
                 str(r)
-                for r in island.get("required_roles", [])
+                for r in raw_required_roles
                 if str(r) and str(r) not in excluded_role_ids
             ]
-            is_member_island = (island.get("cat") or "").strip().lower() == "member"
-            if is_member_island and not raw_required_roles:
-                raw_required_roles = list(configured_role_ids)
-                profile_required_roles = [rid for rid in configured_role_ids if rid not in excluded_role_ids]
+            is_member_island = _is_member_island(island.get("cat"), island.get("type"))
 
             # The raw channel overwrite roles decide access. The filtered profile roles
             # are only for display so general access/mod roles do not show as subscriptions.
@@ -302,6 +451,8 @@ def _load_profile_subscriptions(user: dict) -> dict:
                     "id": island.get("id"),
                     "name": island.get("name"),
                     "type": island.get("type"),
+                    "channel_id": resolved_channel_id,
+                    "access_source": access_source,
                     "required_roles": [_role_payload(rid, role_names) for rid in profile_required_roles],
                     "matched_roles": [_role_payload(rid, role_names) for rid in display_matching_roles],
                 })
@@ -349,7 +500,9 @@ def _load_profile_subscriptions(user: dict) -> dict:
         "matched_subscription_role_names": [role["name"] for role in matched_subscription_roles],
         "matched_subscription_roles": matched_subscription_roles,
         "accessible_islands": accessible_islands,
+        "accessible_member_islands": accessible_islands,
         "alert_subscriptions": alert_subscriptions,
+        "island_alert_subscriptions": alert_subscriptions,
     }
 
 
@@ -685,15 +838,37 @@ def process_island(entry, island_type):
     }
 
 
-def _build_island_response(entry, island_type, db_island, discord_bot_online=None, viewer_is_mod=False):
+def _build_island_response(
+    entry,
+    island_type,
+    db_island,
+    discord_bot_online=None,
+    viewer_roles=None,
+    viewer_is_mod=False,
+):
     """Build the enriched island response merging live filesystem data with DB metadata."""
     name = entry.name.upper()
+    viewer_roles = [str(role_id) for role_id in (viewer_roles or []) if str(role_id)]
+    island_cat = db_island.get("cat") or ("member" if island_type == "VIP" else "public")
+    required_roles, resolved_channel_id, access_source = _resolved_island_required_roles(
+        name,
+        island_cat,
+        db_island.get("required_roles", []),
+        island_type,
+        db_island.get("channel_id"),
+    )
+    is_member_locked = _is_member_island(island_cat, island_type) and not required_roles and not viewer_is_mod
+    viewer_has_access = False if is_member_locked else _has_island_access(
+        viewer_roles,
+        required_roles,
+        viewer_is_mod,
+    )
 
     raw_dodo = get_file_content(entry.path, "Dodo.txt")
     visitors, visitor_list = _parse_visitor_list(get_file_content(entry.path, "Visitors.txt"))
 
     # Determine live status and dodo_code from filesystem
-    if island_type == "VIP" and not viewer_is_mod:
+    if _is_member_island(island_cat, island_type) and not viewer_has_access:
         status = "SUB ONLY"
         dodo_code = None  # Do not expose dodo code for subscriber-only islands
     elif raw_dodo is None:
@@ -706,6 +881,10 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
         status = "ONLINE"
         dodo_code = raw_dodo
 
+    # Keep member codes behind the explicit reveal endpoint so access logging/webhooks still run.
+    if _is_member_island(island_cat, island_type):
+        dodo_code = None
+
     # When the Discord bot is not confirmed online, hide live data to avoid stale values
     if not discord_bot_online:
         visitors = 0
@@ -715,7 +894,7 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
     return {
         "id":                db_island.get("id", name.lower()),
         "name":              name,
-        "cat":               db_island.get("cat", "public"),
+        "cat":               island_cat,
         "description":       db_island.get("description", ""),
         "dodo_code":         dodo_code,
         "visitors":          visitors,
@@ -725,10 +904,14 @@ def _build_island_response(entry, island_type, db_island, discord_bot_online=Non
         "seasonal":          db_island.get("seasonal", ""),
         "status":            status,
         "theme":             db_island.get("theme", "teal"),
-        "type":              db_island.get("type", ""),
+        "type":              db_island.get("type") or island_type,
         "updated_at":        db_island.get("updated_at"),
         "discord_bot_online": discord_bot_online,
-        "required_roles":    db_island.get("required_roles", []),
+        "channel_id":        resolved_channel_id,
+        "required_roles":    required_roles,
+        "access_source":     access_source,
+        "accessible":        viewer_has_access,
+        "viewer_has_access": viewer_has_access,
     }
 
 # ============================================================================
@@ -967,29 +1150,44 @@ def reveal_dodo(name):
     db = get_db()
     try:
         row = db.execute(
-            "SELECT cat, required_roles, channel_id FROM islands WHERE UPPER(name) = ?", (target,)
+            "SELECT cat, type, required_roles, channel_id FROM islands WHERE UPPER(name) = ?", (target,)
         ).fetchone()
     finally:
         db.close()
 
     island_cat = ""
+    island_type = ""
     required_roles: list[str] = []
     channel_id = None
     if row:
         island_cat = (row["cat"] or "").strip().lower()
+        island_type = row["type"] or ""
         channel_id = row["channel_id"]
         try:
             required_roles = json.loads(row["required_roles"] or "[]")
         except (ValueError, TypeError):
             required_roles = []
+    elif Config.DIR_VIP:
+        for candidate in [target, name]:
+            if os.path.isdir(os.path.join(Config.DIR_VIP, candidate)):
+                island_cat = "member"
+                island_type = "VIP"
+                break
 
     # Safety: member islands must never become public because required_roles is empty.
-    effective_required_roles = required_roles
+    effective_required_roles, resolved_channel_id, _access_source = _resolved_island_required_roles(
+        target,
+        island_cat,
+        required_roles,
+        island_type,
+        channel_id,
+    )
+    channel_id = resolved_channel_id or channel_id
 
     is_viewer_admin = bool(user.get("is_admin"))
     is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
 
-    if island_cat == "member" and not effective_required_roles and not is_viewer_mod:
+    if _is_member_island(island_cat, island_type) and not effective_required_roles and not is_viewer_mod:
         return jsonify({"error": "Subscriber roles are not configured for this island"}), 403
 
     # Check for general island access role first
@@ -1324,14 +1522,21 @@ def get_islands():
     db = get_db()
     try:
         rows = db.execute(
-            "SELECT id, name, cat, description, items, map_url, seasonal, theme, type, updated_at, required_roles "
+            "SELECT id, name, cat, description, items, map_url, seasonal, theme, type, updated_at, required_roles, channel_id "
             "FROM islands ORDER BY name"
         ).fetchall()
         for row in rows:
             isl = row_to_island_dict(dict(row))
             # Keep frontend gating aligned with reveal endpoint safety logic.
-            if (isl.get("cat") or "").strip().lower() == "member" and not (isl.get("required_roles") or []):
-                isl["required_roles"] = _configured_subscription_role_ids()
+            isl["required_roles"], resolved_channel_id, access_source = _resolved_island_required_roles(
+                isl.get("name"),
+                isl.get("cat"),
+                isl.get("required_roles") or [],
+                isl.get("type"),
+                isl.get("channel_id"),
+            )
+            isl["channel_id"] = resolved_channel_id
+            isl["access_source"] = access_source
             if isl.get("name"):
                 db_map[isl["name"].upper()] = isl
         # Load Discord bot presence data
@@ -1353,6 +1558,7 @@ def get_islands():
                     results.append(_build_island_response(
                         entry, "Free", db_map.get(name, {}),
                         discord_status.get(name.lower()),
+                        viewer_roles,
                         viewer_is_mod,
                     ))
 
@@ -1364,6 +1570,7 @@ def get_islands():
                     results.append(_build_island_response(
                         entry, "VIP", db_map.get(name, {}),
                         discord_status.get(name.lower()),
+                        viewer_roles,
                         viewer_is_mod,
                     ))
 
