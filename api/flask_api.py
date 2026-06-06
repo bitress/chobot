@@ -27,6 +27,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import ThreadedWSGIServer
 
 from utils.config import Config
+from utils import island_access
 from utils.database import connect_db
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
 from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token
@@ -88,6 +89,19 @@ def _persist_dodo_reveal_message(
             conn.close()
     except Exception as exc:
         logger.warning("dodo_reveal_messages insert failed: %s", exc)
+
+
+def _log_dodo_reveal_attempt(user: dict | None, island: str, outcome: str, reason: str, **extra) -> None:
+    """Log dodo reveal attempts with enough context for dashboard analytics/debugging."""
+    logger.info(
+        "dodo_reveal user_id=%s username=%s island=%s outcome=%s reason=%s extra=%s",
+        user.get("user_id") if user else None,
+        user.get("username") if user else None,
+        island,
+        outcome,
+        reason,
+        extra,
+    )
 
 
 # Initialize Flask app
@@ -387,6 +401,39 @@ def _role_payload(role_id: str, role_names: dict[str, str]) -> dict:
         "id": str(role_id),
         "name": role_names.get(str(role_id), str(role_id)),
     }
+
+
+# Keep legacy helper names stable while sharing the access engine with dashboard APIs.
+_is_mod = island_access.is_mod
+_has_island_access = island_access.has_island_access
+_configured_subscription_role_ids = island_access.configured_subscription_role_ids
+_discord_bot_auth_value = island_access.discord_bot_auth_value
+_discord_api_json = island_access.discord_api_json
+_discord_channel_overwrite_roles = island_access.discord_channel_overwrite_roles
+_discord_guild_channels = island_access.discord_guild_channels
+_find_discord_island_channel_id = island_access.find_discord_island_channel_id
+_is_member_island = island_access.is_member_island
+_effective_island_required_roles = island_access.effective_island_required_roles
+_excluded_profile_role_ids = island_access.excluded_profile_role_ids
+_get_guild_role_names = island_access.get_guild_role_names
+_role_payload = island_access.role_payload
+
+
+def _resolved_island_required_roles(
+    island_name: str | None,
+    cat: str | None,
+    required_roles: list[str] | None,
+    island_type: str | None = None,
+    channel_id: str | None = None,
+) -> tuple[list[str], str | None, str]:
+    info = island_access.resolved_island_required_roles(
+        island_name,
+        cat,
+        required_roles,
+        island_type,
+        channel_id,
+    )
+    return info.required_roles, info.channel_id, info.access_source
 
 
 def _iso_to_unix(value: str | None) -> int | None:
@@ -1142,6 +1189,7 @@ def reveal_dodo(name):
     """
     user = _current_auth_user()
     if not user:
+        _log_dodo_reveal_attempt(None, name.upper(), "denied", "not_logged_in")
         return jsonify({"error": "Authentication required"}), 401
 
     target = name.upper()
@@ -1188,16 +1236,39 @@ def reveal_dodo(name):
     is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
 
     if _is_member_island(island_cat, island_type) and not effective_required_roles and not is_viewer_mod:
+        _log_dodo_reveal_attempt(user, target, "denied", "no_member_roles_configured", channel_id=channel_id)
         return jsonify({"error": "Subscriber roles are not configured for this island"}), 403
 
     # Check for general island access role first
     island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
     if island_access_role and not is_viewer_admin:
         if island_access_role not in set(user.get("roles", [])):
-            return jsonify({"error": "You need island access role to reveal this dodo code"}), 403
+            _log_dodo_reveal_attempt(
+                user,
+                target,
+                "denied",
+                "missing_global_island_access_role",
+                required_role=island_access_role,
+                channel_id=channel_id,
+            )
+            return jsonify({
+                "error": "You need the Discord island access role to reveal this Dodo code.",
+                "code": "missing_global_island_access_role",
+            }), 403
 
     if not _has_island_access(user.get("roles", []), effective_required_roles, is_viewer_mod):
-        return jsonify({"error": "You don't have the required subscription for this island"}), 403
+        _log_dodo_reveal_attempt(
+            user,
+            target,
+            "denied",
+            "missing_island_channel_role",
+            required_roles=effective_required_roles,
+            channel_id=channel_id,
+        )
+        return jsonify({
+            "error": "You do not have the Discord role required for this island channel.",
+            "code": "missing_island_channel_role",
+        }), 403
 
     # Find the dodo code from the filesystem
     dodo_code = None
@@ -1215,6 +1286,7 @@ def reveal_dodo(name):
             break
 
     if not dodo_code:
+        _log_dodo_reveal_attempt(user, target, "failed", "dodo_unavailable", channel_id=channel_id)
         return jsonify({"error": "Dodo code not available right now"}), 404
 
     # Fire webhook in background thread so the response isn't delayed
@@ -1232,6 +1304,7 @@ def reveal_dodo(name):
         daemon=True,
     ).start()
 
+    _log_dodo_reveal_attempt(user, target, "allowed", "revealed", channel_id=channel_id)
     return jsonify({"island": target, "dodo_code": dodo_code})
 
 # ============================================================================
@@ -1586,6 +1659,64 @@ def get_islands():
             ),
         },
         "data": results,
+    })
+
+
+@app.route('/api/islands/access', methods=['GET'])
+def get_island_access():
+    """Return the current user's per-island access state without Dodo/status payloads."""
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    subscriptions = _load_profile_subscriptions(user)
+    accessible = subscriptions.get("accessible_member_islands", [])
+    accessible_ids = {str(item.get("id") or "").lower() for item in accessible}
+    accessible_names = {str(item.get("name") or "").upper() for item in accessible}
+    role_names = _get_guild_role_names()
+
+    rows = []
+    db = get_db()
+    try:
+        db_rows = db.execute(
+            "SELECT id, name, cat, type, required_roles, channel_id FROM islands ORDER BY name"
+        ).fetchall()
+        for row in db_rows:
+            island = row_to_island_dict(dict(row))
+            required_roles, resolved_channel_id, access_source = _resolved_island_required_roles(
+                island.get("name"),
+                island.get("cat"),
+                island.get("required_roles", []),
+                island.get("type"),
+                island.get("channel_id"),
+            )
+            user_roles = {str(role_id) for role_id in user.get("roles", [])}
+            matched = sorted(user_roles & set(required_roles))
+            accessible_flag = (
+                str(island.get("id") or "").lower() in accessible_ids
+                or str(island.get("name") or "").upper() in accessible_names
+                or _has_island_access(user.get("roles", []), required_roles, bool(user.get("is_mod") or user.get("is_admin")))
+            )
+            rows.append({
+                "id": island.get("id"),
+                "name": island.get("name"),
+                "cat": island.get("cat"),
+                "type": island.get("type"),
+                "channel_id": resolved_channel_id,
+                "access_source": access_source,
+                "accessible": accessible_flag,
+                "required_roles": [_role_payload(role_id, role_names) for role_id in required_roles],
+                "matched_roles": [_role_payload(role_id, role_names) for role_id in matched],
+            })
+    finally:
+        db.close()
+
+    return jsonify({
+        "user_id": user.get("user_id"),
+        "is_mod": bool(user.get("is_mod")),
+        "is_admin": bool(user.get("is_admin")),
+        "accessible_count": sum(1 for item in rows if item["accessible"]),
+        "items": rows,
     })
 
 

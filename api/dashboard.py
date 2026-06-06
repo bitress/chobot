@@ -33,6 +33,7 @@ from utils.config import Config
 from utils.auth_tokens import get_auth_user
 from utils.database import connect_db, get_backend, get_engine
 from utils.db_migration import migrate_sqlite_to_mariadb
+from utils import island_access
 
 logger = logging.getLogger("Dashboard")
 
@@ -557,13 +558,57 @@ _row_to_island_dict = row_to_island_dict
 _API_ISLAND_FIELDS = (
     "cat", "description", "discord_bot_online", "dodo_code", "id", "items",
     "map_url", "name", "required_roles", "seasonal", "status", "theme",
-    "type", "updated_at", "visitors",
+    "type", "updated_at", "visitors", "channel_id", "access_source",
 )
 
 
 def _island_api_dict(isl: dict) -> dict:
     """Return a clean API-facing dict containing only canonical island fields."""
     return {field: isl.get(field) for field in _API_ISLAND_FIELDS}
+
+
+def _island_access_status(isl: dict, *, force_refresh: bool = False) -> dict:
+    """Return dashboard-facing access status for one island."""
+    info = island_access.resolved_island_required_roles(
+        isl.get("name"),
+        isl.get("cat"),
+        isl.get("required_roles") or [],
+        isl.get("type"),
+        isl.get("channel_id"),
+        force_refresh=force_refresh,
+    )
+    role_names = island_access.get_guild_role_names()
+    is_member = island_access.is_member_island(isl.get("cat"), isl.get("type"))
+    warnings = []
+    if is_member and not info.channel_id:
+        warnings.append("missing_channel_id")
+    if is_member and info.role_count == 0:
+        warnings.append("no_view_roles")
+    if is_member and info.access_source != "discord_channel":
+        warnings.append("using_database_fallback")
+    return {
+        "id": isl.get("id"),
+        "name": isl.get("name"),
+        "cat": isl.get("cat"),
+        "type": isl.get("type"),
+        "is_member": is_member,
+        "channel_id": info.channel_id,
+        "access_source": info.access_source,
+        "required_roles": [island_access.role_payload(role_id, role_names) for role_id in info.required_roles],
+        "required_role_ids": info.required_roles,
+        "role_count": info.role_count,
+        "warnings": warnings,
+        "ok": not warnings,
+    }
+
+
+def _load_dashboard_islands() -> list[dict]:
+    db = get_db()
+    try:
+        rows = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        return [_row_to_island_dict(dict(r)) for r in rows]
+    finally:
+        db.close()
 
 
 def _find_island_filesystem_meta(island_id: str, display_name: str | None = None) -> dict:
@@ -1898,11 +1943,22 @@ def api_status_summary():
     refreshing_count = 0
     offline_count    = 0
     islands_out      = []
+    access_problem_count = 0
 
     for isl in db_islands:
         isl["discord_bot_online"] = bot_status.get(isl.get("id", ""))
         s = _effective_status(isl)
-        islands_out.append({"id": isl.get("id", ""), "name": isl.get("name", ""), "status": s})
+        access_status = _island_access_status(isl)
+        if access_status["warnings"]:
+            access_problem_count += 1
+        islands_out.append({
+            "id": isl.get("id", ""),
+            "name": isl.get("name", ""),
+            "status": s,
+            "access_source": access_status["access_source"],
+            "role_count": access_status["role_count"],
+            "access_warnings": access_status["warnings"],
+        })
         if s == STATUS_ONLINE:
             online_count += 1
         elif s == STATUS_REFRESHING:
@@ -1921,6 +1977,7 @@ def api_status_summary():
         "online_pct":       _pct(online_count),
         "refreshing_pct":   _pct(refreshing_count),
         "off_pct":          _pct(offline_count),
+        "access_problem_count": access_problem_count,
         "islands":          islands_out,
     })
 
@@ -1943,8 +2000,112 @@ def api_islands_list():
     result = []
     for isl in db_islands:
         isl["discord_bot_online"] = bot_status.get(isl.get("id", ""))
+        access_info = island_access.resolved_island_required_roles(
+            isl.get("name"),
+            isl.get("cat"),
+            isl.get("required_roles") or [],
+            isl.get("type"),
+            isl.get("channel_id"),
+        )
+        isl["required_roles"] = access_info.required_roles
+        isl["channel_id"] = access_info.channel_id
+        isl["access_source"] = access_info.access_source
         result.append(_island_api_dict(isl))
     return jsonify(result)
+
+
+@dashboard.route("/api/islands/role-status", methods=["GET"])
+@api_auth_required
+def api_island_role_status():
+    """Return Discord role-gating diagnostics for dashboard island rows."""
+    force_refresh = request.args.get("refresh") in {"1", "true", "yes"}
+    if force_refresh:
+        island_access.clear_access_caches()
+    islands = _load_dashboard_islands()
+    statuses = [_island_access_status(isl, force_refresh=force_refresh) for isl in islands]
+    problem_count = sum(1 for item in statuses if item["warnings"])
+    return jsonify({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "discord_configured": bool(Config.DISCORD_TOKEN and Config.GUILD_ID),
+        "category_id": str(Config.CATEGORY_ID or ""),
+        "total": len(statuses),
+        "member_islands": sum(1 for item in statuses if item["is_member"]),
+        "problem_count": problem_count,
+        "items": statuses,
+    })
+
+
+@dashboard.route("/api/islands/sync-roles", methods=["POST"])
+@api_auth_required
+def api_island_sync_roles():
+    """Refresh stored island required_roles/channel_id from Discord channel permissions."""
+    islands = _load_dashboard_islands()
+    db = get_db()
+    try:
+        summary = island_access.sync_island_role_cache(db, islands, force_refresh=True)
+        db.commit()
+    finally:
+        db.close()
+    summary.update({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "discord_configured": bool(Config.DISCORD_TOKEN and Config.GUILD_ID),
+    })
+    return jsonify(summary)
+
+
+@dashboard.route("/api/islands/test-access", methods=["POST"])
+@api_auth_required
+def api_island_test_access():
+    """Test island access for a set of Discord role IDs or a Discord user ID."""
+    data = request.get_json(silent=True) or {}
+    roles = [str(role) for role in data.get("roles", []) if str(role)]
+    user_id = str(data.get("user_id") or "").strip()
+    is_admin = bool(data.get("is_admin"))
+    is_mod_user = bool(data.get("is_mod"))
+
+    if user_id and not roles:
+        member = island_access.discord_api_json(f"/guilds/{Config.GUILD_ID}/members/{user_id}")
+        if isinstance(member, dict):
+            roles = [str(role) for role in member.get("roles", []) if str(role)]
+        else:
+            return jsonify({"error": "Discord member not found or unavailable"}), 404
+
+    if not roles and not is_admin and not is_mod_user:
+        return jsonify({"error": "Provide roles, user_id, is_mod, or is_admin"}), 400
+
+    is_mod_user = is_mod_user or is_admin or island_access.is_mod(roles)
+    role_names = island_access.get_guild_role_names()
+    islands = _load_dashboard_islands()
+    results = []
+    for isl in islands:
+        info = island_access.resolved_island_required_roles(
+            isl.get("name"),
+            isl.get("cat"),
+            isl.get("required_roles") or [],
+            isl.get("type"),
+            isl.get("channel_id"),
+        )
+        accessible = island_access.has_island_access(roles, info.required_roles, is_mod_user)
+        matched_role_ids = sorted(set(roles) & set(info.required_roles))
+        results.append({
+            "id": isl.get("id"),
+            "name": isl.get("name"),
+            "type": isl.get("type"),
+            "cat": isl.get("cat"),
+            "channel_id": info.channel_id,
+            "access_source": info.access_source,
+            "accessible": accessible,
+            "required_roles": [island_access.role_payload(role_id, role_names) for role_id in info.required_roles],
+            "matched_roles": [island_access.role_payload(role_id, role_names) for role_id in matched_role_ids],
+        })
+
+    return jsonify({
+        "user_id": user_id or None,
+        "roles": [island_access.role_payload(role_id, role_names) for role_id in roles],
+        "is_mod": is_mod_user,
+        "accessible_count": sum(1 for item in results if item["accessible"]),
+        "items": results,
+    })
 
 
 @dashboard.route("/api/islands", methods=["POST"])
@@ -2009,7 +2170,20 @@ def api_island_get(name):
         db.close()
     if not row:
         return jsonify({"error": f'Island "{name}" not found'}), 404
-    return jsonify(_island_detail_api_dict(_row_to_island_dict(dict(row))))
+    island = _row_to_island_dict(dict(row))
+    access_info = island_access.resolved_island_required_roles(
+        island.get("name"),
+        island.get("cat"),
+        island.get("required_roles") or [],
+        island.get("type"),
+        island.get("channel_id"),
+    )
+    island["required_roles"] = access_info.required_roles
+    island["channel_id"] = access_info.channel_id
+    island["access_source"] = access_info.access_source
+    payload = _island_detail_api_dict(island)
+    payload["access_status"] = _island_access_status(island)
+    return jsonify(payload)
 
 
 @dashboard.route("/api/islands/<name>", methods=["PUT"])
