@@ -234,6 +234,29 @@ def init_dashboard_db():
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS website_login_events (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id           TEXT NOT NULL,
+                username          TEXT,
+                discord_name      TEXT,
+                global_name       TEXT,
+                account_name      TEXT,
+                nickname          TEXT,
+                avatar            TEXT,
+                roles             TEXT NOT NULL DEFAULT '[]',
+                role_count        INTEGER NOT NULL DEFAULT 0,
+                is_admin          INTEGER NOT NULL DEFAULT 0,
+                is_mod            INTEGER NOT NULL DEFAULT 0,
+                ip_address        TEXT,
+                user_agent        TEXT,
+                return_to         TEXT,
+                discord_message_id TEXT,
+                discord_channel_id TEXT,
+                created_at        TEXT NOT NULL
+            )
+        """)
+
         # Legacy table kept for backward compatibility
         conn.execute("""
             CREATE TABLE IF NOT EXISTS island_metadata (

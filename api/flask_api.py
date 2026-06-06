@@ -40,6 +40,117 @@ logger = logging.getLogger("FlaskAPI")
 CHOBOT_SQLITE_DB = "chobot.db"
 
 
+def _client_ip() -> str:
+    """Return the most useful client IP for audit logging."""
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+    return forwarded or request.headers.get("X-Real-IP", "").strip() or request.remote_addr or ""
+
+
+def _post_website_login_log_message(event_id: int, event: dict) -> None:
+    """Send a website-login audit message to the configured Discord channel."""
+    channel_id = getattr(Config, "WEBSITE_LOGIN_LOG_CHANNEL_ID", None)
+    token = str(Config.DISCORD_TOKEN or "").strip()
+    if not channel_id or not token:
+        return
+
+    auth_value = token if token.lower().startswith("bot ") else f"Bot {token}"
+    role_count = int(event.get("role_count") or 0)
+    username = event.get("username") or event.get("discord_name") or "Unknown user"
+    user_id = event.get("user_id") or ""
+    payload = {
+        "allowed_mentions": {"parse": []},
+        "embeds": [{
+            "title": "Website Discord Login",
+            "color": 0x28A745 if event.get("is_mod") else 0x5BC0DE,
+            "timestamp": event.get("created_at"),
+            "thumbnail": {"url": event.get("avatar")} if event.get("avatar") else None,
+            "fields": [
+                {"name": "User", "value": f"{username}\n`{user_id}`", "inline": True},
+                {"name": "Access", "value": f"Mod: `{bool(event.get('is_mod'))}`\nAdmin: `{bool(event.get('is_admin'))}`", "inline": True},
+                {"name": "Roles", "value": f"`{role_count}` role(s)", "inline": True},
+                {"name": "IP", "value": f"`{event.get('ip_address') or 'unknown'}`", "inline": True},
+                {"name": "Return To", "value": event.get("return_to") or "unknown", "inline": False},
+                {"name": "Event ID", "value": f"`{event_id}`", "inline": True},
+            ],
+            "footer": {"text": "Chopaeng website auth"},
+        }],
+    }
+    payload["embeds"][0]["fields"] = [
+        field for field in payload["embeds"][0]["fields"]
+        if field.get("value") is not None
+    ]
+    if payload["embeds"][0]["thumbnail"] is None:
+        payload["embeds"][0].pop("thumbnail", None)
+
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+    try:
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={"Authorization": auth_value, "User-Agent": _DISCORD_UA},
+            timeout=10,
+        )
+        if resp.status_code >= 300:
+            logger.warning("Website login Discord log failed HTTP %s: %s", resp.status_code, resp.text[:300])
+            return
+        message_id = str((resp.json() or {}).get("id") or "")
+        if message_id:
+            db = get_db()
+            try:
+                db.execute(
+                    "UPDATE website_login_events SET discord_message_id = ?, discord_channel_id = ? WHERE id = ?",
+                    (message_id, str(channel_id), event_id),
+                )
+                db.commit()
+            finally:
+                db.close()
+    except Exception as exc:
+        logger.warning("Website login Discord log failed: %s", exc)
+
+
+def _record_website_login(event: dict) -> None:
+    """Persist and asynchronously announce a successful website Discord OAuth login."""
+    db = get_db()
+    try:
+        cur = db.execute(
+            """INSERT INTO website_login_events
+                   (user_id, username, discord_name, global_name, account_name, nickname,
+                    avatar, roles, role_count, is_admin, is_mod, ip_address, user_agent,
+                    return_to, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                event.get("user_id") or "",
+                event.get("username") or "",
+                event.get("discord_name") or "",
+                event.get("global_name") or "",
+                event.get("account_name") or "",
+                event.get("nickname") or "",
+                event.get("avatar") or "",
+                json.dumps(event.get("roles") or []),
+                int(event.get("role_count") or 0),
+                int(bool(event.get("is_admin"))),
+                int(bool(event.get("is_mod"))),
+                event.get("ip_address") or "",
+                event.get("user_agent") or "",
+                event.get("return_to") or "",
+                event.get("created_at") or datetime.utcnow().isoformat(),
+            ),
+        )
+        db.commit()
+        event_id = int(cur.lastrowid or 0)
+    except Exception as exc:
+        logger.warning("Website login DB log failed: %s", exc)
+        return
+    finally:
+        db.close()
+
+    threading.Thread(
+        target=_post_website_login_log_message,
+        args=(event_id, dict(event)),
+        daemon=True,
+    ).start()
+
+
 def _persist_dodo_reveal_message(
     user_id: str,
     island_name: str,
@@ -1119,7 +1230,27 @@ def auth_callback():
         "is_mod":    _is_mod(member_roles) or is_admin,
     })
 
-    logger.info("Website OAuth login: user=%s is_mod=%s", discord_username, _is_mod(member_roles) or is_admin)
+    is_mod_user = _is_mod(member_roles) or is_admin
+    login_event = {
+        "user_id": discord_user_id,
+        "username": discord_username,
+        "discord_name": discord_global_name or discord_account_name,
+        "global_name": discord_global_name,
+        "account_name": discord_account_name,
+        "nickname": member_nickname,
+        "avatar": discord_avatar_url,
+        "roles": member_roles,
+        "role_count": len(member_roles),
+        "is_admin": is_admin,
+        "is_mod": is_mod_user,
+        "ip_address": _client_ip(),
+        "user_agent": request.headers.get("User-Agent", ""),
+        "return_to": return_to,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    _record_website_login(login_event)
+
+    logger.info("Website OAuth login: user=%s is_mod=%s", discord_username, is_mod_user)
     return redirect(f"{return_to}?token={urllib.parse.quote(token)}")
 
 
