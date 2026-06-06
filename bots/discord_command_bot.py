@@ -2605,6 +2605,19 @@ class DiscordCommandCog(commands.Cog):
         if not channel:
             return False
 
+        if (
+            Config.ORDER_BOT_DISCORD_ID
+            and clean_text(island) in {clean_text(name) for name in getattr(Config, "ORDER_BOT_ISLANDS", [])}
+        ):
+            order_bot = guild.get_member(Config.ORDER_BOT_DISCORD_ID)
+            if order_bot is None:
+                try:
+                    order_bot = await guild.fetch_member(Config.ORDER_BOT_DISCORD_ID)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    order_bot = None
+            if order_bot:
+                return order_bot.status in (discord.Status.online, discord.Status.idle)
+
         # Check island bot presence first (fast, no API call)
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
         island_bot = None
