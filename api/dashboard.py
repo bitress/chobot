@@ -192,7 +192,9 @@ def init_dashboard_db():
                 map_url        TEXT,
                 updated_at     TEXT,
                 required_roles TEXT NOT NULL DEFAULT '[]',
-                channel_id     TEXT
+                channel_id     TEXT,
+                display_name   TEXT,
+                is_visible     INTEGER NOT NULL DEFAULT 1
             )
         """)
 
@@ -205,6 +207,18 @@ def init_dashboard_db():
 
         try:
             conn.execute("ALTER TABLE islands ADD COLUMN channel_id TEXT")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+        try:
+            conn.execute("ALTER TABLE islands ADD COLUMN display_name TEXT")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+        try:
+            conn.execute("ALTER TABLE islands ADD COLUMN is_visible INTEGER NOT NULL DEFAULT 1")
             conn.commit()
         except Exception:
             pass  # Column already exists
@@ -525,6 +539,7 @@ def row_to_island_dict(row: dict) -> dict:
         row["required_roles"] = json.loads(row.get("required_roles") or "[]")
     except (ValueError, TypeError):
         row["required_roles"] = []
+    row["is_visible"] = bool(row.get("is_visible", 1))
     return row
 
 
@@ -558,7 +573,7 @@ _row_to_island_dict = row_to_island_dict
 # Canonical fields exposed by the public API (in consistent order)
 _API_ISLAND_FIELDS = (
     "cat", "description", "discord_bot_online", "dodo_code", "id", "items",
-    "map_url", "name", "required_roles", "seasonal", "status", "theme",
+    "map_url", "name", "display_name", "is_visible", "required_roles", "seasonal", "status", "theme",
     "type", "updated_at", "visitors", "channel_id", "access_source",
 )
 
@@ -566,6 +581,16 @@ _API_ISLAND_FIELDS = (
 def _island_api_dict(isl: dict) -> dict:
     """Return a clean API-facing dict containing only canonical island fields."""
     return {field: isl.get(field) for field in _API_ISLAND_FIELDS}
+
+
+def _json_bool(data: dict, key: str, fallback: bool = True) -> bool:
+    """Read a JSON boolean-ish value without treating omitted fields as false."""
+    if key not in data:
+        return fallback
+    value = data.get(key)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", ""}
+    return bool(value)
 
 
 def _island_access_status(isl: dict, *, force_refresh: bool = False) -> dict:
@@ -1138,9 +1163,9 @@ def island_detail(name):
                 # It is included in INSERT so that new records get the default '[]'.
                 db2.execute(
                     """INSERT INTO islands
-                           (id, name, type, items, theme, cat, description, seasonal,
+                           (id, name, display_name, is_visible, type, items, theme, cat, description, seasonal,
                             status, visitors, dodo_code, map_url, updated_at, required_roles)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(id) DO UPDATE SET
                            name=excluded.name, type=excluded.type, items=excluded.items,
                            theme=excluded.theme, cat=excluded.cat,
@@ -1148,7 +1173,9 @@ def island_detail(name):
                            status=excluded.status, visitors=excluded.visitors,
                            dodo_code=excluded.dodo_code, updated_at=excluded.updated_at""",
                     (
-                        island_id, upper, isl_type, json.dumps(items_list),
+                        island_id, upper, meta.get("display_name") if meta else None,
+                        int(bool(meta.get("is_visible", True) if meta else True)),
+                        isl_type, json.dumps(items_list),
                         isl_theme, isl_cat, isl_desc, isl_seasonal,
                         isl_status, isl_visitors, isl_dodo,
                         meta["map_url"] if meta else None,
@@ -2116,6 +2143,8 @@ def api_island_create():
     data      = request.get_json(silent=True) or {}
     island_id = (data.get("id") or data.get("name", "")).strip().lower()
     name      = (data.get("name") or island_id).strip().upper()
+    display_name = (data.get("display_name") or data.get("displayName") or "").strip() or None
+    is_visible = _json_bool(data, "is_visible", _json_bool(data, "isVisible", True))
     isl_type  = data.get("type", "")
     items     = data.get("items", [])
     theme     = data.get("theme", "teal")
@@ -2140,16 +2169,17 @@ def api_island_create():
     try:
         db.execute(
             """INSERT INTO islands
-                   (id, name, type, items, theme, cat, description, seasonal,
+                   (id, name, display_name, is_visible, type, items, theme, cat, description, seasonal,
                     status, visitors, dodo_code, map_url, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
-                   name=excluded.name, type=excluded.type, items=excluded.items,
+                   name=excluded.name, display_name=excluded.display_name,
+                   is_visible=excluded.is_visible, type=excluded.type, items=excluded.items,
                    theme=excluded.theme, cat=excluded.cat, description=excluded.description,
                    seasonal=excluded.seasonal, status=excluded.status,
                    visitors=excluded.visitors, dodo_code=excluded.dodo_code,
                    updated_at=excluded.updated_at""",
-            (island_id, name, isl_type, json.dumps(items),
+            (island_id, name, display_name, int(is_visible), isl_type, json.dumps(items),
              theme, cat, desc, seasonal, status, visitors, dodo_code, map_url,
              datetime.now(timezone.utc).isoformat()),
         )
@@ -2216,6 +2246,14 @@ def api_island_update(name):
         except ValueError:
             items_in = [i.strip() for i in items_in.split(",") if i.strip()]
 
+    display_name = (
+        data.get("display_name")
+        if "display_name" in data
+        else data.get("displayName", existing.get("display_name"))
+    )
+    display_name = (display_name or "").strip() or None
+    is_visible = _json_bool(data, "is_visible", _json_bool(data, "isVisible", existing.get("is_visible", True)))
+
     dodo_code = data.get("dodoCode") or data.get("dodo_code") or existing.get("dodo_code")
     if (dodo_code or "").strip().upper() == REFRESHING_DODO_CODE:
         status = STATUS_REFRESHING
@@ -2224,11 +2262,12 @@ def api_island_update(name):
     try:
         db2.execute(
             """INSERT INTO islands
-                   (id, name, type, items, theme, cat, description, seasonal,
+                   (id, name, display_name, is_visible, type, items, theme, cat, description, seasonal,
                     status, visitors, dodo_code, map_url, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
-                   name=excluded.name, type=excluded.type, items=excluded.items,
+                   name=excluded.name, display_name=excluded.display_name,
+                   is_visible=excluded.is_visible, type=excluded.type, items=excluded.items,
                    theme=excluded.theme, cat=excluded.cat, description=excluded.description,
                    seasonal=excluded.seasonal, status=excluded.status,
                    visitors=excluded.visitors, dodo_code=excluded.dodo_code,
@@ -2236,6 +2275,8 @@ def api_island_update(name):
             (
                 island_id,
                 data.get("name", existing.get("name", island_id.upper())).upper(),
+                display_name,
+                int(is_visible),
                 data.get("type",        existing.get("type",        "")),
                 json.dumps(items_in),
                 theme, cat,

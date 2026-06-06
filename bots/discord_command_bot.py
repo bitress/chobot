@@ -33,6 +33,7 @@ MENTION_PATTERN = re.compile(r'<@!?\d+>')
 ISLAND_HOST_NAME = "chopaeng"
 MESSAGE_HISTORY_LIMIT = 30
 ISLAND_DOWN_IMAGE_URL = "https://cdn.chopaeng.com/misc/Bot-is-Down.jpg"
+ONLINE_DISCORD_STATUSES = {discord.Status.online, discord.Status.idle, discord.Status.dnd}
 
 # Patterns for intercepting island bot responses
 ISLAND_VISITORS_PATTERN = re.compile(r"The following visitors are on (.+?):", re.IGNORECASE)
@@ -1854,7 +1855,7 @@ class DiscordCommandCog(commands.Cog):
                             island_bot = member
                             break
 
-                if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
                     sub_results.append((island, "✅", "Bot online", channel_id))
                     sub_online += 1
                     continue
@@ -1905,7 +1906,7 @@ class DiscordCommandCog(commands.Cog):
                             island_bot = member
                             break
 
-                if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
                     free_results.append((island, "✅", "Bot online", channel_id))
                     free_online += 1
                 elif island_bot:
@@ -2021,7 +2022,7 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        if island_bot and island_bot.status in (discord.Status.online, discord.Status.idle):
+        if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
             logger.info(f"[DISCORD] Island bot online for {ctx.channel.name}, doing nothing")
             return True
 
@@ -2049,7 +2050,7 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
 
@@ -2083,7 +2084,7 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
 
@@ -2126,7 +2127,7 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
 
@@ -2178,7 +2179,7 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
 
@@ -2211,7 +2212,7 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
 
@@ -2270,7 +2271,7 @@ class DiscordCommandCog(commands.Cog):
         guild = self.bot.get_guild(Config.GUILD_ID)
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        if not island_bot or island_bot.status not in (discord.Status.online, discord.Status.idle):
+        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
 
@@ -2596,6 +2597,8 @@ class DiscordCommandCog(commands.Cog):
         built.  Defaults to ``self.sub_island_lookup``.
         """
         island_clean = clean_text(island)
+        order_island_keys = {clean_text(name) for name in getattr(Config, "ORDER_BOT_ISLANDS", [])}
+        is_order_island = island_clean in order_island_keys
         effective_lookup = lookup if lookup is not None else self.sub_island_lookup
         channel_id = effective_lookup.get(island_clean)
         if not channel_id:
@@ -2607,7 +2610,7 @@ class DiscordCommandCog(commands.Cog):
 
         if (
             Config.ORDER_BOT_DISCORD_ID
-            and clean_text(island) in {clean_text(name) for name in getattr(Config, "ORDER_BOT_ISLANDS", [])}
+            and is_order_island
         ):
             order_bot = guild.get_member(Config.ORDER_BOT_DISCORD_ID)
             if order_bot is None:
@@ -2616,7 +2619,11 @@ class DiscordCommandCog(commands.Cog):
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     order_bot = None
             if order_bot:
-                return order_bot.status in (discord.Status.online, discord.Status.idle)
+                if order_bot.status in ONLINE_DISCORD_STATUSES:
+                    return True
+                logger.info(
+                    f"[DISCORD] Order bot {Config.ORDER_BOT_DISCORD_ID} status for {island}: {order_bot.status}"
+                )
 
         # Check island bot presence first (fast, no API call)
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
@@ -2629,7 +2636,7 @@ class DiscordCommandCog(commands.Cog):
                     break
 
         if island_bot:
-            return island_bot.status in (discord.Status.online, discord.Status.idle)
+            return island_bot.status in ONLINE_DISCORD_STATUSES
 
         # Fallback: scan recent channel messages for dodo code / host presence
         try:
@@ -2639,6 +2646,8 @@ class DiscordCommandCog(commands.Cog):
 
         for msg in messages:
             if not msg.author.bot:
+                continue
+            if is_order_island and Config.ORDER_BOT_DISCORD_ID and msg.author.id != Config.ORDER_BOT_DISCORD_ID:
                 continue
             if DODO_CODE_PATTERN.search(msg.content) or ISLAND_HOST_NAME in msg.content.lower():
                 return True

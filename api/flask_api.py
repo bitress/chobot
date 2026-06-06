@@ -466,10 +466,12 @@ def _load_profile_subscriptions(user: dict) -> dict:
     try:
         all_required_role_ids: set[str] = set()
         rows = db.execute(
-            "SELECT id, name, cat, type, required_roles, channel_id FROM islands ORDER BY name"
+            "SELECT id, name, display_name, is_visible, cat, type, required_roles, channel_id FROM islands ORDER BY name"
         ).fetchall()
         for row in rows:
             island = row_to_island_dict(dict(row))
+            if island.get("is_visible") is False:
+                continue
             raw_required_roles, resolved_channel_id, access_source = _resolved_island_required_roles(
                 island.get("name"),
                 island.get("cat"),
@@ -496,7 +498,8 @@ def _load_profile_subscriptions(user: dict) -> dict:
                 matched_role_ids.update(display_matching_roles)
                 accessible_islands.append({
                     "id": island.get("id"),
-                    "name": island.get("name"),
+                    "name": island.get("display_name") or island.get("name"),
+                    "canonical_name": island.get("name"),
                     "type": island.get("type"),
                     "channel_id": resolved_channel_id,
                     "access_source": access_source,
@@ -941,7 +944,8 @@ def _build_island_response(
 
     return {
         "id":                db_island.get("id", name.lower()),
-        "name":              name,
+        "name":              (db_island.get("display_name") or name),
+        "canonical_name":    name,
         "cat":               island_cat,
         "description":       db_island.get("description", ""),
         "dodo_code":         dodo_code,
@@ -1199,7 +1203,7 @@ def reveal_dodo(name):
     db = get_db()
     try:
         row = db.execute(
-            "SELECT cat, type, required_roles, channel_id FROM islands WHERE UPPER(name) = ?", (target,)
+            "SELECT cat, type, required_roles, channel_id, is_visible FROM islands WHERE UPPER(name) = ?", (target,)
         ).fetchone()
     finally:
         db.close()
@@ -1209,6 +1213,9 @@ def reveal_dodo(name):
     required_roles: list[str] = []
     channel_id = None
     if row:
+        if row["is_visible"] is not None and not bool(row["is_visible"]):
+            _log_dodo_reveal_attempt(user, target, "denied", "island_hidden")
+            return jsonify({"error": "Island is not available"}), 404
         island_cat = (row["cat"] or "").strip().lower()
         island_type = row["type"] or ""
         channel_id = row["channel_id"]
@@ -1596,7 +1603,7 @@ def get_islands():
     db = get_db()
     try:
         rows = db.execute(
-            "SELECT id, name, cat, description, items, map_url, seasonal, theme, type, updated_at, required_roles, channel_id "
+            "SELECT id, name, display_name, is_visible, cat, description, items, map_url, seasonal, theme, type, updated_at, required_roles, channel_id "
             "FROM islands ORDER BY name"
         ).fetchall()
         for row in rows:
@@ -1629,6 +1636,8 @@ def get_islands():
             for entry in entries:
                 if entry.is_dir():
                     name = entry.name.upper()
+                    if db_map.get(name, {}).get("is_visible") is False:
+                        continue
                     results.append(_build_island_response(
                         entry, "Free", db_map.get(name, {}),
                         discord_status.get(name.lower()),
@@ -1641,6 +1650,8 @@ def get_islands():
             for entry in entries:
                 if entry.is_dir():
                     name = entry.name.upper()
+                    if db_map.get(name, {}).get("is_visible") is False:
+                        continue
                     results.append(_build_island_response(
                         entry, "VIP", db_map.get(name, {}),
                         discord_status.get(name.lower()),
@@ -1662,8 +1673,11 @@ def get_islands():
                         "theme": "teal",
                         "seasonal": "Year-Round",
                         "channel_id": str(Config.ORDER_BOT_CHANNEL_ID or ""),
+                        "is_visible": True,
                     }
                     db_meta = {**default_order_meta, **db_map.get(name, {})}
+                    if db_meta.get("is_visible") is False:
+                        continue
                     results.append(_build_island_response(
                         entry, "Order", db_meta,
                         discord_status.get(name.lower()),
@@ -1703,10 +1717,12 @@ def get_island_access():
     db = get_db()
     try:
         db_rows = db.execute(
-            "SELECT id, name, cat, type, required_roles, channel_id FROM islands ORDER BY name"
+            "SELECT id, name, display_name, is_visible, cat, type, required_roles, channel_id FROM islands ORDER BY name"
         ).fetchall()
         for row in db_rows:
             island = row_to_island_dict(dict(row))
+            if island.get("is_visible") is False:
+                continue
             required_roles, resolved_channel_id, access_source = _resolved_island_required_roles(
                 island.get("name"),
                 island.get("cat"),
@@ -1723,7 +1739,8 @@ def get_island_access():
             )
             rows.append({
                 "id": island.get("id"),
-                "name": island.get("name"),
+                "name": island.get("display_name") or island.get("name"),
+                "canonical_name": island.get("name"),
                 "cat": island.get("cat"),
                 "type": island.get("type"),
                 "channel_id": resolved_channel_id,
