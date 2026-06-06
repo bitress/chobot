@@ -578,6 +578,7 @@ class DiscordCommandCog(commands.Cog):
         self.cooldowns = {}
         self.sub_island_lookup = {}
         self.free_island_lookup = {}
+        self.order_island_lookup = {}
         self.free_dodo_board_messages: list[discord.Message] = []
         self.free_dodo_board_startup_cleanup_done = False
 
@@ -587,6 +588,12 @@ class DiscordCommandCog(commands.Cog):
         self.island_down_messages: dict[str, discord.Message] = {}
         self.island_monitor_loop.start()
         self.free_dodo_board_loop.start()
+
+    def _refresh_order_island_lookup(self) -> None:
+        """Refresh the fixed order-bot island lookup."""
+        self.order_island_lookup = {}
+        if Config.ORDER_BOT_CHANNEL_ID and Config.ORDER_BOT_ISLAND:
+            self.order_island_lookup[clean_text(Config.ORDER_BOT_ISLAND)] = Config.ORDER_BOT_CHANNEL_ID
 
     @app_commands.command(name="nick", description="Set your ACNH nickname and island name")
     @app_commands.describe(nickname="Format: Character Name | Island Name (e.g. ChoPaeng | ChoPaeng Camp)")
@@ -2025,6 +2032,13 @@ class DiscordCommandCog(commands.Cog):
     @commands.hybrid_command(name="senddodo", aliases=["sd"])
     async def send_dodo(self, ctx):
         """Send the dodo code to a user via DM"""
+        if self._is_order_island_channel(ctx.channel):
+            island_name = Config.ORDER_BOT_ISLAND or "This island"
+            await ctx.reply(
+                f"{island_name} is an order-bot island. Dodo access is handled by the order bot in this channel, so `!senddodo` / `!sd` is not available here.",
+                ephemeral=True,
+            )
+            return
         if not self._is_sub_island_channel(ctx.channel):
             await ctx.reply("This command can only be used in a sub island channel. Please read the sticky post below carefully and make sure you understand and follow all the <#783677194576330792> before agreeing to them.", ephemeral=True)
             return
@@ -2147,6 +2161,13 @@ class DiscordCommandCog(commands.Cog):
     @commands.hybrid_command(name="drop")
     async def drop(self, ctx):
         """Request item drop on the sub island"""
+        if self._is_order_island_channel(ctx.channel):
+            island_name = Config.ORDER_BOT_ISLAND or "This island"
+            await ctx.reply(
+                f"{island_name} is an order-bot island. Use the order bot flow for this channel; `!drop` is only available on sub islands.",
+                ephemeral=True,
+            )
+            return
         if not self._is_sub_island_channel(ctx.channel):
             await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
             return
@@ -2319,7 +2340,7 @@ class DiscordCommandCog(commands.Cog):
             return None
 
         chan_clean = clean_text(channel.name)
-        for island in Config.SUB_ISLANDS:
+        for island in list(Config.SUB_ISLANDS) + list(getattr(Config, "ORDER_BOT_ISLANDS", [])):
             if clean_text(island) in chan_clean:
                 target = clean_text(f"chobot {island}")
                 for member in island_bot_role.members:
@@ -2333,6 +2354,10 @@ class DiscordCommandCog(commands.Cog):
         if not Config.CATEGORY_ID:
             return False
         return getattr(channel, "category_id", None) == Config.CATEGORY_ID
+
+    def _is_order_island_channel(self, channel) -> bool:
+        """Return True for the fixed order-bot island channel."""
+        return bool(Config.ORDER_BOT_CHANNEL_ID and getattr(channel, "id", None) == Config.ORDER_BOT_CHANNEL_ID)
 
 
     def _build_status_embed(self, ctx, title: str, description: str, color: discord.Color) -> discord.Embed:
@@ -2654,6 +2679,33 @@ class DiscordCommandCog(commands.Cog):
         if sent:
             logger.info(f"[DISCORD] Notified {sent} subscriber(s) that {island_display} is {'back ONLINE' if online else 'OFFLINE'}")
 
+    async def _send_order_island_status_alert(self, channel: discord.TextChannel, island_display: str, online: bool) -> None:
+        """Send Sinta/order-bot island status transitions into the configured order channel."""
+        if online:
+            embed = discord.Embed(
+                title="Order Island is Back Online",
+                description=(
+                    f"**{island_display}** is back online for order-bot visits.\n"
+                    "Use the order bot flow in this channel. `!senddodo`, `!sd`, and `!drop` are not used here."
+                ),
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_image(url=Config.FOOTER_LINE)
+        else:
+            embed = discord.Embed(
+                title="Order Island is Offline",
+                description=f"**{island_display}** is currently offline. Please wait for it to come back up before using the order bot.",
+                color=discord.Color.red(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_image(url=ISLAND_DOWN_IMAGE_URL)
+        try:
+            await channel.send(embed=embed)
+            logger.info(f"[DISCORD] Order island monitor: {island_display} is {'ONLINE' if online else 'OFFLINE'}")
+        except Exception as exc:
+            logger.error(f"[DISCORD] Failed to send order island status alert for {island_display}: {exc}")
+
     @tasks.loop(seconds=300)
     async def island_monitor_loop(self):
         """Background task: detect island down/up transitions and notify in channel."""
@@ -2667,6 +2719,7 @@ class DiscordCommandCog(commands.Cog):
             except Exception as e:
                 logger.error(f"[DISCORD] island_monitor_loop failed to fetch islands: {e}")
                 return
+        self._refresh_order_island_lookup()
 
         for island in Config.SUB_ISLANDS:
             island_clean = clean_text(island)
@@ -2770,12 +2823,40 @@ class DiscordCommandCog(commands.Cog):
                     self.island_down_states[f"free:{free_island_clean}"] = False
                     await self._notify_island_subscribers(free_island_clean, island, online=True)
 
+        # --- Order-bot island status ---
+        if self.order_island_lookup:
+            for island in Config.ORDER_BOT_ISLANDS:
+                order_island_clean = clean_text(island)
+                channel_id = self.order_island_lookup.get(order_island_clean)
+                channel = guild.get_channel(channel_id) if channel_id else None
+                if not isinstance(channel, discord.TextChannel):
+                    continue
+                try:
+                    is_online = await self._check_island_online(guild, island, lookup=self.order_island_lookup)
+                except Exception as e:
+                    logger.error(f"[DISCORD] island_monitor_loop error checking order island {island}: {e}")
+                    continue
+                _upsert_bot_status(island.lower(), island, is_online)
+
+                state_key = f"order:{order_island_clean}"
+                order_was_down = self.island_down_states.get(state_key)
+                if order_was_down is None:
+                    self.island_down_states[state_key] = False
+                    continue
+                if not is_online and not order_was_down:
+                    self.island_down_states[state_key] = True
+                    await self._send_order_island_status_alert(channel, island, online=False)
+                elif is_online and order_was_down:
+                    self.island_down_states[state_key] = False
+                    await self._send_order_island_status_alert(channel, island, online=True)
+
     @island_monitor_loop.before_loop
     async def before_island_monitor_loop(self):
         """Wait until bot is ready before starting the island monitor."""
         await self.bot.wait_until_ready()
         await self.fetch_islands()
         await self.fetch_free_islands()
+        self._refresh_order_island_lookup()
 
     # ── Period choices shared by both leaderboard commands ──────────────────
     _PERIOD_LABELS = {
@@ -3428,7 +3509,7 @@ class DiscordCommandBot(commands.Bot):
                         # Auto-delete dodo code update announcements in sub-island channels
                 if (
                     message.author.bot
-                    and self._is_sub_island_channel(message.channel)
+                    and (self._is_sub_island_channel(message.channel) or self._is_order_island_channel(message.channel))
                     and DODO_UPDATE_PATTERN.search(message.content)
                 ):
                     try:

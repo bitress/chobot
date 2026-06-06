@@ -89,12 +89,18 @@ def smart_threshold(query: str) -> int:
 
 def format_locations_text(locations_str: str):
     """Format locations for text output (Twitch)"""
-    locs_list = list(set(locations_str.split(", ")))
+    locs_list = list(dict.fromkeys(locations_str.split(", ")))
+    sub_lookup = {clean_text(island) for island in Config.SUB_ISLANDS}
+    order_lookup = {clean_text(island) for island in getattr(Config, "ORDER_BOT_ISLANDS", [])}
     free_islands = []
     sub_islands = []
+    order_islands = []
 
     for loc in locs_list:
-        if loc in Config.SUB_ISLANDS:
+        loc_key = clean_text(loc)
+        if loc_key in order_lookup:
+            order_islands.append(loc)
+        elif loc_key in sub_lookup:
             sub_islands.append(loc)
         else:
             free_islands.append(loc)
@@ -110,15 +116,34 @@ def format_locations_text(locations_str: str):
         label = "this Sub Island" if len(sub_islands) == 1 else "these Sub Islands"
         parts.append(f"on {label}: {formatted_sub}")
 
+    if order_islands:
+        formatted_order = " | ".join(order_islands).upper()
+        label = "this Order Bot Island" if len(order_islands) == 1 else "these Order Bot Islands"
+        parts.append(f"on {label}: {formatted_order}")
+
     return " and ".join(parts)
 
 
 def parse_locations_json(locations_str: str):
     """Parse locations for JSON API response"""
-    locs_list = list(set(locations_str.split(", ")))
-    free_islands = [loc for loc in locs_list if loc in Config.FREE_ISLANDS]
-    sub_islands = [loc for loc in locs_list if loc in Config.SUB_ISLANDS]
-    return free_islands, sub_islands
+    locs_list = list(dict.fromkeys(locations_str.split(", ")))
+    free_lookup = {clean_text(island) for island in Config.FREE_ISLANDS}
+    sub_lookup = {clean_text(island) for island in Config.SUB_ISLANDS}
+    order_lookup = {clean_text(island) for island in getattr(Config, "ORDER_BOT_ISLANDS", [])}
+    free_islands = []
+    sub_islands = []
+    order_islands = []
+
+    for loc in locs_list:
+        loc_key = clean_text(loc)
+        if loc_key in order_lookup:
+            order_islands.append(loc)
+        elif loc_key in sub_lookup:
+            sub_islands.append(loc)
+        elif loc_key in free_lookup:
+            free_islands.append(loc)
+
+    return free_islands, sub_islands, order_islands
 
 
 def get_best_suggestions(query: str, keys: list, limit: int = 8) -> list:

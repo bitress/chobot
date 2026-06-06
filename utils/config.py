@@ -122,9 +122,14 @@ class Config:
 
     VILLAGERS_DIR = os.getenv('VILLAGERS_DIR')
     TWITCH_VILLAGERS_DIR = os.getenv('TWITCH_VILLAGERS_DIR')
+    ORDER_BOT_DIR = os.getenv('ORDER_BOT_DIR') or os.getenv('ORDER_BOR_DIR')
+    ORDER_BOT_ISLAND = os.getenv('ORDER_BOT_ISLAND', 'Sinta')
+    ORDER_BOT_CHANNEL_ID = _get_int('ORDER_BOT_CHANNEL_ID', 1175672083183829075)
+    ORDER_BOT_TWITCH_CHANNEL = os.getenv('ORDER_BOT_TWITCH_CHANNEL') or TWITCH_CHANNEL
 
     DIR_FREE = TWITCH_VILLAGERS_DIR
     DIR_VIP = VILLAGERS_DIR
+    DIR_ORDER = ORDER_BOT_DIR
 
     # Island Lists (fallback defaults; dynamically updated at runtime from Discord sub-category)
     SUB_ISLANDS = [
@@ -142,6 +147,8 @@ class Config:
         "Amihan", "Silakbo", "Dangal", "Kariktan", "Tinig", "Banaag",
         "Sinag", "Giting", "Marilag"
     ]
+
+    ORDER_BOT_ISLANDS = [ORDER_BOT_ISLAND] if ORDER_BOT_ISLAND else []
 
     ISLAND_BOT_ROLE_ID = _get_int('ISLAND_BOT_ROLE_ID')
 

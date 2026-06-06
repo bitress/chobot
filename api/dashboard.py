@@ -63,7 +63,7 @@ _DB_PATH = os.path.join(
     "chobot.db",
 )
 
-ALLOWED_CATEGORIES = ("public", "member")
+ALLOWED_CATEGORIES = ("public", "member", "order")
 ALLOWED_THEMES     = ("pink", "teal", "purple", "gold")
 ALLOWED_STATUSES   = ("ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE")
 
@@ -491,6 +491,7 @@ def _collect_fs_islands():
 
     _scan(Config.DIR_FREE, "Free")
     _scan(Config.DIR_VIP,  "VIP")
+    _scan(getattr(Config, "DIR_ORDER", None), "Order")
     return result
 
 
@@ -615,7 +616,7 @@ def _find_island_filesystem_meta(island_id: str, display_name: str | None = None
     """Return filesystem metadata used by the legacy island detail page."""
     upper = (display_name or island_id).upper()
     fs_path = fs_type = None
-    for directory, itype in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP")]:
+    for directory, itype in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP"), (getattr(Config, "DIR_ORDER", None), "Order")]:
         if not directory:
             continue
         for candidate_name in [upper, island_id]:

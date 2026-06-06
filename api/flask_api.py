@@ -896,7 +896,8 @@ def _build_island_response(
     """Build the enriched island response merging live filesystem data with DB metadata."""
     name = entry.name.upper()
     viewer_roles = [str(role_id) for role_id in (viewer_roles or []) if str(role_id)]
-    island_cat = db_island.get("cat") or ("member" if island_type == "VIP" else "public")
+    default_cat = "member" if island_type == "VIP" else "order" if island_type == "Order" else "public"
+    island_cat = db_island.get("cat") or default_cat
     required_roles, resolved_channel_id, access_source = _resolved_island_required_roles(
         name,
         island_cat,
@@ -921,15 +922,15 @@ def _build_island_response(
     elif raw_dodo is None:
         status = "OFFLINE"
         dodo_code = None
-    elif raw_dodo in ["00000", "-----", ""]:
+    elif raw_dodo in ["00000", "-----", "", "GETTIN'"]:
         status = "REFRESHING"
         dodo_code = None
     else:
         status = "ONLINE"
         dodo_code = raw_dodo
 
-    # Keep member codes behind the explicit reveal endpoint so access logging/webhooks still run.
-    if _is_member_island(island_cat, island_type):
+    # Keep member/order codes behind their controlled channels/endpoints.
+    if _is_member_island(island_cat, island_type) or island_type == "Order" or island_cat == "order":
         dodo_code = None
 
     # When the Discord bot is not confirmed online, hide live data to avoid stale values
@@ -965,7 +966,7 @@ def _build_island_response(
 # ISLAND METADATA CRUD (separate from /api/islands Dodo-status endpoint)
 # ============================================================================
 
-ALLOWED_CATEGORIES = {"public", "member"}
+ALLOWED_CATEGORIES = {"public", "member", "order"}
 ALLOWED_THEMES = {"pink", "teal", "purple", "gold"}
 ALLOWED_STATUSES = {"ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE"}
 
@@ -1448,12 +1449,12 @@ def api_find_item():
     found_locs = cache.get(query)
 
     if found_locs:
-        free, sub = parse_locations_json(found_locs)
+        free, sub, order = parse_locations_json(found_locs)
         final_msg = format_locations_text(found_locs)
         return jsonify({
             "found": True,
             "query": query,
-            "results": {"free": free, "sub": sub},
+            "results": {"free": free, "sub": sub, "order": order},
             "suggestions": [],
             "message": f"Hey {user}, I found {query.upper()} {final_msg}"
         })
@@ -1524,12 +1525,12 @@ def api_find_villager():
     found_locs = villager_map.get(query)
 
     if found_locs:
-        free, sub = parse_locations_json(found_locs)
+        free, sub, order = parse_locations_json(found_locs)
         final_msg = format_locations_text(found_locs)
         return jsonify({
             "found": True,
             "query": query,
-            "results": {"free": free, "sub": sub},
+            "results": {"free": free, "sub": sub, "order": order},
             "suggestions": [],
             "message": f"Hey {user}, I found villager {query.upper()} {final_msg}"
         })
@@ -1559,7 +1560,7 @@ def api_list_villagers_by_island():
     if data_manager is None:
         return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
 
-    villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
+    villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR, Config.ORDER_BOT_DIR])
     island_manifest = {}
 
     for villager_name, locations in villager_map.items():
@@ -1642,6 +1643,29 @@ def get_islands():
                     name = entry.name.upper()
                     results.append(_build_island_response(
                         entry, "VIP", db_map.get(name, {}),
+                        discord_status.get(name.lower()),
+                        viewer_roles,
+                        viewer_is_mod,
+                    ))
+
+    if Config.DIR_ORDER and os.path.exists(Config.DIR_ORDER):
+        with os.scandir(Config.DIR_ORDER) as entries:
+            for entry in entries:
+                if entry.is_dir():
+                    name = entry.name.upper()
+                    default_order_meta = {
+                        "id": name.lower(),
+                        "name": name,
+                        "cat": "order",
+                        "type": "Order Bot",
+                        "description": "Order bot island. Dodo access is handled in the configured Discord and Twitch channels.",
+                        "theme": "teal",
+                        "seasonal": "Year-Round",
+                        "channel_id": str(Config.ORDER_BOT_CHANNEL_ID or ""),
+                    }
+                    db_meta = {**default_order_meta, **db_map.get(name, {})}
+                    results.append(_build_island_response(
+                        entry, "Order", db_meta,
                         discord_status.get(name.lower()),
                         viewer_roles,
                         viewer_is_mod,

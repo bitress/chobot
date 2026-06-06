@@ -24,19 +24,23 @@ class TwitchBot(commands.Bot):
     """Twitch bot for treasure hunt commands"""
 
     def __init__(self, data_manager):
+        channels = list(dict.fromkeys(
+            channel for channel in [Config.TWITCH_CHANNEL, Config.ORDER_BOT_TWITCH_CHANNEL] if channel
+        ))
         super().__init__(
             token=Config.TWITCH_TOKEN,
             prefix='!',
-            initial_channels=[Config.TWITCH_CHANNEL]
+            initial_channels=channels
         )
         self.data_manager = data_manager
         self.cooldowns = {}
+        self.channels = channels
         self.start_time = time.time()  # Track bot start time for uptime
 
     async def event_ready(self):
         """Called when bot is connected"""
         logger.info(f"[TWITCH] Logged in as: {self.nick}")
-        logger.info(f"[TWITCH] Monitoring channel: {Config.TWITCH_CHANNEL}")
+        logger.info(f"[TWITCH] Monitoring channels: {', '.join(self.channels)}")
 
     async def event_message(self, message):
         """Called on every message"""
@@ -88,7 +92,7 @@ class TwitchBot(commands.Bot):
         if found_locs_raw:
             # Filter: SUB_ISLANDS + FREE_ISLANDS for items
             loc_list = found_locs_raw.split(", ")
-            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS + Config.ORDER_BOT_ISLANDS
             all_found = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
             
             display_name = display_map.get(search_term, search_term_raw.title())
@@ -133,7 +137,8 @@ class TwitchBot(commands.Bot):
         
         villager_map = self.data_manager.get_villagers([
             Config.VILLAGERS_DIR,
-            Config.TWITCH_VILLAGERS_DIR
+            Config.TWITCH_VILLAGERS_DIR,
+            Config.ORDER_BOT_DIR,
         ])
         
         found_locs_raw = villager_map.get(search_term)
@@ -141,7 +146,7 @@ class TwitchBot(commands.Bot):
         if found_locs_raw:
             # Filter: only SUB_ISLANDS
             loc_list = found_locs_raw.split(", ")
-            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS + Config.ORDER_BOT_ISLANDS
             sub_only = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
             
             display_name = search_term.title()
@@ -202,7 +207,7 @@ class TwitchBot(commands.Bot):
         if found_locs_raw:
             # Filter: SUB_ISLANDS + FREE_ISLANDS
             loc_list = found_locs_raw.split(", ")
-            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS
+            allowed_islands = Config.SUB_ISLANDS + Config.FREE_ISLANDS + Config.ORDER_BOT_ISLANDS
             all_found = [loc for loc in loc_list if any(clean_text(si) == clean_text(loc) for si in allowed_islands)]
             
             if all_found:
