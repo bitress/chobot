@@ -632,9 +632,58 @@ def _load_dashboard_islands() -> list[dict]:
     db = get_db()
     try:
         rows = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
-        return [_row_to_island_dict(dict(r)) for r in rows]
+        return _merge_dashboard_fs_islands([_row_to_island_dict(dict(r)) for r in rows])
     finally:
         db.close()
+
+
+def _fs_island_stub(fs: dict) -> dict:
+    """Build dashboard metadata for an island folder that has no DB row yet."""
+    name = fs.get("name", "")
+    fs_type = fs.get("fs_type") or ""
+    cat = "member" if fs_type == "VIP" else "order" if fs_type == "Order" else "public"
+    island_type = "Order Bot" if fs_type == "Order" else fs_type
+    channel_id = str(Config.ORDER_BOT_CHANNEL_ID or "") if fs_type == "Order" else None
+    return {
+        "id": name.lower(),
+        "name": name,
+        "display_name": None,
+        "is_visible": True,
+        "type": island_type,
+        "items": [],
+        "theme": "teal",
+        "cat": cat,
+        "description": "",
+        "seasonal": "Year-Round" if fs_type == "Order" else "",
+        "status": "OFFLINE",
+        "visitors": 0,
+        "dodo_code": None,
+        "map_url": None,
+        "updated_at": None,
+        "required_roles": [],
+        "channel_id": channel_id,
+    }
+
+
+def _merge_dashboard_fs_islands(db_islands: list[dict]) -> list[dict]:
+    """Return DB islands plus filesystem-only islands such as Sinta/order bot."""
+    fs_map = _collect_fs_islands()
+    merged = []
+    seen = set()
+
+    for isl in db_islands:
+        uname = str(isl.get("name") or isl.get("id") or "").upper()
+        if uname:
+            seen.add(uname)
+        merged.append(_merge_island(isl, fs_map.get(uname)))
+
+    for uname, fs in fs_map.items():
+        if uname in seen:
+            continue
+        merged.append(_merge_island(_fs_island_stub(fs), fs))
+
+    merged.sort(key=lambda item: str(item.get("name") or item.get("id") or ""))
+    return merged
 
 
 def _find_island_filesystem_meta(island_id: str, display_name: str | None = None) -> dict:
@@ -1071,27 +1120,7 @@ def islands():
     finally:
         db.close()
 
-    fs_map     = _collect_fs_islands()
-    merged     = []
-    seen_names = set()
-
-    for isl in db_islands:
-        uname = isl["name"].upper()
-        seen_names.add(uname)
-        merged.append(_merge_island(isl, fs_map.get(uname)))
-
-    # Islands on filesystem but not yet in DB
-    for uname, fs in fs_map.items():
-        if uname not in seen_names:
-            stub = {
-                "id": uname.lower(), "name": uname, "type": "", "items": [],
-                "theme": "teal", "cat": "public", "description": "", "seasonal": "",
-                "status": "OFFLINE", "visitors": 0, "dodo_code": None,
-                "map_url": None, "updated_at": None,
-            }
-            merged.append(_merge_island(stub, fs))
-
-    merged.sort(key=lambda x: x["name"])
+    merged = _merge_dashboard_fs_islands(db_islands)
     return render_template("dashboard/islands.html", islands=merged)
 
 
@@ -1958,7 +1987,7 @@ def api_status_summary():
     db = get_db()
     try:
         rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
-        db_islands = [_row_to_island_dict(dict(r)) for r in rows]
+        db_islands = _merge_dashboard_fs_islands([_row_to_island_dict(dict(r)) for r in rows])
         bot_status = _load_bot_status_map(db)
     except Exception:
         db_islands = []
@@ -2017,7 +2046,7 @@ def api_islands_list():
     db = get_db()
     try:
         rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
-        db_islands = [_row_to_island_dict(dict(r)) for r in rows]
+        db_islands = _merge_dashboard_fs_islands([_row_to_island_dict(dict(r)) for r in rows])
         bot_status = _load_bot_status_map(db)
     except Exception:
         db_islands = []
@@ -2028,6 +2057,7 @@ def api_islands_list():
     result = []
     for isl in db_islands:
         isl["discord_bot_online"] = bot_status.get(isl.get("id", ""))
+        isl["status"] = _effective_status(isl)
         access_info = island_access.resolved_island_required_roles(
             isl.get("name"),
             isl.get("cat"),
@@ -2199,9 +2229,17 @@ def api_island_get(name):
         row = db.execute("SELECT * FROM islands WHERE id = ?", (island_id,)).fetchone()
     finally:
         db.close()
-    if not row:
-        return jsonify({"error": f'Island "{name}" not found'}), 404
-    island = _row_to_island_dict(dict(row))
+    if row:
+        island = _row_to_island_dict(dict(row))
+    else:
+        fs_match = None
+        for fs in _collect_fs_islands().values():
+            if str(fs.get("name", "")).lower() == island_id:
+                fs_match = fs
+                break
+        if not fs_match:
+            return jsonify({"error": f'Island "{name}" not found'}), 404
+        island = _merge_island(_fs_island_stub(fs_match), fs_match)
     access_info = island_access.resolved_island_required_roles(
         island.get("name"),
         island.get("cat"),
