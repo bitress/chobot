@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import requests
 from flask import Flask, jsonify, request, session, redirect, url_for
@@ -1660,30 +1661,43 @@ def get_islands():
                     ))
 
     if Config.DIR_ORDER and os.path.exists(Config.DIR_ORDER):
+        order_entries = []
+        direct_order_files = [
+            os.path.join(Config.DIR_ORDER, "Dodo.txt"),
+            os.path.join(Config.DIR_ORDER, "Visitors.txt"),
+            os.path.join(Config.DIR_ORDER, "Villagers.txt"),
+        ]
+        order_name = Config.ORDER_BOT_ISLAND or os.path.basename(Config.DIR_ORDER)
+        basename_matches = clean_text(os.path.basename(Config.DIR_ORDER)) == clean_text(order_name)
+        if basename_matches or any(os.path.exists(path) for path in direct_order_files):
+            order_entries.append(SimpleNamespace(
+                name=order_name,
+                path=Config.DIR_ORDER,
+            ))
         with os.scandir(Config.DIR_ORDER) as entries:
-            for entry in entries:
-                if entry.is_dir():
-                    name = entry.name.upper()
-                    default_order_meta = {
-                        "id": name.lower(),
-                        "name": name,
-                        "cat": "order",
-                        "type": "Order Bot",
-                        "description": "Order bot island. Dodo access is handled in the configured Discord and Twitch channels.",
-                        "theme": "teal",
-                        "seasonal": "Year-Round",
-                        "channel_id": str(Config.ORDER_BOT_CHANNEL_ID or ""),
-                        "is_visible": True,
-                    }
-                    db_meta = {**default_order_meta, **db_map.get(name, {})}
-                    if db_meta.get("is_visible") is False:
-                        continue
-                    results.append(_build_island_response(
-                        entry, "Order", db_meta,
-                        discord_status.get(name.lower()),
-                        viewer_roles,
-                        viewer_is_mod,
-                    ))
+            order_entries.extend(entry for entry in entries if entry.is_dir())
+        for entry in order_entries:
+            name = entry.name.upper()
+            default_order_meta = {
+                "id": name.lower(),
+                "name": name,
+                "cat": "order",
+                "type": "Order Bot",
+                "description": "Order bot island. Dodo access is handled in the configured Discord and Twitch channels.",
+                "theme": "teal",
+                "seasonal": "Year-Round",
+                "channel_id": str(Config.ORDER_BOT_CHANNEL_ID or ""),
+                "is_visible": True,
+            }
+            db_meta = {**default_order_meta, **db_map.get(name, {})}
+            if db_meta.get("is_visible") is False:
+                continue
+            results.append(_build_island_response(
+                entry, "Order", db_meta,
+                discord_status.get(name.lower()),
+                viewer_roles,
+                viewer_is_mod,
+            ))
 
     results.sort(key=lambda x: x['name'])
     return jsonify({

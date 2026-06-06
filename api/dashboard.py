@@ -33,6 +33,7 @@ from utils.config import Config
 from utils.auth_tokens import get_auth_user
 from utils.database import connect_db, get_backend, get_engine
 from utils.db_migration import migrate_sqlite_to_mariadb
+from utils.helpers import clean_text
 from utils import island_access
 
 logger = logging.getLogger("Dashboard")
@@ -491,6 +492,23 @@ def _collect_fs_islands():
     def _scan(directory, itype):
         if not directory or not os.path.exists(directory):
             return
+        if itype == "Order" and os.path.isdir(directory):
+            direct_files = [
+                os.path.join(directory, "Dodo.txt"),
+                os.path.join(directory, "Visitors.txt"),
+                os.path.join(directory, "Villagers.txt"),
+            ]
+            configured_name = getattr(Config, "ORDER_BOT_ISLAND", None) or os.path.basename(directory)
+            basename_matches = clean_text(os.path.basename(directory)) == clean_text(configured_name)
+            if basename_matches or any(os.path.exists(path) for path in direct_files):
+                uname = configured_name.upper()
+                result[uname] = {
+                    "name":        uname,
+                    "fs_path":     directory,
+                    "fs_type":     itype,
+                    "fs_dodo":     _read_file(directory, "Dodo.txt"),
+                    "fs_visitors": _parse_visitor_value(_read_file(directory, "Visitors.txt")),
+                }
         with os.scandir(directory) as entries:
             for entry in entries:
                 if entry.is_dir():
@@ -693,6 +711,14 @@ def _find_island_filesystem_meta(island_id: str, display_name: str | None = None
     for directory, itype in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP"), (getattr(Config, "DIR_ORDER", None), "Order")]:
         if not directory:
             continue
+        if itype == "Order" and os.path.isdir(directory):
+            order_key = (getattr(Config, "ORDER_BOT_ISLAND", None) or os.path.basename(directory)).upper()
+            if upper == order_key or island_id.lower() == order_key.lower():
+                basename_matches = clean_text(os.path.basename(directory)) == clean_text(order_key)
+                has_order_files = any(os.path.exists(os.path.join(directory, fname)) for fname in ("Dodo.txt", "Visitors.txt", "Villagers.txt"))
+                if basename_matches or has_order_files:
+                    fs_path, fs_type = directory, itype
+                    break
         for candidate_name in [upper, island_id]:
             candidate = os.path.join(directory, candidate_name)
             if os.path.isdir(candidate):
