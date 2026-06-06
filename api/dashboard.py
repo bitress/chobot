@@ -253,9 +253,16 @@ def init_dashboard_db():
                 return_to         TEXT,
                 discord_message_id TEXT,
                 discord_channel_id TEXT,
+                discord_guild_id TEXT,
                 created_at        TEXT NOT NULL
             )
         """)
+
+        try:
+            conn.execute("ALTER TABLE website_login_events ADD COLUMN discord_guild_id TEXT")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
 
         # Legacy table kept for backward compatibility
         conn.execute("""
@@ -2804,6 +2811,99 @@ def api_analytics():
             "total_30d":     total_unique_30d,
         },
         "island_type_filter": island_type_filter,
+    })
+
+
+@dashboard.route("/api/website-logins", methods=["GET"])
+@api_auth_required
+def api_website_logins():
+    """Return paginated Discord website login audit events."""
+    page = max(request.args.get("page", 1, type=int), 1)
+    per_page = min(max(request.args.get("per_page", 25, type=int), 1), 100)
+    search = (request.args.get("q") or "").strip()
+    access = (request.args.get("access") or "all").strip().lower()
+    date_from = (request.args.get("from") or "").strip()
+    date_to = (request.args.get("to") or "").strip()
+
+    conditions = []
+    params = []
+
+    if search:
+        like = f"%{search}%"
+        conditions.append(
+            "(user_id LIKE ? OR username LIKE ? OR discord_name LIKE ? OR "
+            "global_name LIKE ? OR account_name LIKE ? OR nickname LIKE ? OR ip_address LIKE ?)"
+        )
+        params.extend([like, like, like, like, like, like, like])
+
+    if access == "mod":
+        conditions.append("is_mod = 1")
+    elif access == "admin":
+        conditions.append("is_admin = 1")
+    elif access == "regular":
+        conditions.append("is_mod = 0 AND is_admin = 0")
+
+    if date_from:
+        conditions.append("created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("created_at <= ?")
+        params.append(f"{date_to}T23:59:59Z" if len(date_to) == 10 else date_to)
+
+    where_sql = _where_clause(conditions)
+    offset = (page - 1) * per_page
+
+    db = get_db()
+    try:
+        total = db.execute(
+            f"SELECT COUNT(*) AS count FROM website_login_events {where_sql}",
+            params,
+        ).fetchone()["count"]
+        rows = db.execute(
+            "SELECT * FROM website_login_events "
+            f"{where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + [per_page, offset],
+        ).fetchall()
+        summary = db.execute(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN is_mod = 1 THEN 1 ELSE 0 END) AS mod_count, "
+            "SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END) AS admin_count "
+            "FROM website_login_events"
+        ).fetchone()
+    except Exception as exc:
+        logger.exception("Failed to load website login events")
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        db.close()
+
+    entries = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["roles"] = json.loads(item.get("roles") or "[]")
+        except (TypeError, ValueError):
+            item["roles"] = []
+        item["is_admin"] = bool(item.get("is_admin"))
+        item["is_mod"] = bool(item.get("is_mod"))
+        entries.append(item)
+
+    return jsonify({
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": max(1, (total + per_page - 1) // per_page),
+        "entries": entries,
+        "filters": {
+            "q": search,
+            "access": access,
+            "from": date_from,
+            "to": date_to,
+        },
+        "summary": {
+            "total": int(summary["total"] or 0),
+            "mod_count": int(summary["mod_count"] or 0),
+            "admin_count": int(summary["admin_count"] or 0),
+        },
     })
 
 

@@ -98,8 +98,8 @@ def _post_website_login_log_message(event_id: int, event: dict) -> None:
             db = get_db()
             try:
                 db.execute(
-                    "UPDATE website_login_events SET discord_message_id = ?, discord_channel_id = ? WHERE id = ?",
-                    (message_id, str(channel_id), event_id),
+                    "UPDATE website_login_events SET discord_message_id = ?, discord_channel_id = ?, discord_guild_id = ? WHERE id = ?",
+                    (message_id, str(channel_id), str(Config.GUILD_ID or ""), event_id),
                 )
                 db.commit()
             finally:
