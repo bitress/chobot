@@ -185,6 +185,54 @@ def _build_create_table_sql(table_name: str, columns: list[dict], sqlite_table_s
     )
 
 
+def _column_definition_sql(table_name: str, col: dict, indexed_columns: set[str], *, relax_not_null: bool = False) -> str:
+    name = col["name"]
+    sqlite_type = col["type"] or ""
+    model_types = _model_column_mysql_types()
+    mysql_type = model_types.get(
+        (table_name, name),
+        _map_sqlite_type(sqlite_type, is_primary_key=bool(col["pk"])),
+    )
+    mysql_type = _cap_indexed_varchar(mysql_type, indexed=name in indexed_columns)
+    not_null = " NOT NULL" if col["notnull"] and not relax_not_null else ""
+    default_clause = _translate_default(col["dflt_value"])
+    if default_clause and not _supports_default(mysql_type):
+        default_clause = ""
+    return f"{_quote_identifier(name)} {mysql_type}{not_null}{default_clause}"
+
+
+def _ensure_table_columns(cur, table_name: str, columns: list[dict]) -> list[str]:
+    """Add source columns that are missing from an existing MariaDB table."""
+    cur.execute(f"SHOW COLUMNS FROM {_quote_identifier(table_name)}")
+    existing = {str(row[0]) for row in cur.fetchall()}
+    pk_columns = {c["name"] for c in columns if c["pk"]}
+    indexed_columns = _model_indexed_columns().get(table_name, set()) | pk_columns
+    added: list[str] = []
+
+    for col in columns:
+        name = col["name"]
+        if name in existing:
+            continue
+        if col["pk"]:
+            logger.warning(
+                "[MIGRATE] %s.%s is a missing primary-key column; not adding it to existing table automatically.",
+                table_name,
+                name,
+            )
+            continue
+        definition = _column_definition_sql(table_name, col, indexed_columns, relax_not_null=True)
+        cur.execute(f"ALTER TABLE {_quote_identifier(table_name)} ADD COLUMN {definition}")
+        added.append(name)
+
+    if table_name == "warnings" and "id" not in existing:
+        cur.execute(
+            f"ALTER TABLE {_quote_identifier(table_name)} "
+            "ADD COLUMN `id` BIGINT PRIMARY KEY AUTO_INCREMENT FIRST"
+        )
+        added.append("id")
+    return added
+
+
 def inspect_sqlite_source(sqlite_path: str) -> dict[str, Any]:
     """Return table, column, index, and row-count information for a SQLite file."""
     if not os.path.exists(sqlite_path):
@@ -649,6 +697,9 @@ def migrate_sqlite_to_mariadb(
 
                 create_sql = _build_create_table_sql(table_name, columns, sqlite_table_sql)
                 cur.execute(create_sql)
+                added_columns = _ensure_table_columns(cur, table_name, columns)
+                if added_columns:
+                    logger.info("[MIGRATE] %s: added missing column(s): %s.", table_name, ", ".join(added_columns))
 
                 if create_indexes:
                     sqlite_indexes = _sqlite_index_specs(sqlite_conn, table_name)
