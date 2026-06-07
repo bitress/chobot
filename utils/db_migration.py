@@ -8,6 +8,8 @@ from typing import Any
 
 logger = logging.getLogger("DBMigration")
 
+VOLATILE_TABLES = {"command_claims"}
+
 
 def _quote_identifier(name: str) -> str:
     return f"`{str(name).replace('`', '``')}`"
@@ -122,7 +124,7 @@ def migrate_sqlite_to_mariadb(
     database: str,
     truncate_before_import: bool = True,
 ) -> dict[str, int]:
-    """Migrate all user tables from sqlite to MariaDB.
+    """Migrate persistent user tables from sqlite to MariaDB.
 
     Returns a mapping of table name to rows inserted.
     """
@@ -183,6 +185,11 @@ def migrate_sqlite_to_mariadb(
 
             for row in table_meta:
                 table_name = row["name"]
+                if table_name in VOLATILE_TABLES:
+                    table_rows[table_name] = 0
+                    logger.info("[MIGRATE] Skipping volatile table %s.", table_name)
+                    continue
+
                 sqlite_table_sql = row["sql"] or ""
 
                 pragma = sqlite_conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
@@ -215,12 +222,23 @@ def migrate_sqlite_to_mariadb(
                 col_names = [c["name"] for c in columns]
                 col_sql = ", ".join(_quote_identifier(name) for name in col_names)
                 placeholders = ", ".join(["%s"] * len(col_names))
-                insert_sql = f"INSERT INTO {_quote_identifier(table_name)} ({col_sql}) VALUES ({placeholders})"
+                insert_verb = "INSERT" if truncate_before_import else "INSERT IGNORE"
+                insert_sql = f"{insert_verb} INTO {_quote_identifier(table_name)} ({col_sql}) VALUES ({placeholders})"
 
                 payload = [tuple(r[name] for name in col_names) for r in src_rows]
                 cur.executemany(insert_sql, payload)
-                table_rows[table_name] = len(payload)
-                logger.info("[MIGRATE] %s: %d rows.", table_name, len(payload))
+                copied_rows = len(payload) if truncate_before_import else max(cur.rowcount, 0)
+                table_rows[table_name] = copied_rows
+                if copied_rows != len(payload):
+                    logger.info(
+                        "[MIGRATE] %s: %d/%d rows inserted (%d duplicate row(s) ignored).",
+                        table_name,
+                        copied_rows,
+                        len(payload),
+                        len(payload) - copied_rows,
+                    )
+                else:
+                    logger.info("[MIGRATE] %s: %d rows.", table_name, copied_rows)
 
             cur.execute("SET FOREIGN_KEY_CHECKS=1")
 

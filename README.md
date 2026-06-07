@@ -195,7 +195,7 @@ MARIADB_TRUNCATE_BEFORE_IMPORT=true
     ```
 3. Check logs for per-table row counts and final success summary.
 
-This migrates all user tables from `chobot.db` into MariaDB. By default it truncates target tables first (`MARIADB_TRUNCATE_BEFORE_IMPORT=true`).
+This migrates persistent user tables from `chobot.db` into MariaDB. By default it truncates target tables first (`MARIADB_TRUNCATE_BEFORE_IMPORT=true`). If truncation is disabled, duplicate primary-key rows already present in MariaDB are ignored instead of failing the import. Short-lived command claim locks are skipped because they only prevent duplicate Discord message handling for a few minutes.
 
 The same copy-only migration is also available through the authenticated dashboard API:
 
