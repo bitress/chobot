@@ -8,6 +8,7 @@ import json
 import os
 import re
 import csv
+import contextlib
 import io
 import secrets
 import logging
@@ -31,8 +32,12 @@ from flask import (
 
 from utils.config import Config
 from utils.auth_tokens import get_auth_user
-from utils.database import connect_db, get_backend, get_engine
-from utils.db_migration import migrate_sqlite_to_mariadb
+from utils.database import connect_db, get_backend
+from utils.db_migration import (
+    dry_run_sqlite_to_mariadb,
+    inspect_sqlite_source,
+    migrate_sqlite_to_mariadb_detailed,
+)
 from utils.helpers import clean_text
 from utils import island_access
 
@@ -272,6 +277,19 @@ def init_dashboard_db():
                 theme      TEXT NOT NULL DEFAULT 'teal',
                 notes      TEXT NOT NULL DEFAULT '',
                 updated_at TEXT
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dashboard_audit_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_user_id TEXT,
+                actor_name    TEXT,
+                action        TEXT NOT NULL,
+                target        TEXT,
+                details       TEXT NOT NULL,
+                ip_address    TEXT,
+                created_at    INTEGER NOT NULL
             )
         """)
 
@@ -1899,32 +1917,60 @@ def _parse_bool(value, default: bool) -> bool:
     return bool(value)
 
 
-def _sqlite_table_counts() -> dict[str, int]:
+def _parse_positive_int(value, default: int) -> int:
+    try:
+        return max(int(value), 1)
+    except (TypeError, ValueError):
+        return default
+
+
+def _request_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return request.remote_addr or ""
+
+
+def _dashboard_actor() -> tuple[str | None, str | None]:
+    user_id = session.get("discord_user_id")
+    name = session.get("discord_username") or session.get("discord_global_name")
+    bearer_user = _dashboard_bearer_user()
+    if bearer_user:
+        user_id = user_id or str(bearer_user.get("user_id") or bearer_user.get("id") or "")
+        name = name or bearer_user.get("username") or bearer_user.get("global_name")
+    return (str(user_id) if user_id else None, str(name) if name else None)
+
+
+def _record_audit_event(action: str, target: str | None = None, details: dict | None = None) -> None:
     db = get_db()
     try:
-        if get_backend() == "mysql":
-            from sqlalchemy import inspect
-
-            table_names = sorted(inspect(get_engine()).get_table_names())
-        else:
-            table_names = [
-                row["name"] for row in db.execute(
-                    """
-                    SELECT name
-                    FROM sqlite_master
-                    WHERE type='table' AND name NOT LIKE 'sqlite_%'
-                    ORDER BY name
-                    """
-                ).fetchall()
-            ]
-        counts: dict[str, int] = {}
-        for table_name in table_names:
-            safe_table = str(table_name).replace('"', '""')
-            count = db.execute(f'SELECT COUNT(*) FROM "{safe_table}"').fetchone()[0]
-            counts[table_name] = int(count or 0)
-        return counts
+        actor_user_id, actor_name = _dashboard_actor()
+        db.execute(
+            """
+            INSERT INTO dashboard_audit_events
+            (actor_user_id, actor_name, action, target, details, ip_address, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                actor_user_id,
+                actor_name,
+                action,
+                target,
+                json.dumps(details or {}, sort_keys=True),
+                _request_ip(),
+                int(time.time()),
+            ),
+        )
+        db.commit()
+    except Exception as exc:
+        logger.debug("Audit event insert failed: %s", exc)
     finally:
         db.close()
+
+
+def _sqlite_table_counts() -> dict[str, int]:
+    source = inspect_sqlite_source(_DB_PATH)
+    return {name: int(meta["rows"] or 0) for name, meta in source["tables"].items()}
 
 
 def _mariadb_settings_payload() -> dict:
@@ -1952,7 +1998,8 @@ def _mariadb_settings_payload() -> dict:
 def api_mariadb_migration_status():
     """Return SQLite source counts and MariaDB migration configuration status."""
     try:
-        source_tables = _sqlite_table_counts()
+        source = inspect_sqlite_source(_DB_PATH)
+        source_tables = {name: int(meta["rows"] or 0) for name, meta in source["tables"].items()}
     except Exception as exc:
         return jsonify({"error": f"Could not inspect SQLite database: {exc}"}), 500
 
@@ -1961,7 +2008,9 @@ def api_mariadb_migration_status():
         "sqlite_path": _DB_PATH,
         "sqlite_exists": os.path.exists(_DB_PATH),
         "source_tables": source_tables,
-        "source_total_rows": sum(source_tables.values()),
+        "source_total_rows": source["total_rows"],
+        "persistent_total_rows": source["persistent_rows"],
+        "skipped_tables": [name for name, meta in source["tables"].items() if meta["skipped"]],
         "mariadb": _mariadb_settings_payload(),
         "migration_running": _mariadb_migration_lock.locked(),
         "last_result": _mariadb_migration_last_result,
@@ -1987,20 +2036,44 @@ def api_mariadb_migration_run():
 
     started_at = datetime.now(timezone.utc).isoformat()
     try:
-        source_tables = _sqlite_table_counts()
         if dry_run:
+            report = dry_run_sqlite_to_mariadb(
+                sqlite_path=_DB_PATH,
+                host=Config.MARIADB_HOST,
+                port=Config.MARIADB_PORT,
+                user=Config.MARIADB_USER,
+                password=Config.MARIADB_PASSWORD,
+                database=Config.MARIADB_DATABASE,
+            )
+            source_tables = {
+                name: int(meta["rows"] or 0)
+                for name, meta in report["source"]["tables"].items()
+            }
             _mariadb_migration_last_result = {
                 "ok": True,
                 "dry_run": True,
                 "started_at": started_at,
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "source_tables": source_tables,
-                "source_total_rows": sum(source_tables.values()),
+                "source_total_rows": report["source"]["total_rows"],
+                "persistent_total_rows": report["source"]["persistent_rows"],
+                "target_database_exists": report["target_database_exists"],
+                "target_tables": report["target_tables"],
+                "schema_drift": report["schema_drift"],
+                "warnings": report["warnings"],
                 "mariadb": _mariadb_settings_payload(),
             }
+            _record_audit_event(
+                "mariadb_migration_dry_run",
+                Config.MARIADB_DATABASE,
+                {
+                    "source_total_rows": report["source"]["total_rows"],
+                    "schema_drift_tables": sorted(report["schema_drift"]),
+                },
+            )
             return jsonify(_mariadb_migration_last_result)
 
-        summary = migrate_sqlite_to_mariadb(
+        summary = migrate_sqlite_to_mariadb_detailed(
             sqlite_path=_DB_PATH,
             host=Config.MARIADB_HOST,
             port=Config.MARIADB_PORT,
@@ -2010,17 +2083,21 @@ def api_mariadb_migration_run():
             truncate_before_import=truncate_before_import,
         )
         _mariadb_migration_last_result = {
-            "ok": True,
-            "dry_run": False,
-            "started_at": started_at,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "truncate_before_import": truncate_before_import,
-            "tables": summary,
-            "total_rows_copied": sum(summary.values()),
+            **summary,
             "runtime_database": get_backend(),
             "sqlite_preserved": True,
             "note": "Migration copied data to MariaDB. Set DB_BACKEND=mysql to use it as the app database.",
         }
+        _record_audit_event(
+            "mariadb_migration_run",
+            Config.MARIADB_DATABASE,
+            {
+                "truncate_before_import": truncate_before_import,
+                "total_rows_copied": summary["total_rows_copied"],
+                "backup_path": summary["backup_path"],
+                "validation_ok": bool(summary.get("validation", {}).get("ok")),
+            },
+        )
         return jsonify(_mariadb_migration_last_result)
     except Exception as exc:
         logger.exception("MariaDB migration failed")
@@ -2034,6 +2111,90 @@ def api_mariadb_migration_run():
         return jsonify(_mariadb_migration_last_result), 500
     finally:
         _mariadb_migration_lock.release()
+
+
+@dashboard.route("/api/database/maintenance", methods=["POST"])
+@api_auth_required
+def api_database_maintenance():
+    """Prune volatile and stale operational rows."""
+    data = request.get_json(silent=True) or {}
+    warning_days = _parse_positive_int(data.get("warning_days"), 3)
+    reveal_days = _parse_positive_int(data.get("reveal_days"), 30)
+    audit_days = _parse_positive_int(data.get("audit_days"), 180)
+    now = int(time.time())
+
+    deleted: dict[str, int] = {}
+    db = get_db()
+    try:
+        cur = db.execute("DELETE FROM command_claims")
+        deleted["command_claims"] = max(cur.rowcount, 0)
+
+        cur = db.execute(
+            "DELETE FROM warnings WHERE timestamp IS NOT NULL AND timestamp < ?",
+            (now - warning_days * 86400,),
+        )
+        deleted["expired_warnings"] = max(cur.rowcount, 0)
+
+        cur = db.execute(
+            "DELETE FROM dodo_reveal_messages WHERE created_at < ?",
+            (now - reveal_days * 86400,),
+        )
+        deleted["stale_dodo_reveals"] = max(cur.rowcount, 0)
+
+        cur = db.execute(
+            "DELETE FROM dashboard_audit_events WHERE created_at < ?",
+            (now - audit_days * 86400,),
+        )
+        deleted["old_audit_events"] = max(cur.rowcount, 0)
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Database maintenance failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        db.close()
+
+    _record_audit_event(
+        "database_maintenance",
+        "database",
+        {
+            "deleted": deleted,
+            "warning_days": warning_days,
+            "reveal_days": reveal_days,
+            "audit_days": audit_days,
+        },
+    )
+    return jsonify({"ok": True, "deleted": deleted})
+
+
+@dashboard.route("/api/audit-events", methods=["GET"])
+@api_auth_required
+def api_audit_events():
+    """Return recent dashboard/system audit entries."""
+    limit = min(max(request.args.get("limit", 25, type=int), 1), 100)
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT * FROM dashboard_audit_events ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "entries": []}), 500
+    finally:
+        db.close()
+
+    entries = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["details"] = json.loads(item.get("details") or "{}")
+        except (TypeError, ValueError):
+            item["details"] = {}
+        item["created_at_text"] = _ts_to_str(item.get("created_at"))
+        entries.append(item)
+
+    return jsonify({"ok": True, "entries": entries})
 
 
 @dashboard.route("/api/status-summary", methods=["GET"])
@@ -2092,6 +2253,160 @@ def api_status_summary():
         "off_pct":          _pct(offline_count),
         "access_problem_count": access_problem_count,
         "islands":          islands_out,
+    })
+
+
+@dashboard.route("/api/island-health", methods=["GET"])
+@api_auth_required
+def api_island_health():
+    """Return per-island operational health signals."""
+    stale_minutes = max(request.args.get("stale_minutes", 15, type=int), 1)
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+    db = get_db()
+    try:
+        rows = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
+        db_islands = _merge_dashboard_fs_islands([_row_to_island_dict(dict(r)) for r in rows])
+        bot_status = _load_bot_status_map(db)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "islands": []}), 500
+    finally:
+        db.close()
+
+    items = []
+    for island in db_islands:
+        updated_raw = island.get("updated_at") or ""
+        updated_dt = None
+        if updated_raw:
+            with contextlib.suppress(Exception):
+                updated_dt = datetime.fromisoformat(str(updated_raw).replace("Z", "+00:00"))
+                if updated_dt.tzinfo is None:
+                    updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+        warnings = []
+        status = _effective_status(island)
+        bot_online = bot_status.get(island.get("id", ""))
+        if status == STATUS_OFFLINE:
+            warnings.append("offline")
+        if bot_online is False:
+            warnings.append("bot_offline")
+        if updated_dt and updated_dt < stale_cutoff:
+            warnings.append("stale_update")
+        access_status = _island_access_status(island)
+        warnings.extend(access_status["warnings"])
+        items.append({
+            "id": island.get("id", ""),
+            "name": island.get("name", ""),
+            "status": status,
+            "visitors": island.get("visitors") or 0,
+            "discord_bot_online": bot_online,
+            "updated_at": updated_raw,
+            "access_source": access_status["access_source"],
+            "warnings": warnings,
+            "ok": not warnings,
+        })
+
+    return jsonify({
+        "ok": True,
+        "stale_minutes": stale_minutes,
+        "problem_count": sum(1 for item in items if item["warnings"]),
+        "islands": items,
+    })
+
+
+@dashboard.route("/api/user-trust-profile", methods=["GET"])
+@api_auth_required
+def api_user_trust_profile():
+    """Return a compact moderation/trust profile for a Discord user."""
+    user_id = (request.args.get("user_id") or "").strip()
+    guild_id = (request.args.get("guild_id") or str(Config.GUILD_ID or "")).strip()
+    if not user_id:
+        return jsonify({"ok": False, "error": "user_id is required"}), 400
+
+    db = get_db()
+    try:
+        params = [user_id]
+        guild_clause = ""
+        if guild_id:
+            guild_clause = " AND guild_id = ?"
+            params.append(guild_id)
+
+        visit_summary = db.execute(
+            "SELECT COUNT(*) AS total_visits, "
+            "SUM(CASE WHEN authorized = 1 THEN 1 ELSE 0 END) AS authorized_visits, "
+            "SUM(CASE WHEN authorized = 0 THEN 1 ELSE 0 END) AS unauthorized_visits, "
+            "MAX(timestamp) AS last_visit_at "
+            f"FROM island_visits WHERE user_id = ?{guild_clause}",
+            params,
+        ).fetchone()
+        warning_summary = db.execute(
+            "SELECT COUNT(*) AS total_actions, "
+            "SUM(CASE WHEN UPPER(action_type) = 'WARN' THEN 1 ELSE 0 END) AS warnings, "
+            "SUM(CASE WHEN UPPER(action_type) = 'KICK' THEN 1 ELSE 0 END) AS kicks, "
+            "SUM(CASE WHEN UPPER(action_type) = 'BAN' THEN 1 ELSE 0 END) AS bans, "
+            "MAX(timestamp) AS last_action_at "
+            f"FROM warnings WHERE user_id = ?{guild_clause}",
+            params,
+        ).fetchone()
+        recent_visits = db.execute(
+            "SELECT ign, destination, authorized, timestamp "
+            f"FROM island_visits WHERE user_id = ?{guild_clause} "
+            "ORDER BY timestamp DESC LIMIT 10",
+            params,
+        ).fetchall()
+        recent_actions = db.execute(
+            "SELECT action_type, reason, mod_id, timestamp "
+            f"FROM warnings WHERE user_id = ?{guild_clause} "
+            "ORDER BY timestamp DESC LIMIT 10",
+            params,
+        ).fetchall()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        db.close()
+
+    total_visits = int(visit_summary["total_visits"] or 0)
+    total_actions = int(warning_summary["total_actions"] or 0)
+    risk_score = min(
+        100,
+        int(warning_summary["warnings"] or 0) * 20
+        + int(warning_summary["kicks"] or 0) * 35
+        + int(warning_summary["bans"] or 0) * 60
+        + int(visit_summary["unauthorized_visits"] or 0) * 5,
+    )
+    return jsonify({
+        "ok": True,
+        "user_id": user_id,
+        "guild_id": guild_id,
+        "user_name": _resolve_discord_username(user_id),
+        "risk_score": risk_score,
+        "summary": {
+            "total_visits": total_visits,
+            "authorized_visits": int(visit_summary["authorized_visits"] or 0),
+            "unauthorized_visits": int(visit_summary["unauthorized_visits"] or 0),
+            "total_actions": total_actions,
+            "warnings": int(warning_summary["warnings"] or 0),
+            "kicks": int(warning_summary["kicks"] or 0),
+            "bans": int(warning_summary["bans"] or 0),
+            "last_visit_at": _ts_to_str(visit_summary["last_visit_at"]),
+            "last_action_at": _ts_to_str(warning_summary["last_action_at"]),
+        },
+        "recent_visits": [
+            {
+                "ign": row["ign"],
+                "destination": row["destination"],
+                "authorized": bool(row["authorized"]),
+                "timestamp": _ts_to_str(row["timestamp"]),
+            }
+            for row in recent_visits
+        ],
+        "recent_actions": [
+            {
+                "action_type": row["action_type"],
+                "reason": row["reason"],
+                "mod_id": row["mod_id"],
+                "timestamp": _ts_to_str(row["timestamp"]),
+            }
+            for row in recent_actions
+        ],
     })
 
 

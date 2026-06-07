@@ -225,15 +225,7 @@ app.secret_key = Config.FLASK_SECRET_KEY
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
-_cors_origins = [
-    origin.strip()
-    for origin in os.getenv(
-        "FRONTEND_ORIGINS",
-        "https://www.chopaeng.com,https://chopaeng.com,http://localhost:5173,http://localhost:3000",
-    ).split(",")
-    if origin.strip()
-]
-CORS(app, resources={r"/*": {"origins": _cors_origins}}, supports_credentials=True)
+CORS(app, resources={r"/*": {"origins": Config.FRONTEND_ORIGINS}}, supports_credentials=True)
 
 # Register the mod-only web dashboard
 app.register_blueprint(dashboard, url_prefix="/dashboard")

@@ -1,6 +1,6 @@
 {% extends "dashboard/base.html" %}
 
-{% block title %}Database — ChoBot Dashboard{% endblock %}
+{% block title %}Database - ChoBot Dashboard{% endblock %}
 {% block header %}Database{% endblock %}
 
 {% block content %}
@@ -16,14 +16,14 @@
   <div class="col-12 col-lg-4">
     <div class="stat-card h-100">
       <div class="stat-label">SQLite Rows</div>
-      <div class="stat-value" id="sourceTotalRows" style="color:#4090bd;">—</div>
+      <div class="stat-value" id="sourceTotalRows" style="color:#4090bd;">-</div>
       <div class="x-small fw-bold mt-2" style="color:#888;">Rows found in source tables</div>
     </div>
   </div>
   <div class="col-12 col-lg-4">
     <div class="stat-card h-100">
       <div class="stat-label">MySQL Config</div>
-      <div class="stat-value" id="mysqlConfigState" style="color:#f0ad4e;">—</div>
+      <div class="stat-value" id="mysqlConfigState" style="color:#f0ad4e;">-</div>
       <div class="x-small fw-bold mt-2" style="color:#888;">Connection settings readiness</div>
     </div>
   </div>
@@ -88,17 +88,17 @@
       <div class="col-12 col-xl-5">
         <div id="migrationMessage" class="h-100 p-3 rounded-3"
              style="background:#fffdf0;border:2px solid #e1e6d3;color:#666;font-weight:700;">
-          Loading database status…
+          Loading database status...
         </div>
       </div>
     </div>
   </div>
 </div>
 
-<div class="section-card">
+<div class="section-card mb-4">
   <div class="section-card-header">
     <span><i class="bi bi-table me-2 text-nook-green"></i>Source Tables</span>
-    <span class="x-small fw-bold" style="color:#aaa;" id="tableCount">—</span>
+    <span class="x-small fw-bold" style="color:#aaa;" id="tableCount">-</span>
   </div>
   <div class="table-responsive">
     <table class="db-table">
@@ -109,9 +109,66 @@
         </tr>
       </thead>
       <tbody id="sourceTableRows">
-        <tr><td colspan="2" class="text-center py-4" style="color:#aaa;font-weight:700;">Loading…</td></tr>
+        <tr><td colspan="2" class="text-center py-4" style="color:#aaa;font-weight:700;">Loading...</td></tr>
       </tbody>
     </table>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-12 col-xl-5">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-tools me-2 text-nook-green"></i>Maintenance</span>
+      </div>
+      <div class="p-4">
+        <div class="row g-3">
+          <div class="col-4">
+            <label class="db-label">Warnings</label>
+            <input id="cleanupWarningDays" type="number" min="1" value="3" class="form-control fw-bold">
+          </div>
+          <div class="col-4">
+            <label class="db-label">Dodo Reveals</label>
+            <input id="cleanupRevealDays" type="number" min="1" value="30" class="form-control fw-bold">
+          </div>
+          <div class="col-4">
+            <label class="db-label">Audit</label>
+            <input id="cleanupAuditDays" type="number" min="1" value="180" class="form-control fw-bold">
+          </div>
+        </div>
+        <button type="button" id="runMaintenanceBtn" class="btn btn-sm fw-bold mt-3"
+                style="background:#fff;border:2px solid #e1e6d3;color:#666;border-radius:50px;padding:.45rem 1rem;">
+          <i class="bi bi-archive me-1"></i>Run Cleanup
+        </button>
+        <div id="maintenanceMessage" class="x-small fw-bold mt-3" style="color:#888;">Ready.</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-xl-7">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-shield-check me-2 text-nook-green"></i>Audit Trail</span>
+        <button type="button" id="refreshAuditBtn" class="btn btn-sm fw-bold"
+                style="background:#fff;border:2px solid #e1e6d3;color:#666;border-radius:50px;padding:.25rem .75rem;">
+          <i class="bi bi-arrow-clockwise"></i>
+        </button>
+      </div>
+      <div class="table-responsive">
+        <table class="db-table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Action</th>
+              <th>Actor</th>
+              <th>Target</th>
+            </tr>
+          </thead>
+          <tbody id="auditRows">
+            <tr><td colspan="4" class="text-center py-4" style="color:#aaa;font-weight:700;">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -122,8 +179,19 @@
 (function () {
   var statusUrl = '{{ url_for("dashboard.api_mariadb_migration_status") }}';
   var runUrl = '{{ url_for("dashboard.api_mariadb_migration_run") }}';
+  var maintenanceUrl = '{{ url_for("dashboard.api_database_maintenance") }}';
+  var auditUrl = '{{ url_for("dashboard.api_audit_events") }}';
 
   function $(id) { return document.getElementById(id); }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
   function setBusy(busy) {
     ['refreshDbStatusBtn', 'dryRunMigrationBtn', 'runMigrationBtn'].forEach(function (id) {
@@ -150,6 +218,22 @@
     el.textContent = message;
   }
 
+  function resultMessage(result) {
+    if (!result) return 'Ready. Use Dry Run first to verify the source tables before running the copy.';
+    if (result.ok === false) return 'Last migration failed: ' + (result.error || 'Unknown error');
+    if (result.dry_run) {
+      var drift = Object.keys(result.schema_drift || {});
+      return 'Dry run passed. Persistent rows: '
+        + Number(result.persistent_total_rows || result.source_total_rows || 0).toLocaleString()
+        + (drift.length ? '. Schema drift: ' + drift.join(', ') : '. No target schema drift found.');
+    }
+    var validation = result.validation || {};
+    return 'Migration complete. Rows copied: '
+      + Number(result.total_rows_copied || 0).toLocaleString()
+      + (result.backup_path ? '. Backup: ' + result.backup_path : '')
+      + (validation.ok === false ? '. Validation mismatches: ' + (validation.mismatches || []).join(', ') : '. Validation passed.');
+  }
+
   function renderStatus(data) {
     $('dbBackend').textContent = data.runtime_database || 'unknown';
     $('sourceTotalRows').textContent = Number(data.source_total_rows || 0).toLocaleString();
@@ -165,16 +249,16 @@
     var names = Object.keys(rows).sort();
     $('tableCount').textContent = names.length + ' tables';
     $('sourceTableRows').innerHTML = names.length ? names.map(function (name) {
-      return '<tr><td class="fw-bold">' + name + '</td><td class="text-end fw-bold">' +
+      return '<tr><td class="fw-bold">' + escapeHtml(name) + '</td><td class="text-end fw-bold">' +
         Number(rows[name] || 0).toLocaleString() + '</td></tr>';
     }).join('') : '<tr><td colspan="2" class="text-center py-4" style="color:#aaa;font-weight:700;">No source tables found.</td></tr>';
 
     if (data.mariadb && !data.mariadb.configured) {
       setMessage('warning', 'MySQL settings are incomplete: ' + (data.mariadb.missing || []).join(', '));
     } else if (data.last_result && data.last_result.ok === false) {
-      setMessage('danger', 'Last migration failed: ' + (data.last_result.error || 'Unknown error'));
+      setMessage('danger', resultMessage(data.last_result));
     } else if (data.last_result && data.last_result.ok) {
-      setMessage('success', 'Last migration completed. Rows copied: ' + Number(data.last_result.total_rows_copied || data.last_result.source_total_rows || 0).toLocaleString());
+      setMessage('success', resultMessage(data.last_result));
     } else {
       setMessage('info', 'Ready. Use Dry Run first to verify the source tables before running the copy.');
     }
@@ -194,10 +278,29 @@
       .finally(function () { setBusy(false); });
   }
 
+  function loadAudit() {
+    return fetch(auditUrl + '?limit=20', { credentials: 'same-origin' })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok || res.data.ok === false) throw new Error(res.data.error || 'Could not load audit events');
+        var rows = res.data.entries || [];
+        $('auditRows').innerHTML = rows.length ? rows.map(function (row) {
+          return '<tr><td class="fw-bold">' + escapeHtml(row.created_at_text || row.created_at) + '</td>'
+            + '<td>' + escapeHtml(row.action) + '</td>'
+            + '<td>' + escapeHtml(row.actor_name || row.actor_user_id || 'System') + '</td>'
+            + '<td>' + escapeHtml(row.target || '') + '</td></tr>';
+        }).join('') : '<tr><td colspan="4" class="text-center py-4" style="color:#aaa;font-weight:700;">No audit events yet.</td></tr>';
+      })
+      .catch(function (err) {
+        $('auditRows').innerHTML = '<tr><td colspan="4" class="text-center py-4" style="color:#a93226;font-weight:700;">'
+          + escapeHtml(err.message || 'Could not load audit events') + '</td></tr>';
+      });
+  }
+
   function runMigration(dryRun) {
     if (!dryRun && !confirm('Run the SQLite to MariaDB/MySQL migration now?')) return;
     setBusy(true);
-    setMessage('info', dryRun ? 'Checking source tables…' : 'Migration running. Keep this tab open until it finishes.');
+    setMessage('info', dryRun ? 'Checking source tables...' : 'Migration running. Keep this tab open until it finishes.');
 
     fetch(runUrl, {
       method: 'POST',
@@ -211,11 +314,8 @@
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
       .then(function (res) {
         if (!res.ok || res.data.ok === false) throw new Error(res.data.error || 'Migration failed');
-        if (dryRun) {
-          setMessage('success', 'Dry run passed. Source rows found: ' + Number(res.data.source_total_rows || 0).toLocaleString());
-        } else {
-          setMessage('success', 'Migration complete. Rows copied: ' + Number(res.data.total_rows_copied || 0).toLocaleString());
-        }
+        setMessage('success', resultMessage(res.data));
+        loadAudit();
         return loadStatus();
       })
       .catch(function (err) {
@@ -224,11 +324,43 @@
       .finally(function () { setBusy(false); });
   }
 
+  function runMaintenance() {
+    if (!confirm('Run database cleanup now?')) return;
+    $('runMaintenanceBtn').disabled = true;
+    $('maintenanceMessage').textContent = 'Cleanup running...';
+    fetch(maintenanceUrl, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        warning_days: $('cleanupWarningDays').value,
+        reveal_days: $('cleanupRevealDays').value,
+        audit_days: $('cleanupAuditDays').value
+      })
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok || res.data.ok === false) throw new Error(res.data.error || 'Cleanup failed');
+        var deleted = res.data.deleted || {};
+        $('maintenanceMessage').textContent = 'Deleted rows: '
+          + Object.keys(deleted).map(function (k) { return k + ' ' + Number(deleted[k] || 0).toLocaleString(); }).join(', ');
+        loadStatus();
+        loadAudit();
+      })
+      .catch(function (err) {
+        $('maintenanceMessage').textContent = err.message || 'Cleanup failed';
+      })
+      .finally(function () { $('runMaintenanceBtn').disabled = false; });
+  }
+
   $('refreshDbStatusBtn').addEventListener('click', loadStatus);
   $('dryRunMigrationBtn').addEventListener('click', function () { runMigration(true); });
   $('runMigrationBtn').addEventListener('click', function () { runMigration(false); });
+  $('runMaintenanceBtn').addEventListener('click', runMaintenance);
+  $('refreshAuditBtn').addEventListener('click', loadAudit);
 
   loadStatus();
+  loadAudit();
 })();
 </script>
 {% endblock %}

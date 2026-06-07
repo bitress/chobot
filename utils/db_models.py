@@ -51,6 +51,8 @@ class Island(Base):
     updated_at: Mapped[str | None] = mapped_column(String(64))
     required_roles: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     channel_id: Mapped[str | None] = mapped_column(String(64))
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    is_visible: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 class IslandBotStatus(Base):
@@ -120,3 +122,20 @@ class DodoRevealMessage(Base):
     username: Mapped[str | None] = mapped_column(String(255))
     nickname: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+
+class DashboardAuditEvent(Base):
+    __tablename__ = "dashboard_audit_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    actor_name: Mapped[str | None] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    target: Mapped[str | None] = mapped_column(String(255), index=True)
+    details: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_dashboard_audit_action_ts", "action", "created_at"),
+    )

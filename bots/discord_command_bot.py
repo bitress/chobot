@@ -825,8 +825,7 @@ class DiscordCommandCog(commands.Cog):
 
     async def _fetch_islands_api_data(self) -> tuple[list[dict], datetime | None] | tuple[None, None]:
         """Fetch raw island snapshot data from the API."""
-        base_url = os.getenv("API_BASE_URL", "https://console.chopaeng.com").rstrip("/")
-        url = f"{base_url}/api/islands"
+        url = f"{Config.API_BASE_URL}/api/islands"
 
         def _get_json():
             response = requests.get(url, timeout=8)

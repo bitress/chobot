@@ -37,7 +37,7 @@ from typing import Optional, Set
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils import Config, DataManager
-from utils.db_migration import migrate_sqlite_to_mariadb
+from utils.db_migration import migrate_sqlite_to_mariadb_detailed
 from bots import TwitchBot, DiscordCommandBot
 from bots.flight_logger import FlightLoggerCog, FreeFlightCog
 from api import run_flask_app, set_data_manager
@@ -380,7 +380,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1].strip().lower() == "migrate-mariadb":
         sqlite_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chobot.db")
         try:
-            summary = migrate_sqlite_to_mariadb(
+            summary = migrate_sqlite_to_mariadb_detailed(
                 sqlite_path=sqlite_path,
                 host=Config.MARIADB_HOST,
                 port=Config.MARIADB_PORT,
@@ -389,8 +389,14 @@ def main():
                 database=Config.MARIADB_DATABASE,
                 truncate_before_import=Config.MARIADB_TRUNCATE_BEFORE_IMPORT,
             )
-            total_rows = sum(summary.values())
-            logger.info("[MIGRATE] Success: %d tables, %d rows copied.", len(summary), total_rows)
+            total_rows = summary["total_rows_copied"]
+            logger.info(
+                "[MIGRATE] Success: %d tables, %d rows copied. Backup: %s. Validation: %s.",
+                len(summary["tables"]),
+                total_rows,
+                summary.get("backup_path") or "skipped",
+                "passed" if summary.get("validation", {}).get("ok") else "check warnings",
+            )
             return
         except Exception as exc:
             logger.critical(f"[MIGRATE] Failed: {exc}")
