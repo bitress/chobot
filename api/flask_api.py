@@ -219,6 +219,7 @@ def _log_dodo_reveal_attempt(user: dict | None, island: str, outcome: str, reaso
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = Config.FLASK_SECRET_KEY
+app.permanent_session_lifetime = timedelta(days=max(int(Config.FLASK_SESSION_DAYS or 30), 1))
 # Trust one level of X-Forwarded-For / X-Forwarded-Proto headers from the
 # reverse proxy (nginx, Cloudflare Tunnel, etc.) so that url_for(_external=True)
 # produces the correct https:// URL instead of http://.

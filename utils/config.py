@@ -86,6 +86,8 @@ class Config:
 
     _FLASK_SECRET_ENV = os.getenv("FLASK_SECRET_KEY", "").strip()
     FLASK_SECRET_KEY: str = _FLASK_SECRET_ENV or DASHBOARD_SECRET or secrets.token_hex(32)
+    FLASK_SESSION_DAYS = _get_int("FLASK_SESSION_DAYS", 30)
+    AUTH_TOKEN_TTL_DAYS = _get_int("AUTH_TOKEN_TTL_DAYS", 30)
 
     DISCORD_CLIENT_ID     = os.getenv("DISCORD_CLIENT_ID", "")
     DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")

@@ -139,3 +139,12 @@ class DashboardAuditEvent(Base):
     __table_args__ = (
         Index("ix_dashboard_audit_action_ts", "action", "created_at"),
     )
+
+
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_json: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
