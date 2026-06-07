@@ -16,7 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, UserSelect, Select, button
 from utils.config import Config
-from utils.database import connect_async_db
+from utils.database import connect_async_db, get_backend
 from utils.helpers import clean_text
 
 logger = logging.getLogger("FlightLogger")
@@ -55,15 +55,183 @@ COLOR_ALERT = 0xED4245         # Discord red (for unknown traveler alerts)
 # --- DATABASE SETUP ---
 DB_NAME = "chobot.db"
 WARN_EXPIRY_DAYS = 3
+RECENT_IDENTITY_WINDOW_SECONDS = 24 * 60 * 60
+IDENTITY_EVENT_NICKNAME_CHANGE = "nickname_change"
+IDENTITY_EVENT_MEMBER_JOIN = "member_join"
 MAX_HISTORY_ENTRIES = 10  # Max entries shown per section in !flighthistory
 MAX_DEBUG_CANDIDATES = 5  # Max closest-candidate entries shown in !fdebug
 LEGACY_TWO_IDENTITY_CUTOFF_UTC = datetime.datetime(2022, 9, 1, tzinfo=datetime.timezone.utc)
 LEGACY_TWO_IDENTITY_LIMIT = 2
 
+
+def _trim_discord_value(value: str, limit: int = 1024) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3].rstrip() + "..."
+
+
+def _format_display_name_for_audit(display_name: str | None) -> str:
+    name = (display_name or "Unknown").replace("`", "'").strip()
+    if len(name) > 80:
+        name = name[:77].rstrip() + "..."
+    return f"`{name}`"
+
+
+def summarize_recent_identity_events(events: list[dict], max_events: int = 5) -> tuple[str, list[str]]:
+    """Return a Discord-field summary and compact reason labels for recent identity events."""
+    if not events:
+        return "", []
+
+    lines = []
+    reasons = []
+    for event in events[:max_events]:
+        event_type = event.get("event_type")
+        created_at = int(event.get("created_at") or 0)
+        when = f"<t:{created_at}:R>" if created_at > 0 else "recently"
+
+        if event_type == IDENTITY_EVENT_NICKNAME_CHANGE:
+            if "Recent nickname change" not in reasons:
+                reasons.append("Recent nickname change")
+            old_name = _format_display_name_for_audit(event.get("old_display_name"))
+            new_name = _format_display_name_for_audit(event.get("new_display_name"))
+            lines.append(f"**Recent nickname change** {when}\n{old_name} -> {new_name}")
+        elif event_type == IDENTITY_EVENT_MEMBER_JOIN:
+            if "Recently joined server" not in reasons:
+                reasons.append("Recently joined server")
+            new_name = _format_display_name_for_audit(event.get("new_display_name"))
+            lines.append(f"**Recently joined server** {when}\nDisplay name: {new_name}")
+        else:
+            if "Recent identity activity" not in reasons:
+                reasons.append("Recent identity activity")
+            lines.append(f"**Recent identity activity** {when}")
+
+    if len(events) > max_events:
+        lines.append(f"...and {len(events) - max_events} more recent event(s)")
+
+    return _trim_discord_value("\n".join(lines)), reasons
+
+
+def filter_recent_identity_events(
+    events: list[dict],
+    now_ts: int,
+    window_seconds: int = RECENT_IDENTITY_WINDOW_SECONDS,
+) -> list[dict]:
+    """Filter identity-event dicts to the recent window, newest first."""
+    cutoff = now_ts - window_seconds
+    return sorted(
+        [event for event in events if int(event.get("created_at") or 0) >= cutoff],
+        key=lambda event: int(event.get("created_at") or 0),
+        reverse=True,
+    )
+
+
+_SQLITE_AUTOINCREMENT_TABLES = {
+    "island_visits": """
+        CREATE TABLE island_visits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ign TEXT NOT NULL,
+            origin_island TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            user_id INTEGER,
+            guild_id INTEGER,
+            authorized INTEGER NOT NULL DEFAULT 0,
+            timestamp INTEGER NOT NULL,
+            island_type TEXT NOT NULL DEFAULT 'sub',
+            has_island_access INTEGER NOT NULL DEFAULT 0
+        )
+    """,
+    "warnings": """
+        CREATE TABLE warnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            guild_id INTEGER,
+            reason TEXT,
+            mod_id INTEGER,
+            timestamp INTEGER,
+            visit_id INTEGER REFERENCES island_visits(id),
+            action_type TEXT NOT NULL DEFAULT 'WARN'
+        )
+    """,
+    "dodo_reveal_messages": """
+        CREATE TABLE dodo_reveal_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            island_clean TEXT NOT NULL,
+            channel_id TEXT,
+            message_url TEXT NOT NULL,
+            username TEXT,
+            nickname TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """,
+    "member_identity_events": """
+        CREATE TABLE member_identity_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            guild_id INTEGER,
+            event_type TEXT NOT NULL,
+            old_display_name TEXT,
+            new_display_name TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """,
+}
+
+
+async def _repair_sqlite_autoincrement_table(db, table_name: str, create_sql: str) -> None:
+    """Rebuild old SQLAlchemy-created BIGINT PK tables as SQLite INTEGER rowid tables."""
+    cur = await db.execute(f"PRAGMA table_info({table_name})")
+    rows = await cur.fetchall()
+    if not rows:
+        return
+
+    id_col = next((row for row in rows if row[1] == "id"), None)
+    if id_col and str(id_col[2]).upper() == "INTEGER" and int(id_col[5] or 0) == 1:
+        return
+
+    backup_name = f"{table_name}__bad_autoinc"
+    backup_cur = await db.execute(f"PRAGMA table_info({backup_name})")
+    if await backup_cur.fetchall():
+        await db.execute(f"DROP TABLE {backup_name}")
+
+    await db.execute(f"ALTER TABLE {table_name} RENAME TO {backup_name}")
+    await db.execute(create_sql)
+
+    old_cols_cur = await db.execute(f"PRAGMA table_info({backup_name})")
+    new_cols_cur = await db.execute(f"PRAGMA table_info({table_name})")
+    old_cols = {row[1] for row in await old_cols_cur.fetchall()}
+    new_cols = [row[1] for row in await new_cols_cur.fetchall()]
+    shared_cols = [col for col in new_cols if col in old_cols]
+    if shared_cols:
+        cols_sql = ", ".join(shared_cols)
+        await db.execute(f"INSERT INTO {table_name} ({cols_sql}) SELECT {cols_sql} FROM {backup_name}")
+
+    await db.execute(f"DROP TABLE {backup_name}")
+    logger.warning(f"[FLIGHT] Repaired SQLite autoincrement table: {table_name}")
+
+
+async def _repair_sqlite_autoincrement_tables(db) -> None:
+    if get_backend() != "sqlite":
+        return
+    for table_name, create_sql in _SQLITE_AUTOINCREMENT_TABLES.items():
+        await _repair_sqlite_autoincrement_table(db, table_name, create_sql)
+
+
+async def _ensure_mysql_autoincrement_tables(db) -> None:
+    if get_backend() != "mysql":
+        return
+    for table_name in _SQLITE_AUTOINCREMENT_TABLES:
+        try:
+            await db.execute(f"ALTER TABLE {table_name} MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT")
+        except Exception as exc:
+            logger.debug(f"[FLIGHT] MySQL auto-increment check skipped for {table_name}: {exc}")
+
+
 # --- DATABASE HELPERS ---
 async def init_db():
     """Initializes the database schema."""
     async with connect_async_db() as db:
+        await _repair_sqlite_autoincrement_tables(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS island_visits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,6 +289,25 @@ async def init_db():
                 created_at INTEGER NOT NULL
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS member_identity_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                guild_id INTEGER,
+                event_type TEXT NOT NULL,
+                old_display_name TEXT,
+                new_display_name TEXT,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        try:
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_member_identity_events_user_guild_ts "
+                "ON member_identity_events (user_id, guild_id, created_at)"
+            )
+        except Exception as exc:
+            logger.debug(f"[FLIGHT] member_identity_events index check skipped: {exc}")
+        await _ensure_mysql_autoincrement_tables(db)
         await db.commit()
 
 DEFAULT_REASON_TEXT = (
@@ -1300,6 +1487,75 @@ class FlightLoggerCog(commands.Cog):
         """Return True if this IGN has a recent visit that was authorized AND has a linked target user."""
         return await self._get_recent_authorized_target(ign, hours) is not None
 
+    async def record_member_identity_event(
+        self,
+        member: discord.Member,
+        event_type: str,
+        old_display_name: str | None,
+        new_display_name: str | None,
+        created_at: int | None = None,
+    ) -> None:
+        """Persist recent nickname/join activity used by flight-log triage."""
+        if event_type not in {IDENTITY_EVENT_NICKNAME_CHANGE, IDENTITY_EVENT_MEMBER_JOIN}:
+            return
+        if getattr(member, "bot", False):
+            return
+
+        guild_id = member.guild.id if getattr(member, "guild", None) else None
+        ts = created_at or int(discord.utils.utcnow().timestamp())
+        db = await self._get_db()
+        await db.execute(
+            """
+            INSERT INTO member_identity_events
+                (user_id, guild_id, event_type, old_display_name, new_display_name, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (member.id, guild_id, event_type, old_display_name, new_display_name, ts),
+        )
+        await db.commit()
+
+    async def get_recent_identity_events(
+        self,
+        user_id: int,
+        guild_id: int | None,
+        window_seconds: int = RECENT_IDENTITY_WINDOW_SECONDS,
+    ) -> list[dict]:
+        """Return recent nickname/join events for a member, newest first."""
+        db = await self._get_db()
+        cutoff = int(discord.utils.utcnow().timestamp()) - window_seconds
+        if guild_id is None:
+            cursor = await db.execute(
+                """
+                SELECT event_type, old_display_name, new_display_name, created_at
+                FROM member_identity_events
+                WHERE user_id = ? AND created_at >= ?
+                ORDER BY created_at DESC
+                LIMIT 10
+                """,
+                (user_id, cutoff),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                SELECT event_type, old_display_name, new_display_name, created_at
+                FROM member_identity_events
+                WHERE user_id = ? AND guild_id = ? AND created_at >= ?
+                ORDER BY created_at DESC
+                LIMIT 10
+                """,
+                (user_id, guild_id, cutoff),
+            )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "event_type": row[0],
+                "old_display_name": row[1],
+                "new_display_name": row[2],
+                "created_at": row[3],
+            }
+            for row in rows
+        ]
+
     async def record_authorized_followup_visit(self, ign: str, origin_island: str, destination: str, user_id: int, guild_id: int | None, timestamp: int, island_type: str = 'sub') -> int | None:
         """Record an authorized follow-up visit linked to a previously identified traveler."""
         db = await self._get_db()
@@ -1496,11 +1752,13 @@ class FlightLoggerCog(commands.Cog):
         message_content,
         timestamp,
         island_type='sub',
+        recent_identity_events=None,
     ):
         """Automatically create a manual alert and an xlog entry for suspicious flights."""
         guild = self.bot.get_guild(Config.GUILD_ID)
         guild_id = guild.id if guild else None
         guild_icon = guild.icon.url if guild and guild.icon else None
+        identity_summary, identity_reasons = summarize_recent_identity_events(recent_identity_events or [])
 
         # Ensure we have up-to-date roles (member cache can be stale/partial).
         try:
@@ -1534,6 +1792,8 @@ class FlightLoggerCog(commands.Cog):
             alert_embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
             alert_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
             alert_embed.add_field(name="Destination", value=destination or "Unknown", inline=True)
+            if identity_summary:
+                alert_embed.add_field(name="Recent Identity Activity", value=identity_summary, inline=False)
             if visit_id:
                 alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
             alert_embed.set_image(url=Config.FOOTER_LINE)
@@ -1546,7 +1806,10 @@ class FlightLoggerCog(commands.Cog):
             await self.add_warning(
                 member.id,
                 guild_id,
-                f"Auto-flagged: Nickname identity mismatch ({identities} vs allowed {allowed_identities}; subs {subs})",
+                (
+                    f"Auto-flagged: Nickname identity mismatch ({identities} vs allowed {allowed_identities}; subs {subs})"
+                    + (f"; {', '.join(identity_reasons)}" if identity_reasons else "")
+                ),
                 self.bot.user.id,
                 visit_id,
                 action_type='FLAG',
@@ -1564,6 +1827,8 @@ class FlightLoggerCog(commands.Cog):
                 f"**Identities:** {identities}  |  **Subs:** {subs}  |  **Allowed:** {allowed_identities}\n"
                 f"**Sub Roles:** {(' / '.join(sub_role_mentions)) if sub_role_mentions else 'None detected'}"
             )
+            if identity_reasons:
+                xlog_desc += f"\n**Also Flagged:** {', '.join(identity_reasons)}"
             
             xlog_embed = discord.Embed(
                 title="🚩 Flagged Flight",
@@ -1574,9 +1839,95 @@ class FlightLoggerCog(commands.Cog):
             xlog_embed.add_field(name="IGN", value=f"```yaml\n{ign}```", inline=True)
             xlog_embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
             xlog_embed.add_field(name="Destination", value=self.get_island_channel_link(destination), inline=True)
+            if identity_summary:
+                xlog_embed.add_field(name="Recent Identity Activity", value=identity_summary, inline=False)
             
             xlog_embed.set_image(url=Config.FOOTER_LINE)
             xlog_embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
+
+            xlog_view = discord.ui.View()
+            if message_url:
+                xlog_view.add_item(discord.ui.Button(label="View Flight Log", url=message_url, style=discord.ButtonStyle.link))
+            if alert_msg:
+                xlog_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
+
+            await xlog_channel.send(embed=xlog_embed, view=xlog_view)
+
+    async def _trigger_recent_identity_flag(
+        self,
+        ign,
+        island,
+        destination,
+        member,
+        recent_identity_events,
+        visit_id,
+        message_url,
+        timestamp,
+    ):
+        """Create a manual alert for matched members with recent nickname/join activity."""
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        guild_id = guild.id if guild else None
+        guild_icon = guild.icon.url if guild and guild.icon else None
+        destination_link = self.get_island_channel_link(destination)
+        identity_summary, identity_reasons = summarize_recent_identity_events(recent_identity_events)
+        reason_text = ", ".join(identity_reasons) if identity_reasons else "Recent identity activity"
+
+        output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
+        alert_msg = None
+        if output_channel:
+            alert_embed = discord.Embed(
+                description=(
+                    f"### <a:CampWarning:1172346431542140961> Recent Identity Activity\n"
+                    f"Member {member.mention} matched this flight for **{destination_link}**, "
+                    f"but they have recent nickname/join activity.\n"
+                    f"**Reason:** {reason_text}\n"
+                    f"Use the buttons below to take action."
+                ),
+                color=COLOR_INVESTIGATION,
+                timestamp=timestamp,
+            )
+            alert_embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
+            alert_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+            alert_embed.add_field(name="Destination", value=destination_link, inline=True)
+            if identity_summary:
+                alert_embed.add_field(name="Recent Identity Activity", value=identity_summary, inline=False)
+            if visit_id:
+                alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            alert_embed.set_image(url=Config.FOOTER_LINE)
+            alert_embed.set_footer(text="Chopaeng Camp - Flight Logger", icon_url=guild_icon)
+
+            action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
+            alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
+
+            await self.add_warning(
+                member.id,
+                guild_id,
+                f"Auto-flagged: {reason_text}",
+                self.bot.user.id,
+                visit_id,
+                action_type='FLAG',
+            )
+
+        xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        if xlog_channel:
+            xlog_embed = discord.Embed(
+                title="Flagged Flight",
+                description=(
+                    f"**{member.mention} ({member.display_name})**\n"
+                    f"**Auto-Flag:** {reason_text}"
+                ),
+                color=COLOR_INVESTIGATION,
+                timestamp=timestamp,
+            )
+            xlog_embed.add_field(name="IGN", value=f"```yaml\n{ign}```", inline=True)
+            xlog_embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
+            xlog_embed.add_field(name="Destination", value=destination_link, inline=True)
+            if identity_summary:
+                xlog_embed.add_field(name="Recent Identity Activity", value=identity_summary, inline=False)
+            if visit_id:
+                xlog_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            xlog_embed.set_image(url=Config.FOOTER_LINE)
+            xlog_embed.set_footer(text="Chopaeng Camp - Match Log", icon_url=guild_icon)
 
             xlog_view = discord.ui.View()
             if message_url:
@@ -1908,6 +2259,34 @@ class FlightLoggerCog(commands.Cog):
         return candidates
 
     @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if before.display_name == after.display_name:
+            return
+        try:
+            await self.record_member_identity_event(
+                after,
+                IDENTITY_EVENT_NICKNAME_CHANGE,
+                before.display_name,
+                after.display_name,
+            )
+            logger.info(f"[FLIGHT] Recorded nickname change for {after.id}: {before.display_name!r} -> {after.display_name!r}")
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] Could not record nickname change for {after.id}: {exc}")
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        try:
+            await self.record_member_identity_event(
+                member,
+                IDENTITY_EVENT_MEMBER_JOIN,
+                None,
+                member.display_name,
+            )
+            logger.info(f"[FLIGHT] Recorded member join for {member.id}: {member.display_name!r}")
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] Could not record member join for {member.id}: {exc}")
+
+    @commands.Cog.listener()
     async def on_message(self, message):
         if message.author == self.bot.user or message.channel.id != Config.FLIGHT_LISTEN_CHANNEL_ID:
             return
@@ -1998,6 +2377,7 @@ class FlightLoggerCog(commands.Cog):
                 current_island_subs = [r for r in member.roles if r.id in sub_roles]
                 other_subs = [r for r in all_member_subs if r.id not in sub_roles]
                 allowed_identities = self.get_allowed_identity_count(member, len(all_member_subs))
+                recent_identity_events = await self.get_recent_identity_events(member.id, guild_id)
 
                 if max_identities > allowed_identities:
                     # SUSPICIOUS: Automatically trigger manual alert flow
@@ -2013,6 +2393,20 @@ class FlightLoggerCog(commands.Cog):
                         message_content,
                         embed_timestamp,
                         island_type=island_type,
+                        recent_identity_events=recent_identity_events,
+                    )
+                    return
+
+                if recent_identity_events:
+                    await self._trigger_recent_identity_flag(
+                        ign,
+                        island,
+                        destination,
+                        member,
+                        recent_identity_events,
+                        visit_id,
+                        message_url,
+                        embed_timestamp,
                     )
                     return
 
@@ -2442,30 +2836,24 @@ class FlightLoggerCog(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="flightdebug", aliases=["fdebug"])
-    @app_commands.describe(test_string="The message string to test against the regex")
+    @app_commands.describe(
+        character_name="ACNH character name from the flight log",
+        island_name="ACNH island name from the flight log",
+    )
     @commands.has_permissions(manage_messages=True)
-    async def flight_debug(self, ctx, *, test_string: str = None):
+    async def flight_debug(self, ctx, character_name: str, island_name: str):
         """
-        Test the regex and member-matching against a raw log message string.
-        Usage: !fdebug [Flight Log Message]
+        Test member-matching against a character and island name.
+        Usage: /flightdebug character_name island_name
         """
-        if not test_string:
-            return await ctx.send("**Usage:** `!fdebug [Message Content]`")
-
-        match = self.join_pattern.search(test_string)
-
-        if not match:
-            embed = discord.Embed(title="Regex Match Failed", color=0xff0000)
-            embed.description = (
-                "Input did not match pattern.\n"
-                "**Check:** Format changes, hidden characters, or case sensitivity."
+        if not character_name or not island_name:
+            return await ctx.send(
+                "**Usage:** `/flightdebug character_name island_name`\n"
+                "Prefix usage for names with spaces: `!fdebug \"Character Name\" \"Island Name\"`"
             )
-            embed.add_field(name="Current Pattern", value=f"```regex\n{self.join_pattern.pattern}\n```", inline=False)
-            return await ctx.send(embed=embed)
 
-        ign = match.group(1).strip()
-        island = match.group(2).strip()
-        dest = match.group(3).strip()
+        ign = character_name.strip()
+        island = island_name.strip()
         ign_norm = self.normalize_identity_text(ign)
         isl_norm = self.normalize_identity_text(island)
 
@@ -2477,28 +2865,37 @@ class FlightLoggerCog(commands.Cog):
             self.find_all_candidates, ctx.guild, ign_norm, isl_norm
         )
 
-        destination_link = self.get_island_channel_link(dest)
-
         if found:
-            member_line = "\n".join(f"{m.mention} (`{m.display_name}`)" for m in found)
+            member_lines = []
+            found_has_identity_flags = False
+            for m in found:
+                events = await self.get_recent_identity_events(m.id, ctx.guild.id if ctx.guild else None)
+                _, reasons = summarize_recent_identity_events(events)
+                suffix = ""
+                if reasons:
+                    found_has_identity_flags = True
+                    suffix = f" - FLAG: {', '.join(reasons)}"
+                member_lines.append(f"{m.mention} (`{m.display_name}`){suffix}")
             embed = discord.Embed(
                 title="<:Cho_Check:1456715827213504593> Match Found",
-                description=f"This log entry **would be verified** as a known traveler.",
-                color=COLOR_SUCCESS,
+                description=(
+                    "This log entry **would trigger manual review** due to recent identity activity."
+                    if found_has_identity_flags
+                    else "This log entry **would be verified** as a known traveler."
+                ),
+                color=COLOR_INVESTIGATION if found_has_identity_flags else COLOR_SUCCESS,
             )
             embed.add_field(name="IGN",         value=f"`{ign}`",            inline=True)
             embed.add_field(name="Island",      value=f"`{island}`",         inline=True)
-            embed.add_field(name="Destination", value=destination_link,      inline=True)
-            embed.add_field(name="Matched Member(s)", value=member_line,     inline=False)
+            embed.add_field(name="Matched Member(s)", value="\n".join(member_lines), inline=False)
         else:
             embed = discord.Embed(
                 title=f"{Config.EMOJI_FAIL} No Match",
-                description=f"This log entry **would trigger an unknown traveler alert**.",
+                description="This character/island pair **would trigger an unknown traveler alert**.",
                 color=COLOR_ALERT,
             )
             embed.add_field(name="IGN",         value=f"`{ign}`",            inline=True)
             embed.add_field(name="Island",      value=f"`{island}`",         inline=True)
-            embed.add_field(name="Destination", value=destination_link,      inline=True)
 
             # Show partial candidates (IGN-only or island-only matches) to help diagnose
             partial = [c for c in candidates if c["ign_match"] or c["island_match"]][:MAX_DEBUG_CANDIDATES]
@@ -2508,6 +2905,10 @@ class FlightLoggerCog(commands.Cog):
                     flags = []
                     if c["ign_match"]:    flags.append("IGN ✓")
                     if c["island_match"]: flags.append("Island ✓")
+                    events = await self.get_recent_identity_events(c["member"].id, ctx.guild.id if ctx.guild else None)
+                    _, reasons = summarize_recent_identity_events(events)
+                    if reasons:
+                        flags.append(f"FLAG: {', '.join(reasons)}")
                     cand_lines.append(f"{c['member'].mention} (`{c['member'].display_name}`) — {', '.join(flags)}")
                 embed.add_field(name="Closest Candidates", value="\n".join(cand_lines), inline=False)
             else:

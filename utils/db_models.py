@@ -77,7 +77,7 @@ class IslandMetadata(Base):
 class IslandVisit(Base):
     __tablename__ = "island_visits"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ign: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     origin_island: Mapped[str] = mapped_column(String(255), nullable=False)
     destination: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -97,7 +97,7 @@ class IslandVisit(Base):
 class Warning(Base):
     __tablename__ = "warnings"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     guild_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     reason: Mapped[str | None] = mapped_column(Text)
@@ -114,7 +114,7 @@ class Warning(Base):
 class DodoRevealMessage(Base):
     __tablename__ = "dodo_reveal_messages"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     island_clean: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     channel_id: Mapped[str | None] = mapped_column(String(64))
@@ -124,10 +124,26 @@ class DodoRevealMessage(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
 
 
+class MemberIdentityEvent(Base):
+    __tablename__ = "member_identity_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    guild_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    old_display_name: Mapped[str | None] = mapped_column(String(255))
+    new_display_name: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_member_identity_events_user_guild_ts", "user_id", "guild_id", "created_at"),
+    )
+
+
 class DashboardAuditEvent(Base):
     __tablename__ = "dashboard_audit_events"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     actor_user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     actor_name: Mapped[str | None] = mapped_column(String(255))
     action: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

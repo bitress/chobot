@@ -15,7 +15,7 @@ from functools import lru_cache
 from typing import Any, Iterable
 from urllib.parse import quote_plus
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
@@ -233,8 +233,22 @@ def get_engine():
         "future": True,
     }
     if get_backend() == "sqlite":
-        kwargs["connect_args"] = {"check_same_thread": False}
-    return create_engine(get_database_url(), **kwargs)
+        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+    engine = create_engine(get_database_url(), **kwargs)
+    if get_backend() == "sqlite":
+        event.listen(engine, "connect", _configure_sqlite_connection)
+    return engine
+
+
+def _configure_sqlite_connection(dbapi_conn, _connection_record) -> None:
+    try:
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA busy_timeout = 30000")
+        cur.execute("PRAGMA journal_mode = WAL")
+        cur.execute("PRAGMA synchronous = NORMAL")
+        cur.close()
+    except Exception:
+        pass
 
 
 @lru_cache(maxsize=1)
