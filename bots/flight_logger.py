@@ -1937,6 +1937,106 @@ class FlightLoggerCog(commands.Cog):
 
             await xlog_channel.send(embed=xlog_embed, view=xlog_view)
 
+    async def _trigger_island_access_mismatch_flag(
+        self,
+        ign,
+        island,
+        destination,
+        member,
+        visit_id,
+        required_roles,
+        member_sub_roles,
+        recent_identity_events,
+        message_url,
+        timestamp,
+    ):
+        """Create a manual alert when a member joins an island they are not subscribed to."""
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        guild_id = guild.id if guild else None
+        guild_icon = guild.icon.url if guild and guild.icon else None
+        destination_link = self.get_island_channel_link(destination)
+        identity_summary, identity_reasons = summarize_recent_identity_events(recent_identity_events or [])
+        required_text = " / ".join(r.mention for r in required_roles) if required_roles else "Unknown"
+        member_sub_text = " / ".join(r.mention for r in member_sub_roles) if member_sub_roles else "None detected"
+        reason_text = "No subscription role for destination island"
+
+        output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
+        alert_msg = None
+        if output_channel:
+            alert_embed = discord.Embed(
+                description=(
+                    "### <a:CampWarning:1172346431542140961> Island Access Mismatch\n"
+                    f"Member {member.mention} matched this flight for **{destination_link}**, "
+                    "but they do not have a subscription role for that island.\n"
+                    f"**Member Subscription(s):** {member_sub_text}\n"
+                    f"**Required For Destination:** {required_text}\n"
+                    "Use the buttons below to take action."
+                ),
+                color=COLOR_INVESTIGATION,
+                timestamp=timestamp,
+            )
+            alert_embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
+            alert_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+            alert_embed.add_field(name="Destination", value=destination_link, inline=True)
+            if identity_summary:
+                alert_embed.add_field(name="Recent Identity Activity", value=identity_summary, inline=False)
+            if visit_id:
+                alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            alert_embed.set_image(url=Config.FOOTER_LINE)
+            alert_embed.set_footer(text="Chopaeng Camp - Flight Logger", icon_url=guild_icon)
+
+            action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
+            alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
+
+            await self.add_warning(
+                member.id,
+                guild_id,
+                (
+                    f"Auto-flagged: {reason_text}; member subs: "
+                    f"{', '.join(r.name for r in member_sub_roles) if member_sub_roles else 'none'}; "
+                    f"required: {', '.join(r.name for r in required_roles) if required_roles else 'unknown'}"
+                    + (f"; {', '.join(identity_reasons)}" if identity_reasons else "")
+                ),
+                self.bot.user.id,
+                visit_id,
+                action_type='FLAG',
+            )
+
+        xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        if xlog_channel:
+            xlog_desc = (
+                f"**{member.mention} ({member.display_name})**\n"
+                f"**Auto-Flag:** {reason_text}\n"
+                f"**Member Subscription(s):** {member_sub_text}\n"
+                f"**Required For Destination:** {required_text}"
+            )
+            if identity_reasons:
+                xlog_desc += f"\n**Also Flagged:** {', '.join(identity_reasons)}"
+
+            xlog_embed = discord.Embed(
+                title="Flagged Flight",
+                description=xlog_desc,
+                color=COLOR_INVESTIGATION,
+                timestamp=timestamp,
+            )
+            xlog_embed.add_field(name="IGN", value=f"```yaml\n{ign}```", inline=True)
+            xlog_embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
+            xlog_embed.add_field(name="Destination", value=destination_link, inline=True)
+            if identity_summary:
+                xlog_embed.add_field(name="Recent Identity Activity", value=identity_summary, inline=False)
+            if visit_id:
+                xlog_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            xlog_embed.set_image(url=Config.FOOTER_LINE)
+            xlog_embed.set_footer(text="Chopaeng Camp - Match Log", icon_url=guild_icon)
+
+            xlog_view = discord.ui.View()
+            if message_url:
+                xlog_view.add_item(discord.ui.Button(label="View Flight Log", url=message_url, style=discord.ButtonStyle.link))
+            if alert_msg:
+                xlog_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
+
+            await xlog_channel.send(embed=xlog_embed, view=xlog_view)
+
     def cog_unload(self):
         self.fetch_islands_task.cancel()
         self.cleanup_warnings_task.cancel()
@@ -2376,6 +2476,10 @@ class FlightLoggerCog(commands.Cog):
                 all_member_subs = [r for r in member.roles if r.id in cog.all_sub_roles]
                 current_island_subs = [r for r in member.roles if r.id in sub_roles]
                 other_subs = [r for r in all_member_subs if r.id not in sub_roles]
+                required_destination_roles = [
+                    role for role in (guild.get_role(role_id) for role_id in sub_roles)
+                    if role is not None
+                ]
                 allowed_identities = self.get_allowed_identity_count(member, len(all_member_subs))
                 recent_identity_events = await self.get_recent_identity_events(member.id, guild_id)
 
@@ -2394,6 +2498,21 @@ class FlightLoggerCog(commands.Cog):
                         embed_timestamp,
                         island_type=island_type,
                         recent_identity_events=recent_identity_events,
+                    )
+                    return
+
+                if sub_roles and all_member_subs and not current_island_subs:
+                    await self._trigger_island_access_mismatch_flag(
+                        ign,
+                        island,
+                        destination,
+                        member,
+                        visit_id,
+                        required_destination_roles,
+                        all_member_subs,
+                        recent_identity_events,
+                        message_url,
+                        embed_timestamp,
                     )
                     return
 
