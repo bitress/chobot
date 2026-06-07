@@ -93,12 +93,14 @@ class Config:
     DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
     WEBSITE_LOGIN_LOG_CHANNEL_ID = _get_int("WEBSITE_LOGIN_LOG_CHANNEL_ID", 1510672689998860440)
     API_BASE_URL = os.getenv("API_BASE_URL", "https://console.chopaeng.com").strip().rstrip("/")
+    _FRONTEND_ORIGINS_ENV = (
+        os.getenv("FRONTEND_ORIGINS")
+        or os.getenv("FLASK_ALLOWED_ORIGINS")
+        or "https://www.chopaeng.com,https://chopaeng.com,http://localhost:5173,http://localhost:3000"
+    )
     FRONTEND_ORIGINS = [
         origin.strip()
-        for origin in os.getenv(
-            "FRONTEND_ORIGINS",
-            "https://www.chopaeng.com,https://chopaeng.com,http://localhost:5173,http://localhost:3000",
-        ).split(",")
+        for origin in _FRONTEND_ORIGINS_ENV.split(",")
         if origin.strip()
     ]
 

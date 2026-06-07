@@ -244,9 +244,117 @@ patreon_cache = {
 
 # Data manager will be set from main.py
 data_manager = None
+_fallback_item_cache = None
+_fallback_item_cache_mtime = None
+_fallback_item_cache_lock = threading.Lock()
+_fallback_villager_cache = {}
+_fallback_villager_cache_time = None
+_fallback_villager_cache_lock = threading.Lock()
+_FALLBACK_CACHE_FILE = "cache_dump.json"
+_FALLBACK_VILLAGER_CACHE_TTL = 300
 
 # Guard: prevents multiple concurrent cache-refresh operations
 _refresh_lock = threading.Lock()
+
+
+def _request_search_query(*names: str) -> str:
+    for name in names:
+        value = request.args.get(name, "")
+        if value and value.strip():
+            return normalize_text(value)
+    return ""
+
+
+def _load_fallback_item_cache() -> tuple[dict, datetime | None]:
+    global _fallback_item_cache, _fallback_item_cache_mtime
+    cache_path = os.path.join(os.getcwd(), _FALLBACK_CACHE_FILE)
+    if not os.path.exists(cache_path):
+        return {}, None
+
+    try:
+        mtime = os.path.getmtime(cache_path)
+        with _fallback_item_cache_lock:
+            if _fallback_item_cache is not None and _fallback_item_cache_mtime == mtime:
+                return dict(_fallback_item_cache), datetime.fromtimestamp(mtime)
+
+            with open(cache_path, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if not isinstance(loaded, dict):
+                return {}, None
+            _fallback_item_cache = loaded
+            _fallback_item_cache_mtime = mtime
+            return dict(loaded), datetime.fromtimestamp(mtime)
+    except Exception as exc:
+        logger.warning("Failed to load fallback item cache: %s", exc)
+        return {}, None
+
+
+def _get_item_cache() -> tuple[dict, datetime | None, float | None, str]:
+    if data_manager is not None:
+        with data_manager.lock:
+            return (
+                dict(data_manager.cache),
+                data_manager.last_update,
+                float(data_manager.cache_refresh_hours or 0) * 3600,
+                "data_manager",
+            )
+
+    cache, last_update = _load_fallback_item_cache()
+    return cache, last_update, None, "disk_cache"
+
+
+def _scan_villager_dirs(villager_dirs) -> dict:
+    data = {}
+    paths_to_scan = tuple(sorted(p for p in villager_dirs if p and os.path.exists(p)))
+    if not paths_to_scan:
+        return data
+
+    for base_dir in paths_to_scan:
+        for root, _dirs, files in os.walk(base_dir):
+            if "Villagers.txt" not in files:
+                continue
+
+            location_name = os.path.basename(root)
+            file_path = os.path.join(root, "Villagers.txt")
+            try:
+                with open(file_path, "rb") as fh:
+                    raw_content = fh.read().decode("utf-8", errors="ignore")
+            except Exception as exc:
+                logger.warning("Could not read Villagers.txt at %s: %s", location_name, exc)
+                continue
+
+            raw_content = re.sub(r"Villagers\s+on\s+[^:]+:", "", raw_content, flags=re.IGNORECASE)
+            for name in re.split(r"[,\n\r]+", raw_content):
+                clean_name = name.strip()
+                if not clean_name or len(clean_name) > 30:
+                    continue
+                if clean_name in ["Ren?E", "Ren?e"]:
+                    clean_name = "Renee"
+                key = normalize_text(clean_name)
+                if key in data:
+                    current_locs = data[key].split(", ")
+                    if location_name not in current_locs:
+                        data[key] += f", {location_name}"
+                else:
+                    data[key] = location_name
+    return data
+
+
+def _get_villager_map(villager_dirs) -> tuple[dict, str]:
+    global _fallback_villager_cache, _fallback_villager_cache_time
+    if data_manager is not None:
+        return data_manager.get_villagers(villager_dirs), "data_manager"
+
+    now = time.time()
+    cache_key = tuple(sorted(p for p in villager_dirs if p))
+    with _fallback_villager_cache_lock:
+        cached = _fallback_villager_cache.get(cache_key)
+        if cached is not None and _fallback_villager_cache_time and now - _fallback_villager_cache_time < _FALLBACK_VILLAGER_CACHE_TTL:
+            return cached, "disk_scan"
+        scanned = _scan_villager_dirs(villager_dirs)
+        _fallback_villager_cache[cache_key] = scanned
+        _fallback_villager_cache_time = now
+        return scanned, "disk_scan"
 
 # ---------------------------------------------------------------------------
 # Auth — short-lived opaque tokens for Discord OAuth (website subscribers)
@@ -1448,12 +1556,8 @@ def reveal_dodo(name):
 @app.route('/')
 def home():
     """API home with endpoint info and system status"""
-    cache_count = 0
-    last_update = None
-    if data_manager:
-        with data_manager.lock:
-            cache_count = len(data_manager.cache)
-            last_update = data_manager.last_update
+    cache, last_update, _refresh_interval, source = _get_item_cache()
+    cache_count = len([key for key in cache if key != "_display"])
 
     return jsonify({
         "system": {
@@ -1465,6 +1569,8 @@ def home():
         "data_stats": {
             "items_in_cache": cache_count,
             "last_gsheets_sync": last_update.isoformat() if last_update else None,
+            "source": source,
+            "data_manager_initialised": data_manager is not None,
             "island_file_cache_ttl": f"{_FILE_CACHE_TTL}s"
         },
         "endpoints": {
@@ -1499,24 +1605,22 @@ def home():
 @app.route('/api/health')
 def health():
     """Health check endpoint for monitoring"""
-    if data_manager is None:
-        return jsonify({"status": "unavailable", "error": "Data manager not initialised"}), 503
+    cache, last_update, refresh_interval_seconds, source = _get_item_cache()
+    cache_count = len([key for key in cache if key != "_display"])
+    is_healthy = cache_count > 0
 
-    with data_manager.lock:
-        cache_count = len(data_manager.cache)
-        last_update = data_manager.last_update
-
-    is_healthy = cache_count > 0 and last_update is not None
-
-    refresh_interval_seconds = int(data_manager.cache_refresh_hours * 3600)
     if last_update is not None:
-        next_update = (last_update + timedelta(seconds=refresh_interval_seconds)).isoformat()
+        next_update = (
+            last_update + timedelta(seconds=refresh_interval_seconds)
+        ).isoformat() if refresh_interval_seconds else None
     else:
         next_update = None
 
     response = {
         "status": "healthy" if is_healthy else "degraded",
         "timestamp": datetime.now().isoformat(),
+        "source": source,
+        "data_manager_initialised": data_manager is not None,
         "cache": {
             "items": cache_count,
             "last_update": last_update.isoformat() if last_update else None,
@@ -1537,16 +1641,14 @@ def health():
 def find_item():
     """Text response for item search"""
     user = request.args.get('user', 'User')
-    query = normalize_text(request.args.get('q', ''))
+    query = _request_search_query("q", "item", "name")
 
     if not query:
         return f"Hey {user}, type !find <item name> to search."
 
-    if data_manager is None:
+    cache, _last_update, _refresh_interval, _source = _get_item_cache()
+    if not cache:
         return f"Hey {user}, the search service is not available right now. Please try again later."
-
-    with data_manager.lock:
-        cache = data_manager.cache
 
     found_locs = cache.get(query)
 
@@ -1568,16 +1670,14 @@ def find_item():
 def api_find_item():
     """JSON response for item search"""
     user = request.args.get('user', 'User')
-    query = normalize_text(request.args.get('q', ''))
+    query = _request_search_query("q", "item", "name")
 
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !find <item name> to search."})
 
-    if data_manager is None:
-        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
-
-    with data_manager.lock:
-        cache = data_manager.cache
+    cache, _last_update, _refresh_interval, source = _get_item_cache()
+    if not cache:
+        return jsonify({"error": "Service unavailable - item cache is not loaded"}), 503
 
     found_locs = cache.get(query)
 
@@ -1587,6 +1687,7 @@ def api_find_item():
         return jsonify({
             "found": True,
             "query": query,
+            "source": source,
             "results": {"free": free, "sub": sub, "order": order},
             "suggestions": [],
             "message": f"Hey {user}, I found {query.upper()} {final_msg}"
@@ -1599,6 +1700,7 @@ def api_find_item():
         return jsonify({
             "found": False,
             "query": query,
+            "source": source,
             "suggestions": valid_suggestions,
             "message": f"Hey {user}, I couldn't find \"{query}\" - Did you mean: {', '.join(valid_suggestions)}?"
         })
@@ -1606,10 +1708,10 @@ def api_find_item():
     return jsonify({
         "found": False,
         "query": query,
+        "source": source,
         "suggestions": [],
         "message": f"Hey {user}, I couldn't find \"{query}\" or anything similar."
     })
-
 
 # --- VILLAGER SEARCH ROUTES ---
 
@@ -1617,15 +1719,15 @@ def api_find_item():
 def find_villager():
     """Text response for villager search"""
     user = request.args.get('user', 'User')
-    query = normalize_text(request.args.get('q', ''))
+    query = _request_search_query("q", "villager", "name")
 
     if not query:
         return f"Hey {user}, type !villager <n> to search."
 
-    if data_manager is None:
+    villager_map, _source = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
+    if not villager_map:
         return f"Hey {user}, the search service is not available right now. Please try again later."
 
-    villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
     found_locs = villager_map.get(query)
 
     if found_locs:
@@ -1646,15 +1748,15 @@ def find_villager():
 def api_find_villager():
     """JSON response for villager search"""
     user = request.args.get('user', 'User')
-    query = normalize_text(request.args.get('q', ''))
+    query = _request_search_query("q", "villager", "name")
 
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !villager <n> to search."})
 
-    if data_manager is None:
-        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
+    villager_map, source = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
+    if not villager_map:
+        return jsonify({"error": "Service unavailable - villager cache is not loaded"}), 503
 
-    villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
     found_locs = villager_map.get(query)
 
     if found_locs:
@@ -1663,6 +1765,7 @@ def api_find_villager():
         return jsonify({
             "found": True,
             "query": query,
+            "source": source,
             "results": {"free": free, "sub": sub, "order": order},
             "suggestions": [],
             "message": f"Hey {user}, I found villager {query.upper()} {final_msg}"
@@ -1675,6 +1778,7 @@ def api_find_villager():
         return jsonify({
             "found": False,
             "query": query,
+            "source": source,
             "suggestions": valid_suggestions,
             "message": f"Hey {user}, I couldn't find villager \"{query}\" - Did you mean: {', '.join(valid_suggestions)}?"
         })
@@ -1682,18 +1786,18 @@ def api_find_villager():
     return jsonify({
         "found": False,
         "query": query,
+        "source": source,
         "suggestions": [],
         "message": f"Hey {user}, I couldn't find a villager named \"{query}\"."
     })
 
-
 @app.route('/api/villagers/list')
 def api_list_villagers_by_island():
     """List all villagers grouped by island"""
-    if data_manager is None:
-        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
+    villager_map, source = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR, Config.ORDER_BOT_DIR])
+    if not villager_map:
+        return jsonify({"error": "Service unavailable - villager cache is not loaded"}), 503
 
-    villager_map = data_manager.get_villagers([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR, Config.ORDER_BOT_DIR])
     island_manifest = {}
 
     for villager_name, locations in villager_map.items():
@@ -1708,10 +1812,10 @@ def api_list_villagers_by_island():
 
     return jsonify({
         "timestamp": datetime.now().isoformat(),
+        "source": source,
         "total_islands": len(island_manifest),
         "islands": island_manifest
     })
-
 
 # --- DODO CODE / ISLAND STATUS ROUTES ---
 
