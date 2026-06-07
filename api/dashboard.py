@@ -33,6 +33,7 @@ from flask import (
 from utils.config import Config
 from utils.auth_tokens import get_auth_user
 from utils.database import connect_db, get_backend
+from utils.discord_http import request as discord_request
 from utils.db_migration import (
     dry_run_sqlite_to_mariadb,
     inspect_sqlite_source,
@@ -132,15 +133,15 @@ def _resolve_discord_username(user_id) -> str:
     if not token:
         return uid
     try:
-        req = urllib.request.Request(
+        resp = discord_request(
             f"https://discord.com/api/v10/users/{uid}",
             headers={
                 "Authorization": f"Bot {token}",
                 "User-Agent":    _DISCORD_USER_AGENT,
             },
+            timeout=5,
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
+        data = json.loads(resp.body)
         name = data.get("global_name") or data.get("username") or uid
     except urllib.error.HTTPError as exc:
         if exc.code == 403:
@@ -947,7 +948,7 @@ def oauth2_callback():
             "code":          code,
             "redirect_uri":  callback_url,
         }).encode()
-        req = urllib.request.Request(
+        resp = discord_request(
             "https://discord.com/api/oauth2/token",
             data=token_body,
             headers={
@@ -955,9 +956,9 @@ def oauth2_callback():
                 "User-Agent":   _DISCORD_USER_AGENT,
             },
             method="POST",
+            timeout=10,
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            token_resp = json.loads(resp.read().decode())
+        token_resp = json.loads(resp.body)
     except urllib.error.HTTPError as exc:
         body = ""
         try:
@@ -984,15 +985,15 @@ def oauth2_callback():
     role = None
     member_perms = 0
     try:
-        mem_req = urllib.request.Request(
+        resp = discord_request(
             f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "User-Agent":    _DISCORD_USER_AGENT,
             },
+            timeout=10,
         )
-        with urllib.request.urlopen(mem_req, timeout=10) as resp:
-            member_data = json.loads(resp.read().decode())
+        member_data = json.loads(resp.body)
         member_roles = [str(r) for r in member_data.get("roles", [])]
         try:
             member_perms = int(member_data.get("permissions", "0") or 0)
@@ -1030,15 +1031,15 @@ def oauth2_callback():
     discord_user_id    = ""
     discord_avatar_url = ""
     try:
-        user_req = urllib.request.Request(
+        resp = discord_request(
             "https://discord.com/api/users/@me",
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "User-Agent":    _DISCORD_USER_AGENT,
             },
+            timeout=10,
         )
-        with urllib.request.urlopen(user_req, timeout=10) as resp:
-            user_data = json.loads(resp.read().decode())
+        user_data = json.loads(resp.body)
         discord_user_id  = str(user_data.get("id", ""))
         discord_username = user_data.get("global_name") or user_data.get("username", "")
         avatar_hash      = user_data.get("avatar") or ""

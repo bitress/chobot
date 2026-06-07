@@ -581,6 +581,7 @@ class DiscordCommandCog(commands.Cog):
         self.free_island_lookup = {}
         self.order_island_lookup = {}
         self.free_dodo_board_messages: list[discord.Message] = []
+        self.free_dodo_board_fingerprints: list[str] = []
         self.free_dodo_board_startup_cleanup_done = False
 
         # island_clean -> True (down) / False (up); None = not yet initialized
@@ -1019,6 +1020,12 @@ class DiscordCommandCog(commands.Cog):
         )
         return embed
 
+    @staticmethod
+    def _free_dodo_embed_fingerprint(embed: discord.Embed) -> str:
+        payload = embed.to_dict()
+        payload.pop("timestamp", None)
+        return repr(payload)
+
     async def _load_existing_free_dodo_board_messages(self, channel: discord.TextChannel) -> None:
         """Find board messages from the current bot after a restart."""
         if self.free_dodo_board_messages:
@@ -1070,6 +1077,7 @@ class DiscordCommandCog(commands.Cog):
             return
 
         self.free_dodo_board_messages = []
+        self.free_dodo_board_fingerprints = []
         if deleted:
             logger.info(f"[DISCORD] Deleted {deleted} stale Free Dodo board message(s) in #{channel.name}")
 
@@ -1077,16 +1085,28 @@ class DiscordCommandCog(commands.Cog):
         """Edit or create individual Discord messages for each Free Dodo board entry."""
         await self._load_existing_free_dodo_board_messages(channel)
         expected_count = len(embeds)
+        fingerprints = [self._free_dodo_embed_fingerprint(embed) for embed in embeds]
 
         for idx, embed in enumerate(embeds):
             try:
                 if idx < len(self.free_dodo_board_messages):
+                    if (
+                        idx < len(self.free_dodo_board_fingerprints)
+                        and self.free_dodo_board_fingerprints[idx] == fingerprints[idx]
+                    ):
+                        continue
                     await self.free_dodo_board_messages[idx].edit(content=None, embeds=[embed])
+                    if idx < len(self.free_dodo_board_fingerprints):
+                        self.free_dodo_board_fingerprints[idx] = fingerprints[idx]
+                    else:
+                        self.free_dodo_board_fingerprints.append(fingerprints[idx])
                 else:
                     msg = await channel.send(embed=embed)
                     self.free_dodo_board_messages.append(msg)
+                    self.free_dodo_board_fingerprints.append(fingerprints[idx])
             except discord.NotFound:
                 self.free_dodo_board_messages = []
+                self.free_dodo_board_fingerprints = []
                 logger.warning("[DISCORD] Free Dodo board message disappeared; it will be recreated next cycle.")
                 return
             except discord.Forbidden:
@@ -1098,6 +1118,7 @@ class DiscordCommandCog(commands.Cog):
 
         extras = self.free_dodo_board_messages[expected_count:]
         self.free_dodo_board_messages = self.free_dodo_board_messages[:expected_count]
+        self.free_dodo_board_fingerprints = self.free_dodo_board_fingerprints[:expected_count]
         for msg in extras:
             try:
                 await msg.delete()

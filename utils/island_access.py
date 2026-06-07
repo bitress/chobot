@@ -11,11 +11,11 @@ import json
 import logging
 import re
 import time
-import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
 from utils.config import Config
+from utils.discord_http import request as discord_request
 from utils.helpers import clean_text
 
 logger = logging.getLogger("IslandAccess")
@@ -131,12 +131,12 @@ def discord_api_json(path: str, timeout: int = 10) -> dict | list | None:
     if not auth_value:
         return None
     try:
-        req = urllib.request.Request(
+        resp = discord_request(
             f"https://discord.com/api/v10{path}",
             headers={"Authorization": auth_value, "User-Agent": DISCORD_USER_AGENT},
+            timeout=timeout,
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
+        return json.loads(resp.body)
     except Exception as exc:
         logger.warning("Discord API request failed for %s: %s", path, exc)
         return None

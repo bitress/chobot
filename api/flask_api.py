@@ -30,6 +30,8 @@ from werkzeug.serving import ThreadedWSGIServer
 from utils.config import Config
 from utils import island_access
 from utils.database import connect_db
+from utils.discord_http import json_request as discord_json_request
+from utils.discord_http import request as discord_request
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
 from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token
 from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value, _parse_visitor_list
@@ -84,16 +86,14 @@ def _post_website_login_log_message(event_id: int, event: dict) -> None:
 
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
     try:
-        resp = requests.post(
+        data = discord_json_request(
             url,
-            json=payload,
+            method="POST",
+            payload=payload,
             headers={"Authorization": auth_value, "User-Agent": _DISCORD_UA},
             timeout=10,
-        )
-        if resp.status_code >= 300:
-            logger.warning("Website login Discord log failed HTTP %s: %s", resp.status_code, resp.text[:300])
-            return
-        message_id = str((resp.json() or {}).get("id") or "")
+        ) or {}
+        message_id = str(data.get("id") or "")
         if message_id:
             db = get_db()
             try:
@@ -329,12 +329,12 @@ def _discord_api_json(path: str, timeout: int = 10) -> dict | list | None:
     if not auth_value:
         return None
     try:
-        req = urllib.request.Request(
+        resp = discord_request(
             f"https://discord.com/api/v10{path}",
             headers={"Authorization": auth_value, "User-Agent": _DISCORD_UA},
+            timeout=timeout,
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
+        return json.loads(resp.body)
     except Exception as exc:
         logger.warning("Discord API request failed for %s: %s", path, exc)
         return None
@@ -481,12 +481,12 @@ def _get_guild_role_names() -> dict[str, str]:
     if not auth_value:
         return {}
     try:
-        req = urllib.request.Request(
+        resp = discord_request(
             f"https://discord.com/api/v10/guilds/{guild_id}/roles",
             headers={"Authorization": auth_value, "User-Agent": _DISCORD_UA},
+            timeout=10,
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            roles = json.loads(resp.read().decode())
+        roles = json.loads(resp.body)
         role_names = {
             str(role.get("id")): str(role.get("name") or role.get("id"))
             for role in roles
@@ -814,36 +814,37 @@ def _fire_dodo_webhook(
     sep = "&" if "?" in webhook_execute else "?"
     webhook_execute = f"{webhook_execute}{sep}wait=true"
     try:
-        req = urllib.request.Request(
-            webhook_execute, data=payload,
+        resp = discord_request(
+            webhook_execute,
+            data=payload,
             headers={"Content-Type": "application/json", "User-Agent": _DISCORD_UA},
             method="POST",
+            timeout=10,
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode(errors="replace")
-            if resp.status not in (200, 204):
-                logger.warning("Dodo webhook unexpected HTTP status: %s", resp.status)
-            else:
-                logger.debug("Dodo webhook delivered for island=%s user=%s", island_name, username)
-            message_url = None
-            if resp.status == 200 and body and Config.GUILD_ID:
-                try:
-                    data = json.loads(body)
-                    mid = data.get("id")
-                    cid = data.get("channel_id")
-                    if mid and cid:
-                        message_url = f"https://discord.com/channels/{Config.GUILD_ID}/{cid}/{mid}"
-                except (json.JSONDecodeError, TypeError) as exc:
-                    logger.debug("Dodo webhook response not JSON: %s", exc)
-            if message_url:
-                _persist_dodo_reveal_message(
-                    user_id=str(user_id),
-                    island_name=island_name,
-                    channel_id=channel_id,
-                    message_url=message_url,
-                    username=username or "",
-                    nickname=nickname or "",
-                )
+        body = resp.body
+        if resp.status not in (200, 204):
+            logger.warning("Dodo webhook unexpected HTTP status: %s", resp.status)
+        else:
+            logger.debug("Dodo webhook delivered for island=%s user=%s", island_name, username)
+        message_url = None
+        if resp.status == 200 and body and Config.GUILD_ID:
+            try:
+                data = json.loads(body)
+                mid = data.get("id")
+                cid = data.get("channel_id")
+                if mid and cid:
+                    message_url = f"https://discord.com/channels/{Config.GUILD_ID}/{cid}/{mid}"
+            except (json.JSONDecodeError, TypeError) as exc:
+                logger.debug("Dodo webhook response not JSON: %s", exc)
+        if message_url:
+            _persist_dodo_reveal_message(
+                user_id=str(user_id),
+                island_name=island_name,
+                channel_id=channel_id,
+                message_url=message_url,
+                username=username or "",
+                nickname=nickname or "",
+            )
     except urllib.error.HTTPError as exc:
         body = ""
         try:
@@ -1139,14 +1140,14 @@ def auth_callback():
             "code":          code,
             "redirect_uri":  callback_url,
         }).encode()
-        req = urllib.request.Request(
+        resp = discord_request(
             "https://discord.com/api/oauth2/token",
             data=token_body,
             headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": _DISCORD_UA},
             method="POST",
+            timeout=10,
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            token_resp = json.loads(resp.read().decode())
+        token_resp = json.loads(resp.body)
     except Exception:
         return redirect(f"{return_to}?error=token_exchange_failed")
 
@@ -1160,12 +1161,12 @@ def auth_callback():
     member_joined_at = ""
     member_perms = 0
     try:
-        mem_req = urllib.request.Request(
+        resp = discord_request(
             f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
             headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
+            timeout=10,
         )
-        with urllib.request.urlopen(mem_req, timeout=10) as resp:
-            member_data = json.loads(resp.read().decode())
+        member_data = json.loads(resp.body)
         member_roles = [str(r) for r in member_data.get("roles", [])]
         member_nickname = (member_data.get("nick") or "").strip()
         member_joined_at = str(member_data.get("joined_at") or "")
@@ -1184,12 +1185,12 @@ def auth_callback():
     discord_user_id = discord_username = discord_avatar_url = ""
     discord_global_name = discord_account_name = ""
     try:
-        user_req = urllib.request.Request(
+        resp = discord_request(
             "https://discord.com/api/users/@me",
             headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
+            timeout=10,
         )
-        with urllib.request.urlopen(user_req, timeout=10) as resp:
-            user_data = json.loads(resp.read().decode())
+        user_data = json.loads(resp.body)
         discord_user_id  = str(user_data.get("id", ""))
         discord_global_name = str(user_data.get("global_name") or "")
         discord_account_name = str(user_data.get("username") or "")
