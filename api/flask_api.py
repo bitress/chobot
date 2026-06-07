@@ -57,33 +57,23 @@ def _post_website_login_log_message(event_id: int, event: dict) -> None:
         return
 
     auth_value = token if token.lower().startswith("bot ") else f"Bot {token}"
-    role_count = int(event.get("role_count") or 0)
     username = event.get("username") or event.get("discord_name") or "Unknown user"
     user_id = event.get("user_id") or ""
     payload = {
         "allowed_mentions": {"parse": []},
         "embeds": [{
-            "title": "Website Discord Login",
+            "title": "Website Login",
             "color": 0x28A745 if event.get("is_mod") else 0x5BC0DE,
             "timestamp": event.get("created_at"),
-            "thumbnail": {"url": event.get("avatar")} if event.get("avatar") else None,
             "fields": [
                 {"name": "User", "value": f"{username}\n`{user_id}`", "inline": True},
-                {"name": "Access", "value": f"Mod: `{bool(event.get('is_mod'))}`\nAdmin: `{bool(event.get('is_admin'))}`", "inline": True},
-                {"name": "Roles", "value": f"`{role_count}` role(s)", "inline": True},
-                {"name": "IP", "value": f"`{event.get('ip_address') or 'unknown'}`", "inline": True},
-                {"name": "Return To", "value": event.get("return_to") or "unknown", "inline": False},
-                {"name": "Event ID", "value": f"`{event_id}`", "inline": True},
             ],
-            "footer": {"text": "Chopaeng website auth"},
         }],
     }
     payload["embeds"][0]["fields"] = [
         field for field in payload["embeds"][0]["fields"]
         if field.get("value") is not None
     ]
-    if payload["embeds"][0]["thumbnail"] is None:
-        payload["embeds"][0].pop("thumbnail", None)
 
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
     try:

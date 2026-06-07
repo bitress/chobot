@@ -77,6 +77,17 @@ def _format_display_name_for_audit(display_name: str | None) -> str:
     return f"`{name}`"
 
 
+def _format_user_for_embed(user=None, user_id: int | str | None = None, fallback_name: str = "Unknown User") -> str:
+    """Return a readable user label without creating a Discord user mention link."""
+    raw_name = getattr(user, "display_name", None) or getattr(user, "name", None) or fallback_name
+    name = str(raw_name or fallback_name).replace("`", "'").strip() or fallback_name
+    if len(name) > 80:
+        name = name[:77].rstrip() + "..."
+
+    raw_id = getattr(user, "id", None) or user_id
+    return f"{name} (`{raw_id}`)" if raw_id else name
+
+
 def summarize_recent_identity_events(events: list[dict], max_events: int = 5) -> tuple[str, list[str]]:
     """Return a Discord-field summary and compact reason labels for recent identity events."""
     if not events:
@@ -382,18 +393,18 @@ def create_sapphire_log(member: discord.Member, mod: discord.Member, reason: str
 
     if action_verb.upper() in ["KICKED", "BANNED"]:
         desc_lines = [
-            f"> **{member.mention} ({member.display_name})** has been {action_verb.lower()}!",
+            f"> **{_format_user_for_embed(member)}** has been {action_verb.lower()}!",
             f"> **Reason:** {reason}",
-            f"> **Responsible:** {mod.mention} ({mod_role_name})",
+            f"> **Responsible:** {_format_user_for_embed(mod)} ({mod_role_name})",
         ]
     else:
         delta = _parse_duration(duration)
         desc_lines = [
-            f"> **{member.mention} ({member.display_name})** has been {action_verb.lower()}!",
+            f"> **{_format_user_for_embed(member)}** has been {action_verb.lower()}!",
             f"> **Reason:** {reason}",
             f"> **Duration:** {duration}",
             f"> **Count:** {warn_count}",
-            f"> **Responsible:** {mod.mention} ({mod_role_name})",
+            f"> **Responsible:** {_format_user_for_embed(mod)} ({mod_role_name})",
         ]
         if delta is not None:
             expiry_ts = int((now + delta).timestamp())
@@ -633,7 +644,7 @@ class AdmitConfirmView(discord.ui.View):
     def _build_content(self) -> str:
         base = f"Are you sure you want to admit **{self.ign or 'Visitor'}**?"
         if self.selected_member:
-            return f"{base}\n👤 Linked to: {self.selected_member.mention}"
+            return f"{base}\n👤 Linked to: {_format_user_for_embed(self.selected_member)}"
         return base
 
     @discord.ui.button(label="Yes, Admit", style=discord.ButtonStyle.success, row=1)
@@ -641,7 +652,7 @@ class AdmitConfirmView(discord.ui.View):
         """Proceed with admission."""
         msg = f"**{self.ign or 'Visitor'}** is cleared for entry."
         if self.selected_member:
-            msg += f" Linked to {self.selected_member.mention}."
+            msg += f" Linked to {_format_user_for_embed(self.selected_member)}."
         # Update the original alert message (the flight log alert)
         await self.parent_view._resolve_alert(
             interaction, "AUTHORIZED", COLOR_SUCCESS, msg,
@@ -707,7 +718,7 @@ class NoteModal(discord.ui.Modal, title="Add Note"):
             timestamp = int(discord.utils.utcnow().timestamp())
             note_value = self.note_input.value
             if self.linked_user:
-                note_value += f"\n-# Linked: {self.linked_user.mention}"
+                note_value += f"\n-# Linked: {_format_user_for_embed(self.linked_user)}"
             note_value += f"\n-# Added <t:{timestamp}:R>"
             embed.add_field(
                 name=f"<:Cho_Notes:1474311464688029817> Note by {interaction.user.display_name}",
@@ -748,7 +759,7 @@ class NoteUserSelect(discord.ui.UserSelect):
         self.parent_view.selected_member = self.values[0] if self.values else None
         content = "<:Cho_Notes:1474311464688029817> **Add Note:**\nOptionally link a Discord user, then click **Write Note...**"
         if self.parent_view.selected_member:
-            content += f"\n👤 Linked to: {self.parent_view.selected_member.mention}"
+            content += f"\n👤 Linked to: {_format_user_for_embed(self.parent_view.selected_member)}"
         try:
             await interaction.response.edit_message(content=content)
         except discord.NotFound:
@@ -810,7 +821,7 @@ class TravelerActionView(discord.ui.View):
 
     async def _resolve_alert(self, interaction, status_label, color, log_msg, target_user=None, log_message=None, reason=None, mod_log_url=None):
         """Internal helper to update the alert embed state. Does NOT send interaction responses."""
-        target_str      = f"{target_user.mention}" if target_user else "Visitor (unlinked)"
+        target_str      = _format_user_for_embed(target_user) if target_user else "Visitor (unlinked)"
         message_to_edit = log_message or (interaction.message if interaction.response.is_done() else None)
 
         if not message_to_edit:
@@ -839,7 +850,7 @@ class TravelerActionView(discord.ui.View):
             embed.color = color
             embed.set_author(name=f"CASE CLOSED: {status_label}", icon_url=target_user.display_avatar.url if target_user else interaction.user.display_avatar.url)
             resolved_ts = int(discord.utils.utcnow().timestamp())
-            action_value = f"**{status_label}** by {interaction.user.mention}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>"
+            action_value = f"**{status_label}** by {_format_user_for_embed(interaction.user)}\nTarget: {target_str}\nResolved <t:{resolved_ts}:R>"
             
             # Add island access status and subscription roles if target is a member
             if target_user and hasattr(target_user, 'roles'):
@@ -953,7 +964,7 @@ class TravelerActionView(discord.ui.View):
             # Add investigation field
             embed.add_field(
                 name="<:Cho_Investigate:1474310726381338666> Investigating",
-                value=f"**{mod.mention}** is looking into this. Started <t:{timestamp}:R>",
+                value=f"**{_format_user_for_embed(mod)}** is looking into this. Started <t:{timestamp}:R>",
                 inline=False
             )
 
@@ -1144,6 +1155,8 @@ class VerifiedFlightFlagView(discord.ui.View):
             # Prefer resolving the linked traveler from the verbose-xlog embed.
             # (The interaction user is the mod clicking the button, not the traveler.)
             m = re.search(r"<@!?(?P<uid>\d+)>", embed.description)
+            if not m:
+                m = re.search(r"`(?P<uid>\d{15,25})`", embed.description)
             if m:
                 traveler_member = guild.get_member(int(m.group("uid")))
 
@@ -1194,7 +1207,7 @@ class VerifiedFlightFlagView(discord.ui.View):
             alert_embed = discord.Embed(
                 description=(
                     f"### {Config.EMOJI_FAIL} Flight Flagged for Review\n"
-                    f"A verified flight was manually flagged by {interaction.user.mention}.\n"
+                    f"A verified flight was manually flagged by {_format_user_for_embed(interaction.user)}.\n"
                     f"Use the buttons below to take action."
                 ),
                 color=COLOR_INVESTIGATION,
@@ -1213,7 +1226,7 @@ class VerifiedFlightFlagView(discord.ui.View):
                     name="Flag Reason",
                     value=(
                         "**Mismatch Detected (Auto-Flag)**\n"
-                        f"Traveler {traveler_member.mention} has multiple identities in nickname, but fewer subscription roles detected.\n"
+                        f"Traveler {_format_user_for_embed(traveler_member)} has multiple identities in nickname, but fewer subscription roles detected.\n"
                                             ),
                     inline=False,
                 )
@@ -1239,7 +1252,7 @@ class VerifiedFlightFlagView(discord.ui.View):
                 flag_ts = int(discord.utils.utcnow().timestamp())
                 embed.add_field(
                     name="🚩 Flagged",
-                    value=f"By {interaction.user.mention} <t:{flag_ts}:R>",
+                    value=f"By {_format_user_for_embed(interaction.user)} <t:{flag_ts}:R>",
                     inline=False,
                 )
             new_view = discord.ui.View()
@@ -1781,7 +1794,7 @@ class FlightLoggerCog(commands.Cog):
             alert_embed = discord.Embed(
                 description=(
                     f"### <a:CampWarning:1172346431542140961> Mismatch Detected\n"
-                    f"Member {member.mention} matched, but their nickname has more identities than their allowed count.\n"
+                    f"Member {_format_user_for_embed(member)} matched, but their nickname has more identities than their allowed count.\n"
                     f"**Identities:** {identities} | **Subs:** {subs} | **Allowed:** {allowed_identities}\n"
                     f"**Sub Roles:** {' / '.join(sub_role_mentions) if sub_role_mentions else 'None detected'}\n"
                     f"Use the buttons below to take action."
@@ -1822,7 +1835,7 @@ class FlightLoggerCog(commands.Cog):
             member_sub_roles = [r for r in member.roles if r.id in self.all_sub_roles]
             sub_role_mentions = [r.mention for r in member_sub_roles]
             xlog_desc = (
-                f"**{member.mention} ({member.display_name})**\n"
+                f"**{_format_user_for_embed(member)}**\n"
                 f"**Auto-Flag:** Nickname identities exceed allowed count.\n"
                 f"**Identities:** {identities}  |  **Subs:** {subs}  |  **Allowed:** {allowed_identities}\n"
                 f"**Sub Roles:** {(' / '.join(sub_role_mentions)) if sub_role_mentions else 'None detected'}"
@@ -1878,7 +1891,7 @@ class FlightLoggerCog(commands.Cog):
             alert_embed = discord.Embed(
                 description=(
                     f"### <a:CampWarning:1172346431542140961> Recent Identity Activity\n"
-                    f"Member {member.mention} matched this flight for **{destination_link}**, "
+                    f"Member {_format_user_for_embed(member)} matched this flight for **{destination_link}**, "
                     f"but they have recent nickname/join activity.\n"
                     f"**Reason:** {reason_text}\n"
                     f"Use the buttons below to take action."
@@ -1913,7 +1926,7 @@ class FlightLoggerCog(commands.Cog):
             xlog_embed = discord.Embed(
                 title="Flagged Flight",
                 description=(
-                    f"**{member.mention} ({member.display_name})**\n"
+                    f"**{_format_user_for_embed(member)}**\n"
                     f"**Auto-Flag:** {reason_text}"
                 ),
                 color=COLOR_INVESTIGATION,
@@ -1965,7 +1978,7 @@ class FlightLoggerCog(commands.Cog):
             alert_embed = discord.Embed(
                 description=(
                     "### <a:CampWarning:1172346431542140961> Island Access Mismatch\n"
-                    f"Member {member.mention} matched this flight for **{destination_link}**, "
+                    f"Member {_format_user_for_embed(member)} matched this flight for **{destination_link}**, "
                     "but they do not have a subscription role for that island.\n"
                     f"**Member Subscription(s):** {member_sub_text}\n"
                     "Use the buttons below to take action."
@@ -2003,7 +2016,7 @@ class FlightLoggerCog(commands.Cog):
         xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
         if xlog_channel:
             xlog_desc = (
-                f"**{member.mention} ({member.display_name})**\n"
+                f"**{_format_user_for_embed(member)}**\n"
                 f"**Auto-Flag:** {reason_text}\n"
                 f"**Member Subscription(s):** {member_sub_text}\n"
             )
@@ -2429,9 +2442,7 @@ class FlightLoggerCog(commands.Cog):
             xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
             if xlog_channel:
                 guild_icon = guild.icon.url if guild and guild.icon else None
-                member_line = "\n".join(
-                    f"{m.mention} ({m.display_name})" for m in found_members
-                )
+                member_line = "\n".join(_format_user_for_embed(m) for m in found_members)
                 destination_link = self.get_island_channel_link(destination)
 
                 desc_lines = []
@@ -2618,11 +2629,11 @@ class FlightLoggerCog(commands.Cog):
                     xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
                     if xlog_channel:
                         guild_icon = guild.icon.url if guild and guild.icon else None
-                        member_label = f"<@{user_id}>"
+                        member_label = _format_user_for_embed(user_id=user_id)
                         try:
                             if guild:
                                 member = await guild.fetch_member(user_id)
-                                member_label = f"{member.mention} ({member.display_name})"
+                                member_label = _format_user_for_embed(member)
                         except Exception:
                             pass
 
@@ -2771,7 +2782,7 @@ class FlightLoggerCog(commands.Cog):
                     embed.add_field(name="Destination",    value=f"```yaml\n{destination.title()}```", inline=True)
                     if is_ambiguous:
                         candidate_lines = [
-                            f"{m.mention} ({m.display_name})"
+                            _format_user_for_embed(m)
                             for m in ambiguous_members[:15]
                         ]
                         if len(ambiguous_members) > 15:
@@ -2817,7 +2828,7 @@ class FlightLoggerCog(commands.Cog):
                         xlog_embed.add_field(name="Destination",   value=destination_link,               inline=True)
                         if is_ambiguous:
                             candidate_lines = [
-                                f"{m.mention} ({m.display_name})"
+                                _format_user_for_embed(m)
                                 for m in ambiguous_members[:10]
                             ]
                             if len(ambiguous_members) > 10:
@@ -2991,7 +3002,7 @@ class FlightLoggerCog(commands.Cog):
                 if reasons:
                     found_has_identity_flags = True
                     suffix = f" - FLAG: {', '.join(reasons)}"
-                member_lines.append(f"{m.mention} (`{m.display_name}`){suffix}")
+                member_lines.append(f"{_format_user_for_embed(m)}{suffix}")
             embed = discord.Embed(
                 title="<:Cho_Check:1456715827213504593> Match Found",
                 description=(
@@ -3025,7 +3036,7 @@ class FlightLoggerCog(commands.Cog):
                     _, reasons = summarize_recent_identity_events(events)
                     if reasons:
                         flags.append(f"FLAG: {', '.join(reasons)}")
-                    cand_lines.append(f"{c['member'].mention} (`{c['member'].display_name}`) — {', '.join(flags)}")
+                    cand_lines.append(f"{_format_user_for_embed(c['member'])} — {', '.join(flags)}")
                 embed.add_field(name="Closest Candidates", value="\n".join(cand_lines), inline=False)
             else:
                 embed.add_field(name="Closest Candidates", value="None found.", inline=False)
@@ -3240,11 +3251,11 @@ class FlightLoggerCog(commands.Cog):
         mod_role_name = mod.top_role.name if hasattr(mod, 'top_role') and mod.top_role else "Moderator"
         
         desc_lines = [
-            f"> **{member.mention} ({member.display_name})** has been unwarned!",
+            f"> **{_format_user_for_embed(member)}** has been unwarned!",
             f"> **Reason:** {reason}",
             f"> **Warnings Removed:** {removed_count}",
             f"> **Remaining Count:** 0",
-            f"> **Responsible:** {mod.mention} ({mod_role_name})",
+            f"> **Responsible:** {_format_user_for_embed(mod)} ({mod_role_name})",
         ]
         
         embed = discord.Embed(
@@ -3297,7 +3308,7 @@ class FlightLoggerCog(commands.Cog):
         for i, warn in enumerate(warnings, 1):
             mod_id = warn['mod_id']
             mod = guild.get_member(mod_id)
-            mod_text = mod.mention if mod else f"ID: {mod_id}"
+            mod_text = _format_user_for_embed(mod) if mod else f"ID: {mod_id}"
             
             timestamp = warn['timestamp']
             reason = warn['reason']
