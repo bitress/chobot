@@ -2006,7 +2006,6 @@ class FlightLoggerCog(commands.Cog):
                 f"**{member.mention} ({member.display_name})**\n"
                 f"**Auto-Flag:** {reason_text}\n"
                 f"**Member Subscription(s):** {member_sub_text}\n"
-                f"**Required For Destination:** {required_text}"
             )
             if identity_reasons:
                 xlog_desc += f"\n**Also Flagged:** {', '.join(identity_reasons)}"
