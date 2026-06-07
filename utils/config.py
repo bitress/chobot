@@ -80,6 +80,8 @@ class Config:
 
     # Web Dashboard (mod-only)
     DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", "")
+    DASHBOARD_LEGACY_JINJA = os.getenv("DASHBOARD_LEGACY_JINJA", "true").strip().lower() not in {"0", "false", "no", "off"}
+    DASHBOARD_FRONTEND_URL = os.getenv("DASHBOARD_FRONTEND_URL", "").strip().rstrip("/")
 
     # Discord webhook for logging dodo code reveals on the website
     DODO_LOG_WEBHOOK_URL = os.getenv("DODO_LOG_WEBHOOK_URL", "")

@@ -843,12 +843,61 @@ def _merge_island(db_row: dict, fs: dict | None) -> dict:
 _ALLOWED_DASHBOARD_HOSTS = {"console.chopaeng.com", "localhost", "127.0.0.1"}
 
 
+def _legacy_jinja_enabled() -> bool:
+    return bool(getattr(Config, "DASHBOARD_LEGACY_JINJA", True))
+
+
+def _dashboard_frontend_response():
+    """Send legacy page requests to the frontend app when Jinja pages are disabled."""
+    frontend = getattr(Config, "DASHBOARD_FRONTEND_URL", "").strip().rstrip("/")
+    if frontend:
+        path = request.path
+        if path.startswith("/dashboard"):
+            path = path[len("/dashboard"):] or "/"
+        query = f"?{request.query_string.decode()}" if request.query_string else ""
+        return redirect(f"{frontend}{path}{query}")
+    return jsonify({
+        "error": "Dashboard Jinja pages are disabled",
+        "api": "/dashboard/api",
+        "path": request.path,
+    }), 404
+
+
+def _is_legacy_dashboard_page_request() -> bool:
+    """True for server-rendered dashboard pages that a frontend can own instead."""
+    if request.method != "GET":
+        return False
+
+    path = request.path.rstrip("/") or "/dashboard"
+    if path.startswith("/dashboard/api"):
+        return False
+    if path.startswith("/dashboard/static"):
+        return False
+    if path.startswith("/dashboard/oauth2"):
+        return False
+    if path.endswith("/analytics/export.csv"):
+        return False
+
+    exact_pages = {
+        "/dashboard",
+        "/dashboard/login",
+        "/dashboard/islands",
+        "/dashboard/logs",
+        "/dashboard/status",
+        "/dashboard/analytics",
+        "/dashboard/database",
+    }
+    return path in exact_pages or path.startswith("/dashboard/islands/")
+
+
 @dashboard.before_request
 def _restrict_to_console_domain():
     """Return 404 for any request that did not arrive via an allowed dashboard host."""
     host = request.host.split(":")[0]  # strip optional port
     if host not in _ALLOWED_DASHBOARD_HOSTS:
         abort(404)
+    if not _legacy_jinja_enabled() and _is_legacy_dashboard_page_request():
+        return _dashboard_frontend_response()
     if request.method in {"POST", "PUT", "DELETE"} and not request.path.startswith("/dashboard/api/"):
         if not _csrf_is_valid():
             abort(403)
@@ -856,12 +905,71 @@ def _restrict_to_console_domain():
 
 @dashboard.errorhandler(403)
 def _forbidden(_e):
+    if not _legacy_jinja_enabled() or request.path.startswith("/dashboard/api/"):
+        return jsonify({"error": "Forbidden"}), 403
     return render_template("dashboard/403.html"), 403
 
 @dashboard.errorhandler(500)
 def _internal_server_error(e):
     logger.exception("Internal server error: %s", e)
+    if not _legacy_jinja_enabled() or request.path.startswith("/dashboard/api/"):
+        return jsonify({"error": "Internal server error"}), 500
     return render_template("dashboard/500.html"), 500
+
+
+@dashboard.route("/api/session", methods=["GET"])
+def api_session():
+    """Return the current dashboard session state for a React dashboard."""
+    user = _dashboard_bearer_user()
+    bearer_mod = _is_dashboard_mod_user(user)
+    session_auth = _check_session()
+    role = _get_session_role() if session_auth else ("admin" if bearer_mod else None)
+    return jsonify({
+        "authenticated": bool(session_auth or bearer_mod or _check_bearer()),
+        "role": role,
+        "legacy_jinja_enabled": _legacy_jinja_enabled(),
+        "csrf_token": _csrf_token() if session_auth else None,
+        "user": user if bearer_mod else {
+            "id": session.get("discord_user_id"),
+            "username": session.get("discord_username"),
+            "avatar": session.get("discord_avatar_url"),
+        } if session_auth else None,
+    })
+
+
+@dashboard.route("/api/login", methods=["POST"])
+def api_login():
+    """Secret-key login endpoint for a React dashboard."""
+    payload = request.get_json(silent=True) or {}
+    secret = payload.get("secret") or request.form.get("secret", "")
+    if secret and Config.DASHBOARD_SECRET and secrets.compare_digest(secret, Config.DASHBOARD_SECRET):
+        session["mod_logged_in"] = True
+        session["mod_role"] = "admin"
+        session.permanent = True
+        return jsonify({
+            "ok": True,
+            "role": "admin",
+            "csrf_token": _csrf_token(),
+        })
+    return jsonify({"ok": False, "error": "Invalid secret key"}), 401
+
+
+@dashboard.route("/api/logout", methods=["POST"])
+def api_logout():
+    """Clear the browser dashboard session for a React dashboard."""
+    _clear_dashboard_session()
+    return jsonify({"ok": True})
+
+
+def _clear_dashboard_session() -> None:
+    session.pop("mod_logged_in",       None)
+    session.pop("mod_role",            None)
+    session.pop("discord_user_id",     None)
+    session.pop("discord_username",    None)
+    session.pop("discord_avatar_url",  None)
+    session.pop("oauth_state",         None)
+    session.pop("csrf_token",          None)
+
 
 @dashboard.route("/login", methods=["GET", "POST"])
 def login():
@@ -880,12 +988,7 @@ def login():
 
 @dashboard.route("/logout")
 def logout():
-    session.pop("mod_logged_in",       None)
-    session.pop("mod_role",            None)
-    session.pop("discord_user_id",     None)
-    session.pop("discord_username",    None)
-    session.pop("discord_avatar_url",  None)
-    session.pop("oauth_state",         None)
+    _clear_dashboard_session()
     return redirect(url_for("dashboard.login"))
 
 
