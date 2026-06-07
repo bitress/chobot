@@ -11,6 +11,7 @@ from typing import Any
 logger = logging.getLogger("DBMigration")
 
 VOLATILE_TABLES = {"command_claims"}
+MAX_INDEXED_VARCHAR_LENGTH = 191
 
 
 def _quote_identifier(name: str) -> str:
@@ -42,6 +43,18 @@ def _map_sqlite_type(sqlite_decl: str, *, is_primary_key: bool = False) -> str:
     return "LONGTEXT"
 
 
+def _varchar_length(mysql_type: str) -> int | None:
+    match = re.fullmatch(r"VARCHAR\((\d+)\)", mysql_type.strip(), flags=re.I)
+    return int(match.group(1)) if match else None
+
+
+def _cap_indexed_varchar(mysql_type: str, *, indexed: bool) -> str:
+    length = _varchar_length(mysql_type)
+    if indexed and length and length > MAX_INDEXED_VARCHAR_LENGTH:
+        return f"VARCHAR({MAX_INDEXED_VARCHAR_LENGTH})"
+    return mysql_type
+
+
 def _model_column_mysql_types() -> dict[tuple[str, str], str]:
     """Return preferred MariaDB types from SQLAlchemy models when available."""
     try:
@@ -61,13 +74,30 @@ def _model_column_mysql_types() -> dict[tuple[str, str], str]:
                 mysql_type = "INTEGER"
             elif isinstance(col_type, Float):
                 mysql_type = "DOUBLE"
-            elif isinstance(col_type, String):
-                mysql_type = f"VARCHAR({col_type.length or 255})"
             elif isinstance(col_type, Text):
                 mysql_type = "LONGTEXT"
+            elif isinstance(col_type, String):
+                mysql_type = f"VARCHAR({col_type.length or 255})"
             if mysql_type:
                 result[(table.name, column.name)] = mysql_type
     return result
+
+
+def _model_indexed_columns() -> dict[str, set[str]]:
+    try:
+        from utils.db_models import Base
+    except Exception:
+        return {}
+
+    by_table: dict[str, set[str]] = {}
+    for table in Base.metadata.sorted_tables:
+        indexed = by_table.setdefault(table.name, set())
+        for column in table.columns:
+            if column.primary_key or column.index or column.unique:
+                indexed.add(column.name)
+        for index in table.indexes:
+            indexed.update(column.name for column in index.columns)
+    return by_table
 
 
 def _supports_default(mysql_type: str) -> bool:
@@ -106,6 +136,7 @@ def _build_create_table_sql(table_name: str, columns: list[dict], sqlite_table_s
     single_pk = len(pk_columns) == 1
     single_pk_name = pk_columns[0]["name"] if single_pk else None
     model_types = _model_column_mysql_types()
+    indexed_columns = _model_indexed_columns().get(table_name, set()) | {c["name"] for c in pk_columns}
 
     lines: list[str] = []
     for col in columns:
@@ -116,6 +147,7 @@ def _build_create_table_sql(table_name: str, columns: list[dict], sqlite_table_s
             (table_name, name),
             _map_sqlite_type(sqlite_type, is_primary_key=bool(col["pk"])),
         )
+        mysql_type = _cap_indexed_varchar(mysql_type, indexed=name in indexed_columns)
         not_null = " NOT NULL" if col["notnull"] else ""
 
         is_int_pk = "INT" in sqlite_type.upper()
@@ -306,6 +338,40 @@ def _create_indexes(cur, table_name: str, index_specs: list[dict[str, Any]]) -> 
         )
         created += 1
     return created
+
+
+def _ensure_indexable_column_types(cur, table_name: str, columns: list[str]) -> None:
+    if not columns:
+        return
+    cur.execute(f"SHOW COLUMNS FROM {_quote_identifier(table_name)}")
+    column_meta = {row[0]: row for row in cur.fetchall()}
+    for column in dict.fromkeys(columns):
+        meta = column_meta.get(column)
+        if not meta:
+            continue
+        column_type = str(meta[1] or "").lower()
+        if column_type in {"text", "mediumtext", "longtext"}:
+            null_sql = "NULL" if str(meta[2]).upper() == "YES" else "NOT NULL"
+            default_sql = ""
+            if meta[4] is not None:
+                default = str(meta[4]).replace("'", "''")
+                default_sql = f" DEFAULT '{default}'"
+            cur.execute(
+                f"ALTER TABLE {_quote_identifier(table_name)} "
+                f"MODIFY {_quote_identifier(column)} VARCHAR({MAX_INDEXED_VARCHAR_LENGTH}) {null_sql}{default_sql}"
+            )
+            continue
+        length = _varchar_length(column_type)
+        if length and length > MAX_INDEXED_VARCHAR_LENGTH:
+            null_sql = "NULL" if str(meta[2]).upper() == "YES" else "NOT NULL"
+            default_sql = ""
+            if meta[4] is not None:
+                default = str(meta[4]).replace("'", "''")
+                default_sql = f" DEFAULT '{default}'"
+            cur.execute(
+                f"ALTER TABLE {_quote_identifier(table_name)} "
+                f"MODIFY {_quote_identifier(column)} VARCHAR({MAX_INDEXED_VARCHAR_LENGTH}) {null_sql}{default_sql}"
+            )
 
 
 def _target_table_columns(cur, database: str, table_name: str) -> dict[str, str]:
@@ -587,6 +653,12 @@ def migrate_sqlite_to_mariadb(
                 if create_indexes:
                     sqlite_indexes = _sqlite_index_specs(sqlite_conn, table_name)
                     model_indexes = _model_index_specs().get(table_name, [])
+                    index_columns = [
+                        column
+                        for spec in sqlite_indexes + model_indexes
+                        for column in spec.get("columns", [])
+                    ] + [c["name"] for c in columns if c["pk"]]
+                    _ensure_indexable_column_types(cur, table_name, index_columns)
                     created_count = _create_indexes(cur, table_name, sqlite_indexes + model_indexes)
                     if created_count:
                         logger.info("[MIGRATE] %s: ensured %d index(es).", table_name, created_count)
