@@ -27,7 +27,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 
 from flask import (
     Blueprint, render_template, request, redirect,
-    url_for, session, flash, jsonify, abort, g, Response,
+    url_for, session, flash, jsonify, abort, g, Response, send_from_directory,
 )
 
 from utils.config import Config
@@ -35,11 +35,19 @@ from utils.auth_tokens import get_auth_user
 from utils.database import connect_db, get_backend
 from utils.discord_http import request as discord_request
 from utils.db_migration import (
+    backup_sqlite_database,
     dry_run_sqlite_to_mariadb,
     inspect_sqlite_source,
     migrate_sqlite_to_mariadb_detailed,
 )
 from utils.helpers import clean_text
+from utils.ops_status import (
+    backup_dir_path,
+    build_health_payload,
+    get_active_data_manager,
+    list_backups,
+    update_maintenance_settings,
+)
 from utils import island_access
 
 logger = logging.getLogger("Dashboard")
@@ -293,6 +301,55 @@ def init_dashboard_db():
                 created_at    INTEGER NOT NULL
             )
         """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS command_search_events (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                command          TEXT NOT NULL,
+                query            TEXT NOT NULL,
+                normalized_query TEXT NOT NULL,
+                source           TEXT,
+                user_id          TEXT,
+                channel_id       TEXT,
+                found            INTEGER NOT NULL DEFAULT 0,
+                result_count     INTEGER NOT NULL DEFAULT 0,
+                created_at       INTEGER NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS search_aliases (
+                alias      TEXT NOT NULL,
+                target     TEXT NOT NULL,
+                kind       TEXT NOT NULL DEFAULT 'item',
+                created_by TEXT,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (alias, kind)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dodo_queue (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                island_clean TEXT NOT NULL,
+                island_name  TEXT NOT NULL,
+                user_id      TEXT NOT NULL,
+                username     TEXT,
+                status       TEXT NOT NULL DEFAULT 'waiting',
+                note         TEXT,
+                created_at   INTEGER NOT NULL,
+                updated_at   INTEGER NOT NULL
+            )
+        """)
+
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_command_search_command_ts ON command_search_events (command, created_at)")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_dodo_queue_island_status_ts ON dodo_queue (island_clean, status, created_at)")
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
@@ -548,7 +605,7 @@ def _collect_fs_islands():
                 os.path.join(directory, "Villagers.txt"),
             ]
             configured_name = getattr(Config, "ORDER_BOT_ISLAND", None) or os.path.basename(directory)
-            basename_matches = clean_text(os.path.basename(directory)) == clean_text(configured_name)
+            basename_matches = clean_text(os.path.basename(directory)) in {clean_text(configured_name), clean_text("SYSBOT-ACNH-ORDERS")}
             if basename_matches or any(os.path.exists(path) for path in direct_files):
                 uname = configured_name.upper()
                 result[uname] = {
@@ -695,6 +752,180 @@ def _island_access_status(isl: dict, *, force_refresh: bool = False) -> dict:
     }
 
 
+def _event_severity(kind: str) -> str:
+    if kind in {"ban", "repeat_offender"}:
+        return "critical"
+    if kind in {"unknown_traveler", "no_island_access", "recent_nickname_change", "dodo_without_flight"}:
+        return "warning"
+    if kind in {"active_warning", "investigation"}:
+        return "attention"
+    return "info"
+
+
+def _recent_incident_payload(limit: int = 25) -> dict:
+    """Collect moderation signals for the incident center."""
+    now = int(time.time())
+    db = get_db()
+    try:
+        unknown = db.execute(
+            "SELECT id, ign, destination, user_id, timestamp, island_type, has_island_access "
+            "FROM island_visits WHERE authorized = 0 ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        warnings = db.execute(
+            "SELECT w.*, iv.ign, iv.destination "
+            "FROM warnings w LEFT JOIN island_visits iv ON w.visit_id = iv.id "
+            "WHERE w.timestamp IS NOT NULL AND w.timestamp >= ? "
+            "ORDER BY w.timestamp DESC LIMIT ?",
+            (now - 3 * 86400, limit),
+        ).fetchall()
+        dodo_reveals = db.execute(
+            "SELECT * FROM dodo_reveal_messages ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        identity_events = db.execute(
+            "SELECT * FROM member_identity_events ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        queue = db.execute(
+            "SELECT * FROM dodo_queue WHERE status IN ('waiting', 'called', 'investigating') "
+            "ORDER BY created_at ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        repeat_offenders = db.execute(
+            "SELECT user_id, COUNT(*) AS warning_count, MAX(timestamp) AS last_warning_at "
+            "FROM warnings WHERE user_id IS NOT NULL AND timestamp >= ? "
+            "GROUP BY user_id HAVING COUNT(*) >= 2 "
+            "ORDER BY warning_count DESC, last_warning_at DESC LIMIT ?",
+            (now - 30 * 86400, limit),
+        ).fetchall()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+    events = []
+    for row in unknown:
+        kind = "no_island_access" if row["has_island_access"] == 0 else "unknown_traveler"
+        events.append({
+            "kind": kind,
+            "severity": _event_severity(kind),
+            "title": f"{row['ign']} visited {row['destination']}",
+            "timestamp": _ts_to_str(row["timestamp"]),
+            "user_id": row["user_id"],
+            "payload": dict(row),
+        })
+    for row in warnings:
+        action = (row["action_type"] or "WARN").lower()
+        kind = "investigation" if action == "note" else "active_warning"
+        events.append({
+            "kind": kind,
+            "severity": _event_severity(kind),
+            "title": f"{row['action_type']} for {row['ign'] or row['user_id'] or 'unknown user'}",
+            "timestamp": _ts_to_str(row["timestamp"]),
+            "user_id": row["user_id"],
+            "payload": dict(row),
+        })
+    for row in identity_events:
+        events.append({
+            "kind": "recent_nickname_change",
+            "severity": _event_severity("recent_nickname_change"),
+            "title": f"Identity event for {row['user_id']}",
+            "timestamp": _ts_to_str(row["created_at"]),
+            "user_id": row["user_id"],
+            "payload": dict(row),
+        })
+    for row in repeat_offenders:
+        events.append({
+            "kind": "repeat_offender",
+            "severity": _event_severity("repeat_offender"),
+            "title": f"{row['user_id']} has {row['warning_count']} recent actions",
+            "timestamp": _ts_to_str(row["last_warning_at"]),
+            "user_id": row["user_id"],
+            "payload": dict(row),
+        })
+
+    return {
+        "ok": True,
+        "summary": {
+            "unknown_travelers": len(unknown),
+            "active_warnings": len(warnings),
+            "recent_dodo_reveals": len(dodo_reveals),
+            "recent_identity_events": len(identity_events),
+            "open_queue_entries": len(queue),
+            "repeat_offenders": len(repeat_offenders),
+        },
+        "events": sorted(events, key=lambda item: item.get("timestamp") or "", reverse=True)[:limit],
+        "unknown_travelers": [dict(row) for row in unknown],
+        "active_warnings": [dict(row) for row in warnings],
+        "recent_dodo_reveals": [dict(row) for row in dodo_reveals],
+        "recent_identity_events": [dict(row) for row in identity_events],
+        "open_queue": [dict(row) for row in queue],
+        "repeat_offenders": [dict(row) for row in repeat_offenders],
+    }
+
+
+def _command_analytics_payload(days: int = 30, limit: int = 15) -> dict:
+    cutoff = int(time.time()) - max(days, 1) * 86400
+    db = get_db()
+    try:
+        top_queries = db.execute(
+            "SELECT command, normalized_query, COUNT(*) AS count, "
+            "SUM(CASE WHEN found = 0 THEN 1 ELSE 0 END) AS failed_count "
+            "FROM command_search_events WHERE created_at >= ? "
+            "GROUP BY command, normalized_query ORDER BY count DESC LIMIT ?",
+            (cutoff, limit),
+        ).fetchall()
+        failed = db.execute(
+            "SELECT command, normalized_query, COUNT(*) AS count "
+            "FROM command_search_events WHERE created_at >= ? AND found = 0 "
+            "GROUP BY command, normalized_query ORDER BY count DESC LIMIT ?",
+            (cutoff, limit),
+        ).fetchall()
+        channels = db.execute(
+            "SELECT channel_id, COUNT(*) AS count "
+            "FROM command_search_events WHERE created_at >= ? AND channel_id IS NOT NULL AND channel_id != '' "
+            "GROUP BY channel_id ORDER BY count DESC LIMIT ?",
+            (cutoff, limit),
+        ).fetchall()
+        totals = db.execute(
+            "SELECT COUNT(*) AS total, SUM(CASE WHEN found = 0 THEN 1 ELSE 0 END) AS failed "
+            "FROM command_search_events WHERE created_at >= ?",
+            (cutoff,),
+        ).fetchone()
+        busiest_islands = db.execute(
+            "SELECT destination, COUNT(*) AS count FROM island_visits WHERE timestamp >= ? "
+            "GROUP BY destination ORDER BY count DESC LIMIT ?",
+            (cutoff, limit),
+        ).fetchall()
+        peak_hours = db.execute(
+            "SELECT CAST(strftime('%H', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS hour, COUNT(*) AS count "
+            "FROM island_visits WHERE timestamp >= ? GROUP BY hour ORDER BY count DESC LIMIT ?",
+            (cutoff, limit),
+        ).fetchall()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+    total = int(totals["total"] or 0) if totals else 0
+    failed_total = int(totals["failed"] or 0) if totals else 0
+    return {
+        "ok": True,
+        "days": days,
+        "summary": {
+            "total_searches": total,
+            "failed_searches": failed_total,
+            "success_rate_pct": round((total - failed_total) * 100 / total, 1) if total else None,
+        },
+        "top_queries": [dict(row) for row in top_queries],
+        "failed_queries": [dict(row) for row in failed],
+        "top_channels": [dict(row) for row in channels],
+        "busiest_islands": [dict(row) for row in busiest_islands],
+        "peak_hours": [dict(row) for row in peak_hours],
+    }
+
+
 def _load_dashboard_islands() -> list[dict]:
     db = get_db()
     try:
@@ -763,7 +994,7 @@ def _find_island_filesystem_meta(island_id: str, display_name: str | None = None
         if itype == "Order" and os.path.isdir(directory):
             order_key = (getattr(Config, "ORDER_BOT_ISLAND", None) or os.path.basename(directory)).upper()
             if upper == order_key or island_id.lower() == order_key.lower():
-                basename_matches = clean_text(os.path.basename(directory)) == clean_text(order_key)
+                basename_matches = clean_text(os.path.basename(directory)) in {clean_text(order_key), clean_text("SYSBOT-ACNH-ORDERS")}
                 has_order_files = any(os.path.exists(os.path.join(directory, fname)) for fname in ("Dodo.txt", "Visitors.txt", "Villagers.txt"))
                 if basename_matches or has_order_files:
                     fs_path, fs_type = directory, itype
@@ -1587,7 +1818,7 @@ def island_status():
     db = get_db()
     try:
         rows = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
-        db_islands = [_row_to_island_dict(dict(r)) for r in rows]
+        db_islands = _merge_dashboard_fs_islands([_row_to_island_dict(dict(r)) for r in rows])
     except Exception:
         db_islands = []
     finally:
@@ -1948,6 +2179,27 @@ def database():
     )
 
 
+@dashboard.route("/ops")
+@admin_required
+def ops():
+    """Operations dashboard page."""
+    return render_template("dashboard/ops.html")
+
+
+@dashboard.route("/incidents")
+@admin_required
+def incidents():
+    """Incident center page."""
+    return render_template("dashboard/incidents.html")
+
+
+@dashboard.route("/trust")
+@admin_required
+def trust():
+    """User trust profile lookup page."""
+    return render_template("dashboard/trust.html")
+
+
 @dashboard.route("/analytics/export.csv")
 @admin_required
 def analytics_export_csv():
@@ -2185,6 +2437,7 @@ def api_mariadb_migration_run():
             password=Config.MARIADB_PASSWORD,
             database=Config.MARIADB_DATABASE,
             truncate_before_import=truncate_before_import,
+            backup_dir=backup_dir_path(),
         )
         _mariadb_migration_last_result = {
             **summary,
@@ -2226,6 +2479,12 @@ def api_database_maintenance():
     reveal_days = _parse_positive_int(data.get("reveal_days"), 30)
     audit_days = _parse_positive_int(data.get("audit_days"), 180)
     now = int(time.time())
+    backup_file = None
+    if get_backend() == "sqlite":
+        try:
+            backup_file = os.path.basename(backup_sqlite_database(_DB_PATH, backup_dir_path()))
+        except Exception as exc:
+            logger.warning("Could not create pre-maintenance backup: %s", exc)
 
     deleted: dict[str, int] = {}
     db = get_db()
@@ -2267,9 +2526,68 @@ def api_database_maintenance():
             "warning_days": warning_days,
             "reveal_days": reveal_days,
             "audit_days": audit_days,
+            "backup_file": backup_file,
         },
     )
-    return jsonify({"ok": True, "deleted": deleted})
+    return jsonify({"ok": True, "deleted": deleted, "backup_file": backup_file})
+
+
+@dashboard.route("/api/runtime-status", methods=["GET"])
+@api_auth_required
+def api_runtime_status():
+    """Return authenticated operational health and integration details."""
+    return jsonify(build_health_payload(
+        data_manager=get_active_data_manager(),
+        include_private=True,
+    ))
+
+
+@dashboard.route("/api/backups", methods=["GET"])
+@api_auth_required
+def api_backups():
+    """Return recent SQLite database backups without exposing filesystem paths."""
+    limit = min(max(request.args.get("limit", 25, type=int), 1), 100)
+    return jsonify(list_backups(limit=limit))
+
+
+@dashboard.route("/api/backups/<filename>", methods=["GET"])
+@api_auth_required
+def api_backup_download(filename):
+    """Download a named backup file from the configured backup directory."""
+    safe_name = os.path.basename(filename)
+    if safe_name != filename or not safe_name.endswith(".db"):
+        return jsonify({"ok": False, "error": "Invalid backup filename"}), 400
+    backup_dir = backup_dir_path()
+    if not os.path.exists(os.path.join(backup_dir, safe_name)):
+        return jsonify({"ok": False, "error": "Backup not found"}), 404
+    _record_audit_event("backup_download", safe_name, {})
+    return send_from_directory(backup_dir, safe_name, as_attachment=True)
+
+
+@dashboard.route("/api/maintenance-mode", methods=["POST"])
+@api_auth_required
+def api_maintenance_mode():
+    """Update maintenance-mode switches stored in the settings table."""
+    data = request.get_json(silent=True) or {}
+    try:
+        settings = update_maintenance_settings(data)
+    except Exception as exc:
+        logger.exception("Maintenance mode update failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    _record_audit_event(
+        "maintenance_mode_update",
+        "settings",
+        {
+            "maintenance_mode": settings["maintenance_mode"],
+            "disable_dodo_reveals": settings["disable_dodo_reveals"],
+            "disable_refresh": settings["disable_refresh"],
+            "disable_commands": settings.get("disable_commands", False),
+            "island_count": len(settings.get("islands") or {}),
+            "has_message": bool(settings["message"]),
+        },
+    )
+    return jsonify({"ok": True, "maintenance": settings})
 
 
 @dashboard.route("/api/audit-events", methods=["GET"])
@@ -2299,6 +2617,112 @@ def api_audit_events():
         entries.append(item)
 
     return jsonify({"ok": True, "entries": entries})
+
+
+@dashboard.route("/api/incidents", methods=["GET"])
+@api_auth_required
+def api_incidents():
+    """Return incident-center moderation queues and alert levels."""
+    limit = min(max(request.args.get("limit", 25, type=int), 1), 100)
+    payload = _recent_incident_payload(limit=limit)
+    status = 200 if payload.get("ok") else 500
+    return jsonify(payload), status
+
+
+@dashboard.route("/api/command-analytics", methods=["GET"])
+@api_auth_required
+def api_command_analytics():
+    """Return command/search analytics for dashboard reporting."""
+    days = min(max(request.args.get("days", 30, type=int), 1), 365)
+    limit = min(max(request.args.get("limit", 15, type=int), 1), 100)
+    payload = _command_analytics_payload(days=days, limit=limit)
+    status = 200 if payload.get("ok") else 500
+    return jsonify(payload), status
+
+
+@dashboard.route("/api/search-aliases", methods=["GET", "POST"])
+@api_auth_required
+def api_search_aliases():
+    """List or upsert typo/synonym aliases for item and villager search."""
+    db = get_db()
+    try:
+        if request.method == "GET":
+            rows = db.execute(
+                "SELECT alias, target, kind, created_by, created_at FROM search_aliases ORDER BY kind, alias"
+            ).fetchall()
+            return jsonify({"ok": True, "items": [dict(row) for row in rows]})
+
+        data = request.get_json(silent=True) or {}
+        alias = re.sub(r"\s+", " ", str(data.get("alias") or "").lower()).strip()
+        target = re.sub(r"\s+", " ", str(data.get("target") or "").lower()).strip()
+        kind = (data.get("kind") or "item").strip().lower()
+        if kind not in {"item", "villager"}:
+            return jsonify({"ok": False, "error": "kind must be item or villager"}), 400
+        if not alias or not target:
+            return jsonify({"ok": False, "error": "alias and target are required"}), 400
+        now = int(time.time())
+        db.execute(
+            "INSERT INTO search_aliases (alias, target, kind, created_by, created_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(alias, kind) DO UPDATE SET target=excluded.target, created_by=excluded.created_by, created_at=excluded.created_at",
+            (alias, target, kind, session.get("discord_user_id") or "", now),
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        db.close()
+
+    _record_audit_event("search_alias_upsert", alias, {"target": target, "kind": kind})
+    return jsonify({"ok": True, "alias": alias, "target": target, "kind": kind})
+
+
+@dashboard.route("/api/dodo-queue", methods=["GET", "PATCH"])
+@api_auth_required
+def api_dodo_queue():
+    """List and moderate Dodo queue entries."""
+    db = get_db()
+    try:
+        if request.method == "GET":
+            status_filter = (request.args.get("status") or "waiting,called,investigating").strip()
+            statuses = [item.strip() for item in status_filter.split(",") if item.strip()]
+            if not statuses:
+                statuses = ["waiting", "called", "investigating"]
+            placeholders = ",".join("?" for _ in statuses)
+            rows = db.execute(
+                f"SELECT * FROM dodo_queue WHERE status IN ({placeholders}) ORDER BY created_at ASC LIMIT 100",
+                statuses,
+            ).fetchall()
+            return jsonify({"ok": True, "items": [dict(row) for row in rows]})
+
+        data = request.get_json(silent=True) or {}
+        entry_id = int(data.get("id") or 0)
+        status = (data.get("status") or "").strip().lower()
+        note = (data.get("note") or "").strip()[:500]
+        if not entry_id or status not in {"waiting", "called", "done", "cancelled", "investigating"}:
+            return jsonify({"ok": False, "error": "id and valid status are required"}), 400
+        cur = db.execute(
+            "UPDATE dodo_queue SET status = ?, note = ?, updated_at = ? WHERE id = ?",
+            (status, note, int(time.time()), entry_id),
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        db.close()
+
+    _record_audit_event("dodo_queue_update", str(entry_id), {"status": status, "note": bool(note)})
+    return jsonify({"ok": True, "updated": max(cur.rowcount, 0)})
+
+
+@dashboard.route("/api/access-simulator", methods=["POST"])
+@api_auth_required
+def api_access_simulator():
+    """Alias for the role/access simulator with audit logging."""
+    response = api_island_test_access()
+    _record_audit_event("access_simulator_run", None, {"payload_keys": sorted((request.get_json(silent=True) or {}).keys())})
+    return response
 
 
 @dashboard.route("/api/status-summary", methods=["GET"])
@@ -2462,6 +2886,23 @@ def api_user_trust_profile():
             "ORDER BY timestamp DESC LIMIT 10",
             params,
         ).fetchall()
+        dodo_reveals = db.execute(
+            "SELECT island_clean, message_url, username, nickname, created_at "
+            "FROM dodo_reveal_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
+            (user_id,),
+        ).fetchall()
+        identity_events = db.execute(
+            "SELECT event_type, old_display_name, new_display_name, created_at "
+            f"FROM member_identity_events WHERE user_id = ?{guild_clause} "
+            "ORDER BY created_at DESC LIMIT 10",
+            params,
+        ).fetchall()
+        known_igns = db.execute(
+            "SELECT ign, COUNT(*) AS visit_count, MAX(timestamp) AS last_seen_at "
+            f"FROM island_visits WHERE user_id = ?{guild_clause} "
+            "GROUP BY ign ORDER BY visit_count DESC, last_seen_at DESC LIMIT 10",
+            params,
+        ).fetchall()
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
@@ -2476,12 +2917,24 @@ def api_user_trust_profile():
         + int(warning_summary["bans"] or 0) * 60
         + int(visit_summary["unauthorized_visits"] or 0) * 5,
     )
+    risk_flags = []
+    if int(warning_summary["warnings"] or 0) >= 2:
+        risk_flags.append("repeat_warning")
+    if int(warning_summary["kicks"] or 0) > 0:
+        risk_flags.append("has_kick_action")
+    if int(warning_summary["bans"] or 0) > 0:
+        risk_flags.append("has_ban_action")
+    if int(visit_summary["unauthorized_visits"] or 0) > 0:
+        risk_flags.append("unauthorized_visit_history")
+    if identity_events:
+        risk_flags.append("recent_identity_activity")
     return jsonify({
         "ok": True,
         "user_id": user_id,
         "guild_id": guild_id,
         "user_name": _resolve_discord_username(user_id),
         "risk_score": risk_score,
+        "risk_flags": risk_flags,
         "summary": {
             "total_visits": total_visits,
             "authorized_visits": int(visit_summary["authorized_visits"] or 0),
@@ -2490,9 +2943,19 @@ def api_user_trust_profile():
             "warnings": int(warning_summary["warnings"] or 0),
             "kicks": int(warning_summary["kicks"] or 0),
             "bans": int(warning_summary["bans"] or 0),
+            "dodo_reveals": len(dodo_reveals),
+            "known_igns": len(known_igns),
             "last_visit_at": _ts_to_str(visit_summary["last_visit_at"]),
             "last_action_at": _ts_to_str(warning_summary["last_action_at"]),
         },
+        "known_igns": [
+            {
+                "ign": row["ign"],
+                "visit_count": row["visit_count"],
+                "last_seen_at": _ts_to_str(row["last_seen_at"]),
+            }
+            for row in known_igns
+        ],
         "recent_visits": [
             {
                 "ign": row["ign"],
@@ -2510,6 +2973,25 @@ def api_user_trust_profile():
                 "timestamp": _ts_to_str(row["timestamp"]),
             }
             for row in recent_actions
+        ],
+        "recent_dodo_reveals": [
+            {
+                "island": row["island_clean"],
+                "message_url": row["message_url"],
+                "username": row["username"],
+                "nickname": row["nickname"],
+                "created_at": _ts_to_str(row["created_at"]),
+            }
+            for row in dodo_reveals
+        ],
+        "recent_identity_events": [
+            {
+                "event_type": row["event_type"],
+                "old_display_name": row["old_display_name"],
+                "new_display_name": row["new_display_name"],
+                "created_at": _ts_to_str(row["created_at"]),
+            }
+            for row in identity_events
         ],
     })
 

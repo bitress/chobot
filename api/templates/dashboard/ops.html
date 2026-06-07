@@ -1,0 +1,301 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Ops - ChoBot Dashboard{% endblock %}
+{% block header %}Ops{% endblock %}
+
+{% block content %}
+
+<div class="row g-4 mb-4">
+  <div class="col-12 col-md-6 col-xl-3">
+    <div class="stat-card h-100">
+      <div class="stat-label">System</div>
+      <div class="stat-value" id="opsStatus">-</div>
+      <div class="x-small fw-bold mt-2" id="opsReasons" style="color:#888;">Loading...</div>
+    </div>
+  </div>
+  <div class="col-12 col-md-6 col-xl-3">
+    <div class="stat-card h-100">
+      <div class="stat-label">Database</div>
+      <div class="stat-value text-nook-green" id="dbStatus">-</div>
+      <div class="x-small fw-bold mt-2" id="dbMeta" style="color:#888;">-</div>
+    </div>
+  </div>
+  <div class="col-12 col-md-6 col-xl-3">
+    <div class="stat-card h-100">
+      <div class="stat-label">Item Cache</div>
+      <div class="stat-value" id="cacheItems" style="color:#4090bd;">-</div>
+      <div class="x-small fw-bold mt-2" id="cacheMeta" style="color:#888;">-</div>
+    </div>
+  </div>
+  <div class="col-12 col-md-6 col-xl-3">
+    <div class="stat-card h-100">
+      <div class="stat-label">Uptime</div>
+      <div class="stat-value" id="uptime" style="color:#f0ad4e;">-</div>
+      <div class="x-small fw-bold mt-2" id="refreshedAt" style="color:#888;">-</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-12 col-xl-7">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-heart-pulse me-2 text-nook-green"></i>Services</span>
+        <button type="button" id="refreshOpsBtn" class="btn btn-sm fw-bold"
+                style="background:#fff;border:2px solid #e1e6d3;color:#666;border-radius:50px;padding:.25rem .75rem;">
+          <i class="bi bi-arrow-clockwise"></i>
+        </button>
+      </div>
+      <div class="table-responsive">
+        <table class="db-table">
+          <thead>
+            <tr>
+              <th>Service</th>
+              <th>Status</th>
+              <th>Mode</th>
+              <th>Last Heartbeat</th>
+              <th>Last Error</th>
+            </tr>
+          </thead>
+          <tbody id="serviceRows">
+            <tr><td colspan="5" class="text-center py-4" style="color:#aaa;font-weight:700;">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-xl-5">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-toggle2-on me-2 text-nook-green"></i>Maintenance Mode</span>
+        <span class="badge rounded-pill fw-bold" id="maintenanceBadge"
+              style="background:#f5f5f5;color:#888;font-size:.65rem;">-</span>
+      </div>
+      <div class="p-4">
+        <label class="d-flex align-items-start gap-3 mb-3">
+          <input class="form-check-input mt-1" type="checkbox" id="maintenanceMode">
+          <span>
+            <span class="fw-bold" style="color:#555;">Global maintenance mode</span>
+            <span class="d-block x-small fw-bold mt-1" style="color:#888;">Marks health as degraded and can pause risky public actions.</span>
+          </span>
+        </label>
+        <label class="d-flex align-items-start gap-3 mb-3">
+          <input class="form-check-input mt-1" type="checkbox" id="disableDodo">
+          <span class="fw-bold" style="color:#555;">Disable Dodo reveals</span>
+        </label>
+        <label class="d-flex align-items-start gap-3 mb-3">
+          <input class="form-check-input mt-1" type="checkbox" id="disableRefresh">
+          <span class="fw-bold" style="color:#555;">Disable manual refresh</span>
+        </label>
+        <label class="d-flex align-items-start gap-3 mb-3">
+          <input class="form-check-input mt-1" type="checkbox" id="disableCommands">
+          <span class="fw-bold" style="color:#555;">Disable bot commands</span>
+        </label>
+        <label class="db-label">Public Message</label>
+        <textarea id="maintenanceMessage" class="form-control fw-bold" rows="3" maxlength="500"
+                  placeholder="Optional message shown when actions are paused"></textarea>
+        <button type="button" id="saveMaintenanceBtn" class="btn btn-sm fw-bold mt-3"
+                style="background:var(--nook-green);border:2px solid var(--nook-dark);color:#fff;border-radius:50px;padding:.45rem 1rem;">
+          <i class="bi bi-save me-1"></i>Save
+        </button>
+        <span id="maintenanceSaveState" class="x-small fw-bold ms-2" style="color:#888;">Ready.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-12 col-xl-5">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-plug-fill me-2 text-nook-green"></i>Integrations</span>
+      </div>
+      <div class="table-responsive">
+        <table class="db-table">
+          <tbody id="integrationRows">
+            <tr><td class="text-center py-4" style="color:#aaa;font-weight:700;">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-xl-7">
+    <div class="section-card h-100">
+      <div class="section-card-header">
+        <span><i class="bi bi-archive-fill me-2 text-nook-green"></i>Recent Backups</span>
+        <span class="x-small fw-bold" id="backupMeta" style="color:#aaa;">-</span>
+      </div>
+      <div class="table-responsive">
+        <table class="db-table">
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>Created</th>
+              <th class="text-end">Size</th>
+            </tr>
+          </thead>
+          <tbody id="backupRows">
+            <tr><td colspan="3" class="text-center py-4" style="color:#aaa;font-weight:700;">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="p-3" style="background:#fffdf0;border-top:2px solid #e1e6d3;color:#666;font-weight:700;">
+        <div class="db-label mb-2">Restore Checklist</div>
+        <ol class="mb-0 ps-3 x-small">
+          <li>Pause Dodo reveals and manual refresh in Maintenance Mode.</li>
+          <li>Stop bot processes before replacing a live SQLite database.</li>
+          <li>Copy the selected backup into place, then restart Flask and bot services.</li>
+          <li>Check Ops health, cache age, and recent errors before reopening commands.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var statusUrl = '{{ url_for("dashboard.api_runtime_status") }}';
+  var backupsUrl = '{{ url_for("dashboard.api_backups") }}';
+  var backupDownloadBase = '{{ url_for("dashboard.api_backups") }}';
+  var maintenanceUrl = '{{ url_for("dashboard.api_maintenance_mode") }}';
+
+  function $(id) { return document.getElementById(id); }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function statusColor(status) {
+    if (status === 'ok' || status === 'running') return '#2e7d32';
+    if (status === 'degraded' || status === 'starting' || status === 'not_selected') return '#b7791f';
+    return '#b42318';
+  }
+
+  function formatSeconds(total) {
+    total = Number(total || 0);
+    var days = Math.floor(total / 86400);
+    var hours = Math.floor((total % 86400) / 3600);
+    var mins = Math.floor((total % 3600) / 60);
+    if (days) return days + 'd ' + hours + 'h';
+    if (hours) return hours + 'h ' + mins + 'm';
+    return mins + 'm';
+  }
+
+  function formatBytes(bytes) {
+    bytes = Number(bytes || 0);
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return bytes + ' B';
+  }
+
+  function setMaintenanceForm(maintenance) {
+    $('maintenanceMode').checked = !!maintenance.maintenance_mode;
+    $('disableDodo').checked = !!maintenance.disable_dodo_reveals;
+    $('disableRefresh').checked = !!maintenance.disable_refresh;
+    $('disableCommands').checked = !!maintenance.disable_commands;
+    $('maintenanceMessage').value = maintenance.message || '';
+    $('maintenanceBadge').textContent = maintenance.maintenance_mode ? 'Enabled' : 'Off';
+    $('maintenanceBadge').style.background = maintenance.maintenance_mode ? '#fff3cd' : '#f5f5f5';
+    $('maintenanceBadge').style.color = maintenance.maintenance_mode ? '#856404' : '#888';
+  }
+
+  function renderStatus(data) {
+    $('opsStatus').textContent = String(data.status || '-').toUpperCase();
+    $('opsStatus').style.color = statusColor(data.status);
+    $('opsReasons').textContent = (data.reasons && data.reasons.length) ? data.reasons.join(', ') : 'No active warnings.';
+    $('dbStatus').textContent = String((data.database || {}).status || '-').toUpperCase();
+    $('dbStatus').style.color = statusColor((data.database || {}).status);
+    $('dbMeta').textContent = ((data.database || {}).backend || '-') + ' · ' + ((data.database || {}).latency_ms || 0) + ' ms';
+    $('cacheItems').textContent = String((data.cache || {}).items || 0);
+    $('cacheMeta').textContent = 'Age ' + formatSeconds((data.cache || {}).age_seconds) + ' · ' + ((data.cache || {}).last_refresh_status || '-');
+    $('uptime').textContent = formatSeconds(data.uptime_seconds);
+    $('refreshedAt').textContent = 'Updated ' + new Date(data.timestamp).toLocaleString();
+    setMaintenanceForm(data.maintenance || {});
+
+    var services = data.services || {};
+    var serviceNames = Object.keys(services).sort();
+    $('serviceRows').innerHTML = serviceNames.length ? serviceNames.map(function (name) {
+      var svc = services[name] || {};
+      return '<tr>' +
+        '<td class="fw-bold">' + escapeHtml(name) + '</td>' +
+        '<td style="color:' + statusColor(svc.status) + ';font-weight:800;">' + escapeHtml(svc.status || '-') + '</td>' +
+        '<td>' + escapeHtml(svc.mode || '-') + '</td>' +
+        '<td>' + escapeHtml(svc.last_heartbeat || '-') + '</td>' +
+        '<td>' + escapeHtml(svc.last_error || '') + '</td>' +
+      '</tr>';
+    }).join('') : '<tr><td colspan="5" class="text-center py-4" style="color:#aaa;font-weight:700;">No service heartbeats yet.</td></tr>';
+
+    var integrations = data.integrations || {};
+    $('integrationRows').innerHTML = Object.keys(integrations).sort().map(function (key) {
+      var ok = !!integrations[key];
+      return '<tr><td class="fw-bold">' + escapeHtml(key.replace(/_/g, ' ')) + '</td>' +
+        '<td class="text-end" style="color:' + (ok ? '#2e7d32' : '#888') + ';font-weight:800;">' +
+        (ok ? 'Configured' : 'Off') + '</td></tr>';
+    }).join('');
+  }
+
+  function renderBackups(data) {
+    $('backupMeta').textContent = (data.backup_dir || 'backups') + ' · ' + (data.backend || '-');
+    var entries = data.entries || [];
+    $('backupRows').innerHTML = entries.length ? entries.map(function (item) {
+      return '<tr>' +
+        '<td class="fw-bold"><a href="' + backupDownloadBase + '/' + encodeURIComponent(item.file) + '">' + escapeHtml(item.file) + '</a></td>' +
+        '<td>' + escapeHtml(item.created_at || '-') + '</td>' +
+        '<td class="text-end">' + formatBytes(item.size_bytes) + '</td>' +
+      '</tr>';
+    }).join('') : '<tr><td colspan="3" class="text-center py-4" style="color:#aaa;font-weight:700;">No backups found.</td></tr>';
+  }
+
+  function loadOps() {
+    fetch(statusUrl, { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(renderStatus)
+      .catch(function () { $('opsReasons').textContent = 'Could not load runtime status.'; });
+    fetch(backupsUrl, { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(renderBackups)
+      .catch(function () { $('backupRows').innerHTML = '<tr><td colspan="3" class="text-center py-4 text-danger fw-bold">Could not load backups.</td></tr>'; });
+  }
+
+  $('refreshOpsBtn').addEventListener('click', loadOps);
+  $('saveMaintenanceBtn').addEventListener('click', function () {
+    $('saveMaintenanceBtn').disabled = true;
+    $('maintenanceSaveState').textContent = 'Saving...';
+    fetch(maintenanceUrl, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        maintenance_mode: $('maintenanceMode').checked,
+        disable_dodo_reveals: $('disableDodo').checked,
+        disable_refresh: $('disableRefresh').checked,
+        disable_commands: $('disableCommands').checked,
+        message: $('maintenanceMessage').value
+      })
+    })
+      .then(function (r) { return r.json().then(function (data) { if (!r.ok) throw data; return data; }); })
+      .then(function (data) {
+        setMaintenanceForm(data.maintenance || {});
+        $('maintenanceSaveState').textContent = 'Saved.';
+        loadOps();
+      })
+      .catch(function (err) {
+        $('maintenanceSaveState').textContent = (err && err.error) || 'Save failed.';
+      })
+      .finally(function () { $('saveMaintenanceBtn').disabled = false; });
+  });
+
+  loadOps();
+  window._registerPoll && window._registerPoll(setInterval(loadOps, 60000));
+}());
+</script>
+{% endblock %}

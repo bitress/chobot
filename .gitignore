@@ -12,9 +12,9 @@ cache_dump.json
 chat_log.json
 chobot.pid
 *.pid
+backups/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .env.cho
 .env.xx
-tests/

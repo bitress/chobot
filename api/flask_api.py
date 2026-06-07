@@ -34,6 +34,7 @@ from utils.discord_http import json_request as discord_json_request
 from utils.discord_http import request as discord_request
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
 from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token
+from utils.ops_status import build_health_payload, get_maintenance_settings, record_service_status, set_active_data_manager
 from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value, _parse_visitor_list
 
 
@@ -216,6 +217,112 @@ def _log_dodo_reveal_attempt(user: dict | None, island: str, outcome: str, reaso
     )
 
 
+def _record_api_audit_event(action: str, target: str | None = None, details: dict | None = None) -> None:
+    """Best-effort audit log writer for public/API actions."""
+    user = _current_auth_user()
+    try:
+        db = get_db()
+        try:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS dashboard_audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    actor_user_id TEXT,
+                    actor_name TEXT,
+                    action TEXT NOT NULL,
+                    target TEXT,
+                    details TEXT NOT NULL,
+                    ip_address TEXT,
+                    created_at INTEGER NOT NULL
+                )"""
+            )
+            db.execute(
+                """INSERT INTO dashboard_audit_events
+                   (actor_user_id, actor_name, action, target, details, ip_address, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user.get("user_id") if user else None,
+                    user.get("username") if user else None,
+                    action,
+                    target,
+                    json.dumps(details or {}, sort_keys=True),
+                    _client_ip(),
+                    int(time.time()),
+                ),
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.debug("API audit insert failed: %s", exc)
+
+
+def _resolve_search_alias(kind: str, query: str) -> tuple[str, str | None]:
+    alias = clean_text(query)
+    if not alias:
+        return query, None
+    try:
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT target FROM search_aliases WHERE alias = ? AND kind = ?",
+                (alias, kind),
+            ).fetchone()
+        finally:
+            db.close()
+    except Exception:
+        row = None
+    return (row["target"], alias) if row else (query, None)
+
+
+def _log_command_search(
+    command: str,
+    query: str,
+    *,
+    found: bool,
+    result_count: int = 0,
+    source: str = "api",
+) -> None:
+    try:
+        db = get_db()
+        try:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS command_search_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    normalized_query TEXT NOT NULL,
+                    source TEXT,
+                    user_id TEXT,
+                    channel_id TEXT,
+                    found INTEGER NOT NULL DEFAULT 0,
+                    result_count INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                )"""
+            )
+            user = _current_auth_user()
+            db.execute(
+                """INSERT INTO command_search_events
+                   (command, query, normalized_query, source, user_id, channel_id, found, result_count, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    command,
+                    query,
+                    clean_text(query),
+                    source,
+                    user.get("user_id") if user else request.args.get("user_id", ""),
+                    request.args.get("channel_id", ""),
+                    1 if found else 0,
+                    int(result_count or 0),
+                    int(time.time()),
+                ),
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.debug("Command search log failed: %s", exc)
+
+
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = Config.FLASK_SECRET_KEY
@@ -231,6 +338,7 @@ CORS(app, resources={r"/*": {"origins": Config.FRONTEND_ORIGINS}}, supports_cred
 # Register the mod-only web dashboard
 app.register_blueprint(dashboard, url_prefix="/dashboard")
 init_dashboard_db()
+record_service_status("flask", mode="api", status="running")
 
 # Suppress Flask/Werkzeug standard logs
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -969,6 +1077,7 @@ def set_data_manager(dm):
     """Set the data manager instance"""
     global data_manager
     data_manager = dm
+    set_active_data_manager(dm)
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -1405,6 +1514,63 @@ def api_profile():
     })
 
 
+@app.route("/api/subscriptions", methods=["GET", "POST", "DELETE"])
+def api_subscriptions():
+    """Manage authenticated user island/item/villager/slot notifications."""
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    user_id = str(user.get("user_id") or "")
+    db = get_db()
+    try:
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS island_subscriptions (
+                user_id INTEGER NOT NULL,
+                island_clean TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'sub',
+                has_island_access INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, island_clean, kind)
+            )"""
+        )
+        if request.method == "GET":
+            rows = db.execute(
+                "SELECT island_clean, kind, has_island_access FROM island_subscriptions WHERE user_id = ? ORDER BY kind, island_clean",
+                (user_id,),
+            ).fetchall()
+            return jsonify({"ok": True, "items": [dict(row) for row in rows]})
+
+        data = request.get_json(silent=True) or {}
+        target = clean_text(data.get("target") or data.get("island") or data.get("item") or data.get("villager") or "")
+        kind = (data.get("kind") or "island_online").strip().lower()
+        allowed = {"island_online", "island_slot", "item", "villager", "sub"}
+        if kind not in allowed or not target:
+            return jsonify({"ok": False, "error": f"kind must be one of {sorted(allowed)} and target is required"}), 400
+        if request.method == "POST":
+            db.execute(
+                "INSERT OR IGNORE INTO island_subscriptions (user_id, island_clean, kind, has_island_access) VALUES (?, ?, ?, ?)",
+                (user_id, target, kind, 1 if bool(user.get("is_mod") or user.get("is_admin")) else 0),
+            )
+        else:
+            db.execute(
+                "DELETE FROM island_subscriptions WHERE user_id = ? AND island_clean = ? AND kind = ?",
+                (user_id, target, kind),
+            )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        db.close()
+
+    _record_api_audit_event(
+        "subscription_update",
+        target,
+        {"kind": kind, "method": request.method},
+    )
+    return jsonify({"ok": True, "target": target, "kind": kind, "method": request.method})
+
+
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
     """Invalidate the current auth token."""
@@ -1431,6 +1597,16 @@ def reveal_dodo(name):
         _log_dodo_reveal_attempt(None, name.upper(), "denied", "not_logged_in")
         return jsonify({"error": "Authentication required"}), 401
 
+    maintenance = get_maintenance_settings()
+    island_maintenance = (maintenance.get("islands") or {}).get(clean_text(name), {})
+    if maintenance["maintenance_mode"] or maintenance["disable_dodo_reveals"] or island_maintenance.get("disable_dodo_reveals"):
+        _log_dodo_reveal_attempt(user, name.upper(), "denied", "maintenance_mode")
+        _record_api_audit_event("dodo_reveal_denied", name.upper(), {"reason": "maintenance_mode"})
+        return jsonify({
+            "error": island_maintenance.get("message") or maintenance["message"] or "Dodo reveals are temporarily unavailable.",
+            "code": "maintenance_mode",
+        }), 503
+
     target = name.upper()
 
     # Load island metadata (cat + required_roles)
@@ -1449,6 +1625,7 @@ def reveal_dodo(name):
     if row:
         if row["is_visible"] is not None and not bool(row["is_visible"]):
             _log_dodo_reveal_attempt(user, target, "denied", "island_hidden")
+            _record_api_audit_event("dodo_reveal_denied", target, {"reason": "island_hidden"})
             return jsonify({"error": "Island is not available"}), 404
         island_cat = (row["cat"] or "").strip().lower()
         island_type = row["type"] or ""
@@ -1479,6 +1656,7 @@ def reveal_dodo(name):
 
     if _is_member_island(island_cat, island_type) and not effective_required_roles and not is_viewer_mod:
         _log_dodo_reveal_attempt(user, target, "denied", "no_member_roles_configured", channel_id=channel_id)
+        _record_api_audit_event("dodo_reveal_denied", target, {"reason": "no_member_roles_configured", "channel_id": channel_id})
         return jsonify({"error": "Subscriber roles are not configured for this island"}), 403
 
     # Check for general island access role first
@@ -1493,6 +1671,11 @@ def reveal_dodo(name):
                 required_role=island_access_role,
                 channel_id=channel_id,
             )
+            _record_api_audit_event(
+                "dodo_reveal_denied",
+                target,
+                {"reason": "missing_global_island_access_role", "channel_id": channel_id},
+            )
             return jsonify({
                 "error": "You need the Discord island access role to reveal this Dodo code.",
                 "code": "missing_global_island_access_role",
@@ -1506,6 +1689,11 @@ def reveal_dodo(name):
             "missing_island_channel_role",
             required_roles=effective_required_roles,
             channel_id=channel_id,
+        )
+        _record_api_audit_event(
+            "dodo_reveal_denied",
+            target,
+            {"reason": "missing_island_channel_role", "channel_id": channel_id},
         )
         return jsonify({
             "error": "You do not have the Discord role required for this island channel.",
@@ -1529,6 +1717,7 @@ def reveal_dodo(name):
 
     if not dodo_code:
         _log_dodo_reveal_attempt(user, target, "failed", "dodo_unavailable", channel_id=channel_id)
+        _record_api_audit_event("dodo_reveal_failed", target, {"reason": "dodo_unavailable", "channel_id": channel_id})
         return jsonify({"error": "Dodo code not available right now"}), 404
 
     # Fire webhook in background thread so the response isn't delayed
@@ -1547,7 +1736,94 @@ def reveal_dodo(name):
     ).start()
 
     _log_dodo_reveal_attempt(user, target, "allowed", "revealed", channel_id=channel_id)
+    _record_api_audit_event("dodo_reveal_allowed", target, {"channel_id": channel_id})
     return jsonify({"island": target, "dodo_code": dodo_code})
+
+
+@app.route("/api/islands/<name>/queue", methods=["POST"])
+def join_dodo_queue(name):
+    """Join the Dodo reservation queue for an island."""
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    target = name.upper().strip()
+    island_clean = clean_text(target)
+    maintenance = get_maintenance_settings()
+    island_maintenance = (maintenance.get("islands") or {}).get(island_clean, {})
+    if maintenance["maintenance_mode"] or island_maintenance.get("queue_paused"):
+        return jsonify({
+            "ok": False,
+            "error": island_maintenance.get("message") or maintenance["message"] or "This island queue is temporarily paused.",
+            "code": "maintenance_mode",
+        }), 503
+    note = (request.get_json(silent=True) or {}).get("note", "")
+    now = int(time.time())
+    db = get_db()
+    try:
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS dodo_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                island_clean TEXT NOT NULL,
+                island_name TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                username TEXT,
+                status TEXT NOT NULL DEFAULT 'waiting',
+                note TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )"""
+        )
+        existing = db.execute(
+            "SELECT id, status FROM dodo_queue WHERE island_clean = ? AND user_id = ? AND status IN ('waiting', 'called', 'investigating')",
+            (island_clean, str(user.get("user_id") or "")),
+        ).fetchone()
+        if existing:
+            return jsonify({"ok": True, "id": existing["id"], "status": existing["status"], "already_queued": True})
+        cur = db.execute(
+            """INSERT INTO dodo_queue
+               (island_clean, island_name, user_id, username, status, note, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'waiting', ?, ?, ?)""",
+            (
+                island_clean,
+                target,
+                str(user.get("user_id") or ""),
+                user.get("username") or user.get("discord_name") or "",
+                str(note or "")[:500],
+                now,
+                now,
+            ),
+        )
+        db.commit()
+        entry_id = cur.lastrowid
+    except Exception as exc:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        db.close()
+
+    _record_api_audit_event("dodo_queue_join", target, {"entry_id": entry_id})
+    return jsonify({"ok": True, "id": entry_id, "status": "waiting"})
+
+
+@app.route("/api/dodo-queue/me", methods=["GET"])
+def my_dodo_queue():
+    """Return the authenticated user's active Dodo queue entries."""
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, island_name, status, note, created_at, updated_at FROM dodo_queue "
+            "WHERE user_id = ? ORDER BY created_at DESC LIMIT 25",
+            (str(user.get("user_id") or ""),),
+        ).fetchall()
+    except Exception:
+        rows = []
+    finally:
+        db.close()
+    return jsonify({"ok": True, "items": [dict(row) for row in rows]})
 
 # ============================================================================
 # API ROUTES
@@ -1605,35 +1881,16 @@ def home():
 @app.route('/api/health')
 def health():
     """Health check endpoint for monitoring"""
-    cache, last_update, refresh_interval_seconds, source = _get_item_cache()
-    cache_count = len([key for key in cache if key != "_display"])
-    is_healthy = cache_count > 0
-
-    if last_update is not None:
-        next_update = (
-            last_update + timedelta(seconds=refresh_interval_seconds)
-        ).isoformat() if refresh_interval_seconds else None
-    else:
-        next_update = None
-
-    response = {
-        "status": "healthy" if is_healthy else "degraded",
-        "timestamp": datetime.now().isoformat(),
-        "source": source,
-        "data_manager_initialised": data_manager is not None,
-        "cache": {
-            "items": cache_count,
-            "last_update": last_update.isoformat() if last_update else None,
-            "refresh_interval_seconds": refresh_interval_seconds,
-            "next_update": next_update,
-        },
-        "islands": {
-            "file_cache_ttl_seconds": _FILE_CACHE_TTL,
-        },
+    payload = build_health_payload(
+        data_manager=data_manager,
+        fallback_loader=_get_item_cache,
+        include_private=False,
+    )
+    payload["islands"] = {
+        "file_cache_ttl_seconds": _FILE_CACHE_TTL,
     }
-
-    status_code = 200 if is_healthy else 503
-    return jsonify(response), status_code
+    status_code = 200 if payload["status"] in {"ok", "degraded"} else 503
+    return jsonify(payload), status_code
 
 # --- ITEM SEARCH ROUTES ---
 
@@ -1675,8 +1932,11 @@ def api_find_item():
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !find <item name> to search."})
 
+    original_query = query
+    query, alias_used = _resolve_search_alias("item", query)
     cache, _last_update, _refresh_interval, source = _get_item_cache()
     if not cache:
+        _log_command_search("find", original_query, found=False, source=source)
         return jsonify({"error": "Service unavailable - item cache is not loaded"}), 503
 
     found_locs = cache.get(query)
@@ -1684,9 +1944,12 @@ def api_find_item():
     if found_locs:
         free, sub, order = parse_locations_json(found_locs)
         final_msg = format_locations_text(found_locs)
+        _log_command_search("find", original_query, found=True, result_count=len(free) + len(sub) + len(order), source=source)
         return jsonify({
             "found": True,
-            "query": query,
+            "query": original_query,
+            "resolved_query": query,
+            "alias_used": alias_used,
             "source": source,
             "results": {"free": free, "sub": sub, "order": order},
             "suggestions": [],
@@ -1697,17 +1960,23 @@ def api_find_item():
     valid_suggestions = list(set([m[0] for m in matches if m[1] > 75]))
 
     if valid_suggestions:
+        _log_command_search("find", original_query, found=False, source=source)
         return jsonify({
             "found": False,
-            "query": query,
+            "query": original_query,
+            "resolved_query": query,
+            "alias_used": alias_used,
             "source": source,
             "suggestions": valid_suggestions,
             "message": f"Hey {user}, I couldn't find \"{query}\" - Did you mean: {', '.join(valid_suggestions)}?"
         })
 
+    _log_command_search("find", original_query, found=False, source=source)
     return jsonify({
         "found": False,
-        "query": query,
+        "query": original_query,
+        "resolved_query": query,
+        "alias_used": alias_used,
         "source": source,
         "suggestions": [],
         "message": f"Hey {user}, I couldn't find \"{query}\" or anything similar."
@@ -1753,8 +2022,11 @@ def api_find_villager():
     if not query:
         return jsonify({"found": False, "message": f"Hey {user}, type !villager <n> to search."})
 
+    original_query = query
+    query, alias_used = _resolve_search_alias("villager", query)
     villager_map, source = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
     if not villager_map:
+        _log_command_search("villager", original_query, found=False, source=source)
         return jsonify({"error": "Service unavailable - villager cache is not loaded"}), 503
 
     found_locs = villager_map.get(query)
@@ -1762,9 +2034,12 @@ def api_find_villager():
     if found_locs:
         free, sub, order = parse_locations_json(found_locs)
         final_msg = format_locations_text(found_locs)
+        _log_command_search("villager", original_query, found=True, result_count=len(free) + len(sub) + len(order), source=source)
         return jsonify({
             "found": True,
-            "query": query,
+            "query": original_query,
+            "resolved_query": query,
+            "alias_used": alias_used,
             "source": source,
             "results": {"free": free, "sub": sub, "order": order},
             "suggestions": [],
@@ -1775,17 +2050,23 @@ def api_find_villager():
     valid_suggestions = list(set([m[0] for m in matches if m[1] > 75]))
 
     if valid_suggestions:
+        _log_command_search("villager", original_query, found=False, source=source)
         return jsonify({
             "found": False,
-            "query": query,
+            "query": original_query,
+            "resolved_query": query,
+            "alias_used": alias_used,
             "source": source,
             "suggestions": valid_suggestions,
             "message": f"Hey {user}, I couldn't find villager \"{query}\" - Did you mean: {', '.join(valid_suggestions)}?"
         })
 
+    _log_command_search("villager", original_query, found=False, source=source)
     return jsonify({
         "found": False,
-        "query": query,
+        "query": original_query,
+        "resolved_query": query,
+        "alias_used": alias_used,
         "source": source,
         "suggestions": [],
         "message": f"Hey {user}, I couldn't find a villager named \"{query}\"."
@@ -1816,6 +2097,33 @@ def api_list_villagers_by_island():
         "total_islands": len(island_manifest),
         "islands": island_manifest
     })
+
+
+@app.route('/api/search/similar')
+def api_search_similar():
+    """Return similar item or villager names for typo-learning/search UI."""
+    kind = (request.args.get("kind") or "item").strip().lower()
+    query = _request_search_query("q", "query", "name")
+    limit = min(max(request.args.get("limit", 8, type=int), 1), 25)
+    if kind not in {"item", "villager"}:
+        return jsonify({"error": "kind must be item or villager"}), 400
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+
+    if kind == "villager":
+        data, source = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR, Config.ORDER_BOT_DIR])
+        choices = list(data.keys())
+    else:
+        cache, _last_update, _refresh_interval, source = _get_item_cache()
+        display_map = cache.get("_display", {})
+        choices = [key for key in cache if key != "_display"]
+
+    matches = process.extract(query, choices, limit=limit, scorer=fuzz.WRatio)
+    suggestions = []
+    for key, score in matches:
+        label = key.title() if kind == "villager" else display_map.get(key, key.title())
+        suggestions.append({"key": key, "label": label, "score": score})
+    return jsonify({"kind": kind, "query": query, "source": source, "suggestions": suggestions})
 
 # --- DODO CODE / ISLAND STATUS ROUTES ---
 
@@ -1861,7 +2169,7 @@ def get_islands():
 
     results = []
 
-    if os.path.exists(Config.DIR_FREE):
+    if Config.DIR_FREE and os.path.exists(Config.DIR_FREE):
         with os.scandir(Config.DIR_FREE) as entries:
             for entry in entries:
                 if entry.is_dir():
@@ -1875,7 +2183,7 @@ def get_islands():
                         viewer_is_mod,
                     ))
 
-    if os.path.exists(Config.DIR_VIP):
+    if Config.DIR_VIP and os.path.exists(Config.DIR_VIP):
         with os.scandir(Config.DIR_VIP) as entries:
             for entry in entries:
                 if entry.is_dir():
@@ -1943,6 +2251,44 @@ def get_islands():
     })
 
 
+@app.route('/api/browser/islands', methods=['GET'])
+def api_browser_islands():
+    """Frontend-friendly public island cards without Dodo codes."""
+    response = get_islands()
+    payload = response.get_json() if hasattr(response, "get_json") else {}
+    cards = []
+    category = (request.args.get("cat") or "").strip().lower()
+    seasonal = (request.args.get("seasonal") or "").strip().lower()
+    for island in payload.get("data", []):
+        if category and str(island.get("cat") or "").lower() != category:
+            continue
+        if seasonal and seasonal not in str(island.get("seasonal") or "").lower():
+            continue
+        cards.append({
+            "id": island.get("id"),
+            "name": island.get("display_name") or island.get("name"),
+            "canonical_name": island.get("name"),
+            "cat": island.get("cat"),
+            "type": island.get("type"),
+            "status": island.get("status"),
+            "visitors": island.get("visitors"),
+            "visitor_list": island.get("visitor_list", []),
+            "map_url": island.get("map_url"),
+            "items": island.get("items") or [],
+            "seasonal": island.get("seasonal"),
+            "theme": island.get("theme"),
+            "required_role_count": len(island.get("required_roles") or []),
+            "accessible": bool(island.get("accessible")),
+            "discord_bot_online": island.get("discord_bot_online"),
+            "updated_at": island.get("updated_at"),
+        })
+    return jsonify({
+        "timestamp": datetime.now().isoformat(),
+        "count": len(cards),
+        "items": cards,
+    })
+
+
 @app.route('/api/islands/access', methods=['GET'])
 def get_island_access():
     """Return the current user's per-island access state without Dodo/status payloads."""
@@ -1995,6 +2341,11 @@ def get_island_access():
     finally:
         db.close()
 
+    _record_api_audit_event(
+        "access_check",
+        "islands",
+        {"accessible_count": sum(1 for item in rows if item["accessible"]), "island_count": len(rows)},
+    )
     return jsonify({
         "user_id": user.get("user_id"),
         "is_mod": bool(user.get("is_mod")),
@@ -2154,6 +2505,13 @@ def api_refresh():
     session_ok = bool(session.get("mod_logged_in"))
     if not secret_bearer_ok and not mod_bearer_ok and not session_ok:
         return jsonify({"error": "Unauthorized"}), 401
+
+    maintenance = get_maintenance_settings()
+    if maintenance["maintenance_mode"] or maintenance["disable_refresh"]:
+        return jsonify({
+            "error": maintenance["message"] or "Manual refresh is temporarily disabled.",
+            "code": "maintenance_mode",
+        }), 503
 
     if data_manager is None:
         return jsonify({"error": "Service unavailable — data manager not initialised"}), 503

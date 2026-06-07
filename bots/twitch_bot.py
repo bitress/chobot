@@ -12,6 +12,7 @@ from thefuzz import process, fuzz
 from utils.config import Config
 from utils.helpers import normalize_text, get_best_suggestions, clean_text, format_locations_text
 from utils.chopaeng_ai import get_ai_answer
+from utils.ops_status import get_maintenance_settings
 
 logger = logging.getLogger("TwitchBot")
 
@@ -52,6 +53,10 @@ class TwitchBot(commands.Bot):
             logger.info(f"[TWITCH CHAT] {author}: {message.content}")
         except Exception as e:
             logger.error(f"Failed to log Twitch message: {e}")
+
+        maintenance = get_maintenance_settings()
+        if maintenance.get("disable_commands") and str(message.content or "").startswith("!"):
+            return
 
         await self.handle_commands(message)
 

@@ -157,6 +157,53 @@ class DashboardAuditEvent(Base):
     )
 
 
+class CommandSearchEvent(Base):
+    __tablename__ = "command_search_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    command: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    query: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    normalized_query: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    source: Mapped[str | None] = mapped_column(String(64))
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    channel_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    found: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_command_search_command_ts", "command", "created_at"),
+    )
+
+
+class SearchAlias(Base):
+    __tablename__ = "search_aliases"
+
+    alias: Mapped[str] = mapped_column(String(255), primary_key=True)
+    target: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False, default="item", primary_key=True)
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+
+class DodoQueueEntry(Base):
+    __tablename__ = "dodo_queue"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    island_clean: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    island_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    username: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(64), nullable=False, default="waiting", index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_dodo_queue_island_status_ts", "island_clean", "status", "created_at"),
+    )
+
+
 class AuthToken(Base):
     __tablename__ = "auth_tokens"
 

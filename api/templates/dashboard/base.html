@@ -84,6 +84,24 @@
         <span class="link-text">Analytics</span>
       </a>
       {% if current_role == 'admin' %}
+      <a href="{{ url_for('dashboard.incidents') }}"
+         class="nav-pill-link {% if request.endpoint == 'dashboard.incidents' %}active{% endif %}"
+         title="Incident Center">
+        <i class="bi bi-exclamation-octagon-fill"></i>
+        <span class="link-text">Incidents</span>
+      </a>
+      <a href="{{ url_for('dashboard.trust') }}"
+         class="nav-pill-link {% if request.endpoint == 'dashboard.trust' %}active{% endif %}"
+         title="Trust Profile">
+        <i class="bi bi-person-vcard-fill"></i>
+        <span class="link-text">Trust Profile</span>
+      </a>
+      <a href="{{ url_for('dashboard.ops') }}"
+         class="nav-pill-link {% if request.endpoint == 'dashboard.ops' %}active{% endif %}"
+         title="Ops">
+        <i class="bi bi-activity"></i>
+        <span class="link-text">Ops</span>
+      </a>
       <a href="{{ url_for('dashboard.database') }}"
          class="nav-pill-link {% if request.endpoint == 'dashboard.database' %}active{% endif %}"
          title="Database">

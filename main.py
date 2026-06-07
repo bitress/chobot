@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils import Config, DataManager
 from utils.db_migration import migrate_sqlite_to_mariadb_detailed
+from utils.ops_status import backup_dir_path, record_service_status, start_backup_scheduler
 from bots import TwitchBot, DiscordCommandBot
 from bots.flight_logger import FlightLoggerCog, FreeFlightCog
 from api import run_flask_app, set_data_manager
@@ -229,11 +230,14 @@ def run_flask(data_manager: DataManager):
     """Run Flask API server in a thread."""
     try:
         logger.info("[FLASK] Starting Flask API...")
+        record_service_status("flask", mode="api", status="starting")
         set_data_manager(data_manager)
+        record_service_status("flask", mode="api", status="running")
         run_flask_app(host="0.0.0.0", port=8100)
     except Exception as e:
         logger.error(f"[FLASK] Critical error: {e}")
         logger.error(traceback.format_exc())
+        record_service_status("flask", mode="api", status="error", error=str(e))
         STOP_EVENT.set()
 
 
@@ -281,16 +285,19 @@ def run_twitch(data_manager: DataManager, find_only: bool = False):
     try:
         mode = "find-only" if find_only else "full"
         logger.info(f"[TWITCH] Starting Twitch bot ({mode} mode)...")
+        record_service_status("twitch", mode=mode, status="starting")
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         twitch_bot = TwitchBot(data_manager)
+        record_service_status("twitch", mode=mode, status="running")
         loop.run_until_complete(_run_twitch_lifecycle(twitch_bot))
 
     except Exception as e:
         logger.error(f"[TWITCH] Critical error: {e}")
         logger.error(traceback.format_exc())
+        record_service_status("twitch", mode="find-only" if find_only else "full", status="error", error=str(e))
         STOP_EVENT.set()
     finally:
         try:
@@ -301,6 +308,7 @@ def run_twitch(data_manager: DataManager, find_only: bool = False):
                 loop.close()
         except Exception:
             pass
+        record_service_status("twitch", mode="find-only" if find_only else "full", status="stopped")
 
 
 # ============================================================================
@@ -325,6 +333,7 @@ async def run_discord(
         else:
             mode = "full"
         logger.info(f"[DISCORD] Starting Discord bot ({mode} mode)...")
+        record_service_status("discord", mode=mode, status="starting")
 
         discord_bot = DiscordCommandBot(data_manager, load_command_cog=not flight_logger_only)
 
@@ -352,13 +361,16 @@ async def run_discord(
 
         watcher_task = asyncio.create_task(stop_watcher())
 
+        record_service_status("discord", mode=mode, status="running")
         await discord_bot.start(Config.DISCORD_TOKEN)
 
         watcher_task.cancel()
+        record_service_status("discord", mode=mode, status="stopped")
 
     except Exception as e:
         logger.error(f"[DISCORD] Critical error: {e}")
         logger.error(traceback.format_exc())
+        record_service_status("discord", mode=mode if "mode" in locals() else "unknown", status="error", error=str(e))
         STOP_EVENT.set()
         if discord_bot:
             try:
@@ -388,6 +400,7 @@ def main():
                 password=Config.MARIADB_PASSWORD,
                 database=Config.MARIADB_DATABASE,
                 truncate_before_import=Config.MARIADB_TRUNCATE_BEFORE_IMPORT,
+                backup_dir=backup_dir_path(),
             )
             total_rows = summary["total_rows_copied"]
             logger.info(
@@ -409,6 +422,12 @@ def main():
 
     needs_discord = flags["discord"] or flags["discord_find_only"] or flags["flight_logger_only"]
     needs_twitch = flags["twitch"] or flags["twitch_find_only"]
+    if not flags["flask"]:
+        record_service_status("flask", mode="api", status="not_selected")
+    if not needs_discord:
+        record_service_status("discord", mode="none", status="not_selected")
+    if not needs_twitch:
+        record_service_status("twitch", mode="none", status="not_selected")
 
     logger.info("=" * 70)
     logger.info("CHOBOT STARTING")
@@ -443,6 +462,7 @@ def main():
             f"[DATA] Local cache loaded successfully "
             f"({len(data_manager.cache)} items). Skipping initial fetch."
         )
+    start_backup_scheduler(STOP_EVENT)
     logger.info(f"[DATA] Cache status: {len(data_manager.cache)} items ready ✓")
 
     # ---- Signal handling ---------------------------------------------------

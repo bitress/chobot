@@ -582,13 +582,14 @@ def migrate_sqlite_to_mariadb_detailed(
     database: str,
     truncate_before_import: bool = True,
     create_backup: bool = True,
+    backup_dir: str | None = None,
     create_indexes: bool = True,
     validate_after_import: bool = True,
 ) -> dict[str, Any]:
     """Run a full migration and return backup, index, and validation details."""
     started_at = dt.datetime.now(dt.timezone.utc).isoformat()
     source = inspect_sqlite_source(sqlite_path)
-    backup_path = backup_sqlite_database(sqlite_path) if create_backup else None
+    backup_path = backup_sqlite_database(sqlite_path, backup_dir) if create_backup else None
     tables = migrate_sqlite_to_mariadb(
         sqlite_path=sqlite_path,
         host=host,

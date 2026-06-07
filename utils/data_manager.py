@@ -26,6 +26,9 @@ class DataManager:
 
         self.cache = {}  # Item cache
         self.last_update = None
+        self.last_refresh_attempt = None
+        self.last_refresh_status = "not_started"
+        self.last_refresh_error = None
         self.gc = None
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -106,6 +109,9 @@ class DataManager:
     def update_cache(self):
         """Fetch items from Google Sheets"""
         logger.info("Updating cache from Google Sheets...")
+        self.last_refresh_attempt = datetime.now()
+        self.last_refresh_status = "running"
+        self.last_refresh_error = None
 
         if not self.gc:
             self._connect_sheets()
@@ -178,6 +184,7 @@ class DataManager:
                     self.last_update = datetime.now()
 
                 self.save_local_cache()
+                self.last_refresh_status = "ok"
                 logger.info(
                     f"Scan complete. {new_item_count} items loaded from "
                     f"{sheets_scanned} sheets ({sheets_failed} failed)."
@@ -189,9 +196,13 @@ class DataManager:
                     f"{sheets_scanned}/{len(worksheets)} sheets scanned, "
                     f"{sheets_failed} failed). Keeping existing cache."
                 )
+                self.last_refresh_status = "degraded"
+                self.last_refresh_error = "Refresh produced insufficient data; kept existing cache."
 
         except Exception as e:
             logger.error(f"Workbook fetch failed: {e}")
+            self.last_refresh_status = "error"
+            self.last_refresh_error = str(e)
             self.gc = None  # Force reconnect on next attempt
 
     def auto_refresh_loop(self):

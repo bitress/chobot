@@ -4,6 +4,7 @@ Handles Discord commands for item and villager search with rich embeds
 """
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import time
@@ -24,6 +25,7 @@ from utils.database import connect_db
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
+from utils.ops_status import create_sqlite_backup, get_maintenance_settings
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -3266,6 +3268,12 @@ class DiscordCommandCog(commands.Cog):
     async def update(self, ctx):
         """OTA update: pull latest code from git and restart the bot (Admin only)"""
         await ctx.reply("Fetching latest changes from git...")
+        try:
+            backup = create_sqlite_backup("pre_update")
+            if backup.get("ok"):
+                await ctx.reply(f"Database backup created: `{backup.get('file')}`")
+        except Exception as exc:
+            logger.warning("[DISCORD] Pre-update backup failed: %s", exc)
 
         # Run git pull, forcing English output for reliable message parsing
         try:
@@ -3484,6 +3492,12 @@ class DiscordCommandBot(commands.Bot):
     async def on_message(self, message):
         """Handle messages"""
         if message.author == self.user:
+            return
+
+        maintenance = get_maintenance_settings()
+        if maintenance.get("disable_commands") and message.content.startswith(self.command_prefix):
+            with contextlib.suppress(discord.HTTPException):
+                await message.reply(maintenance.get("message") or "ChoBot commands are temporarily paused for maintenance.")
             return
 
         # Auto-delete Dodo code update notification messages (only in SUB_CATEGORY channels)

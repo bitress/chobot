@@ -659,6 +659,25 @@ def _direct_faq_answer(text: str) -> Optional[str]:
     return None
 
 
+def _direct_mod_ops_answer(text: str, channel_context: Optional[str] = None) -> Optional[str]:
+    """Return staff-only operational guidance when invoked with mod/staff context."""
+    context = (channel_context or "").lower()
+    if not any(marker in context for marker in ("mod", "staff", "admin", "flight", "xlog")):
+        return None
+    t = text.lower().strip()
+    if any(term in t for term in ("bot status", "service status", "ops", "health", "cache", "database", "db health")):
+        return (
+            "For operational status, use the ChoBot dashboard **Ops** page or `/api/health`. "
+            "Check service heartbeats, cache age, Google Sheets refresh status, DB health, and recent errors before restarting anything."
+        )
+    if any(term in t for term in ("incident", "unknown traveler", "warnings", "investigation", "trust profile")):
+        return (
+            "For moderation triage, open the dashboard **Incidents** page first, then use **Trust Profile** with the Discord user ID. "
+            "Review unknown flights, active warnings, Dodo reveal history, nickname changes, and risk flags together."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Keyword-based fallback (no API key needed)
 # ---------------------------------------------------------------------------
@@ -1150,6 +1169,12 @@ async def get_ai_answer(
         if conversation_key:
             conversation_store.add(conversation_key, q, _VARIANT_ORDERING_RESPONSE)
         return _auto_link_channels(_VARIANT_ORDERING_RESPONSE)
+
+    mod_ops_answer = _direct_mod_ops_answer(q, channel_context)
+    if mod_ops_answer:
+        if conversation_key:
+            conversation_store.add(conversation_key, q, mod_ops_answer)
+        return _auto_link_channels(mod_ops_answer)
 
     direct_faq_answer = _direct_faq_answer(q)
     if direct_faq_answer:
