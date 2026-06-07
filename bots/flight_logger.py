@@ -1956,7 +1956,6 @@ class FlightLoggerCog(commands.Cog):
         guild_icon = guild.icon.url if guild and guild.icon else None
         destination_link = self.get_island_channel_link(destination)
         identity_summary, identity_reasons = summarize_recent_identity_events(recent_identity_events or [])
-        required_text = " / ".join(r.mention for r in required_roles) if required_roles else "Unknown"
         member_sub_text = " / ".join(r.mention for r in member_sub_roles) if member_sub_roles else "None detected"
         reason_text = "No subscription role for destination island"
 
@@ -1969,7 +1968,6 @@ class FlightLoggerCog(commands.Cog):
                     f"Member {member.mention} matched this flight for **{destination_link}**, "
                     "but they do not have a subscription role for that island.\n"
                     f"**Member Subscription(s):** {member_sub_text}\n"
-                    f"**Required For Destination:** {required_text}\n"
                     "Use the buttons below to take action."
                 ),
                 color=COLOR_INVESTIGATION,
