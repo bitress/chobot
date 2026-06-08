@@ -26,8 +26,8 @@ from botocore.client import Config as BotocoreConfig
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from flask import (
-    Blueprint, render_template, request, redirect,
-    url_for, session, flash, jsonify, abort, g, Response, send_from_directory,
+    Blueprint, request, redirect,
+    url_for, session, jsonify, abort, g, Response, send_from_directory,
 )
 
 from utils.config import Config
@@ -58,9 +58,6 @@ logger = logging.getLogger("Dashboard")
 dashboard = Blueprint(
     "dashboard",
     __name__,
-    template_folder="templates",
-    static_folder="static",
-    static_url_path="/static",
 )
 
 
@@ -342,12 +339,33 @@ def init_dashboard_db():
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS incident_workflow (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_kind   TEXT NOT NULL,
+                source_id     TEXT NOT NULL,
+                title         TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'open',
+                severity      TEXT NOT NULL DEFAULT 'attention',
+                assigned_to   TEXT,
+                note          TEXT,
+                actor_user_id TEXT,
+                created_at    INTEGER NOT NULL,
+                updated_at    INTEGER NOT NULL,
+                UNIQUE(source_kind, source_id)
+            )
+        """)
+
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_command_search_command_ts ON command_search_events (command, created_at)")
         except Exception:
             pass
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_dodo_queue_island_status_ts ON dodo_queue (island_clean, status, created_at)")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_incident_workflow_status_ts ON incident_workflow (status, updated_at)")
         except Exception:
             pass
 
@@ -653,6 +671,16 @@ def _where_clause(conditions: list) -> str:
     return ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
 
+def _optional_rows(db, sql: str, params=()) -> list:
+    """Return rows for optional feature tables, or [] before that feature has created them."""
+    try:
+        return db.execute(sql, params).fetchall()
+    except Exception as exc:
+        if "no such table" in str(exc).lower() or "doesn't exist" in str(exc).lower():
+            return []
+        raise
+
+
 def row_to_island_dict(row: dict) -> dict:
     """Decode JSON columns and return a plain dict."""
     try:
@@ -762,6 +790,50 @@ def _event_severity(kind: str) -> str:
     return "info"
 
 
+def _incident_source_id(kind: str, payload: dict) -> str:
+    """Build a stable workflow key for a derived incident signal."""
+    for key in ("id", "visit_id"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value)
+    user_id = payload.get("user_id") or "unknown"
+    timestamp = payload.get("timestamp") or payload.get("created_at") or payload.get("last_warning_at") or ""
+    return f"{user_id}:{timestamp}"
+
+
+def _load_incident_workflow_map(db, source_pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+    if not source_pairs:
+        return {}
+    result = {}
+    try:
+        for kind, source_id in source_pairs:
+            row = db.execute(
+                "SELECT * FROM incident_workflow WHERE source_kind = ? AND source_id = ?",
+                (kind, source_id),
+            ).fetchone()
+            if row:
+                result[(kind, source_id)] = dict(row)
+    except Exception:
+        return {}
+    return result
+
+
+def _incident_event(kind: str, title: str, timestamp, user_id, payload: dict) -> dict:
+    payload = dict(payload)
+    source_id = _incident_source_id(kind, payload)
+    return {
+        "kind": kind,
+        "source_id": source_id,
+        "severity": _event_severity(kind),
+        "title": title,
+        "timestamp": _ts_to_str(timestamp),
+        "timestamp_raw": timestamp,
+        "user_id": user_id,
+        "trust_profile_url": url_for("dashboard.trust", user_id=user_id) if user_id else None,
+        "payload": payload,
+    }
+
+
 def _recent_incident_payload(limit: int = 25) -> dict:
     """Collect moderation signals for the incident center."""
     now = int(time.time())
@@ -779,14 +851,16 @@ def _recent_incident_payload(limit: int = 25) -> dict:
             "ORDER BY w.timestamp DESC LIMIT ?",
             (now - 3 * 86400, limit),
         ).fetchall()
-        dodo_reveals = db.execute(
+        dodo_reveals = _optional_rows(
+            db,
             "SELECT * FROM dodo_reveal_messages ORDER BY created_at DESC LIMIT ?",
             (limit,),
-        ).fetchall()
-        identity_events = db.execute(
+        )
+        identity_events = _optional_rows(
+            db,
             "SELECT * FROM member_identity_events ORDER BY created_at DESC LIMIT ?",
             (limit,),
-        ).fetchall()
+        )
         queue = db.execute(
             "SELECT * FROM dodo_queue WHERE status IN ('waiting', 'called', 'investigating') "
             "ORDER BY created_at ASC LIMIT ?",
@@ -799,51 +873,106 @@ def _recent_incident_payload(limit: int = 25) -> dict:
             "ORDER BY warning_count DESC, last_warning_at DESC LIMIT ?",
             (now - 30 * 86400, limit),
         ).fetchall()
+        workflow_rows = db.execute(
+            "SELECT * FROM incident_workflow WHERE status IN ('open', 'investigating', 'watching') "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-    finally:
         db.close()
+        return {"ok": False, "error": str(exc)}
 
     events = []
     for row in unknown:
         kind = "no_island_access" if row["has_island_access"] == 0 else "unknown_traveler"
-        events.append({
-            "kind": kind,
-            "severity": _event_severity(kind),
-            "title": f"{row['ign']} visited {row['destination']}",
-            "timestamp": _ts_to_str(row["timestamp"]),
-            "user_id": row["user_id"],
-            "payload": dict(row),
-        })
+        events.append(_incident_event(
+            kind,
+            f"{row['ign']} visited {row['destination']}",
+            row["timestamp"],
+            row["user_id"],
+            dict(row),
+        ))
     for row in warnings:
         action = (row["action_type"] or "WARN").lower()
         kind = "investigation" if action == "note" else "active_warning"
-        events.append({
-            "kind": kind,
-            "severity": _event_severity(kind),
-            "title": f"{row['action_type']} for {row['ign'] or row['user_id'] or 'unknown user'}",
-            "timestamp": _ts_to_str(row["timestamp"]),
-            "user_id": row["user_id"],
-            "payload": dict(row),
-        })
+        events.append(_incident_event(
+            kind,
+            f"{row['action_type']} for {row['ign'] or row['user_id'] or 'unknown user'}",
+            row["timestamp"],
+            row["user_id"],
+            dict(row),
+        ))
+    for row in dodo_reveals:
+        events.append(_incident_event(
+            "dodo_reveal",
+            f"Dodo revealed for {row['island_clean']}",
+            row["created_at"],
+            row["user_id"],
+            dict(row),
+        ))
+    for row in queue:
+        events.append(_incident_event(
+            "dodo_queue",
+            f"{row['username'] or row['user_id']} is queued for {row['island_name']}",
+            row["created_at"],
+            row["user_id"],
+            dict(row),
+        ))
     for row in identity_events:
-        events.append({
-            "kind": "recent_nickname_change",
-            "severity": _event_severity("recent_nickname_change"),
-            "title": f"Identity event for {row['user_id']}",
-            "timestamp": _ts_to_str(row["created_at"]),
-            "user_id": row["user_id"],
-            "payload": dict(row),
-        })
+        events.append(_incident_event(
+            "recent_nickname_change",
+            f"Identity event for {row['user_id']}",
+            row["created_at"],
+            row["user_id"],
+            dict(row),
+        ))
     for row in repeat_offenders:
-        events.append({
-            "kind": "repeat_offender",
-            "severity": _event_severity("repeat_offender"),
-            "title": f"{row['user_id']} has {row['warning_count']} recent actions",
-            "timestamp": _ts_to_str(row["last_warning_at"]),
-            "user_id": row["user_id"],
-            "payload": dict(row),
-        })
+        events.append(_incident_event(
+            "repeat_offender",
+            f"{row['user_id']} has {row['warning_count']} recent actions",
+            row["last_warning_at"],
+            row["user_id"],
+            dict(row),
+        ))
+
+    source_pairs = [(event["kind"], event["source_id"]) for event in events]
+    workflow_map = _load_incident_workflow_map(db, source_pairs)
+    db.close()
+
+    for event in events:
+        workflow = workflow_map.get((event["kind"], event["source_id"]))
+        if workflow:
+            event["workflow"] = workflow
+            event["status"] = workflow.get("status") or "open"
+            event["assigned_to"] = workflow.get("assigned_to") or ""
+            event["note"] = workflow.get("note") or ""
+            event["severity"] = workflow.get("severity") or event["severity"]
+        else:
+            event["workflow"] = None
+            event["status"] = "new"
+            event["assigned_to"] = ""
+            event["note"] = ""
+
+    workflow_only = []
+    for row in workflow_rows:
+        key = (row["source_kind"], row["source_id"])
+        if key not in workflow_map:
+            workflow_only.append({
+                "kind": row["source_kind"],
+                "source_id": row["source_id"],
+                "severity": row["severity"],
+                "title": row["title"],
+                "timestamp": _ts_to_str(row["updated_at"]),
+                "timestamp_raw": row["updated_at"],
+                "user_id": None,
+                "trust_profile_url": None,
+                "payload": {},
+                "workflow": dict(row),
+                "status": row["status"],
+                "assigned_to": row["assigned_to"] or "",
+                "note": row["note"] or "",
+            })
+    events.extend(workflow_only)
 
     return {
         "ok": True,
@@ -854,14 +983,16 @@ def _recent_incident_payload(limit: int = 25) -> dict:
             "recent_identity_events": len(identity_events),
             "open_queue_entries": len(queue),
             "repeat_offenders": len(repeat_offenders),
+            "workflow_open": sum(1 for row in workflow_rows if row["status"] in {"open", "investigating", "watching"}),
         },
-        "events": sorted(events, key=lambda item: item.get("timestamp") or "", reverse=True)[:limit],
+        "events": sorted(events, key=lambda item: item.get("timestamp_raw") or 0, reverse=True)[:limit],
         "unknown_travelers": [dict(row) for row in unknown],
         "active_warnings": [dict(row) for row in warnings],
         "recent_dodo_reveals": [dict(row) for row in dodo_reveals],
         "recent_identity_events": [dict(row) for row in identity_events],
         "open_queue": [dict(row) for row in queue],
         "repeat_offenders": [dict(row) for row in repeat_offenders],
+        "workflow": [dict(row) for row in workflow_rows],
     }
 
 
@@ -1074,12 +1205,13 @@ def _merge_island(db_row: dict, fs: dict | None) -> dict:
 _ALLOWED_DASHBOARD_HOSTS = {"console.chopaeng.com", "localhost", "127.0.0.1"}
 
 
-def _legacy_jinja_enabled() -> bool:
-    return bool(getattr(Config, "DASHBOARD_LEGACY_JINJA", True))
+def _dashboard_notice(message: str, category: str = "info") -> None:
+    """Log retired dashboard page notices that used to be Flask flash messages."""
+    logger.info("Dashboard UI notice [%s]: %s", category, message)
 
 
-def _dashboard_frontend_response():
-    """Send legacy page requests to the frontend app when Jinja pages are disabled."""
+def _dashboard_frontend_response(*_args, **_kwargs):
+    """Send dashboard page requests to the React frontend app."""
     frontend = getattr(Config, "DASHBOARD_FRONTEND_URL", "").strip().rstrip("/")
     if frontend:
         path = request.path
@@ -1088,17 +1220,14 @@ def _dashboard_frontend_response():
         query = f"?{request.query_string.decode()}" if request.query_string else ""
         return redirect(f"{frontend}{path}{query}")
     return jsonify({
-        "error": "Dashboard Jinja pages are disabled",
+        "error": "Dashboard UI is served by the React frontend",
         "api": "/dashboard/api",
         "path": request.path,
     }), 404
 
 
-def _is_legacy_dashboard_page_request() -> bool:
-    """True for server-rendered dashboard pages that a frontend can own instead."""
-    if request.method != "GET":
-        return False
-
+def _is_dashboard_frontend_request() -> bool:
+    """True for dashboard UI routes owned by the React frontend."""
     path = request.path.rstrip("/") or "/dashboard"
     if path.startswith("/dashboard/api"):
         return False
@@ -1112,11 +1241,16 @@ def _is_legacy_dashboard_page_request() -> bool:
     exact_pages = {
         "/dashboard",
         "/dashboard/login",
+        "/dashboard/auth-log",
+        "/dashboard/forbidden",
         "/dashboard/islands",
         "/dashboard/logs",
         "/dashboard/status",
         "/dashboard/analytics",
         "/dashboard/database",
+        "/dashboard/ops",
+        "/dashboard/incidents",
+        "/dashboard/trust",
     }
     return path in exact_pages or path.startswith("/dashboard/islands/")
 
@@ -1127,7 +1261,7 @@ def _restrict_to_console_domain():
     host = request.host.split(":")[0]  # strip optional port
     if host not in _ALLOWED_DASHBOARD_HOSTS:
         abort(404)
-    if not _legacy_jinja_enabled() and _is_legacy_dashboard_page_request():
+    if _is_dashboard_frontend_request():
         return _dashboard_frontend_response()
     if request.method in {"POST", "PUT", "DELETE"} and not request.path.startswith("/dashboard/api/"):
         if not _csrf_is_valid():
@@ -1136,16 +1270,12 @@ def _restrict_to_console_domain():
 
 @dashboard.errorhandler(403)
 def _forbidden(_e):
-    if not _legacy_jinja_enabled() or request.path.startswith("/dashboard/api/"):
-        return jsonify({"error": "Forbidden"}), 403
-    return render_template("dashboard/403.html"), 403
+    return jsonify({"error": "Forbidden"}), 403
 
 @dashboard.errorhandler(500)
 def _internal_server_error(e):
     logger.exception("Internal server error: %s", e)
-    if not _legacy_jinja_enabled() or request.path.startswith("/dashboard/api/"):
-        return jsonify({"error": "Internal server error"}), 500
-    return render_template("dashboard/500.html"), 500
+    return jsonify({"error": "Internal server error"}), 500
 
 
 @dashboard.route("/api/session", methods=["GET"])
@@ -1158,7 +1288,7 @@ def api_session():
     return jsonify({
         "authenticated": bool(session_auth or bearer_mod or _check_bearer()),
         "role": role,
-        "legacy_jinja_enabled": _legacy_jinja_enabled(),
+        "frontend_owned": True,
         "csrf_token": _csrf_token() if session_auth else None,
         "user": user if bearer_mod else {
             "id": session.get("discord_user_id"),
@@ -1204,17 +1334,7 @@ def _clear_dashboard_session() -> None:
 
 @dashboard.route("/login", methods=["GET", "POST"])
 def login():
-    if _check_session():
-        return redirect(url_for("dashboard.index"))
-    if request.method == "POST":
-        secret = request.form.get("secret", "")
-        if secret and Config.DASHBOARD_SECRET and secret == Config.DASHBOARD_SECRET:
-            session["mod_logged_in"] = True
-            session["mod_role"]      = "admin"
-            session.permanent        = True
-            return redirect(url_for("dashboard.index"))
-        flash("Invalid secret key. Please try again.", "error")
-    return render_template("dashboard/login.html")
+    return _dashboard_frontend_response()
 
 
 @dashboard.route("/logout")
@@ -1231,10 +1351,8 @@ def logout():
 def oauth2_redirect():
     """Redirect the user to Discord's authorization page."""
     if not Config.DISCORD_CLIENT_ID:
-        flash("Discord OAuth is not configured on this server.", "error")
         return redirect(url_for("dashboard.login"))
     if not Config.GUILD_ID:
-        flash("Discord OAuth is not fully configured on this server (GUILD_ID missing).", "error")
         return redirect(url_for("dashboard.login"))
     state = secrets.token_hex(16)
     session["oauth_state"] = state
@@ -1258,17 +1376,14 @@ def oauth2_callback():
     """Handle the OAuth2 callback from Discord."""
     error = request.args.get("error")
     if error:
-        flash(f"Discord authorization denied: {error}", "error")
         return redirect(url_for("dashboard.login"))
 
     state = request.args.get("state", "")
     if state != session.pop("oauth_state", ""):
-        flash("Invalid OAuth state — possible CSRF. Please try again.", "error")
         return redirect(url_for("dashboard.login"))
 
     code = request.args.get("code", "")
     if not code:
-        flash("No authorization code received from Discord.", "error")
         return redirect(url_for("dashboard.login"))
 
     # Exchange authorization code for access token
@@ -1303,16 +1418,13 @@ def oauth2_callback():
             "OAuth token exchange HTTP %s — redirect_uri=%s — Discord response: %s",
             exc.code, callback_url, body,
         )
-        flash("Failed to exchange authorization code with Discord.", "error")
         return redirect(url_for("dashboard.login"))
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
         logger.error("OAuth token exchange failed: %s", exc)
-        flash("Failed to exchange authorization code with Discord.", "error")
         return redirect(url_for("dashboard.login"))
 
     access_token = token_resp.get("access_token")
     if not access_token:
-        flash("No access token returned by Discord.", "error")
         return redirect(url_for("dashboard.login"))
 
     # Fetch the user's guild-member record (includes roles and computed permissions)
@@ -1341,14 +1453,12 @@ def oauth2_callback():
             role = "admin"
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            flash("You are not a member of this server.", "error")
+            logger.warning("OAuth member fetch returned 404")
         else:
             logger.error("OAuth member fetch HTTP error %s", exc.code)
-            flash("Could not fetch your server roles. Please try again.", "error")
         return redirect(url_for("dashboard.login"))
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
         logger.error("OAuth member fetch failed: %s", exc)
-        flash("Could not fetch your server roles. Please try again.", "error")
         return redirect(url_for("dashboard.login"))
 
     if role is None:
@@ -1357,7 +1467,6 @@ def oauth2_callback():
             "member_roles=%s, admin_id=%s, permissions=%s",
             member_roles, ADMIN_ROLE_ID, member_perms,
         )
-        flash("You do not have a moderator role on this server.", "error")
         return redirect(url_for("dashboard.login"))
 
     # Fetch basic user info for display
@@ -1498,7 +1607,7 @@ def index():
 
     online_count = status_map[STATUS_ONLINE]
 
-    return render_template(
+    return _dashboard_frontend_response(
         "dashboard/index.html",
         total_visits=total_visits,
         total_warnings=total_warnings,
@@ -1530,7 +1639,7 @@ def islands():
         db.close()
 
     merged = _merge_dashboard_fs_islands(db_islands)
-    return render_template("dashboard/islands.html", islands=merged)
+    return _dashboard_frontend_response("dashboard/islands.html", islands=merged)
 
 
 @dashboard.route("/islands/<name>", methods=["GET", "POST"])
@@ -1590,7 +1699,7 @@ def island_detail(name):
 
         if errors:
             for e in errors:
-                flash(e, "error")
+                _dashboard_notice(e, "error")
         else:
             # dodo_code and visitors are managed by island bots; do not write to filesystem
 
@@ -1625,7 +1734,7 @@ def island_detail(name):
             finally:
                 db2.close()
 
-            flash(f'Island "{upper}" saved successfully.', "success")
+            _dashboard_notice(f'Island "{upper}" saved successfully.', "success")
             return redirect(url_for("dashboard.islands"))
 
     island = meta or {
@@ -1642,7 +1751,7 @@ def island_detail(name):
 
     r2_configured = bool(Config.R2_ACCOUNT_ID and Config.R2_ACCESS_KEY_ID and Config.R2_SECRET_ACCESS_KEY)
 
-    return render_template(
+    return _dashboard_frontend_response(
         "dashboard/island_detail.html",
         island=island,
         allowed_categories=ALLOWED_CATEGORIES,
@@ -1792,7 +1901,7 @@ def logs():
     finally:
         db.close()
 
-    return render_template(
+    return _dashboard_frontend_response(
         "dashboard/logs.html",
         entries=entries,
         page=page,
@@ -1860,7 +1969,7 @@ def island_status():
     refreshing_pct = _pct(refreshing_count)
     off_pct        = _pct(offline_count)
 
-    return render_template(
+    return _dashboard_frontend_response(
         "dashboard/status.html",
         island_count=island_count,
         online_count=online_count,
@@ -2138,7 +2247,7 @@ def analytics():
     auth_rate_pct = round(auth_stats["authorized"] / total_visits * 100) if total_visits else None
     warn_rate_week = round(warnings_week / visits_week * 100, 1) if visits_week else 0.0
 
-    return render_template(
+    return _dashboard_frontend_response(
         "dashboard/analytics.html",
         top_islands=top_islands,
         top_travelers=top_travelers,
@@ -2172,7 +2281,7 @@ def analytics():
 @admin_required
 def database():
     """Admin database tools: inspect DB backend and run SQLite -> MariaDB copy."""
-    return render_template(
+    return _dashboard_frontend_response(
         "dashboard/database.html",
         db_backend=get_backend(),
         mariadb=_mariadb_settings_payload(),
@@ -2183,21 +2292,21 @@ def database():
 @admin_required
 def ops():
     """Operations dashboard page."""
-    return render_template("dashboard/ops.html")
+    return _dashboard_frontend_response("dashboard/ops.html")
 
 
 @dashboard.route("/incidents")
 @admin_required
 def incidents():
     """Incident center page."""
-    return render_template("dashboard/incidents.html")
+    return _dashboard_frontend_response("dashboard/incidents.html")
 
 
 @dashboard.route("/trust")
 @admin_required
 def trust():
     """User trust profile lookup page."""
-    return render_template("dashboard/trust.html")
+    return _dashboard_frontend_response("dashboard/trust.html", initial_user_id=(request.args.get("user_id") or "").strip())
 
 
 @dashboard.route("/analytics/export.csv")
@@ -2619,14 +2728,97 @@ def api_audit_events():
     return jsonify({"ok": True, "entries": entries})
 
 
-@dashboard.route("/api/incidents", methods=["GET"])
+@dashboard.route("/api/incidents", methods=["GET", "POST", "PATCH"])
 @api_auth_required
 def api_incidents():
     """Return incident-center moderation queues and alert levels."""
-    limit = min(max(request.args.get("limit", 25, type=int), 1), 100)
-    payload = _recent_incident_payload(limit=limit)
-    status = 200 if payload.get("ok") else 500
-    return jsonify(payload), status
+    if request.method == "GET":
+        limit = min(max(request.args.get("limit", 25, type=int), 1), 100)
+        payload = _recent_incident_payload(limit=limit)
+        status = 200 if payload.get("ok") else 500
+        return jsonify(payload), status
+
+    data = request.get_json(silent=True) or {}
+    source_kind = str(data.get("kind") or data.get("source_kind") or "").strip()
+    source_id = str(data.get("source_id") or "").strip()
+    title = str(data.get("title") or "").strip()[:240]
+    status_value = str(data.get("status") or ("open" if request.method == "POST" else "")).strip().lower()
+    severity = str(data.get("severity") or "attention").strip().lower()
+    assigned_to = str(data.get("assigned_to") or "").strip()[:80]
+    note = str(data.get("note") or "").strip()[:1000]
+    allowed_statuses = {"open", "investigating", "watching", "resolved", "dismissed"}
+    allowed_severities = {"critical", "warning", "attention", "info"}
+
+    if not source_kind or not source_id:
+        return jsonify({"ok": False, "error": "kind/source_kind and source_id are required"}), 400
+    if status_value and status_value not in allowed_statuses:
+        return jsonify({"ok": False, "error": f"status must be one of {sorted(allowed_statuses)}"}), 400
+    if severity not in allowed_severities:
+        return jsonify({"ok": False, "error": f"severity must be one of {sorted(allowed_severities)}"}), 400
+
+    actor_user_id, _actor_name = _dashboard_actor()
+    now = int(time.time())
+    db = get_db()
+    try:
+        if request.method == "POST":
+            if not title:
+                title = f"{source_kind.replace('_', ' ').title()} {source_id}"
+            db.execute(
+                """INSERT INTO incident_workflow
+                   (source_kind, source_id, title, status, severity, assigned_to, note, actor_user_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source_kind, source_id) DO UPDATE SET
+                       title=excluded.title,
+                       status=excluded.status,
+                       severity=excluded.severity,
+                       assigned_to=excluded.assigned_to,
+                       note=excluded.note,
+                       actor_user_id=excluded.actor_user_id,
+                       updated_at=excluded.updated_at""",
+                (source_kind, source_id, title, status_value, severity, assigned_to, note, actor_user_id, now, now),
+            )
+        else:
+            row = db.execute(
+                "SELECT * FROM incident_workflow WHERE source_kind = ? AND source_id = ?",
+                (source_kind, source_id),
+            ).fetchone()
+            if not row:
+                title = title or f"{source_kind.replace('_', ' ').title()} {source_id}"
+                db.execute(
+                    """INSERT INTO incident_workflow
+                       (source_kind, source_id, title, status, severity, assigned_to, note, actor_user_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (source_kind, source_id, title, status_value or "open", severity, assigned_to, note, actor_user_id, now, now),
+                )
+            else:
+                db.execute(
+                    """UPDATE incident_workflow
+                       SET status = COALESCE(NULLIF(?, ''), status),
+                           severity = ?,
+                           assigned_to = ?,
+                           note = ?,
+                           actor_user_id = ?,
+                           updated_at = ?
+                       WHERE source_kind = ? AND source_id = ?""",
+                    (status_value, severity, assigned_to, note, actor_user_id, now, source_kind, source_id),
+                )
+        db.commit()
+        row = db.execute(
+            "SELECT * FROM incident_workflow WHERE source_kind = ? AND source_id = ?",
+            (source_kind, source_id),
+        ).fetchone()
+    except Exception as exc:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        db.close()
+
+    _record_audit_event(
+        "incident_workflow_update",
+        f"{source_kind}:{source_id}",
+        {"status": status_value, "severity": severity, "assigned": bool(assigned_to), "has_note": bool(note)},
+    )
+    return jsonify({"ok": True, "incident": dict(row) if row else None})
 
 
 @dashboard.route("/api/command-analytics", methods=["GET"])
@@ -2886,17 +3078,19 @@ def api_user_trust_profile():
             "ORDER BY timestamp DESC LIMIT 10",
             params,
         ).fetchall()
-        dodo_reveals = db.execute(
+        dodo_reveals = _optional_rows(
+            db,
             "SELECT island_clean, message_url, username, nickname, created_at "
             "FROM dodo_reveal_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
             (user_id,),
-        ).fetchall()
-        identity_events = db.execute(
+        )
+        identity_events = _optional_rows(
+            db,
             "SELECT event_type, old_display_name, new_display_name, created_at "
             f"FROM member_identity_events WHERE user_id = ?{guild_clause} "
             "ORDER BY created_at DESC LIMIT 10",
             params,
-        ).fetchall()
+        )
         known_igns = db.execute(
             "SELECT ign, COUNT(*) AS visit_count, MAX(timestamp) AS last_seen_at "
             f"FROM island_visits WHERE user_id = ?{guild_clause} "
@@ -2910,44 +3104,115 @@ def api_user_trust_profile():
 
     total_visits = int(visit_summary["total_visits"] or 0)
     total_actions = int(warning_summary["total_actions"] or 0)
+    warnings_count = int(warning_summary["warnings"] or 0)
+    kicks_count = int(warning_summary["kicks"] or 0)
+    bans_count = int(warning_summary["bans"] or 0)
+    unauthorized_count = int(visit_summary["unauthorized_visits"] or 0)
     risk_score = min(
         100,
-        int(warning_summary["warnings"] or 0) * 20
-        + int(warning_summary["kicks"] or 0) * 35
-        + int(warning_summary["bans"] or 0) * 60
-        + int(visit_summary["unauthorized_visits"] or 0) * 5,
+        warnings_count * 20
+        + kicks_count * 35
+        + bans_count * 60
+        + unauthorized_count * 5,
     )
     risk_flags = []
-    if int(warning_summary["warnings"] or 0) >= 2:
+    if warnings_count >= 2:
         risk_flags.append("repeat_warning")
-    if int(warning_summary["kicks"] or 0) > 0:
+    if kicks_count > 0:
         risk_flags.append("has_kick_action")
-    if int(warning_summary["bans"] or 0) > 0:
+    if bans_count > 0:
         risk_flags.append("has_ban_action")
-    if int(visit_summary["unauthorized_visits"] or 0) > 0:
+    if unauthorized_count > 0:
         risk_flags.append("unauthorized_visit_history")
     if identity_events:
         risk_flags.append("recent_identity_activity")
+
+    if bans_count or risk_score >= 80:
+        trust_state = "restricted"
+    elif kicks_count or risk_score >= 45:
+        trust_state = "watch"
+    elif warnings_count or unauthorized_count:
+        trust_state = "warned"
+    elif total_visits >= 5:
+        trust_state = "trusted"
+    else:
+        trust_state = "new"
+
+    timeline = []
+    for row in recent_visits:
+        timeline.append({
+            "type": "visit",
+            "label": "Authorized visit" if row["authorized"] else "Unknown visit",
+            "title": f"{row['ign']} visited {row['destination']}",
+            "timestamp": _ts_to_str(row["timestamp"]),
+            "timestamp_raw": row["timestamp"],
+            "severity": "info" if row["authorized"] else "warning",
+            "payload": {
+                "ign": row["ign"],
+                "destination": row["destination"],
+                "authorized": bool(row["authorized"]),
+            },
+        })
+    for row in recent_actions:
+        action = (row["action_type"] or "WARN").upper()
+        timeline.append({
+            "type": "moderation",
+            "label": action,
+            "title": row["reason"] or action,
+            "timestamp": _ts_to_str(row["timestamp"]),
+            "timestamp_raw": row["timestamp"],
+            "severity": "critical" if action == "BAN" else "warning" if action in {"WARN", "KICK"} else "attention",
+            "payload": {
+                "mod_id": row["mod_id"],
+                "reason": row["reason"],
+                "action_type": action,
+            },
+        })
+    for row in dodo_reveals:
+        timeline.append({
+            "type": "dodo_reveal",
+            "label": "Dodo reveal",
+            "title": f"Revealed {row['island_clean']}",
+            "timestamp": _ts_to_str(row["created_at"]),
+            "timestamp_raw": row["created_at"],
+            "severity": "info",
+            "payload": dict(row),
+        })
+    for row in identity_events:
+        timeline.append({
+            "type": "identity",
+            "label": row["event_type"],
+            "title": f"{row['old_display_name'] or 'Unknown'} -> {row['new_display_name'] or 'Unknown'}",
+            "timestamp": _ts_to_str(row["created_at"]),
+            "timestamp_raw": row["created_at"],
+            "severity": "attention",
+            "payload": dict(row),
+        })
+    timeline.sort(key=lambda item: int(item.get("timestamp_raw") or 0), reverse=True)
+
     return jsonify({
         "ok": True,
         "user_id": user_id,
         "guild_id": guild_id,
         "user_name": _resolve_discord_username(user_id),
         "risk_score": risk_score,
+        "trust_state": trust_state,
+        "status_label": trust_state.replace("_", " ").title(),
         "risk_flags": risk_flags,
         "summary": {
             "total_visits": total_visits,
             "authorized_visits": int(visit_summary["authorized_visits"] or 0),
-            "unauthorized_visits": int(visit_summary["unauthorized_visits"] or 0),
+            "unauthorized_visits": unauthorized_count,
             "total_actions": total_actions,
-            "warnings": int(warning_summary["warnings"] or 0),
-            "kicks": int(warning_summary["kicks"] or 0),
-            "bans": int(warning_summary["bans"] or 0),
+            "warnings": warnings_count,
+            "kicks": kicks_count,
+            "bans": bans_count,
             "dodo_reveals": len(dodo_reveals),
             "known_igns": len(known_igns),
             "last_visit_at": _ts_to_str(visit_summary["last_visit_at"]),
             "last_action_at": _ts_to_str(warning_summary["last_action_at"]),
         },
+        "timeline": timeline[:30],
         "known_igns": [
             {
                 "ign": row["ign"],

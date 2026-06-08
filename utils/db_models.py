@@ -52,7 +52,7 @@ class Island(Base):
     required_roles: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     channel_id: Mapped[str | None] = mapped_column(String(64))
     display_name: Mapped[str | None] = mapped_column(String(255))
-    is_visible: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    is_visible: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
 
 
 class IslandBotStatus(Base):
