@@ -78,14 +78,14 @@ def _format_display_name_for_audit(display_name: str | None) -> str:
 
 
 def _format_user_for_embed(user=None, user_id: int | str | None = None, fallback_name: str = "Unknown User") -> str:
-    """Return a readable user label without creating a Discord user mention link."""
+    """Return a readable user label with a Discord user mention when an ID is available."""
     raw_name = getattr(user, "display_name", None) or getattr(user, "name", None) or fallback_name
     name = str(raw_name or fallback_name).replace("`", "'").strip() or fallback_name
     if len(name) > 80:
         name = name[:77].rstrip() + "..."
 
     raw_id = getattr(user, "id", None) or user_id
-    return f"{name} (`{raw_id}`)" if raw_id else name
+    return f"{name} (<@{raw_id}>)" if raw_id else name
 
 
 def summarize_recent_identity_events(events: list[dict], max_events: int = 5) -> tuple[str, list[str]]:
@@ -133,6 +133,31 @@ def filter_recent_identity_events(
         [event for event in events if int(event.get("created_at") or 0) >= cutoff],
         key=lambda event: int(event.get("created_at") or 0),
         reverse=True,
+    )
+
+
+def filter_identity_events_after_authorization(
+    events: list[dict],
+    authorized_at: int | None,
+) -> list[dict]:
+    """Keep only identity events newer than the authorization that cleared them."""
+    if not authorized_at:
+        return list(events)
+    return [
+        event
+        for event in events
+        if int(event.get("created_at") or 0) > int(authorized_at)
+    ]
+
+
+def resolve_authorized_ambiguous_member(ambiguous_members: list, authorized_target: dict | None):
+    """Pick the prior authorized member when it is one of the ambiguous candidates."""
+    if not ambiguous_members or not authorized_target:
+        return None
+    authorized_user_id = int(authorized_target["user_id"])
+    return next(
+        (member for member in ambiguous_members if int(member.id) == authorized_user_id),
+        None,
     )
 
 
@@ -1474,16 +1499,20 @@ class FlightLoggerCog(commands.Cog):
         row = await cursor.fetchone()
         return row[0] if row else None
 
-    async def _get_recent_authorized_target(self, ign: str, hours: int = 24) -> dict | None:
+    async def _get_recent_authorized_target(self, ign: str, hours: int = 24, guild_id: int | None = None) -> dict | None:
         """Return the recent authorized visit for this IGN when it has a linked target user."""
         db = await self._get_db()
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(hours=hours)).timestamp())
+        guild_clause = "AND guild_id = ?" if guild_id is not None else ""
+        params = [ign, cutoff]
+        if guild_id is not None:
+            params.append(guild_id)
         cursor = await db.execute(
-            """SELECT id, user_id, guild_id, destination, timestamp
+            f"""SELECT id, user_id, guild_id, destination, timestamp
                FROM island_visits
-               WHERE ign = ? AND timestamp > ? AND authorized = 1 AND user_id IS NOT NULL
+               WHERE ign = ? AND timestamp > ? AND authorized = 1 AND user_id IS NOT NULL {guild_clause}
                ORDER BY timestamp DESC LIMIT 1""",
-            (ign, cutoff)
+            params,
         )
         row = await cursor.fetchone()
         if not row:
@@ -1499,6 +1528,22 @@ class FlightLoggerCog(commands.Cog):
     async def _is_authorized_with_target(self, ign: str, hours: int = 24) -> bool:
         """Return True if this IGN has a recent visit that was authorized AND has a linked target user."""
         return await self._get_recent_authorized_target(ign, hours) is not None
+
+    async def _get_actionable_identity_events(
+        self,
+        user_id: int,
+        guild_id: int | None,
+        ign: str,
+    ) -> tuple[list[dict], dict | None]:
+        """Return recent identity events that happened after the latest linked authorization."""
+        recent_events = await self.get_recent_identity_events(user_id, guild_id)
+        authorized_target = await self._get_recent_authorized_target(ign, guild_id=guild_id)
+        if authorized_target and int(authorized_target["user_id"]) == int(user_id):
+            recent_events = filter_identity_events_after_authorization(
+                recent_events,
+                authorized_target.get("timestamp"),
+            )
+        return recent_events, authorized_target
 
     async def record_member_identity_event(
         self,
@@ -2432,6 +2477,19 @@ class FlightLoggerCog(commands.Cog):
         guild_id = guild.id if guild else None
 
         ambiguous_members = found_members if len(found_members) > 1 else []
+        resolved_authorized_target = None
+        if ambiguous_members:
+            authorized_target = await self._get_recent_authorized_target(ign, guild_id=guild_id)
+            authorized_member = resolve_authorized_ambiguous_member(ambiguous_members, authorized_target)
+            if authorized_member is not None:
+                resolved_authorized_target = authorized_target
+                logger.info(
+                    "[FLIGHT] Resolved ambiguous match for %s to recent authorized user_id=%s.",
+                    ign,
+                    int(authorized_target["user_id"]),
+                )
+                found_members = [authorized_member]
+                ambiguous_members = []
 
         if len(found_members) == 1:
             mentions = " ".join([m.mention for m in found_members])
@@ -2489,7 +2547,11 @@ class FlightLoggerCog(commands.Cog):
                     if role is not None
                 ]
                 allowed_identities = self.get_allowed_identity_count(member, len(all_member_subs))
-                recent_identity_events = await self.get_recent_identity_events(member.id, guild_id)
+                recent_identity_events, _authorized_target = await self._get_actionable_identity_events(
+                    member.id,
+                    guild_id,
+                    ign,
+                )
 
                 if max_identities > allowed_identities:
                     # SUSPICIOUS: Automatically trigger manual alert flow
@@ -2578,6 +2640,15 @@ class FlightLoggerCog(commands.Cog):
                 embed.add_field(name="IGN",         value=f"```yaml\n{ign}```",           inline=True)
                 embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
                 embed.add_field(name="Destination", value=destination_link,               inline=True)
+                if resolved_authorized_target is not None:
+                    embed.add_field(
+                        name="Visitor",
+                        value=f"```yaml\n{ign} from {island.title()}```",
+                        inline=True,
+                    )
+                    embed.add_field(name="Target", value=member_line, inline=True)
+                    embed.add_field(name="Cleared By", value="Previous authorization", inline=True)
+                    embed.add_field(name="Matched From", value=f"`#{resolved_authorized_target['id']}`", inline=True)
                 if visit_id is not None:
                     embed.add_field(name="Visit ID", value=f"`#{visit_id}`",              inline=True)
 
@@ -2647,6 +2718,13 @@ class FlightLoggerCog(commands.Cog):
                             timestamp=embed_timestamp,
                         )
                         xlog_embed.add_field(name="Member Linked", value=member_label, inline=False)
+                        xlog_embed.add_field(
+                            name="Visitor",
+                            value=f"```yaml\n{ign} from {island.title()}```",
+                            inline=True,
+                        )
+                        xlog_embed.add_field(name="Target", value=member_label, inline=True)
+                        xlog_embed.add_field(name="Cleared By", value="Previous authorization", inline=True)
                         xlog_embed.add_field(name="IGN",           value=f"```yaml\n{ign}```",           inline=True)
                         xlog_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
                         xlog_embed.add_field(name="Destination",   value=destination_link,               inline=True)

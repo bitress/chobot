@@ -30,7 +30,6 @@ from werkzeug.serving import ThreadedWSGIServer
 from utils.config import Config
 from utils import island_access
 from utils.database import connect_db
-from utils.discord_http import json_request as discord_json_request
 from utils.discord_http import request as discord_request
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
 from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token
@@ -49,61 +48,11 @@ def _client_ip() -> str:
     return forwarded or request.headers.get("X-Real-IP", "").strip() or request.remote_addr or ""
 
 
-def _post_website_login_log_message(event_id: int, event: dict) -> None:
-    """Send a website-login audit message to the configured Discord channel."""
-    channel_id = getattr(Config, "WEBSITE_LOGIN_LOG_CHANNEL_ID", None)
-    token = str(Config.DISCORD_TOKEN or "").strip()
-    if not channel_id or not token:
-        return
-
-    auth_value = token if token.lower().startswith("bot ") else f"Bot {token}"
-    username = event.get("username") or event.get("discord_name") or "Unknown user"
-    user_id = event.get("user_id") or ""
-    payload = {
-        "allowed_mentions": {"parse": []},
-        "embeds": [{
-            "title": "Website Login",
-            "color": 0x28A745 if event.get("is_mod") else 0x5BC0DE,
-            "timestamp": event.get("created_at"),
-            "fields": [
-                {"name": "User", "value": f"{username}\n`{user_id}`", "inline": True},
-            ],
-        }],
-    }
-    payload["embeds"][0]["fields"] = [
-        field for field in payload["embeds"][0]["fields"]
-        if field.get("value") is not None
-    ]
-
-    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-    try:
-        data = discord_json_request(
-            url,
-            method="POST",
-            payload=payload,
-            headers={"Authorization": auth_value, "User-Agent": _DISCORD_UA},
-            timeout=10,
-        ) or {}
-        message_id = str(data.get("id") or "")
-        if message_id:
-            db = get_db()
-            try:
-                db.execute(
-                    "UPDATE website_login_events SET discord_message_id = ?, discord_channel_id = ?, discord_guild_id = ? WHERE id = ?",
-                    (message_id, str(channel_id), str(Config.GUILD_ID or ""), event_id),
-                )
-                db.commit()
-            finally:
-                db.close()
-    except Exception as exc:
-        logger.warning("Website login Discord log failed: %s", exc)
-
-
 def _record_website_login(event: dict) -> None:
-    """Persist and asynchronously announce a successful website Discord OAuth login."""
+    """Persist a successful website Discord OAuth login for dashboard audit history."""
     db = get_db()
     try:
-        cur = db.execute(
+        db.execute(
             """INSERT INTO website_login_events
                    (user_id, username, discord_name, global_name, account_name, nickname,
                     avatar, roles, role_count, is_admin, is_mod, ip_address, user_agent,
@@ -134,12 +83,6 @@ def _record_website_login(event: dict) -> None:
         return
     finally:
         db.close()
-
-    threading.Thread(
-        target=_post_website_login_log_message,
-        args=(event_id, dict(event)),
-        daemon=True,
-    ).start()
 
 
 def _persist_dodo_reveal_message(

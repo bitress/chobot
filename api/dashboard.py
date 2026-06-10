@@ -834,6 +834,36 @@ def _incident_event(kind: str, title: str, timestamp, user_id, payload: dict) ->
     }
 
 
+def _latest_authorization_after_identity_event(db, user_id, guild_id, created_at):
+    if user_id is None or created_at is None:
+        return None
+    params = [user_id, int(created_at)]
+    guild_clause = ""
+    if guild_id is not None:
+        guild_clause = " AND guild_id = ?"
+        params.append(guild_id)
+    row = db.execute(
+        "SELECT MAX(timestamp) AS authorized_at "
+        "FROM island_visits "
+        "WHERE user_id = ? AND authorized = 1 AND user_id IS NOT NULL "
+        f"AND timestamp >= ?{guild_clause}",
+        params,
+    ).fetchone()
+    if not row:
+        return None
+    return row["authorized_at"]
+
+
+def _identity_event_cleared_by_authorization(db, row) -> tuple[bool, int | None]:
+    authorized_at = _latest_authorization_after_identity_event(
+        db,
+        row["user_id"],
+        row["guild_id"] if "guild_id" in row.keys() else None,
+        row["created_at"],
+    )
+    return authorized_at is not None, authorized_at
+
+
 def _recent_incident_payload(limit: int = 25) -> dict:
     """Collect moderation signals for the incident center."""
     now = int(time.time())
@@ -918,13 +948,23 @@ def _recent_incident_payload(limit: int = 25) -> dict:
             row["user_id"],
             dict(row),
         ))
+    actionable_identity_events = []
+    suppressed_identity_events = []
     for row in identity_events:
+        cleared, authorized_at = _identity_event_cleared_by_authorization(db, row)
+        payload = dict(row)
+        payload["cleared_by_authorization"] = cleared
+        payload["cleared_authorized_at"] = authorized_at
+        if cleared:
+            suppressed_identity_events.append(payload)
+            continue
+        actionable_identity_events.append(payload)
         events.append(_incident_event(
             "recent_nickname_change",
             f"Identity event for {row['user_id']}",
             row["created_at"],
             row["user_id"],
-            dict(row),
+            payload,
         ))
     for row in repeat_offenders:
         events.append(_incident_event(
@@ -980,7 +1020,8 @@ def _recent_incident_payload(limit: int = 25) -> dict:
             "unknown_travelers": len(unknown),
             "active_warnings": len(warnings),
             "recent_dodo_reveals": len(dodo_reveals),
-            "recent_identity_events": len(identity_events),
+            "recent_identity_events": len(actionable_identity_events),
+            "suppressed_identity_events": len(suppressed_identity_events),
             "open_queue_entries": len(queue),
             "repeat_offenders": len(repeat_offenders),
             "workflow_open": sum(1 for row in workflow_rows if row["status"] in {"open", "investigating", "watching"}),
@@ -989,7 +1030,8 @@ def _recent_incident_payload(limit: int = 25) -> dict:
         "unknown_travelers": [dict(row) for row in unknown],
         "active_warnings": [dict(row) for row in warnings],
         "recent_dodo_reveals": [dict(row) for row in dodo_reveals],
-        "recent_identity_events": [dict(row) for row in identity_events],
+        "recent_identity_events": actionable_identity_events,
+        "suppressed_identity_events": suppressed_identity_events,
         "open_queue": [dict(row) for row in queue],
         "repeat_offenders": [dict(row) for row in repeat_offenders],
         "workflow": [dict(row) for row in workflow_rows],
@@ -3091,6 +3133,11 @@ def api_user_trust_profile():
             "ORDER BY created_at DESC LIMIT 10",
             params,
         )
+        latest_authorized_visit = db.execute(
+            "SELECT MAX(timestamp) AS authorized_at "
+            f"FROM island_visits WHERE user_id = ?{guild_clause} AND authorized = 1",
+            params,
+        ).fetchone()
         known_igns = db.execute(
             "SELECT ign, COUNT(*) AS visit_count, MAX(timestamp) AS last_seen_at "
             f"FROM island_visits WHERE user_id = ?{guild_clause} "
@@ -3124,7 +3171,14 @@ def api_user_trust_profile():
         risk_flags.append("has_ban_action")
     if unauthorized_count > 0:
         risk_flags.append("unauthorized_visit_history")
-    if identity_events:
+    latest_authorized_at = int(latest_authorized_visit["authorized_at"] or 0) if latest_authorized_visit else 0
+    actionable_identity_events = [
+        row
+        for row in identity_events
+        if int(row["created_at"] or 0) > latest_authorized_at
+    ]
+    suppressed_identity_events = len(identity_events) - len(actionable_identity_events)
+    if actionable_identity_events:
         risk_flags.append("recent_identity_activity")
 
     if bans_count or risk_score >= 80:
@@ -3179,14 +3233,18 @@ def api_user_trust_profile():
             "payload": dict(row),
         })
     for row in identity_events:
+        cleared = bool(latest_authorized_at and int(row["created_at"] or 0) <= latest_authorized_at)
+        payload = dict(row)
+        payload["cleared_by_authorization"] = cleared
+        payload["cleared_authorized_at"] = latest_authorized_at if cleared else None
         timeline.append({
             "type": "identity",
             "label": row["event_type"],
             "title": f"{row['old_display_name'] or 'Unknown'} -> {row['new_display_name'] or 'Unknown'}",
             "timestamp": _ts_to_str(row["created_at"]),
             "timestamp_raw": row["created_at"],
-            "severity": "attention",
-            "payload": dict(row),
+            "severity": "info" if cleared else "attention",
+            "payload": payload,
         })
     timeline.sort(key=lambda item: int(item.get("timestamp_raw") or 0), reverse=True)
 
@@ -3209,6 +3267,8 @@ def api_user_trust_profile():
             "bans": bans_count,
             "dodo_reveals": len(dodo_reveals),
             "known_igns": len(known_igns),
+            "recent_identity_events": len(actionable_identity_events),
+            "suppressed_identity_events": suppressed_identity_events,
             "last_visit_at": _ts_to_str(visit_summary["last_visit_at"]),
             "last_action_at": _ts_to_str(warning_summary["last_action_at"]),
         },
@@ -3255,6 +3315,7 @@ def api_user_trust_profile():
                 "old_display_name": row["old_display_name"],
                 "new_display_name": row["new_display_name"],
                 "created_at": _ts_to_str(row["created_at"]),
+                "cleared_by_authorization": bool(latest_authorized_at and int(row["created_at"] or 0) <= latest_authorized_at),
             }
             for row in identity_events
         ],
