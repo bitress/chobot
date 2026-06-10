@@ -18,3 +18,4 @@ backups/
 .mypy_cache/
 .env.cho
 .env.xx
+tests/

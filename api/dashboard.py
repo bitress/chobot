@@ -235,6 +235,26 @@ def init_dashboard_db():
         except Exception:
             pass  # Column already exists
 
+        # Core bot tables are created by SQLAlchemy/create_all, but older
+        # deployments need additive migrations for analytics fields.
+        try:
+            conn.execute("ALTER TABLE island_visits ADD COLUMN island_type TEXT NOT NULL DEFAULT 'sub'")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists or table is not ready yet
+
+        try:
+            conn.execute("ALTER TABLE island_visits ADD COLUMN has_island_access INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists or table is not ready yet
+
+        try:
+            conn.execute("ALTER TABLE warnings ADD COLUMN action_type TEXT NOT NULL DEFAULT 'WARN'")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists or table is not ready yet
+
         # Live island bot presence, written by the Discord bot's monitor loop
         conn.execute("""
             CREATE TABLE IF NOT EXISTS island_bot_status (
@@ -3969,18 +3989,9 @@ def api_analytics():
             f"{' WHERE island_type = ?' if island_type_filter else ''}",
             it_params,
         ).fetchone()[0]
-    except Exception:
-        top_islands = top_travelers = visits_by_day = visits_by_day_30 = []
-        visits_by_hour = dow_raw = []
-        auth_raw = []
-        cat_raw = []
-        top_warned = top_kicked = top_banned = top_noted = []
-        visits_today = visits_week = warnings_week = warnings_today = 0
-        visits_prev_week = 0
-        peak_hour = None
-        avg_visits_30d = 0.0
-        new_7d = total_unique_7d = new_30d = total_unique_30d = 0
-        total_unique_travelers = total_unique_islands = 0
+    except Exception as exc:
+        logger.exception("Failed to build dashboard analytics payload")
+        return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
         db.close()
 
@@ -4002,6 +4013,7 @@ def api_analytics():
     returning_30d = max(total_unique_30d - new_30d, 0)
 
     return jsonify({
+        "ok": True,
         # Basic summary (backward-compatible)
         "top_islands":         top_islands,
         "top_travelers":       top_travelers,
