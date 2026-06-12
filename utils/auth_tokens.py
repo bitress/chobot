@@ -121,6 +121,49 @@ def get_auth_user(token: str) -> dict | None:
     return _load_token(token)
 
 
+def update_auth_user(token: str, user_data: dict) -> None:
+    """Replace the user payload for an existing valid token."""
+    if not token:
+        return
+    expires_at: int | None = None
+    with _auth_tokens_lock:
+        entry = _auth_tokens.get(token)
+        if entry and time.time() <= int(entry["expires_at"]):
+            expires_at = int(entry["expires_at"])
+            entry["user"] = user_data
+        elif entry:
+            _auth_tokens.pop(token, None)
+            return
+
+    if expires_at is None:
+        try:
+            from utils.database import connect_db
+
+            conn = connect_db()
+            try:
+                _ensure_auth_token_table(conn)
+                row = conn.execute(
+                    "SELECT expires_at FROM auth_tokens WHERE token_hash = ?",
+                    (_token_hash(token),),
+                ).fetchone()
+                if not row:
+                    return
+                expires_at = int(row["expires_at"])
+                if time.time() > expires_at:
+                    conn.execute("DELETE FROM auth_tokens WHERE token_hash = ?", (_token_hash(token),))
+                    conn.commit()
+                    return
+                with _auth_tokens_lock:
+                    _auth_tokens[token] = {"user": user_data, "expires_at": expires_at}
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug("Could not load token expiry for auth user update: %s", exc)
+            return
+
+    _save_token(token, user_data, expires_at)
+
+
 def revoke_auth_token(token: str) -> None:
     """Remove a token from memory and persistent storage."""
     if not token:

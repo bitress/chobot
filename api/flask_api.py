@@ -32,9 +32,25 @@ from utils import island_access
 from utils.database import connect_db
 from utils.discord_http import request as discord_request
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
-from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token
+from utils.nickname_format import nickname_warning_for
+from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token, update_auth_user
+from utils.discord_membership import (
+    DiscordMembershipUnavailable,
+    DiscordNotGuildMember,
+    is_beyond_stale_grace,
+    refresh_user_payload,
+    should_refresh,
+)
 from utils.ops_status import build_health_payload, get_maintenance_settings, record_service_status, set_active_data_manager
-from api.dashboard import dashboard, init_dashboard_db, get_db, row_to_island_dict, _parse_visitor_value, _parse_visitor_list
+from api.dashboard import (
+    dashboard,
+    init_dashboard_db,
+    get_db,
+    row_to_island_dict,
+    _check_session as _check_dashboard_session,
+    _parse_visitor_value,
+    _parse_visitor_list,
+)
 
 
 logger = logging.getLogger("FlaskAPI")
@@ -77,7 +93,6 @@ def _record_website_login(event: dict) -> None:
             ),
         )
         db.commit()
-        event_id = int(cur.lastrowid or 0)
     except Exception as exc:
         logger.warning("Website login DB log failed: %s", exc)
         return
@@ -412,11 +427,30 @@ _GUILD_CHANNELS_CACHE: tuple[list[dict], float] | None = None
 _CHANNEL_OVERWRITE_CACHE_TTL = 300
 _GUILD_CHANNELS_CACHE_TTL = 300
 
-def _current_auth_user() -> dict | None:
+def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
     """Extract Bearer token from request and return user dict, or None."""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
-        return get_auth_user(auth[len("Bearer "):])
+        token = auth[len("Bearer "):]
+        user = get_auth_user(token)
+        if not user:
+            return None
+        if not force_refresh and not should_refresh(user):
+            return user
+        try:
+            refreshed = refresh_user_payload(user)
+            update_auth_user(token, refreshed)
+            return refreshed
+        except DiscordNotGuildMember:
+            logger.info("Revoking auth token for user_id=%s: no longer in guild", user.get("user_id"))
+            revoke_auth_token(token)
+            return None
+        except DiscordMembershipUnavailable as exc:
+            logger.warning("Could not refresh Discord auth user %s: %s", user.get("user_id"), exc)
+            if is_beyond_stale_grace(user):
+                revoke_auth_token(token)
+                return None
+            return user
     return None
 
 def _is_mod(roles: list[str]) -> bool:
@@ -959,6 +993,15 @@ def _fire_dodo_webhook(
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
+    warning = nickname_warning_for(nickname)
+    if warning:
+        embed["fields"].append(
+            {
+                "name": "Nickname Status",
+                "value": "User nickname is not currently in the required ACNH format.",
+            }
+        )
+
     payload = json.dumps({"embeds": [embed]}).encode()
     webhook_execute = url
     sep = "&" if "?" in webhook_execute else "?"
@@ -1372,6 +1415,7 @@ def auth_callback():
         "roles":     member_roles,
         "is_admin":  is_admin,
         "is_mod":    _is_mod(member_roles) or is_admin,
+        "discord_checked_at": int(time.time()),
     })
 
     is_mod_user = _is_mod(member_roles) or is_admin
@@ -1401,7 +1445,7 @@ def auth_callback():
 @app.route("/api/auth/me")
 def auth_me():
     """Return the current authenticated user's info."""
-    user = _current_auth_user()
+    user = _current_auth_user(force_refresh=True)
     if not user:
         return jsonify({"logged_in": False}), 200
     return jsonify({
@@ -1525,7 +1569,7 @@ def reveal_dodo(name):
     The client must send:   Authorization: Bearer <token>
     On success, fires a Discord webhook and returns the dodo code.
     """
-    user = _current_auth_user()
+    user = _current_auth_user(force_refresh=True)
     if not user:
         _log_dodo_reveal_attempt(None, name.upper(), "denied", "not_logged_in")
         return jsonify({"error": "Authentication required"}), 401
@@ -1668,9 +1712,14 @@ def reveal_dodo(name):
         daemon=True,
     ).start()
 
+    warning = nickname_warning_for(user.get("nickname"))
+    response_payload = {"island": target, "dodo_code": dodo_code}
+    if warning:
+        response_payload["warning"] = warning
+
     _log_dodo_reveal_attempt(user, target, "allowed", "revealed", channel_id=channel_id)
     _record_api_audit_event("dodo_reveal_allowed", target, {"channel_id": channel_id})
-    return jsonify({"island": target, "dodo_code": dodo_code})
+    return jsonify(response_payload)
 
 
 @app.route("/api/islands/<name>/queue", methods=["POST"])
@@ -2426,7 +2475,7 @@ def api_refresh():
         and Config.DASHBOARD_SECRET
         and _secrets.compare_digest(auth[len("Bearer "):], Config.DASHBOARD_SECRET)
     )
-    token_user = get_auth_user(auth[len("Bearer "):]) if auth.startswith("Bearer ") else None
+    token_user = _current_auth_user() if auth.startswith("Bearer ") else None
     mod_bearer_ok = bool(
         token_user
         and (
@@ -2435,7 +2484,7 @@ def api_refresh():
             or _is_mod(token_user.get("roles", []))
         )
     )
-    session_ok = bool(session.get("mod_logged_in"))
+    session_ok = _check_dashboard_session()
     if not secret_bearer_ok and not mod_bearer_ok and not session_ok:
         return jsonify({"error": "Unauthorized"}), 401
 

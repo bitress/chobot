@@ -31,9 +31,18 @@ from flask import (
 )
 
 from utils.config import Config
-from utils.auth_tokens import get_auth_user
+from utils.auth_tokens import get_auth_user, revoke_auth_token, update_auth_user
 from utils.database import connect_db, get_backend
 from utils.discord_http import request as discord_request
+from utils.discord_membership import (
+    DiscordMembershipUnavailable,
+    DiscordNotGuildMember,
+    REFRESH_SECONDS,
+    STALE_GRACE_SECONDS,
+    is_beyond_stale_grace,
+    refresh_user_payload,
+    should_refresh,
+)
 from utils.db_migration import (
     backup_sqlite_database,
     dry_run_sqlite_to_mariadb,
@@ -449,7 +458,43 @@ def _upload_map_to_r2(file_bytes: bytes, content_type: str, island_id: str) -> s
 # Auth helpers
 # ---------------------------------------------------------------------------
 def _check_session():
-    return bool(session.get("mod_logged_in"))
+    if not session.get("mod_logged_in"):
+        return False
+    user_id = session.get("discord_user_id")
+    if not user_id:
+        return True
+    checked_at = int(session.get("discord_checked_at") or 0)
+    if time.time() - checked_at < REFRESH_SECONDS:
+        return True
+    try:
+        refreshed = refresh_user_payload({
+            "user_id": user_id,
+            "username": session.get("discord_username", ""),
+            "avatar": session.get("discord_avatar_url", ""),
+            "discord_checked_at": checked_at,
+        })
+    except DiscordNotGuildMember:
+        logger.info("Clearing dashboard OAuth session for user_id=%s: no longer in guild", user_id)
+        _clear_dashboard_session()
+        return False
+    except DiscordMembershipUnavailable as exc:
+        logger.warning("Could not refresh dashboard OAuth session for %s: %s", user_id, exc)
+        if not checked_at or time.time() - checked_at >= STALE_GRACE_SECONDS:
+            _clear_dashboard_session()
+            return False
+        return True
+
+    if not refreshed.get("is_admin"):
+        logger.info("Clearing dashboard OAuth session for user_id=%s: admin access removed", user_id)
+        _clear_dashboard_session()
+        return False
+
+    session["mod_logged_in"] = True
+    session["mod_role"] = "admin"
+    session["discord_username"] = refreshed.get("username", "")
+    session["discord_avatar_url"] = refreshed.get("avatar", "")
+    session["discord_checked_at"] = refreshed.get("discord_checked_at", int(time.time()))
+    return True
 
 
 def _get_session_role():
@@ -468,7 +513,26 @@ def _dashboard_bearer_user() -> dict | None:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return None
-    return get_auth_user(auth[len("Bearer "):])
+    token = auth[len("Bearer "):]
+    user = get_auth_user(token)
+    if not user:
+        return None
+    if not should_refresh(user):
+        return user
+    try:
+        refreshed = refresh_user_payload(user)
+        update_auth_user(token, refreshed)
+        return refreshed
+    except DiscordNotGuildMember:
+        logger.info("Revoking dashboard bearer token for user_id=%s: no longer in guild", user.get("user_id"))
+        revoke_auth_token(token)
+        return None
+    except DiscordMembershipUnavailable as exc:
+        logger.warning("Could not refresh dashboard bearer user %s: %s", user.get("user_id"), exc)
+        if is_beyond_stale_grace(user):
+            revoke_auth_token(token)
+            return None
+        return user
 
 
 def _is_dashboard_mod_user(user: dict | None) -> bool:
@@ -1390,6 +1454,7 @@ def _clear_dashboard_session() -> None:
     session.pop("discord_user_id",     None)
     session.pop("discord_username",    None)
     session.pop("discord_avatar_url",  None)
+    session.pop("discord_checked_at",  None)
     session.pop("oauth_state",         None)
     session.pop("csrf_token",          None)
 
@@ -1563,6 +1628,7 @@ def oauth2_callback():
     session["discord_user_id"]    = discord_user_id
     session["discord_username"]   = discord_username
     session["discord_avatar_url"] = discord_avatar_url
+    session["discord_checked_at"] = int(time.time())
     session.permanent          = True
     logger.info("OAuth login: user=%s role=%s", discord_username, role)
     return redirect(url_for("dashboard.index"))

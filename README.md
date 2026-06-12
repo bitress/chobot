@@ -231,6 +231,8 @@ The dashboard supports two login methods:
 
 Once `DISCORD_CLIENT_ID` is set, the **Log in with Discord** button will appear on the login page automatically.
 
+Discord OAuth sessions and website bearer tokens are re-checked against the live guild member record every `AUTH_DISCORD_REFRESH_SECONDS` seconds, defaulting to 5 minutes. If Discord cannot be reached, cached access is allowed only until `AUTH_DISCORD_STALE_GRACE_SECONDS`, defaulting to 1 hour; users removed from the guild or stripped of required roles lose access on the next successful check.
+
 ### Executing program
 
 * How to run the bot:

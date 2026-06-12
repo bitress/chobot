@@ -24,6 +24,7 @@ from utils.config import Config
 from utils.database import connect_db
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.nookipedia import NookipediaClient
+from utils.nickname_format import is_valid_acnh_nickname, nickname_warning_for, NICKNAME_FORMAT_EXAMPLE
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
 from utils.ops_status import create_sqlite_backup, get_maintenance_settings
 
@@ -80,7 +81,6 @@ AUTO_REPLY_PATTERNS = [
 # Nickname submission channel validation
 NICKNAME_SUBMISSION_CHANNEL_ID = 1081147108612124742
 # Format: Nickname[/Nickname...] | Island Name[/Island Name...]
-NICKNAME_FORMAT_PATTERN = re.compile(r'^[^\s|]+(?:/[^\s|]+)*\s*\|\s*[^\s|]+(?:/[^\s|]+)*$', re.MULTILINE)
 FREE_DODO_BOARD_INTERVAL_SECONDS = 60
 FREE_DODO_BOARD_EMBEDS_PER_MESSAGE = 10
 FREE_DODO_BOARD_MARKER = "Chopaeng Camp™ • Free Dodo Board"
@@ -605,10 +605,10 @@ class DiscordCommandCog(commands.Cog):
         """Slash command to set nickname following the required format."""
         
         # Validate format
-        if not NICKNAME_FORMAT_PATTERN.match(nickname.strip()):
+        if not is_valid_acnh_nickname(nickname.strip()):
             await interaction.response.send_message(
                 "❌ **Invalid Format!**\n"
-                "Please use: `Character Name | Island Name`\n"
+                f"Please use: `{NICKNAME_FORMAT_EXAMPLE}`\n"
                 "Example: `ChoPaeng | ChoPaeng Camp` (ensure you include the pipe `|` symbol)",
                 ephemeral=True
             )
@@ -2533,6 +2533,13 @@ class DiscordCommandCog(commands.Cog):
             timestamp=discord.utils.utcnow()
         )
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        warning = nickname_warning_for(ctx.author.display_name)
+        if warning:
+            embed.add_field(
+                name="Nickname Reminder",
+                value=warning,
+                inline=False,
+            )
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
         embed.set_image(url=Config.FOOTER_LINE)
         return embed
