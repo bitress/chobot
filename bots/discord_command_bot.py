@@ -83,7 +83,7 @@ NICKNAME_SUBMISSION_CHANNEL_ID = 1081147108612124742
 # Format: Nickname[/Nickname...] | Island Name[/Island Name...]
 FREE_DODO_BOARD_INTERVAL_SECONDS = 60
 FREE_DODO_BOARD_EMBEDS_PER_MESSAGE = 10
-FREE_DODO_BOARD_MARKER = "Chopaeng Camp™ • Free Dodo Board"
+FREE_DODO_BOARD_MARKER = "Chopaeng Camp™"
 
 # How long (seconds) a command claim record is kept before being pruned.
 # Any message older than this window is no longer at risk of being replayed.
@@ -3630,6 +3630,28 @@ class DiscordCommandBot(commands.Bot):
             await message.reply(f"{answer}")
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
             return
+
+        # Auto-reply on all messages in channels configured for always-autoreply
+        if message.channel.id in Config.ALWAYS_AUTOREPLY_CHANNELS:
+            question = message.content.strip()
+            if question and not message.author.bot:
+                conv_key = _discord_conv_key(message)
+                channel_name = getattr(message.channel, "name", None)
+                async with message.channel.typing():
+                    answer = await get_ai_answer(
+                        question,
+                        gemini_api_key=Config.GEMINI_API_KEY,
+                        openai_api_key=Config.OPENAI_API_KEY,
+                        openai_base_url=Config.OPENAI_BASE_URL,
+                        provider=Config.AI_PROVIDER,
+                        gemini_model=Config.GEMINI_MODEL,
+                        openai_model=Config.OPENAI_MODEL,
+                        conversation_key=conv_key,
+                        channel_context=channel_name,
+                    )
+                await message.reply(f"{answer}")
+                logger.info(f"[DISCORD] Always-autoreply by {message.author.name}: {question[:80]}")
+                return
 
         # Auto-reply on clear help/question intents in configured channels.
         # Check if autoreply is enabled and in allowed channels

@@ -969,7 +969,7 @@ def _fire_dodo_webhook(
     embed = {
         "title": f"✈️ Dodo Code Revealed",
         "color": 0x2ecc71,  # Emerald Green
-        "description": f"<@{user_id}> has revealed the Dodo code for island: <#{channel_id}>",
+        "description": f"<@{user_id}> has revealed the Dodo code for island <#{channel_id}>",
         "fields": [
             {
                 "name": "Member",
@@ -987,7 +987,7 @@ def _fire_dodo_webhook(
             "url": "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
         },
         "footer": {
-            "text": "Chopaeng Camp™ • Dodo Reveal",
+            "text": "Chopaeng Camp™ • Dodo Log",
             "icon_url": "https://www.chopaeng.com/assets/logo-C5oO0bbj.webp"
         },
         "timestamp": datetime.utcnow().isoformat() + "Z",
