@@ -1059,6 +1059,7 @@ class DiscordCommandCog(commands.Cog):
             return
 
         deleted = 0
+        messages_to_delete = []
         try:
             async for msg in channel.history(limit=100):
                 if msg.author.id != self.bot.user.id or not msg.embeds:
@@ -1066,17 +1067,33 @@ class DiscordCommandCog(commands.Cog):
                 footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
                 if not footer or FREE_DODO_BOARD_MARKER not in footer:
                     continue
-                try:
-                    await msg.delete()
-                    deleted += 1
-                except discord.NotFound:
-                    pass
+                messages_to_delete.append(msg)
         except discord.Forbidden:
             logger.warning(f"[DISCORD] Missing permission to delete old Free Dodo board messages in #{channel.name}")
             return
         except discord.HTTPException as exc:
             logger.warning(f"[DISCORD] Failed while deleting old Free Dodo board messages in #{channel.name}: {exc}")
             return
+
+        # Bulk delete collected messages
+        batch_size = 100
+        for i in range(0, len(messages_to_delete), batch_size):
+            batch = messages_to_delete[i:i + batch_size]
+            try:
+                await channel.delete_messages(batch)
+                deleted += len(batch)
+            except discord.Forbidden:
+                # Fallback to individual deletion
+                for msg in batch:
+                    try:
+                        await msg.delete()
+                        deleted += 1
+                    except discord.NotFound:
+                        pass
+                    except Exception as e:
+                        logger.warning(f"[DISCORD] Failed to delete message: {e}")
+            except Exception as e:
+                logger.warning(f"[DISCORD] Failed to bulk delete batch: {e}")
 
         self.free_dodo_board_messages = []
         self.free_dodo_board_fingerprints = []
@@ -3361,6 +3378,154 @@ class DiscordCommandCog(commands.Cog):
         """Handle permission errors for autoreply command"""
         if isinstance(error, commands.MissingPermissions):
             await ctx.reply("You do not have permission to use this command.")
+
+    @commands.hybrid_command(name="clear")
+    @app_commands.describe(channel="The channel to clear (defaults to current channel)")
+    @commands.has_permissions(administrator=True)
+    async def clear(self, ctx, channel: discord.TextChannel = None):
+        """Clear all messages from a channel with confirmation (Admin only)"""
+        if channel is None:
+            channel = ctx.channel
+        
+        # Check if bot has permission to delete messages in the target channel
+        if not channel.permissions_for(ctx.me).manage_messages:
+            await ctx.reply(f"I don't have permission to delete messages in {channel.mention}")
+            return
+        
+        # Create confirmation buttons
+        class ConfirmView(discord.ui.View):
+            def __init__(self, author_id: int, target_channel: discord.TextChannel, bot_cog):
+                super().__init__(timeout=30.0)
+                self.author_id = author_id
+                self.target_channel = target_channel
+                self.bot_cog = bot_cog
+                self.confirmed = False
+            
+            async def on_timeout(self):
+                for item in self.children:
+                    item.disabled = True
+            
+            @discord.ui.button(label="Confirm", style=discord.ButtonStyle.red)
+            async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if interaction.user.id != self.author_id:
+                    await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
+                    return
+                
+                self.confirmed = True
+                await interaction.response.defer()
+                
+                # Disable buttons
+                for item in self.children:
+                    item.disabled = True
+                await interaction.message.edit(view=self)
+                
+                # Send progress message
+                progress_msg = await ctx.send(f"Clearing all messages from {self.target_channel.mention}...")
+                
+                deleted_count = 0
+                failed_count = 0
+                
+                try:
+                    messages_to_delete = []
+                    async for message in self.target_channel.history(limit=None):
+                        messages_to_delete.append(message)
+                    
+                    # Discord only allows bulk delete for messages < 14 days old
+                    cutoff_time = datetime.now(timezone.utc) - timedelta(days=13, hours=23, minutes=59)
+                    
+                    deleted_count = 0
+                    failed_count = 0
+                    
+                    # First pass: bulk delete recent messages (< 14 days)
+                    batch_size = 100
+                    messages_idx = 0
+                    while messages_idx < len(messages_to_delete):
+                        batch = []
+                        batch_start_idx = messages_idx
+                        
+                        # Build a batch of messages that are all under 14 days old
+                        while messages_idx < len(messages_to_delete) and len(batch) < batch_size:
+                            msg = messages_to_delete[messages_idx]
+                            if msg.created_at > cutoff_time:
+                                batch.append(msg)
+                                messages_idx += 1
+                            else:
+                                # Hit an old message, stop this batch
+                                break
+                        
+                        # If we found recent messages to delete
+                        if batch:
+                            try:
+                                await self.target_channel.delete_messages(batch)
+                                deleted_count += len(batch)
+                            except Exception as e:
+                                # Fallback to individual deletion
+                                for msg in batch:
+                                    try:
+                                        await msg.delete()
+                                        deleted_count += 1
+                                    except Exception as del_err:
+                                        failed_count += 1
+                                        logger.warning(f"[DISCORD] Failed to delete message: {del_err}")
+                                    await asyncio.sleep(0.05)
+                                logger.warning(f"[DISCORD] Bulk delete failed, fell back to individual: {e}")
+                            
+                            await asyncio.sleep(0.5)
+                        else:
+                            # No more recent messages, move to old ones
+                            break
+                    
+                    # Second pass: individually delete old messages (>= 14 days)
+                    for idx in range(messages_idx, len(messages_to_delete)):
+                        msg = messages_to_delete[idx]
+                        try:
+                            await msg.delete()
+                            deleted_count += 1
+                        except Exception as e:
+                            failed_count += 1
+                            logger.warning(f"[DISCORD] Failed to delete old message: {e}")
+                        await asyncio.sleep(0.1)
+                
+                except discord.Forbidden:
+                    await progress_msg.edit(content=f"Cannot access message history in {self.target_channel.mention}")
+                    logger.error(f"[DISCORD] Cannot access history for channel {self.target_channel.name}")
+                    return
+                
+                # Update progress message
+                status_msg = f"Cleared {deleted_count} messages from {self.target_channel.mention}"
+                if failed_count > 0:
+                    status_msg += f" ({failed_count} failed)"
+                await progress_msg.edit(content=status_msg)
+                logger.info(f"[DISCORD] Channel {self.target_channel.name} cleared ({deleted_count} deleted, {failed_count} failed)")
+            
+            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.grey)
+            async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+                if interaction.user.id != self.author_id:
+                    await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
+                    return
+                
+                await interaction.response.defer()
+                
+                # Disable buttons
+                for item in self.children:
+                    item.disabled = True
+                await interaction.message.edit(content="Clear operation cancelled.", view=self)
+                logger.info(f"[DISCORD] Clear operation for {self.target_channel.name} cancelled")
+        
+        view = ConfirmView(ctx.author.id, channel, self)
+        await ctx.reply(
+            f"**Clear all messages from {channel.mention}?**\n(This action cannot be undone)",
+            view=view,
+            mention_author=True
+        )
+
+    @clear.error
+    async def clear_error(self, ctx, error):
+        """Handle permission errors for clear command"""
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.reply("You do not have permission to use this command.")
+        elif isinstance(error, commands.BadArgument):
+            await ctx.reply("Please provide a valid channel.")
 
 
 class DiscordCommandBot(commands.Bot):
