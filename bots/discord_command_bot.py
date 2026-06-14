@@ -3666,6 +3666,10 @@ class DiscordCommandBot(commands.Bot):
         if message.author == self.user:
             return
 
+        # Ignore messages from specific bot user ID
+        if message.author.id == 1218852297988112395:
+            return
+
         maintenance = get_maintenance_settings()
         if maintenance.get("disable_commands") and message.content.startswith(self.command_prefix):
             with contextlib.suppress(discord.HTTPException):

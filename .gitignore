@@ -19,3 +19,5 @@ backups/
 .env.cho
 .env.xx
 tests/
+chobot.db-shm
+chobot.db-wal
