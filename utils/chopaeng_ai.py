@@ -255,6 +255,14 @@ def _should_skip_live_search(question: str) -> bool:
     ):
         return True
 
+    # Command queries — asking about commands or how to do things.
+    if re.search(
+        r"\b(?:command|how\s+to|what\s+(?:command|is\s+the))\b.*\b(?:check|view|see|status|statuses)\b|"
+        r"\b(?:check|view|see)\s+(?:island\s+)?status\b",
+        lowered,
+    ):
+        return True
+
     # "Is there a way to …" — usually meta (unless clearly about finding items).
     if re.search(r"\bis\s+there\s+a\s+way\s+to\b", lowered):
         if re.search(
@@ -594,6 +602,27 @@ _CHANNEL_ALIASES = {
     "ordering": "1175672083183829075",
     "lookup": "1175771830510948442",
     "i-report": "1451664423637876848",
+    # Island channels
+    "adhika": "1480590246763561074",
+    "alapaap": "1103147265163546644",
+    "aruga": "1132281149889187840",
+    "bahaghari": "808952218815430656",
+    "bituin": "1086447563957358602",
+    "bonita": "1042985566544867338",
+    "dakila": "1466136034042712319",
+    "dalisay": "1163097804248449144",
+    "diwa": "1466473836491837623",
+    "gabay": "1466477805582942391",
+    "galak": "1093032510474166353",
+    "giliw": "1479349968769912926",
+    "hiraya": "1050578366773862480",
+    "kalangitan": "1466168006957600849",
+    "lakan": "1095766764517855323",
+    "likha": "1066021181205004368",
+    "malaya": "1466172270488584529",
+    "marahuyo": "788365692763766784",
+    "pangarap": "1466181268034293770",
+    "tagumpay": "1128003938789117993",
 }
 
 
