@@ -68,6 +68,20 @@ instead of sending a code.
 
 **For Free Islands:** You can also find Dodo codes and information about each free island in the <#1500493205672825056> (Dodo Board) channel. This channel displays current codes and details about all 27 free islands, making it easy to browse and choose which island to visit.
 
+## Free and Sub on How do get the Order Command or Drop Command or Inject/Multiple Inject Villagers to the Islands
+
+You can create an order (free) or `!drop` (sub) or `!injectvillager` (sub) easily on our website: **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**
+
+## This section applies to free orders only.
+
+The order bot will inform you of your position in the queue. To check your queue status, enter `!position` in the order channel. Avoid excessive use of this command; check every few minutes if necessary.
+
+Once your turn arrives, the bot will notify you to clear your inventory and proceed to the airport. Act promptly when your Dodo code is ready, as the bot won't wait indefinitely. Upon receiving the "Your order is starting" message, interact with Orville until he prompts you to enter a Dodo code. Remain there until the bot provides your Dodo code, and enter it immediately. **Avoid sending a substitute (e.g., a friend) to the island, as this may trigger the alt detector and lead to an automatic ban.**
+
+Upon receiving your Dodo code, enter it and depart for the order island, named "*Sinta*" where the player "*ChoPaeng*" resides.
+
+Collect your items directly in front of the airport and depart. You're done! Use the `-` button on your Joy-Con for the quickest exit method.
+
 Free island questions should not be sent to the Chorder Bot help channel. The
 Chorder Bot help tab/channel is only for the free orderbot and ordering flow.
 
