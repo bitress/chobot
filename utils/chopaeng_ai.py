@@ -303,7 +303,12 @@ def _format_island_groups(free_islands: list[str], sub_islands: list[str]) -> st
 
 
 def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
-    """Convert a live search API payload into a user-facing answer."""
+    """Convert a live search API payload into a user-facing, conversational answer.
+    
+    For free islands: references the Dodo Board with visit instructions.
+    For sub islands: explains subscriber access and uses #channel-name format for auto-linking.
+    For not-found: suggests alternatives or points to ordering/request channels.
+    """
     normalized_query = query.strip().upper()
     results = payload.get("results") or {}
     free_islands = results.get("free") or []
@@ -311,25 +316,72 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
     suggestions = payload.get("suggestions") or []
 
     if payload.get("found") and (free_islands or sub_islands):
-        subject = "villager" if kind == "villager" else "item"
-        island_summary = _format_island_groups(free_islands, sub_islands)
-        return f"I found {subject} {normalized_query} on {island_summary}."
+        is_villager = kind == "villager"
+        article = "is" if is_villager else "is"
+        emoji = "🌟" if is_villager else "✨"
+        
+        # Build conversational answer based on where it's found
+        if free_islands and sub_islands:
+            # Found on both free and sub islands
+            free_list = " | ".join(name.upper() for name in free_islands)
+            sub_list = " | ".join(f"#{name.lower()}" for name in sub_islands)
+            if is_villager:
+                return (
+                    f"Awesome! **{normalized_query}** {emoji} is available in multiple places! "
+                    f"Free members: check <#1500493205672825056> for Dodo codes to visit {free_list}. "
+                    f"Subscribers: visit {sub_list} directly using island commands!"
+                )
+            else:
+                return (
+                    f"Great news! **{normalized_query}** {emoji} is stocked on multiple islands! "
+                    f"Free members: grab it from {free_list} via <#1500493205672825056>. "
+                    f"Subscribers: you can also find it on {sub_list}!"
+                )
+        elif free_islands:
+            # Only on free islands
+            free_list = " | ".join(name.upper() for name in free_islands)
+            if is_villager:
+                return (
+                    f"Perfect! **{normalized_query}** {emoji} is here! Visit {free_list} "
+                    f"for a Dodo code in <#1500493205672825056>"
+                )
+            else:
+                return (
+                    f"Score! **{normalized_query}** {emoji} is stocked right now on {free_list}. "
+                    f"Head to <#1500493205672825056> to grab a Dodo code and visit!"
+                )
+        else:
+            # Only on sub islands
+            sub_list = " | ".join(f"#{name.lower()}" for name in sub_islands)
+            if is_villager:
+                return (
+                    f"Found it! **{normalized_query}** {emoji} is currently on {sub_list}. "
+                    f"As a subscriber, use the island commands to visit!"
+                )
+            else:
+                return (
+                    f"Found it! **{normalized_query}** {emoji} is available on {sub_list} "
+                    f"for subscribers. Use the island commands to grab it!"
+                )
 
-    if suggestions:
+    if suggestions and suggestions[0]:
+        # Format suggestions as a friendly list.
+        formatted_suggestions = ", ".join(s.upper() for s in suggestions[:5] if s)
         return (
-            f"I couldn't find {normalized_query} right now. "
-            f"Did you mean: {', '.join(str(s) for s in suggestions)}?"
+            f"Hmm, I didn't find exact match for **{normalized_query}**. "
+            f"Did you mean one of these? {formatted_suggestions} 🤔"
         )
 
     if kind == "item":
         return (
-            f"I couldn't find item {normalized_query} right now. "
-            f"If it's not stocked, you can use the Chorder Bot flow in <#1175672083183829075>."
+            f"I couldn't find **{normalized_query}** stocked right now. "
+            f"But no worries! You can order it using the Chorder Bot flow in <#1175672083183829075> "
+            f"and it'll be delivered to your island! 📦"
         )
 
     return (
-        f"I couldn't find villager {normalized_query} right now. "
-        f"If you need request help, check <#{_REQUEST_HELP_CHANNEL}> for sub island requests. "
+        f"I couldn't find **{normalized_query}** at the moment. "
+        f"Looking to request them? Check <#{_REQUEST_HELP_CHANNEL}> for sub island request help! 💬 "
         f"For non-subscriber orderbot help, use <#1175704849409654804>."
     )
 
@@ -593,12 +645,17 @@ _VARIANT_ORDERING_RESPONSE = (
     "Example: `!lookup dreamy sweater` -> `!item 1234` -> `!customize 1234 2` -> `!order <long code>`."
 )
 
+# Known channel aliases for static sub-island and support channels.
+# Free island names are intentionally not included here because their Discord
+# channel IDs are managed dynamically by the guild/category lookup logic and
+# should not be auto-linked using a static alias table.
 _CHANNEL_ALIASES = {
     "server-nickname": "1081147108612124742",
     "set-nick": "1081147108612124742",
     "sub-rules": "783677194576330792",
     "chobot-how": "782872507551055892",
     "chorder-bot-how": "1175704849409654804",
+    "chorder-bot": "1175672083183829075",
     "ordering": "1175672083183829075",
     "lookup": "1175771830510948442",
     "i-report": "1451664423637876848",
@@ -633,6 +690,94 @@ def _is_variant_ordering_question(text: str) -> bool:
     has_order_intent = any(word in t for word in ("order", "customize", "customise", "choose", "get"))
     has_item_context = any(word in t for word in ("clothes", "clothing", "shirt", "dress", "hat", "shoes", "item"))
     return has_variant and has_order_intent and has_item_context
+
+
+def _is_order_inject_drop_question(text: str) -> bool:
+    """Return True if the user is asking about ordering, dropping, or injecting.
+    
+    Avoids false positives like 'drop by' or 'drop off' by requiring "order", "drop",
+    or "inject" to appear in command context or specific phrases.
+    """
+    t = (text or "").lower()
+    
+    # Explicit command references: !order, !drop, !injectvillager, !mvi
+    if re.search(r'!(?:order|drop|injectvillager|mvi)\b', t):
+        return True
+    
+    # Command builder phrases should trigger the ordering notice too.
+    if re.search(r'\b(?:command(?:\s|[-\"])builder|build(?:ing)?\s+(?:a\s+)?command)\b', t):
+        return True
+    
+    # Phrases like "how do i order", "need help with ordering", etc.
+    if re.search(r'\b(?:how\s+(?:do|can)\s+i|how\s+to|need\s+help|help\s+with)\b.*?(?:order|drop|inject)', t):
+        return True
+    
+    # Simple: "order item", "drop code", "inject villager" at end of sentence
+    if re.search(r'\b(?:order|drop|inject)\b(?:\s+(?:item|villager|code|items|villagers|codes))?[\s.!?]*$', t):
+        return True
+    
+    return False
+
+
+_COMMAND_BUILDER_URL = "https://www.chopaeng.com/command-builder"
+_COMMAND_BUILDER_LINK = f"**[chopaeng.com/command-builder]({_COMMAND_BUILDER_URL})**"
+_ORDER_CHANNEL_MENTION = "<#1175672083183829075>"
+
+_COMMAND_BUILDER_NOTICE_SUB = (
+    f"Use {_COMMAND_BUILDER_LINK} for Sub requests. "
+    "Click **Drop** for item/DIY requests, then copy from the **Drop Bot** section and paste into any sub island channel. "
+    "For villagers, use the **Inject Bot** section."
+)
+
+_COMMAND_BUILDER_NOTICE_FREE = (
+    f"Use {_COMMAND_BUILDER_LINK} for Free requests. "
+    "Click **Order** for items or DIYs, then copy from the **Order Bot** section and paste into "
+    f"{_ORDER_CHANNEL_MENTION}. Check `!position` only every few minutes."
+)
+
+_COMMAND_BUILDER_NOTICE_BOTH = (
+    f"{_COMMAND_BUILDER_NOTICE_SUB}\n\n{_COMMAND_BUILDER_NOTICE_FREE}"
+)
+
+
+def _command_builder_flow(text: str) -> str:
+    """Classify whether a command-builder question is Sub, Free, or both."""
+    t = (text or "").lower()
+    sub_signals = [
+        "drop",
+        "inject",
+        "injectvillager",
+        "mvi",
+        "drop bot",
+        "inject bot",
+        "sub island",
+        "sub",
+        "subscriber",
+    ]
+    free_signals = [
+        "free",
+        "orderbot",
+        "order bot",
+        "chorder",
+        "order ",
+    ]
+    has_sub = any(signal in t for signal in sub_signals)
+    has_free = any(signal in t for signal in free_signals)
+
+    if has_sub and not has_free:
+        return "sub"
+    if has_free and not has_sub:
+        return "free"
+    return "both"
+
+
+def _build_command_builder_notice_for_question(text: str) -> str:
+    flow = _command_builder_flow(text)
+    if flow == "sub":
+        return _COMMAND_BUILDER_NOTICE_SUB
+    if flow == "free":
+        return _COMMAND_BUILDER_NOTICE_FREE
+    return _COMMAND_BUILDER_NOTICE_BOTH
 
 
 _FAQ_RESPONSES: list[tuple[tuple[str, ...], str]] = [
@@ -675,6 +820,10 @@ _FAQ_RESPONSES: list[tuple[tuple[str, ...], str]] = [
     (
         ("sanrio villager", "amiibo villager", "sanrio character", "amiibo character", "in-boxes", "in boxes"),
         "For Sanrio/Amiibo villagers, first inject any standard placeholder villager into the first plot before flying. After you arrive on that island, inject the Sanrio/Amiibo character and wait for **VILLAGER INJECTED**. Then enter the first plot, talk to the placeholder-looking villager, and invite them. If you inject the Amiibo/Sanrio character before flying, they will not move in.",
+    ),
+    (
+        ("how to order villager", "order villager", "ordering villager", "how do i order villagers", "how can i order", "how to get villagers", "request villager", "request villagers"),
+        "**Free members:** Order villagers using the Chorder Bot in <#1175672083183829075> with `!order villager:<id>`. Find the ID using `ac!lookup villager <name>` in <#943118146259284008>. You need an empty, unsold plot ready. ⚠️ Avoid ordering between 10 PM–8 AM BST (villager may be sleeping).\n\n**Subscribers:** Use `!injectvillager <house#> <name>` (DO NOT be on island when injecting — fly in after confirmation) or `!mvi name1 name2 ...` for multiple villagers on sub islands. For detailed guides and examples, check the knowledge base!",
     ),
 ]
 
@@ -832,8 +981,25 @@ def _auto_link_channels(text: str) -> str:
     text = re.sub(r'(?<!<)#(<#\d{17,20}>)', r'\1', text)
     text = re.sub(r'(?<![<\w])#(\d{17,20})\b', r'<#\1>', text)
     for channel_name, channel_id in _CHANNEL_ALIASES.items():
+        # Prefer explicit hashtag usages like `#channel-name`.
         text = re.sub(
             rf'(?<![<\w])#(?:{re.escape(channel_name)})(?![\w-])',
+            f'<#{channel_id}>',
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    # Also link plain safe channel alias mentions (e.g. "chorder-bot") so short
+    # references get turned into proper channel mentions. This intentionally avoids
+    # linking generic words like "lookup" or command names such as "!lookup".
+    _PLAIN_CHANNEL_ALIASES = {
+        "chorder-bot": _CHANNEL_ALIASES["chorder-bot"],
+        "chorder-bot-how": _CHANNEL_ALIASES["chorder-bot-how"],
+        "chobot-how": _CHANNEL_ALIASES["chobot-how"],
+    }
+    for channel_name, channel_id in _PLAIN_CHANNEL_ALIASES.items():
+        text = re.sub(
+            rf'(?<![<\w!]){re.escape(channel_name)}(?![\w-])',
             f'<#{channel_id}>',
             text,
             flags=re.IGNORECASE,
@@ -1083,6 +1249,8 @@ def _build_model_prompt(
     history: Optional[list[dict]] = None,
     channel_context: Optional[str] = None,
     include_system_prompt: bool = False,
+    is_subscriber: bool = False,
+    is_mod_user: bool = False,
 ) -> str:
     """Build the compact LLM prompt using retrieved KB sections only."""
     conversation_context = ""
@@ -1107,6 +1275,18 @@ def _build_model_prompt(
         f"\n### Channel Context ###\nThis question was asked in the Discord channel: #{channel_context}\n"
         if channel_context else ""
     )
+
+    role_section = ""
+    if is_mod_user:
+        role_section = (
+            "\n### User Access Context ###\n"
+            "The user asking this question is a moderator/admin. They may have access to moderator-only or elevated island commands.\n"
+        )
+    elif is_subscriber:
+        role_section = (
+            "\n### User Access Context ###\n"
+            "The user asking this question is a subscriber/member and may have access to subscriber-only islands and commands.\n"
+        )
 
     kb_context = _retrieve_kb_context(question)
     kb_section = (
@@ -1137,15 +1317,28 @@ def _build_model_prompt(
         f"{live_section}"
         f"{chat_log_section}"
         f"{channel_section}"
+        f"{role_section}"
         f"{conversation_context}"
         f"\n### Current Question ###\n{question}"
     )
     return f"{_AI_SYSTEM_PROMPT}\n\n{prompt}" if include_system_prompt else prompt
 
 
-def _build_prompt(question: str, history: Optional[list[dict]] = None, channel_context: Optional[str] = None) -> str:
+def _build_prompt(
+    question: str,
+    history: Optional[list[dict]] = None,
+    channel_context: Optional[str] = None,
+    is_subscriber: bool = False,
+    is_mod_user: bool = False,
+) -> str:
     """Backward-compatible wrapper for the compact retrieved prompt builder."""
-    return _build_model_prompt(question, history=history, channel_context=channel_context)
+    return _build_model_prompt(
+        question,
+        history=history,
+        channel_context=channel_context,
+        is_subscriber=is_subscriber,
+        is_mod_user=is_mod_user,
+    )
 
 
 async def get_ai_answer(
@@ -1158,6 +1351,8 @@ async def get_ai_answer(
     openai_model: str = "poolside/laguna-m.1:free",
     conversation_key: Optional[str] = None,
     channel_context: Optional[str] = None,
+    is_subscriber: bool = False,
+    is_mod_user: bool = False,
 ) -> str:
     """
     Answer a question about Chopaeng.
@@ -1178,6 +1373,7 @@ async def get_ai_answer(
         return _GREETING_RESPONSE
 
     q = question.strip()
+    is_ordering_q = _is_order_inject_drop_question(q)
 
     # Respond to greetings warmly without hitting the KB or API.
     if _is_greeting(q):
@@ -1193,23 +1389,34 @@ async def get_ai_answer(
 
     history = conversation_store.get(conversation_key) if conversation_key else []
 
+    # Helper: Add command-builder notice if needed (only once, at end).
+    def _maybe_append_notice(resp: str) -> str:
+        if is_ordering_q:
+            notice = _build_command_builder_notice_for_question(q)
+            if notice and notice not in resp:
+                return resp + "\n\n" + notice
+        return resp
+    
     # This workflow is command-sensitive, so answer directly instead of relying on LLM wording.
     if _is_variant_ordering_question(q):
+        resp = _maybe_append_notice(_VARIANT_ORDERING_RESPONSE)
         if conversation_key:
-            conversation_store.add(conversation_key, q, _VARIANT_ORDERING_RESPONSE)
-        return _auto_link_channels(_VARIANT_ORDERING_RESPONSE)
+            conversation_store.add(conversation_key, q, resp)
+        return _auto_link_channels(resp)
 
     mod_ops_answer = _direct_mod_ops_answer(q, channel_context)
     if mod_ops_answer:
+        resp = _maybe_append_notice(mod_ops_answer)
         if conversation_key:
-            conversation_store.add(conversation_key, q, mod_ops_answer)
-        return _auto_link_channels(mod_ops_answer)
+            conversation_store.add(conversation_key, q, resp)
+        return _auto_link_channels(resp)
 
     direct_faq_answer = _direct_faq_answer(q)
     if direct_faq_answer:
+        resp = _maybe_append_notice(direct_faq_answer)
         if conversation_key:
-            conversation_store.add(conversation_key, q, direct_faq_answer)
-        return _auto_link_channels(direct_faq_answer)
+            conversation_store.add(conversation_key, q, resp)
+        return _auto_link_channels(resp)
 
     # Refresh live island/villager data if the cache is stale.
     now = time.time()
@@ -1220,9 +1427,10 @@ async def get_ai_answer(
 
     live_search_answer = await _try_live_search_answer(q)
     if live_search_answer:
+        resp = _maybe_append_notice(live_search_answer)
         if conversation_key:
-            conversation_store.add(conversation_key, q, live_search_answer)
-        return _auto_link_channels(live_search_answer)
+            conversation_store.add(conversation_key, q, resp)
+        return _auto_link_channels(resp)
 
     selected = (provider or "").strip().lower()
     providers_to_try: list[tuple[str, Optional[str]]] = []
@@ -1250,22 +1458,32 @@ async def get_ai_answer(
                     base_url=openai_base_url,
                     history=history,
                     channel_context=channel_context,
+                    is_subscriber=is_subscriber,
+                    is_mod_user=is_mod_user,
                 )
             else:
                 answer = await _gemini_answer(
-                    q, key, model=gemini_model, history=history, channel_context=channel_context
+                    q,
+                    key,
+                    model=gemini_model,
+                    history=history,
+                    channel_context=channel_context,
+                    is_subscriber=is_subscriber,
+                    is_mod_user=is_mod_user,
                 )
 
+            resp = _maybe_append_notice(answer)
             if conversation_key:
-                conversation_store.add(conversation_key, q, answer)
-            return _auto_link_channels(answer)
+                conversation_store.add(conversation_key, q, resp)
+            return _auto_link_channels(resp)
         except Exception as e:
             logger.warning(f"[ChopaengAI] {name} failed ({e}), trying next fallback.")
 
     answer = _keyword_answer(q, history=history)
+    resp = _maybe_append_notice(answer)
     if conversation_key:
-        conversation_store.add(conversation_key, q, answer)
-    return _auto_link_channels(answer)
+        conversation_store.add(conversation_key, q, resp)
+    return _auto_link_channels(resp)
 
 
 async def _gemini_answer(
@@ -1274,6 +1492,8 @@ async def _gemini_answer(
     model: str = "gemini-1.5-flash",
     history: Optional[list[dict]] = None,
     channel_context: Optional[str] = None,
+    is_subscriber: bool = False,
+    is_mod_user: bool = False,
 ) -> str:
     """Call the Gemini API asynchronously and return the answer."""
     import google.generativeai as genai  # lazy import
@@ -1285,6 +1505,8 @@ async def _gemini_answer(
         history=history,
         channel_context=channel_context,
         include_system_prompt=True,
+        is_subscriber=is_subscriber,
+        is_mod_user=is_mod_user,
     )
 
     # Gemini's generate_content is synchronous; run it in a thread to avoid blocking.
@@ -1304,6 +1526,8 @@ async def _openai_answer(
     base_url: Optional[str] = None,
     history: Optional[list[dict]] = None,
     channel_context: Optional[str] = None,
+    is_subscriber: bool = False,
+    is_mod_user: bool = False,
 ) -> str:
     """Call the OpenAI Chat Completions API asynchronously and return the answer."""
     from openai import OpenAI  # lazy import
@@ -1313,7 +1537,13 @@ async def _openai_answer(
     if base_url and base_url.strip():
         client_kwargs["base_url"] = base_url.strip()
     client = OpenAI(**client_kwargs)
-    prompt = _build_model_prompt(question, history=history, channel_context=channel_context)
+    prompt = _build_model_prompt(
+        question,
+        history=history,
+        channel_context=channel_context,
+        is_subscriber=is_subscriber,
+        is_mod_user=is_mod_user,
+    )
 
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(

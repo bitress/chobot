@@ -23,6 +23,7 @@ from thefuzz import process, fuzz
 from utils.config import Config
 from utils.database import connect_db
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
+from utils.island_access import configured_subscription_role_ids, is_mod
 from utils.nookipedia import NookipediaClient
 from utils.nickname_format import is_valid_acnh_nickname, nickname_warning_for, NICKNAME_FORMAT_EXAMPLE
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
@@ -383,6 +384,28 @@ def _try_claim_command(message_id: int) -> bool:
     except Exception as exc:
         logger.error(f"[DISCORD] command_claims check failed for {message_id}: {exc}")
         return True
+
+
+def _get_member_role_ids(member: discord.abc.Snowflake) -> set[str]:
+    """Return the set of role IDs for a Discord member-like object."""
+    return {
+        str(role.id)
+        for role in getattr(member, "roles", [])
+        if getattr(role, "id", None) is not None
+    }
+
+
+def _is_subscriber_member(member: discord.abc.Snowflake) -> bool:
+    """Return whether the member holds any configured subscriber/member role."""
+    member_roles = _get_member_role_ids(member)
+    subscription_role_ids = set(configured_subscription_role_ids())
+    return bool(member_roles & subscription_role_ids)
+
+
+def _is_mod_member(member: discord.abc.Snowflake) -> bool:
+    """Return whether the member holds any configured moderator/admin role."""
+    member_roles = _get_member_role_ids(member)
+    return is_mod(member_roles)
 
 
 def _discord_conv_key(message: discord.Message) -> str:
@@ -1828,6 +1851,8 @@ class DiscordCommandCog(commands.Cog):
             openai_model=Config.OPENAI_MODEL,
             conversation_key=conv_key,
             channel_context=channel_name,
+            is_subscriber=_is_subscriber_member(ctx.author),
+            is_mod_user=_is_mod_member(ctx.author),
         )
 
         await ctx.reply(f"{answer}")
@@ -3773,6 +3798,8 @@ class DiscordCommandBot(commands.Bot):
                         openai_model=Config.OPENAI_MODEL,
                         conversation_key=conv_key,
                         channel_context=channel_name,
+                        is_subscriber=_is_subscriber_member(message.author),
+                        is_mod_user=_is_mod_member(message.author),
                     )
                 await message.reply(f"{answer}")
                 logger.info(f"[DISCORD] DM auto-reply by {message.author.name}: {question[:80]}")
@@ -3795,6 +3822,8 @@ class DiscordCommandBot(commands.Bot):
                     openai_model=Config.OPENAI_MODEL,
                     conversation_key=conv_key,
                     channel_context=channel_name,
+                    is_subscriber=_is_subscriber_member(message.author),
+                    is_mod_user=_is_mod_member(message.author),
                 )
             await message.reply(f"{answer}")
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")
@@ -3817,32 +3846,9 @@ class DiscordCommandBot(commands.Bot):
                         openai_model=Config.OPENAI_MODEL,
                         conversation_key=conv_key,
                         channel_context=channel_name,
+                        is_subscriber=_is_subscriber_member(message.author),
+                        is_mod_user=_is_mod_member(message.author),
                     )
-                await message.reply(f"{answer}")
-                logger.info(f"[DISCORD] Always-autoreply by {message.author.name}: {question[:80]}")
-                return
-
-        # Auto-reply on clear help/question intents in configured channels.
-        # Check if autoreply is enabled and in allowed channels
-        if self.autoreply_enabled and message.channel.id in Config.AUTOREPLY_CHANNELS:
-            content = message.content.strip()
-            if any(pattern.search(content) for pattern in AUTO_REPLY_PATTERNS):
-                question = message.content.strip()
-                if question and not message.author.bot:
-                    conv_key = _discord_conv_key(message)
-                    channel_name = getattr(message.channel, "name", None)
-                    async with message.channel.typing():
-                        answer = await get_ai_answer(
-                            question,
-                            gemini_api_key=Config.GEMINI_API_KEY,
-                            openai_api_key=Config.OPENAI_API_KEY,
-                            openai_base_url=Config.OPENAI_BASE_URL,
-                            provider=Config.AI_PROVIDER,
-                            gemini_model=Config.GEMINI_MODEL,
-                            openai_model=Config.OPENAI_MODEL,
-                            conversation_key=conv_key,
-                            channel_context=channel_name,
-                        )
                     await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Keyword auto-reply by {message.author.name}: {question[:80]}")
                     return
@@ -3879,6 +3885,8 @@ class DiscordCommandBot(commands.Bot):
                             openai_model=Config.OPENAI_MODEL,
                             conversation_key=conv_key,
                             channel_context=channel_name,
+                            is_subscriber=_is_subscriber_member(message.author),
+                            is_mod_user=_is_mod_member(message.author),
                         )
                     await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")

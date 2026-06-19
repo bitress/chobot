@@ -70,9 +70,17 @@ instead of sending a code.
 
 ## Free and Sub on How do get the Order Command or Drop Command or Inject/Multiple Inject Villagers to the Islands
 
-You can create an order (free) or `!drop` (sub) or `!injectvillager` (sub) easily on our website: **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**
+For Sub
 
-## This section applies to free orders only.
+Create your ChoBot command at **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Just click the **Drop** button on any item or DIY you want to add. Click the **Copy Drop** button in the **Drop Bot** section and paste it in any of our sub island channels.
+
+You can request items, DIYs, or villagers using our **command-builder**.
+
+Always copy the **Drop Bot** section for any items or DIY request, and the **Inject Bot** section for your requested villager(s).
+
+For Free
+
+To place an order, visit **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Simply browse the items or DIYs you want and click the **Order** button on each one to add them to your request. Click the **Copy Order** button in the **Order Bot** section and paste it in <#1175672083183829075> (chorder-bot).
 
 The order bot will inform you of your position in the queue. To check your queue status, enter `!position` in the order channel. Avoid excessive use of this command; check every few minutes if necessary.
 
@@ -356,6 +364,47 @@ Use these commands in the lookup channel <#1175771830510948442>, not the order c
 4. Multiple recipes: `!order 00F0000016A2 02A000016A2`
 
 *For an easier way to order DIY recipes, use ACNHMobileSpawner (tutorial in <#1176749687554982008>).*
+
+## How to Order Villagers
+
+You can order villagers whether you're a **free member** or a **subscriber** — the methods differ based on your access level.
+
+### For Free Members: Using Chorder Bot
+
+Free members can order specific villagers using the Chorder Bot in <#1175672083183829075>.
+
+**Step-by-step:**
+1. Find the villager's 5-character ID using `ac!lookup villager <name>` in <#943118146259284008> (e.g., `Raymond` = `tig06`)
+2. In <#1175672083183829075>, type: `!order villager:tig06` (or combine with items: `!order nook miles ticket villager:tig06`)
+3. The bot shows your queue position
+4. When your turn arrives, follow the island visit steps below
+5. **Have an empty, unsold plot ready** before your turn arrives — the villager cannot move in without one
+6. ⚠️ **Important:** Avoid ordering between 10:00 PM – 8:00 AM BST (villager may be sleeping). Check BST time or use `!gt`
+
+### For Subscribers: Using !injectvillager or !mvi
+
+Subscribers can request villagers on sub islands using inject commands.
+
+**Single villager:**
+1. While NOT on the island, type in the sub island channel: `!injectvillager 0 Raymond` (house 0 = first plot, house 1 = second, etc.)
+2. Wait for bot confirmation: "Villager has been injected"
+3. Fly in to the island and visit the villager
+4. ⚠️ **Critical:** Do NOT be on the island when injecting — fly in AFTER confirmation
+
+**Multiple villagers at once:**
+- Type: `!mvi Judy Marshal Raymond`
+- Wait for confirmation, then fly in
+
+**For Sanrio/In-Boxes villagers (advanced):**
+1. Inject a placeholder villager into plot 1 BEFORE flying in
+2. Fly to the island
+3. Inject your target Sanrio/In-Boxes villager WHILE on the island
+4. Wait for "VILLAGER INJECTED" confirmation
+5. Enter plot 1 and talk to the villager inside
+6. They will appear as the placeholder visually but will move in as your target character
+7. Invite them to your island
+
+Need help? Check <#782872507551055892> (chobot-how) for subscriber support.
 
 ### Adding a Villager to Your Order
 Add `villager:<id>` to the end of your order command. Example: `!order nook miles ticket villager:tig06`
