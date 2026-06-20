@@ -103,6 +103,14 @@ def _auto_link_channels(text: str) -> str:
     return re.sub(pattern, repl, text)
 
 
+def _keyword_answer(question: str, history: Optional[list[dict]] = None) -> str:
+    """Fallback answer when all LLMs fail."""
+    return (
+        "I'm not sure about that. Try asking about islands, items, "
+        "commands, or how the Chopaeng community works!"
+    )
+
+
 def _repair_mojibake(text: str) -> str:
     """Repair common UTF-8-as-Windows-1252 artifacts seen in legacy docs."""
     if not text:
@@ -1434,16 +1442,33 @@ async def _openai_answer(
     
     # Tool call execution loop (up to 3 iterations)
     for _ in range(3):
-        response = await loop.run_in_executor(
-            None,
-            lambda: client.chat.completions.create(
-                model=model,
-                temperature=0.4,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-            ),
-        )
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.chat.completions.create(
+                    model=model,
+                    temperature=0.4,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                ),
+            )
+        except Exception as e:
+            # If the model does not support tool calling (e.g., poolside/laguna-m.1:free), 
+            # it will throw a BadRequestError. We fall back to a standard chat completion without tools.
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: client.chat.completions.create(
+                        model=model,
+                        temperature=0.4,
+                        messages=messages,
+                    ),
+                )
+            except Exception as e2:
+                from utils.chopaeng_ai import logger
+                logger.error(f"OpenAI fallback generation failed: {e2}")
+                return _keyword_answer(question)
         
         response_message = response.choices[0].message
         
@@ -1451,7 +1476,23 @@ async def _openai_answer(
             text = (response_message.content or "").strip()
             return text if text else _keyword_answer(question)
             
-        messages.append(response_message)
+        msg_dict = {
+            "role": response_message.role,
+            "content": response_message.content,
+        }
+        if response_message.tool_calls:
+            msg_dict["tool_calls"] = [
+                {
+                    "id": t.id,
+                    "type": t.type,
+                    "function": {
+                        "name": t.function.name,
+                        "arguments": t.function.arguments,
+                    }
+                }
+                for t in response_message.tool_calls
+            ]
+        messages.append(msg_dict)
         
         for tool_call in response_message.tool_calls:
             if tool_call.function.name == "lookup_acnh_item":
