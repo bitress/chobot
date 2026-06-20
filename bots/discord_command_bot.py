@@ -2112,11 +2112,11 @@ class DiscordCommandCog(commands.Cog):
             return
 
         guild = self.bot.get_guild(Config.GUILD_ID)
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
+        if not guild or not await self._is_channel_online(guild, ctx.channel):
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
+
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
         def dodo_check(msg):
             return (
@@ -2146,11 +2146,11 @@ class DiscordCommandCog(commands.Cog):
             return
 
         guild = self.bot.get_guild(Config.GUILD_ID)
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
+        if not guild or not await self._is_channel_online(guild, ctx.channel):
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
+
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
         def visitors_check(msg):
             return (
@@ -2189,11 +2189,11 @@ class DiscordCommandCog(commands.Cog):
             return
 
         guild = self.bot.get_guild(Config.GUILD_ID)
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
+        if not guild or not await self._is_channel_online(guild, ctx.channel):
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
+
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
         def villagers_check(msg):
             return (
@@ -2241,11 +2241,11 @@ class DiscordCommandCog(commands.Cog):
             return
 
         guild = self.bot.get_guild(Config.GUILD_ID)
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
+        if not guild or not await self._is_channel_online(guild, ctx.channel):
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
+
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
         def drop_check(msg):
             return (
@@ -2274,11 +2274,11 @@ class DiscordCommandCog(commands.Cog):
             return
 
         guild = self.bot.get_guild(Config.GUILD_ID)
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
+        if not guild or not await self._is_channel_online(guild, ctx.channel):
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
+
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
         # First check for the queued message
         def inject_queued_check(msg):
@@ -2333,11 +2333,11 @@ class DiscordCommandCog(commands.Cog):
             return
 
         guild = self.bot.get_guild(Config.GUILD_ID)
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        if not island_bot or island_bot.status not in ONLINE_DISCORD_STATUSES:
+        if not guild or not await self._is_channel_online(guild, ctx.channel):
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             return
+
+        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
         # 🔥 SEND COMMAND TO ISLAND BOT (missing in your code)
         command_str = f"!mvi {' '.join(villager_names)}"
@@ -2398,21 +2398,49 @@ class DiscordCommandCog(commands.Cog):
             logger.warning(f"[DISCORD] Timeout waiting for island bot !mvi response in {ctx.channel.name}")
             await ctx.reply(embed=self._create_island_down_embed(ctx))
             
-    def _get_island_bot_for_channel(self, guild: discord.Guild, channel: discord.TextChannel):
-        """Return the island bot member for the given channel, or None if not found."""
-        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
-        if not island_bot_role:
-            return None
-
+    def _get_island_name_for_channel(self, channel: discord.TextChannel) -> str | None:
+        """Return the island name for the given sub/order channel, or None if unknown."""
         chan_clean = clean_text(channel.name)
         for island in list(Config.SUB_ISLANDS) + list(getattr(Config, "ORDER_BOT_ISLANDS", [])):
             if clean_text(island) in chan_clean:
-                target = clean_text(f"chobot {island}")
-                for member in island_bot_role.members:
-                    if member.bot and clean_text(member.display_name) == target:
-                        return member
-                break
+                return island
         return None
+
+    def _get_island_bot_for_channel(self, guild: discord.Guild, channel: discord.TextChannel):
+        """Return the island bot member for the given channel, or None if not found."""
+        island = self._get_island_name_for_channel(channel)
+        if not island:
+            return None
+
+        target = clean_text(f"chobot {island}")
+        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
+
+        if island_bot_role:
+            for member in island_bot_role.members:
+                if member.bot and clean_text(member.display_name) == target:
+                    return member
+
+        for member in guild.members:
+            if member.bot and clean_text(member.display_name) == target:
+                return member
+
+        return None
+
+    async def _is_channel_online(self, guild: discord.Guild, channel: discord.TextChannel) -> bool:
+        """Check if the island channel is online by member status or fallback history."""
+        island_name = self._get_island_name_for_channel(channel)
+        if not island_name:
+            return False
+
+        island_clean = clean_text(island_name)
+        if island_clean in self.order_island_lookup:
+            lookup = self.order_island_lookup
+        elif island_clean in self.free_island_lookup:
+            lookup = self.free_island_lookup
+        else:
+            lookup = self.sub_island_lookup
+
+        return await self._check_island_online(guild, island_name, lookup=lookup)
 
     def _is_sub_island_channel(self, channel) -> bool:
         """Return True if the channel belongs to the sub-islands category."""
@@ -2720,7 +2748,15 @@ class DiscordCommandCog(commands.Cog):
                 continue
             if is_order_island and Config.ORDER_BOT_DISCORD_ID and msg.author.id != Config.ORDER_BOT_DISCORD_ID:
                 continue
-            if DODO_CODE_PATTERN.search(msg.content) or ISLAND_HOST_NAME in msg.content.lower():
+            content = msg.content or ""
+            if (
+                DODO_CODE_PATTERN.search(content)
+                or ISLAND_HOST_NAME in content.lower()
+                or ISLAND_DROP_PATTERN.search(content)
+                or ISLAND_INJECT_QUEUED_PATTERN.search(content)
+                or ISLAND_INJECT_MULTI_QUEUED_PATTERN.search(content)
+                or ISLAND_INJECT_COMPLETE_PATTERN.search(content)
+            ):
                 return True
 
         return False

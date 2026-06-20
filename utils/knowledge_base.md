@@ -68,19 +68,15 @@ instead of sending a code.
 
 **For Free Islands:** You can also find Dodo codes and information about each free island in the <#1500493205672825056> (Dodo Board) channel. This channel displays current codes and details about all 27 free islands, making it easy to browse and choose which island to visit.
 
-## Free and Sub on How do get the Order Command or Drop Command or Inject/Multiple Inject Villagers to the Islands
+## Using the command builder for orders, drops, and villager injects
 
 For Sub
 
-Create your ChoBot command at **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Just click the **Drop** button on any item or DIY you want to add. Click the **Copy Drop** button in the **Drop Bot** section and paste it in any of our sub island channels.
-
-You can request items, DIYs, or villagers using our **command-builder**.
-
-Always copy the **Drop Bot** section for any items or DIY request, and the **Inject Bot** section for your requested villager(s).
+Create your ChoBot command at **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Use the **Drop** button for items or DIYs, and use the **Inject** button for villagers. Copy the generated command from the **Drop Bot** or **Inject Bot** section and paste it into the appropriate sub island channel.
 
 For Free
 
-To place an order, visit **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Simply browse the items or DIYs you want and click the **Order** button on each one to add them to your request. Click the **Copy Order** button in the **Order Bot** section and paste it in <#1175672083183829075> (chorder-bot).
+To place an order, visit **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Browse items or DIYs, click the **Order** button to add them to your request, then copy the command from the **Order Bot** section and paste it in <#1175672083183829075> (chorder-bot).
 
 The order bot will inform you of your position in the queue. To check your queue status, enter `!position` in the order channel. Avoid excessive use of this command; check every few minutes if necessary.
 
@@ -279,26 +275,26 @@ Alternatively, visit a sub island's Discord channel and use the **[Dropping Item
 - Use `!drop` commands while on a sub island to request specific items from ChoBot
 - You can request up to 9 items per line
 - You can place multiple requests across different islands or at different times
-- Need help with commands? Check the <#782872507551055892> (chobot-how) channel
+- Need help with commands? Check the <#782872507551055892> channel
 
 **For Non-Subscribers:**
 - Use the Chorder Bot in the <#1175672083183829075> channel to request items
 - Follow the ordering flow to place custom requests
 - Multiple orders of the same item are allowed
-- Need help with free orderbot ordering? Check the <#1175704849409654804> (chorder-bot-how) channel
-- Do not use <#1175704849409654804> for free island questions; use the Dodo Board <#1500493205672825056> or the specific free island channel instead.
+- Need help with free orderbot ordering? Check the <#1516752902591615046> (chorder-bot-how) channel
+- Do not use <#1516752902591615046> for free island questions; use the Dodo Board <#1500493205672825056> or the specific free island channel instead.
 
 **If an item isn't currently stocked on any island:**
-- Both subscribers and non-subscribers can use the Chorder Bot in <#1175672083183829075> to request it
-- Follow the ordering flow for non-stocked items
+- Subscribers should use `!drop` on a sub island to get the item immediately.
+- Free members ONLY must use the Chorder Bot `!order` in <#1175672083183829075> to request it.
 
 ## Chorder Bot Ordering Guide (For Non-Subscribers)
 
-This guide and the <#1175704849409654804> chorder-bot-how channel are only for
+This guide and the <#1516752902591615046> chorder-bot-how channel are only for
 the free orderbot/ordering flow, not general free island questions.
 
 ### How to Place an Order
-Submit your order using the command `!order <item names>` or `!order [nhi file]` in the designated order channels. Ensure item names are spelled correctly as they appear in-game. For complex orders, consider using ACNHMobileSpawner (tutorial in <#1176749687554982008>).
+Submit your order using the command `!order <item names>` in the designated order channels. Ensure item names are spelled correctly as they appear in-game. For easier ordering commands, drops, and injections, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** — select variations, lookup items/villagers/recipes, copy the generated command, and paste it into the appropriate channel.
 
 **Important:** Do not use plural forms of item names. For example, "blue ornament" is valid (and will automatically stack to the maximum quantity), but "blue ornaments" is not recognized by the bot.
 
@@ -348,10 +344,12 @@ Use these commands in the <#1175771830510948442> channel (NOT in chorder-bot):
 - `!lookup <item names>` — Example: `!lookup golden axe`
 - `!lookuplang <language code> <item names>` — Example: `!lookuplang fr bloupe`
 
-**Note:** Lookup commands are case-sensitive. Check [this item list](https://raw.githubusercontent.com/berichan/ACNHMobileSpawner/master/ACNHMS_Source/Assets/Resources/NHSE/text/en/text_item_en.txt) for correct internal spelling.
+**Note:** Lookup commands are case-sensitive. For easier ordering, dropping, and villager/recipe commands, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to select variations and copy the command directly.
 
 ### Customizing Item Variations
-Use these commands in the lookup channel <#1175771830510948442>, not the order channel:
+For easier lookup and item customization, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to select variations directly and copy the generated command.
+
+Alternatively, to do it manually, use these commands in the lookup channel <#1175771830510948442>, not the order channel:
 1. `!lookup <clothing name>` - get the short HEX item ID. Example: `!lookup dreamy sweater`
 2. `!item <HEX>` - see the color/design variant numbers. Example: `!item 14DA`
 3. `!customize <HEX> <variant number>` - generate the long customized code. Example: `!customize 14DA 1`
@@ -363,7 +361,7 @@ Use these commands in the lookup channel <#1175771830510948442>, not the order c
 3. Copy the long item code (ending in `16A2`) and include it in your order. Example: `!order 00F0000016A2`
 4. Multiple recipes: `!order 00F0000016A2 02A000016A2`
 
-*For an easier way to order DIY recipes, use ACNHMobileSpawner (tutorial in <#1176749687554982008>).*
+*For an easier way to order DIY recipes, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to select recipes, variations, and copy the command directly.*
 
 ## How to Order Villagers
 
@@ -404,7 +402,19 @@ Subscribers can request villagers on sub islands using inject commands.
 6. They will appear as the placeholder visually but will move in as your target character
 7. Invite them to your island
 
-Need help? Check <#782872507551055892> (chobot-how) for subscriber support.
+Need help? Check <#782872507551055892>  for subscriber support.
+
+### Villager Wake Schedules
+
+To ensure that a villager is awake on the island you're injecting into or ordering from, you can use the `!gt` command in the island channels to check the in-game time and refer to the following personality wake schedules. Use `ac!lookup villager <name>` to check their personality:
+- **Snooty:** 8:30 AM to 2:30 AM
+- **Smug:** 7:00 AM to 2:00 AM
+- **Sisterly:** 9:30 AM to 3:00 AM
+- **Normal:** 6:00 AM to 12:00 AM
+- **Peppy:** 7:00 AM to 1:20 AM
+- **Cranky:** 9:00 AM to 3:30 AM
+- **Lazy:** 8:00 AM to 11:00 PM
+- **Jock:** 6:30 AM to 12:30 AM
 
 ### Adding a Villager to Your Order
 Add `villager:<id>` to the end of your order command. Example: `!order nook miles ticket villager:tig06`
@@ -443,7 +453,7 @@ You can also order ONLY a villager: `!order villager:tig06`
 
 **Rule 5:** Ensure you have a good internet connection — at least 15–25 Mbps.
 
-**Rule 6:** You MUST read everything in the <#1175704849409654804> channel to avoid asking questions and spamming the <#1175672083183829075> with incorrect commands.
+**Rule 6:** You MUST read everything in the <#1516752902591615046> channel to avoid asking questions and spamming the <#1175672083183829075> with incorrect commands.
 
 **Rule 7:** DO NOT chat or lookup items in the <#1175672083183829075>. That channel is for orders only. Use the <#1175875039954993306> channel for questions.
 
@@ -611,7 +621,7 @@ the bot will DM you the code.
 
 ## How to Open a Support Ticket
 
-Questions like *How do I open a ticket?*, *I need help so I don’t break a rule*, or *who can I ask?* belong here — not in item search or ordering. For item requests, place orders in <#1175672083183829075>; use <#1175704849409654804> only for free orderbot help.
+Questions like *How do I open a ticket?*, *I need help so I don’t break a rule*, or *who can I ask?* belong here — not in item search or ordering. For item requests, place orders in <#1175672083183829075>; use <#1516752902591615046> only for free orderbot help.
 
 If you need assistance with anything in the community, you can create a support ticket
 in the <#943118146259284008> channel. Before opening a ticket, please note:

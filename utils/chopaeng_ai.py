@@ -302,6 +302,11 @@ def _format_island_groups(free_islands: list[str], sub_islands: list[str]) -> st
     return " and on ".join(parts)
 
 
+def _format_sub_island_mentions(sub_islands: list[str]) -> str:
+    """Return a formatted list of sub island channel names."""
+    return " | ".join(f"#{name.strip().lower()}" for name in sub_islands if name and name.strip())
+
+
 def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
     """Convert a live search API payload into a user-facing, conversational answer.
     
@@ -324,44 +329,44 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
         if free_islands and sub_islands:
             # Found on both free and sub islands
             free_list = " | ".join(name.upper() for name in free_islands)
-            sub_list = " | ".join(f"#{name.lower()}" for name in sub_islands)
+            sub_list = _format_sub_island_mentions(sub_islands)
             if is_villager:
                 return (
                     f"Awesome! **{normalized_query}** {emoji} is available in multiple places! "
-                    f"Free members: check <#1500493205672825056> for Dodo codes to visit {free_list}. "
-                    f"Subscribers: visit {sub_list} directly using island commands!"
+                    f"Free members: use <#1500493205672825056> to get a Dodo code for {free_list}. "
+                    f"Subscribers: go to {sub_list} and type `!senddodo` there."
                 )
             else:
                 return (
                     f"Great news! **{normalized_query}** {emoji} is stocked on multiple islands! "
-                    f"Free members: grab it from {free_list} via <#1500493205672825056>. "
-                    f"Subscribers: you can also find it on {sub_list}!"
+                    f"Free members: use <#1500493205672825056> to get a Dodo code for {free_list}. "
+                    f"Subscribers: go to {sub_list} and type `!senddodo` there."
                 )
         elif free_islands:
             # Only on free islands
             free_list = " | ".join(name.upper() for name in free_islands)
             if is_villager:
                 return (
-                    f"Perfect! **{normalized_query}** {emoji} is here! Visit {free_list} "
-                    f"for a Dodo code in <#1500493205672825056>"
+                    f"Perfect! **{normalized_query}** {emoji} is here on {free_list}. "
+                    f"Go to the Dodo Board <#1500493205672825056> to get the Dodo code and visit!"
                 )
             else:
                 return (
                     f"Score! **{normalized_query}** {emoji} is stocked right now on {free_list}. "
-                    f"Head to <#1500493205672825056> to grab a Dodo code and visit!"
+                    f"Go to the Dodo Board <#1500493205672825056> to get the Dodo code and visit!"
                 )
         else:
             # Only on sub islands
-            sub_list = " | ".join(f"#{name.lower()}" for name in sub_islands)
+            sub_list = _format_sub_island_mentions(sub_islands)
             if is_villager:
                 return (
-                    f"Found it! **{normalized_query}** {emoji} is currently on {sub_list}. "
-                    f"As a subscriber, use the island commands to visit!"
+                    f"Found it! **{normalized_query}** {emoji} is on {sub_list}. "
+                    f"Go to the island channel and type `!senddodo` there."
                 )
             else:
                 return (
-                    f"Found it! **{normalized_query}** {emoji} is available on {sub_list} "
-                    f"for subscribers. Use the island commands to grab it!"
+                    f"Found it! **{normalized_query}** {emoji} is available on {sub_list}. "
+                    f"Go to the island channel and type `!senddodo` there."
                 )
 
     if suggestions and suggestions[0]:
@@ -637,7 +642,8 @@ def _is_vague_request(text: str) -> bool:
 
 
 _VARIANT_ORDERING_RESPONSE = (
-    "To order a clothing color/design, use the lookup channel <#1175771830510948442> first:\n"
+    "For easier lookup and item customization, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**!\n\n"
+    "Alternatively, to do it manually, use the lookup channel <#1175771830510948442> first:\n"
     "1. `!lookup <clothing name>` - get the short HEX item ID.\n"
     "2. `!item <HEX>` - see the variant numbers.\n"
     "3. `!customize <HEX> <variant number>` - get the long customized code.\n"
@@ -654,7 +660,7 @@ _CHANNEL_ALIASES = {
     "set-nick": "1081147108612124742",
     "sub-rules": "783677194576330792",
     "chobot-how": "782872507551055892",
-    "chorder-bot-how": "1175704849409654804",
+    "chorder-bot-how": "1516752902591615046",
     "chorder-bot": "1175672083183829075",
     "ordering": "1175672083183829075",
     "lookup": "1175771830510948442",
@@ -691,93 +697,6 @@ def _is_variant_ordering_question(text: str) -> bool:
     has_item_context = any(word in t for word in ("clothes", "clothing", "shirt", "dress", "hat", "shoes", "item"))
     return has_variant and has_order_intent and has_item_context
 
-
-def _is_order_inject_drop_question(text: str) -> bool:
-    """Return True if the user is asking about ordering, dropping, or injecting.
-    
-    Avoids false positives like 'drop by' or 'drop off' by requiring "order", "drop",
-    or "inject" to appear in command context or specific phrases.
-    """
-    t = (text or "").lower()
-    
-    # Explicit command references: !order, !drop, !injectvillager, !mvi
-    if re.search(r'!(?:order|drop|injectvillager|mvi)\b', t):
-        return True
-    
-    # Command builder phrases should trigger the ordering notice too.
-    if re.search(r'\b(?:command(?:\s|[-\"])builder|build(?:ing)?\s+(?:a\s+)?command)\b', t):
-        return True
-    
-    # Phrases like "how do i order", "need help with ordering", etc.
-    if re.search(r'\b(?:how\s+(?:do|can)\s+i|how\s+to|need\s+help|help\s+with)\b.*?(?:order|drop|inject)', t):
-        return True
-    
-    # Simple: "order item", "drop code", "inject villager" at end of sentence
-    if re.search(r'\b(?:order|drop|inject)\b(?:\s+(?:item|villager|code|items|villagers|codes))?[\s.!?]*$', t):
-        return True
-    
-    return False
-
-
-_COMMAND_BUILDER_URL = "https://www.chopaeng.com/command-builder"
-_COMMAND_BUILDER_LINK = f"**[chopaeng.com/command-builder]({_COMMAND_BUILDER_URL})**"
-_ORDER_CHANNEL_MENTION = "<#1175672083183829075>"
-
-_COMMAND_BUILDER_NOTICE_SUB = (
-    f"Use {_COMMAND_BUILDER_LINK} for Sub requests. "
-    "Click **Drop** for item/DIY requests, then copy from the **Drop Bot** section and paste into any sub island channel. "
-    "For villagers, use the **Inject Bot** section."
-)
-
-_COMMAND_BUILDER_NOTICE_FREE = (
-    f"Use {_COMMAND_BUILDER_LINK} for Free requests. "
-    "Click **Order** for items or DIYs, then copy from the **Order Bot** section and paste into "
-    f"{_ORDER_CHANNEL_MENTION}. Check `!position` only every few minutes."
-)
-
-_COMMAND_BUILDER_NOTICE_BOTH = (
-    f"{_COMMAND_BUILDER_NOTICE_SUB}\n\n{_COMMAND_BUILDER_NOTICE_FREE}"
-)
-
-
-def _command_builder_flow(text: str) -> str:
-    """Classify whether a command-builder question is Sub, Free, or both."""
-    t = (text or "").lower()
-    sub_signals = [
-        "drop",
-        "inject",
-        "injectvillager",
-        "mvi",
-        "drop bot",
-        "inject bot",
-        "sub island",
-        "sub",
-        "subscriber",
-    ]
-    free_signals = [
-        "free",
-        "orderbot",
-        "order bot",
-        "chorder",
-        "order ",
-    ]
-    has_sub = any(signal in t for signal in sub_signals)
-    has_free = any(signal in t for signal in free_signals)
-
-    if has_sub and not has_free:
-        return "sub"
-    if has_free and not has_sub:
-        return "free"
-    return "both"
-
-
-def _build_command_builder_notice_for_question(text: str) -> str:
-    flow = _command_builder_flow(text)
-    if flow == "sub":
-        return _COMMAND_BUILDER_NOTICE_SUB
-    if flow == "free":
-        return _COMMAND_BUILDER_NOTICE_FREE
-    return _COMMAND_BUILDER_NOTICE_BOTH
 
 
 _FAQ_RESPONSES: list[tuple[tuple[str, ...], str]] = [
@@ -1134,14 +1053,12 @@ _AI_SYSTEM_PROMPT = (
 
     "# REQUEST-SPECIFIC BEHAVIOR\n"
     "- If the user asks how to get items:\n"
-    "  * **For subscribers:** Explain using `!drop` on sub islands while on the island.\n"
-    "  * **For non-subscribers or unstocked items:** Explain the Chorder Bot workflow: use "
-    "`!order <item names>` in <#1175672083183829075>, check queue with `!position`, and follow "
-    "instructions when their turn arrives. Emphasize that only the person who placed the order "
-    "can visit the island.\n"
+    "  * **For subscribers:** Explain using `!drop` on sub islands while on the island. Note that `!drop` is ONLY for subscribers! Natively recommend that they use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to create drop commands easily.\n"
+    "  * **For free members:** Explain the Chorder Bot workflow. Note that `!order` is ONLY for free members! Tell them to use "
+    "`!order <item names>` in <#1175672083183829075>. They will NOT receive a Dodo code from this flow; instead, just link them to the Dodo Board <#1500493205672825056>. Recommend using **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to build their order command.\n"
     "- If the user asks how to request a villager, explain `!injectvillager <house#> <name>` "
-    "or `!mvi <name1> <name2> ...` as appropriate, remind them not to be on the island during "
-    "injection, and point them to <#782872507551055892> for extra help.\n"
+    "or `!mvi <name1> <name2> ...`. Emphasize that these inject commands are ONLY for subscribers! Remind them not to be on the island during "
+    "injection, and point them to <#782872507551055892> for extra help. Recommend using **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to easily create inject commands.\n"
     "- If the user asks about Sanrio/in-boxes villagers, use the step-by-step guide in the "
     "reference block: inject a placeholder first (before flying in), then inject the target "
     "character once physically on the island.\n"
@@ -1161,13 +1078,15 @@ _AI_SYSTEM_PROMPT = (
     "- If the user asks about villager schedules, provide the personality-based wake schedule "
     "from the reference guides. Use `ac!lookup villager <name>` to check personality.\n"
     "- If the user asks about free island Dodo codes, status, or general free island help, mention the "
-    "Dodo Board in <#1500493205672825056> or direct them to use `!senddodo` in the island channel. "
+    "Dodo Board in <#1500493205672825056>. Do not tell them to use `!senddodo` for free islands. "
     "Do not point free island questions to <#1175704849409654804>; that channel is only for free orderbot help.\n"
+    "- When mentioning sub islands by name, format them as #islandname (e.g. #giliw). "
+    "When mentioning free islands by name, do NOT use # (e.g. Bathala). For free island links, always direct users to the Dodo Board <#1500493205672825056>.\n"
     "- If the user asks for commands, give a concise grouped command list. For detailed help, "
     "subscribers use island channels; non-subscribers reference the Chorder Bot guides.\n\n"
 
     "# HARD RULES\n"
-    "- Never reveal or guess Dodo codes; direct users to `!senddodo` in the island channel.\n"
+    "- Never reveal or guess Dodo codes. For sub islands, direct users to `!senddodo` in the island channel. For free islands, direct users to the Dodo Board <#1500493205672825056>.\n"
     "- Never recommend violating community rules (sharing codes, littering, AFK, etc.).\n"
     "- Never fabricate island stock, villager locations, or visitor counts — only use "
     "data from the Live Data section and the community reference block below."
@@ -1217,9 +1136,7 @@ def _build_full_prompt_legacy(question: str, history: Optional[list[dict]] = Non
         "AI: To get a Dodo code, go to the specific island's channel in our Discord "
         "server and type `!senddodo` or `!sd`. The bot will DM the code to you!\n\n"
         "User: how do I request an item\n"
-        "AI: If the item isn't currently stocked on an island, use the ChoBot / ordering "
-        "flow from the server's ordering instructions. For extra help with requests, check "
-        "channel <#1175704849409654804>.\n\n"
+        "AI: Free members can use the Chorder Bot `!order` flow in <#1175672083183829075>. Subscribers can simply use the `!drop` command directly on any sub island! For extra help with free ordering, check channel <#1175704849409654804>.\n\n"
         "User: how do I order clothes in different variants?\n"
         "AI: Use the lookup channel <#1175771830510948442> first: `!lookup <clothing name>` to get "
         "the HEX ID, `!item <HEX>` to see variant numbers, then `!customize <HEX> <variant number>` "
@@ -1373,8 +1290,6 @@ async def get_ai_answer(
         return _GREETING_RESPONSE
 
     q = question.strip()
-    is_ordering_q = _is_order_inject_drop_question(q)
-
     # Respond to greetings warmly without hitting the KB or API.
     if _is_greeting(q):
         if conversation_key:
@@ -1389,31 +1304,29 @@ async def get_ai_answer(
 
     history = conversation_store.get(conversation_key) if conversation_key else []
 
-    # Helper: Add command-builder notice if needed (only once, at end).
-    def _maybe_append_notice(resp: str) -> str:
-        if is_ordering_q:
-            notice = _build_command_builder_notice_for_question(q)
-            if notice and notice not in resp:
-                return resp + "\n\n" + notice
+    def _append_support_note(resp: str) -> str:
+        support_note = "If you need support, ask the moderators in <#943118146259284008>."
+        if support_note not in resp:
+            return resp + "\n\n" + support_note
         return resp
     
     # This workflow is command-sensitive, so answer directly instead of relying on LLM wording.
     if _is_variant_ordering_question(q):
-        resp = _maybe_append_notice(_VARIANT_ORDERING_RESPONSE)
+        resp = _append_support_note(_VARIANT_ORDERING_RESPONSE)
         if conversation_key:
             conversation_store.add(conversation_key, q, resp)
         return _auto_link_channels(resp)
 
     mod_ops_answer = _direct_mod_ops_answer(q, channel_context)
     if mod_ops_answer:
-        resp = _maybe_append_notice(mod_ops_answer)
+        resp = _append_support_note(mod_ops_answer)
         if conversation_key:
             conversation_store.add(conversation_key, q, resp)
         return _auto_link_channels(resp)
 
     direct_faq_answer = _direct_faq_answer(q)
     if direct_faq_answer:
-        resp = _maybe_append_notice(direct_faq_answer)
+        resp = _append_support_note(direct_faq_answer)
         if conversation_key:
             conversation_store.add(conversation_key, q, resp)
         return _auto_link_channels(resp)
@@ -1427,7 +1340,7 @@ async def get_ai_answer(
 
     live_search_answer = await _try_live_search_answer(q)
     if live_search_answer:
-        resp = _maybe_append_notice(live_search_answer)
+        resp = _append_support_note(live_search_answer)
         if conversation_key:
             conversation_store.add(conversation_key, q, resp)
         return _auto_link_channels(resp)
@@ -1472,7 +1385,7 @@ async def get_ai_answer(
                     is_mod_user=is_mod_user,
                 )
 
-            resp = _maybe_append_notice(answer)
+            resp = _append_support_note(answer)
             if conversation_key:
                 conversation_store.add(conversation_key, q, resp)
             return _auto_link_channels(resp)
@@ -1480,7 +1393,7 @@ async def get_ai_answer(
             logger.warning(f"[ChopaengAI] {name} failed ({e}), trying next fallback.")
 
     answer = _keyword_answer(q, history=history)
-    resp = _maybe_append_notice(answer)
+    resp = _append_support_note(answer)
     if conversation_key:
         conversation_store.add(conversation_key, q, resp)
     return _auto_link_channels(resp)
