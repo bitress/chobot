@@ -1897,6 +1897,7 @@ class DiscordCommandCog(commands.Cog):
             is_subscriber=_is_subscriber_member(ctx.author),
             is_mod_user=_is_mod_member(ctx.author),
             accessible_islands=_get_accessible_islands(ctx.author),
+            user_name=ctx.author.display_name,
         )
 
         await ctx.reply(f"{answer}")

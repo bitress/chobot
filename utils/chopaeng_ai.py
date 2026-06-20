@@ -847,181 +847,7 @@ def _wb_match(keyword: str, text: str) -> bool:
     return bool(re.search(rf'\b{re.escape(keyword)}\b', text))
 
 
-def _extract_keywords(text: str) -> list[str]:
-    """Return topic-bearing words for KB retrieval and fallback matching."""
-    all_words = re.findall(r'\b\w{3,}\b', text.lower())
-    return [w for w in all_words if w not in _STOPWORDS] or all_words
 
-
-def _score_kb_sections(question: str) -> list[tuple[int, float, str, str]]:
-    """Score KB sections by keyword relevance, returning best matches first."""
-    keywords = _extract_keywords(question)
-    if not keywords:
-        return []
-
-    scored: list[tuple[int, float, str, str]] = []
-    phrase = question.lower().strip()
-    for heading, body in _KB_SECTIONS:
-        heading_lower = heading.lower()
-        body_lower = body.lower()
-        score = (
-            sum(3 for kw in keywords if _wb_match(kw, heading_lower))
-            + sum(1 for kw in keywords if _wb_match(kw, body_lower))
-        )
-        if phrase and len(phrase) > 8:
-            if phrase in heading_lower:
-                score += 4
-            if phrase in body_lower:
-                score += 2
-        if score > 0:
-            word_count = max(len(body.split()), 1)
-            scored.append((score, score / word_count, heading, body))
-
-    return sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)
-
-
-def _retrieve_kb_context(question: str, limit: int = 5) -> str:
-    """Return only the most relevant KB sections for the current question."""
-    sections = _score_kb_sections(question)[:limit]
-    if not sections:
-        return ""
-
-    lines: list[str] = []
-    for _score, _density, heading, body in sections:
-        lines.append(f"## {heading}\n{body}")
-    return "\n\n".join(lines)
-
-
-def _trim_to_sentences(text: str, n: int = 3) -> str:
-    """Return at most *n* complete sentences from *text*.
-
-    Splits on sentence-ending punctuation followed by whitespace, but skips
-    splits where the period is preceded by a digit (numbered list markers like
-    ``1. ``, ``2. ``).
-    """
-    # Use a 2-char lookbehind: char before '.' must be a non-digit letter.
-    sentences = re.split(r'(?<=[^\d\s][.!?])\s+', text.strip())
-    trimmed = ' '.join(sentences[:n])
-    return trimmed
-
-
-def _auto_link_channels(text: str) -> str:
-    """Automatically convert raw 17-20 digit Discord channel IDs into <#ID> links.
-    
-    Skips IDs that are already part of a mention (<#ID>, <@ID>, etc.) or look like
-    part of a URL or path.
-    """
-    if not text:
-        return text
-    text = _repair_mojibake(text)
-
-    # Normalize common LLM-style channel attempts like "#<#123>" or "#123".
-    text = re.sub(r'(?<!<)#(<#\d{17,20}>)', r'\1', text)
-    text = re.sub(r'(?<![<\w])#(\d{17,20})\b', r'<#\1>', text)
-    for channel_name, channel_id in _CHANNEL_ALIASES.items():
-        # Prefer explicit hashtag usages like `#channel-name`.
-        text = re.sub(
-            rf'(?<![<\w])#(?:{re.escape(channel_name)})(?![\w-])',
-            f'<#{channel_id}>',
-            text,
-            flags=re.IGNORECASE,
-        )
-
-    # Also link plain safe channel alias mentions (e.g. "chorder-bot") so short
-    # references get turned into proper channel mentions. This intentionally avoids
-    # linking generic words like "lookup" or command names such as "!lookup".
-    _PLAIN_CHANNEL_ALIASES = {
-        "chorder-bot": _CHANNEL_ALIASES["chorder-bot"],
-        "chorder-bot-how": _CHANNEL_ALIASES["chorder-bot-how"],
-        "chobot-how": _CHANNEL_ALIASES["chobot-how"],
-    }
-    
-    # Include all sub islands and unique aliases in plain linking
-    _UNSAFE_PLAIN_ALIASES = {"lookup", "ordering", "set-nick", "server-nickname", "sub-rules", "i-report"}
-    for alias_name, alias_id in _CHANNEL_ALIASES.items():
-        if alias_name not in _UNSAFE_PLAIN_ALIASES and alias_name not in _PLAIN_CHANNEL_ALIASES:
-            _PLAIN_CHANNEL_ALIASES[alias_name] = alias_id
-
-    for channel_name, channel_id in _PLAIN_CHANNEL_ALIASES.items():
-        text = re.sub(
-            rf'(?<![<\w!]){re.escape(channel_name)}(?![\w-])',
-            f'<#{channel_id}>',
-            text,
-            flags=re.IGNORECASE,
-        )
-    
-    # Matches URLs, existing Discord tags <...>, or markdown links [text](url) to skip them.
-    # Group 2 matches the raw 17-20 digit channel ID we want to replace.
-    pattern = r'(https?://\S+|<[^>]+>|\[.*?\]\(.*?\))|(\b\d{17,20}\b)'
-    
-    def repl(m: re.Match) -> str:
-        if m.group(1):
-            return str(m.group(1))
-        return f"<#{m.group(2)}>"
-        
-    return re.sub(pattern, repl, text)
-
-
-def _keyword_answer(question: str, history: Optional[list[dict]] = None) -> str:
-    """Return a clean answer by matching knowledge base sections.
-
-    Scores each section by how many query keywords appear in both the heading
-    and body text.  Heading matches are weighted 2× to prefer topically
-    relevant sections.
-
-    When *history* is provided and the question is short / vague (≤ 5 words),
-    the last user message is prepended so the keyword scorer has more context.
-    """
-    # Augment a short follow-up with the most recent user turn for better matching.
-    effective_question = question
-    if history and len(question.split()) <= 5:
-        last_user = next(
-            (t["content"] for t in reversed(history) if t["role"] == "user"),
-            None,
-        )
-        if last_user:
-            effective_question = f"{last_user} {question}"
-
-    keywords = _extract_keywords(effective_question)
-
-    if not keywords:
-        return (
-            "I'm not sure about that. Try asking about islands, items, "
-            "commands, or how the Chopaeng community works!"
-        )
-
-    scored = _score_kb_sections(effective_question)
-    if scored:
-        return _trim_to_sentences(scored[0][3])
-
-    # Score each section: heading matches count double.
-    # On ties, prefer shorter (more focused) sections — keyword density breaks ties.
-    best_score = 0
-    best_density = 0.0
-    best_text = ''
-    for heading, body in _KB_SECTIONS:
-        heading_lower = heading.lower()
-        body_lower = body.lower()
-        score = (
-            sum(2 for kw in keywords if _wb_match(kw, heading_lower))
-            + sum(1 for kw in keywords if _wb_match(kw, body_lower))
-        )
-        if score > 0:
-            # Density = score / word-count; higher density means more relevant.
-            word_count = max(len(body.split()), 1)
-            density = score / word_count
-            if score > best_score or (score == best_score and density > best_density):
-                best_score = score
-                best_density = density
-                best_text = body
-
-    if best_score > 0:
-        return _trim_to_sentences(best_text)
-
-    return (
-        "I'm not sure about that. Try asking about islands, items, "
-        "commands, or how the Chopaeng community works!"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1195,6 +1021,7 @@ def _build_model_prompt(
     is_subscriber: bool = False,
     is_mod_user: bool = False,
     accessible_islands: Optional[list[str]] = None,
+    user_name: Optional[str] = None,
 ) -> str:
     """Build the compact LLM prompt using retrieved KB sections only."""
     conversation_context = ""
@@ -1248,14 +1075,12 @@ def _build_model_prompt(
                 "If they are asking about an item or villager on a subscriber island, tell them they need a subscription to access it, or direct them to free island alternatives.\n"
             )
 
-    kb_context = _retrieve_kb_context(question)
     kb_section = (
         "### Relevant Community Guides & Rules (internal reference - do not call this a 'knowledge base' to users) ###\n"
-        f"{kb_context}\n"
-        if kb_context
-        else "### Relevant Community Guides & Rules ###\nNo matching guide section was found.\n"
+        f"{CHOPAENG_KNOWLEDGE}\n"
     )
 
+    user_greeting = f"**Note:** The user's name is {user_name}. Please address them warmly by name in your response!\n" if user_name else ""
     prompt = (
         "# EXAMPLES\n"
         "User: hi\n"
@@ -1280,7 +1105,9 @@ def _build_model_prompt(
         f"{role_section}"
         f"{access_section}"
         f"{conversation_context}"
-        f"\n### Current Question ###\n{question}"
+        f"\n### Current Question ###\n"
+        f"{user_greeting}"
+        f"{question}"
     )
     return f"{_AI_SYSTEM_PROMPT}\n\n{prompt}" if include_system_prompt else prompt
 
@@ -1292,6 +1119,7 @@ def _build_prompt(
     is_subscriber: bool = False,
     is_mod_user: bool = False,
     accessible_islands: Optional[list[str]] = None,
+    user_name: Optional[str] = None,
 ) -> str:
     """Backward-compatible wrapper for the compact retrieved prompt builder."""
     return _build_model_prompt(
@@ -1454,6 +1282,8 @@ async def _gemini_answer(
     channel_context: Optional[str] = None,
     is_subscriber: bool = False,
     is_mod_user: bool = False,
+    accessible_islands: Optional[list[str]] = None,
+    user_name: Optional[str] = None,
 ) -> str:
     """Call the Gemini API asynchronously and return the answer."""
     import google.generativeai as genai  # lazy import
@@ -1468,6 +1298,7 @@ async def _gemini_answer(
         is_subscriber=is_subscriber,
         is_mod_user=is_mod_user,
         accessible_islands=accessible_islands,
+        user_name=user_name,
     )
 
     # Gemini's generate_content is synchronous; run it in a thread to avoid blocking.
@@ -1490,6 +1321,7 @@ async def _openai_answer(
     is_subscriber: bool = False,
     is_mod_user: bool = False,
     accessible_islands: Optional[list[str]] = None,
+    user_name: Optional[str] = None,
 ) -> str:
     """Call the OpenAI Chat Completions API asynchronously and return the answer."""
     from openai import OpenAI  # lazy import
@@ -1506,20 +1338,77 @@ async def _openai_answer(
         is_subscriber=is_subscriber,
         is_mod_user=is_mod_user,
         accessible_islands=accessible_islands,
+        user_name=user_name,
     )
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup_acnh_item",
+                "description": "Look up an Animal Crossing item by name to get variants, colors, and hex codes.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "The exact name of the item to look up, e.g. 'cute sofa'"
+                        }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }
+    ]
+
+    messages = [
+        {"role": "system", "content": _AI_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
 
     loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: client.chat.completions.create(
-            model=model,
-            temperature=0.4,
-            messages=[
-                {"role": "system", "content": _AI_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        ),
-    )
-
-    text = (response.choices[0].message.content or "").strip()
+    
+    # Tool call execution loop (up to 3 iterations)
+    for _ in range(3):
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.chat.completions.create(
+                model=model,
+                temperature=0.4,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            ),
+        )
+        
+        response_message = response.choices[0].message
+        
+        if not response_message.tool_calls:
+            text = (response_message.content or "").strip()
+            return text if text else _keyword_answer(question)
+            
+        messages.append(response_message)
+        
+        for tool_call in response_message.tool_calls:
+            if tool_call.function.name == "lookup_acnh_item":
+                import json
+                from utils.nookipedia import NookipediaClient
+                
+                try:
+                    args = json.loads(tool_call.function.arguments)
+                    item_name = args.get("name")
+                    item_data = await NookipediaClient.get_item_info(item_name)
+                    tool_result = json.dumps(item_data) if item_data else "Item not found on Nookipedia."
+                except Exception as e:
+                    tool_result = f"Error looking up item: {e}"
+                    
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": "lookup_acnh_item",
+                    "content": tool_result,
+                })
+                
+    # Fallback if too many tool loops
+    text = (response_message.content or "").strip()
     return text if text else _keyword_answer(question)
