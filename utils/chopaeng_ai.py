@@ -303,8 +303,19 @@ def _format_island_groups(free_islands: list[str], sub_islands: list[str]) -> st
 
 
 def _format_sub_island_mentions(sub_islands: list[str]) -> str:
-    """Return a formatted list of sub island channel names."""
-    return " | ".join(f"#{name.strip().lower()}" for name in sub_islands if name and name.strip())
+    """Return a formatted list of sub island channel mentions."""
+    mentions = []
+    for name in sub_islands:
+        if not name or not name.strip():
+            continue
+        clean_name = name.strip().lower()
+        if clean_name in _CHANNEL_ALIASES:
+            mentions.append(f"<#{_CHANNEL_ALIASES[clean_name]}>")
+        else:
+            mentions.append(f"#{clean_name}")
+    if len(mentions) > 1:
+        return ", ".join(mentions[:-1]) + f" or {mentions[-1]}"
+    return "".join(mentions) if mentions else ""
 
 
 def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
@@ -332,41 +343,49 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
             sub_list = _format_sub_island_mentions(sub_islands)
             if is_villager:
                 return (
-                    f"Awesome! **{normalized_query}** {emoji} is available in multiple places! "
-                    f"Free members: use <#1500493205672825056> to get a Dodo code for {free_list}. "
-                    f"Subscribers: go to {sub_list} and type `!senddodo` there."
+                    f"Awesome! **{normalized_query}** {emoji} is available in multiple places!\n\n"
+                    f"**Free members**: use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
+                    f"**Subscribers**: go to {sub_list} and type `!senddodo` there."
                 )
             else:
                 return (
-                    f"Great news! **{normalized_query}** {emoji} is stocked on multiple islands! "
-                    f"Free members: use <#1500493205672825056> to get a Dodo code for {free_list}. "
-                    f"Subscribers: go to {sub_list} and type `!senddodo` there."
+                    f"Great news! **{normalized_query}** {emoji} is stocked on multiple islands!\n\n"
+                    f"**Free members**: use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
+                    f"**Subscribers**: go to {sub_list} and type `!senddodo` there."
                 )
         elif free_islands:
             # Only on free islands
             free_list = " | ".join(name.upper() for name in free_islands)
             if is_villager:
                 return (
-                    f"Perfect! **{normalized_query}** {emoji} is here on {free_list}. "
+                    f"Perfect! **{normalized_query}** {emoji} is here on {free_list}.\n"
                     f"Go to the Dodo Board <#1500493205672825056> to get the Dodo code and visit!"
                 )
             else:
                 return (
-                    f"Score! **{normalized_query}** {emoji} is stocked right now on {free_list}. "
+                    f"Score! **{normalized_query}** {emoji} is stocked right now on {free_list}.\n"
                     f"Go to the Dodo Board <#1500493205672825056> to get the Dodo code and visit!"
                 )
         else:
             # Only on sub islands
             sub_list = _format_sub_island_mentions(sub_islands)
+            island_names = ", ".join(name.capitalize() for name in sub_islands[:-1]) + (f" and {sub_islands[-1].capitalize()}" if len(sub_islands) > 1 else sub_islands[0].capitalize()) if sub_islands else ""
+            
             if is_villager:
                 return (
-                    f"Found it! **{normalized_query}** {emoji} is on {sub_list}. "
-                    f"Go to the island channel and type `!senddodo` there."
+                    f"Hey there! 🌸 **{normalized_query}** {emoji} is waiting for you on the subscriber‑only islands {island_names}.\n\n"
+                    f"Just hop into their Discord channels ({sub_list}) and type `!senddodo` (or `!sd`) to get a Dodo code DM’d to you.\n"
+                    f"Remember, these islands are for subscribers only, so make sure your subscription is active.\n"
+                    f"Happy hunting! 😊🏝️\n\n"
+                    f"If you need support, ask the moderators in <#943118146259284008>."
                 )
             else:
                 return (
-                    f"Found it! **{normalized_query}** {emoji} is available on {sub_list}. "
-                    f"Go to the island channel and type `!senddodo` there."
+                    f"Hey there! 🌸 For **{normalized_query}** {emoji}, check out the subscriber‑only islands {island_names}.\n\n"
+                    f"Just hop into their Discord channels ({sub_list}) and type `!senddodo` (or `!sd`) to get a Dodo code DM’d to you.\n"
+                    f"Remember, these islands are for subscribers only, so make sure your subscription is active.\n"
+                    f"Happy hunting for those goodies! 😊🏝️\n\n"
+                    f"If you need support, ask the moderators in <#943118146259284008>."
                 )
 
     if suggestions and suggestions[0]:
@@ -916,6 +935,13 @@ def _auto_link_channels(text: str) -> str:
         "chorder-bot-how": _CHANNEL_ALIASES["chorder-bot-how"],
         "chobot-how": _CHANNEL_ALIASES["chobot-how"],
     }
+    
+    # Include all sub islands and unique aliases in plain linking
+    _UNSAFE_PLAIN_ALIASES = {"lookup", "ordering", "set-nick", "server-nickname", "sub-rules", "i-report"}
+    for alias_name, alias_id in _CHANNEL_ALIASES.items():
+        if alias_name not in _UNSAFE_PLAIN_ALIASES and alias_name not in _PLAIN_CHANNEL_ALIASES:
+            _PLAIN_CHANNEL_ALIASES[alias_name] = alias_id
+
     for channel_name, channel_id in _PLAIN_CHANNEL_ALIASES.items():
         text = re.sub(
             rf'(?<![<\w!]){re.escape(channel_name)}(?![\w-])',
