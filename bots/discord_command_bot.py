@@ -3905,6 +3905,8 @@ class DiscordCommandBot(commands.Bot):
                     channel_context=channel_name,
                     is_subscriber=_is_subscriber_member(message.author),
                     is_mod_user=_is_mod_member(message.author),
+                    accessible_islands=_get_accessible_islands(message.author),
+                    user_name=message.author.display_name,
                 )
             await message.reply(f"{answer}")
             logger.info(f"[DISCORD] Mention-ask by {message.author.name}: {question[:80]}")

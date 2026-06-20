@@ -44,6 +44,65 @@ _LIVE_FETCH_FAILURE_BACKOFF = 30  # seconds
 _http_session = None
 
 
+def _auto_link_channels(text: str) -> str:
+    """Automatically convert raw 17-20 digit Discord channel IDs into <#ID> links.
+    
+    Skips IDs that are already part of a mention (<#ID>, <@ID>, etc.) or look like
+    part of a URL or path.
+    """
+    if not text:
+        return text
+    text = _repair_mojibake(text)
+
+    # Normalize common LLM-style channel attempts like "#<#123>" or "#123".
+    text = re.sub(r'(?<!<)#(<#\d{17,20}>)', r'\1', text)
+    text = re.sub(r'(?<![<\w])#(\d{17,20})\b', r'<#\1>', text)
+    for channel_name, channel_id in _CHANNEL_ALIASES.items():
+        # Prefer explicit hashtag usages like `#channel-name`.
+        text = re.sub(
+            rf'(?<![<\w])#(?:{re.escape(channel_name)})(?![\w-])',
+            f'<#{channel_id}>',
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    # Also link plain safe channel alias mentions (e.g. "chorder-bot") so short
+    # references get turned into proper channel mentions. This intentionally avoids
+    # linking generic words like "lookup" or command names such as "!lookup".
+    _PLAIN_CHANNEL_ALIASES = {
+        "chorder-bot": _CHANNEL_ALIASES.get("chorder-bot"),
+        "chorder-bot-how": _CHANNEL_ALIASES.get("chorder-bot-how"),
+        "chobot-how": _CHANNEL_ALIASES.get("chobot-how"),
+    }
+    
+    # Include all sub islands and unique aliases in plain linking
+    _UNSAFE_PLAIN_ALIASES = {"lookup", "ordering", "set-nick", "server-nickname", "sub-rules", "i-report"}
+    for alias_name, alias_id in _CHANNEL_ALIASES.items():
+        if alias_name not in _UNSAFE_PLAIN_ALIASES and alias_name not in _PLAIN_CHANNEL_ALIASES:
+            _PLAIN_CHANNEL_ALIASES[alias_name] = alias_id
+
+    for channel_name, channel_id in _PLAIN_CHANNEL_ALIASES.items():
+        if not channel_name or not channel_id:
+            continue
+        text = re.sub(
+            rf'(?<![<\w!]){re.escape(channel_name)}(?![\w-])',
+            f'<#{channel_id}>',
+            text,
+            flags=re.IGNORECASE,
+        )
+    
+    # Matches URLs, existing Discord tags <...>, or markdown links [text](url) to skip them.
+    # Group 2 matches the raw 17-20 digit channel ID we want to replace.
+    pattern = r'(https?://\S+|<[^>]+>|\[.*?\]\(.*?\))|(\b\d{17,20}\b)'
+    
+    def repl(m: re.Match) -> str:
+        if m.group(1):
+            return str(m.group(1))
+        return f"<#{m.group(2)}>"
+        
+    return re.sub(pattern, repl, text)
+
+
 def _repair_mojibake(text: str) -> str:
     """Repair common UTF-8-as-Windows-1252 artifacts seen in legacy docs."""
     if not text:
@@ -1145,6 +1204,7 @@ async def get_ai_answer(
     is_subscriber: bool = False,
     is_mod_user: bool = False,
     accessible_islands: Optional[list[str]] = None,
+    user_name: Optional[str] = None,
 ) -> str:
     """
     Answer a question about Chopaeng.
@@ -1248,6 +1308,8 @@ async def get_ai_answer(
                     channel_context=channel_context,
                     is_subscriber=is_subscriber,
                     is_mod_user=is_mod_user,
+                    accessible_islands=accessible_islands,
+                    user_name=user_name,
                 )
             else:
                 answer = await _gemini_answer(
@@ -1258,6 +1320,8 @@ async def get_ai_answer(
                     channel_context=channel_context,
                     is_subscriber=is_subscriber,
                     is_mod_user=is_mod_user,
+                    accessible_islands=accessible_islands,
+                    user_name=user_name,
                 )
 
             resp = _append_support_note(answer)
