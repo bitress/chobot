@@ -1194,6 +1194,7 @@ def _build_model_prompt(
     include_system_prompt: bool = False,
     is_subscriber: bool = False,
     is_mod_user: bool = False,
+    accessible_islands: Optional[list[str]] = None,
 ) -> str:
     """Build the compact LLM prompt using retrieved KB sections only."""
     conversation_context = ""
@@ -1230,6 +1231,22 @@ def _build_model_prompt(
             "\n### User Access Context ###\n"
             "The user asking this question is a subscriber/member and may have access to subscriber-only islands and commands.\n"
         )
+        
+    access_section = ""
+    if accessible_islands is not None:
+        if accessible_islands:
+            island_names = ", ".join(accessible_islands)
+            access_section = (
+                "\n### User Island Access ###\n"
+                f"Based on their Discord roles, the user CAN access these subscriber islands: {island_names}.\n"
+                "If they are asking about an island NOT in this list, explicitly tell them they do not have access to it, and suggest using the `!drop` command on an island they do have access to.\n"
+            )
+        else:
+            access_section = (
+                "\n### User Island Access ###\n"
+                "Based on their Discord roles, the user currently CANNOT access any subscriber islands.\n"
+                "If they are asking about an item or villager on a subscriber island, tell them they need a subscription to access it, or direct them to free island alternatives.\n"
+            )
 
     kb_context = _retrieve_kb_context(question)
     kb_section = (
@@ -1261,6 +1278,7 @@ def _build_model_prompt(
         f"{chat_log_section}"
         f"{channel_section}"
         f"{role_section}"
+        f"{access_section}"
         f"{conversation_context}"
         f"\n### Current Question ###\n{question}"
     )
@@ -1273,6 +1291,7 @@ def _build_prompt(
     channel_context: Optional[str] = None,
     is_subscriber: bool = False,
     is_mod_user: bool = False,
+    accessible_islands: Optional[list[str]] = None,
 ) -> str:
     """Backward-compatible wrapper for the compact retrieved prompt builder."""
     return _build_model_prompt(
@@ -1281,6 +1300,7 @@ def _build_prompt(
         channel_context=channel_context,
         is_subscriber=is_subscriber,
         is_mod_user=is_mod_user,
+        accessible_islands=accessible_islands,
     )
 
 
@@ -1296,6 +1316,7 @@ async def get_ai_answer(
     channel_context: Optional[str] = None,
     is_subscriber: bool = False,
     is_mod_user: bool = False,
+    accessible_islands: Optional[list[str]] = None,
 ) -> str:
     """
     Answer a question about Chopaeng.
@@ -1446,6 +1467,7 @@ async def _gemini_answer(
         include_system_prompt=True,
         is_subscriber=is_subscriber,
         is_mod_user=is_mod_user,
+        accessible_islands=accessible_islands,
     )
 
     # Gemini's generate_content is synchronous; run it in a thread to avoid blocking.
@@ -1467,6 +1489,7 @@ async def _openai_answer(
     channel_context: Optional[str] = None,
     is_subscriber: bool = False,
     is_mod_user: bool = False,
+    accessible_islands: Optional[list[str]] = None,
 ) -> str:
     """Call the OpenAI Chat Completions API asynchronously and return the answer."""
     from openai import OpenAI  # lazy import
@@ -1482,6 +1505,7 @@ async def _openai_answer(
         channel_context=channel_context,
         is_subscriber=is_subscriber,
         is_mod_user=is_mod_user,
+        accessible_islands=accessible_islands,
     )
 
     loop = asyncio.get_event_loop()

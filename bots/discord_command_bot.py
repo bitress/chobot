@@ -23,7 +23,7 @@ from thefuzz import process, fuzz
 from utils.config import Config
 from utils.database import connect_db
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
-from utils.island_access import configured_subscription_role_ids, is_mod
+from utils.island_access import configured_subscription_role_ids, is_mod, resolved_island_required_roles
 from utils.nookipedia import NookipediaClient
 from utils.nickname_format import is_valid_acnh_nickname, nickname_warning_for, NICKNAME_FORMAT_EXAMPLE
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
@@ -406,6 +406,49 @@ def _is_mod_member(member: discord.abc.Snowflake) -> bool:
     """Return whether the member holds any configured moderator/admin role."""
     member_roles = _get_member_role_ids(member)
     return is_mod(member_roles)
+
+
+def _get_accessible_islands(member: discord.abc.Snowflake) -> list[str]:
+    """Return a list of sub island names that the member can access."""
+    import json
+    user_role_ids = _get_member_role_ids(member)
+    is_mod_user = is_mod(user_role_ids)
+    
+    accessible: list[str] = []
+    
+    try:
+        with connect_db() as conn:
+            rows = conn.execute("SELECT name, is_visible, cat, type, required_roles, channel_id FROM islands").fetchall()
+            for row in rows:
+                if row.get("is_visible") is False:
+                    continue
+                
+                req_roles_raw = row.get("required_roles")
+                req_roles = json.loads(req_roles_raw) if req_roles_raw else []
+                
+                info = resolved_island_required_roles(
+                    row.get("name"),
+                    row.get("cat"),
+                    req_roles,
+                    row.get("type"),
+                    row.get("channel_id")
+                )
+                
+                # If no required roles, it's public.
+                if not info.required_roles:
+                    accessible.append(row.get("name"))
+                    continue
+                    
+                if is_mod_user:
+                    accessible.append(row.get("name"))
+                    continue
+                    
+                if set(info.required_roles) & user_role_ids:
+                    accessible.append(row.get("name"))
+    except Exception as exc:
+        logger.error(f"[DISCORD] Error fetching accessible islands for {member.id}: {exc}")
+        
+    return accessible
 
 
 def _discord_conv_key(message: discord.Message) -> str:
@@ -1853,6 +1896,7 @@ class DiscordCommandCog(commands.Cog):
             channel_context=channel_name,
             is_subscriber=_is_subscriber_member(ctx.author),
             is_mod_user=_is_mod_member(ctx.author),
+            accessible_islands=_get_accessible_islands(ctx.author),
         )
 
         await ctx.reply(f"{answer}")
