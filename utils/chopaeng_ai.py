@@ -128,7 +128,7 @@ def _build_live_context() -> str:
                 bot_status = f" | Bot: {'online' if bot_up else 'offline'}"
 
             # Skip internal/dummy entries
-            if not name or name.upper().startswith("ZX"):
+            if not name or name.capitalize().startswith("ZX"):
                 continue
 
             items_preview = ", ".join(items[:6]) + ("…" if len(items) > 6 else "")
@@ -295,10 +295,10 @@ def _format_island_groups(free_islands: list[str], sub_islands: list[str]) -> st
     parts: list[str] = []
     if free_islands:
         label = "these Free Islands" if len(free_islands) > 1 else "this Free Island"
-        parts.append(f"{label}: {' | '.join(name.upper() for name in free_islands)}")
+        parts.append(f"{label}: {' | '.join(name.capitalize() for name in free_islands)}")
     if sub_islands:
         label = "these Sub Islands" if len(sub_islands) > 1 else "this Sub Island"
-        parts.append(f"{label}: {' | '.join(name.upper() for name in sub_islands)}")
+        parts.append(f"{label}: {' | '.join(name.capitalize() for name in sub_islands)}")
     return " and on ".join(parts)
 
 
@@ -339,7 +339,11 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
         # Build conversational answer based on where it's found
         if free_islands and sub_islands:
             # Found on both free and sub islands
-            free_list = " | ".join(name.upper() for name in free_islands)
+            if len(free_islands) > 1:
+                free_list = ", ".join(name.capitalize() for name in free_islands[:-1])
+                free_list += f" and {free_islands[-1].capitalize()}"
+            else:
+                free_list = free_islands[0].capitalize()
             sub_list = _format_sub_island_mentions(sub_islands)
             if is_villager:
                 return (
@@ -355,7 +359,11 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
                 )
         elif free_islands:
             # Only on free islands
-            free_list = " | ".join(name.upper() for name in free_islands)
+            if len(free_islands) > 1:
+                free_list = ", ".join(name.capitalize() for name in free_islands[:-1])
+                free_list += f" and {free_islands[-1].capitalize()}"
+            else:
+                free_list = free_islands[0].capitalize()
             if is_villager:
                 return (
                     f"Perfect! **{normalized_query}** {emoji} is here on {free_list}.\n"
@@ -406,7 +414,7 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
     return (
         f"I couldn't find **{normalized_query}** at the moment. "
         f"Looking to request them? Check <#{_REQUEST_HELP_CHANNEL}> for sub island request help! 💬 "
-        f"For non-subscriber orderbot help, use <#1175704849409654804>."
+        f"For non-subscriber orderbot help, use <#1516752902591615046>."
     )
 
 
@@ -1068,7 +1076,7 @@ _AI_SYSTEM_PROMPT = (
     "<#1175672083183829075> — not the same as a mod ticket.\n"
     "8. **Point users to the appropriate request-help channel when relevant.** For sub island commands "
     "like !drop or villager injections, point to <#782872507551055892>. For Chorder Bot/free orderbot "
-    "ordering help only, point to <#1175704849409654804>. Do not send general free island questions "
+    "ordering help only, point to <#1516752902591615046>. Do not send general free island questions "
     "to chorder-bot-how; for free island Dodo/status questions, use the Dodo Board <#1500493205672825056> "
     "or the specific free island channel.\n"
     "9. **Admit unknowns honestly.** If you can't find the answer, say so and suggest "
@@ -1105,7 +1113,7 @@ _AI_SYSTEM_PROMPT = (
     "from the reference guides. Use `ac!lookup villager <name>` to check personality.\n"
     "- If the user asks about free island Dodo codes, status, or general free island help, mention the "
     "Dodo Board in <#1500493205672825056>. Do not tell them to use `!senddodo` for free islands. "
-    "Do not point free island questions to <#1175704849409654804>; that channel is only for free orderbot help.\n"
+    "Do not point free island questions to <#1516752902591615046>; that channel is only for free orderbot help.\n"
     "- When mentioning sub islands by name, format them as #islandname (e.g. #giliw). "
     "When mentioning free islands by name, do NOT use # (e.g. Bathala). For free island links, always direct users to the Dodo Board <#1500493205672825056>.\n"
     "- If the user asks for commands, give a concise grouped command list. For detailed help, "
@@ -1162,7 +1170,7 @@ def _build_full_prompt_legacy(question: str, history: Optional[list[dict]] = Non
         "AI: To get a Dodo code, go to the specific island's channel in our Discord "
         "server and type `!senddodo` or `!sd`. The bot will DM the code to you!\n\n"
         "User: how do I request an item\n"
-        "AI: Free members can use the Chorder Bot `!order` flow in <#1175672083183829075>. Subscribers can simply use the `!drop` command directly on any sub island! For extra help with free ordering, check channel <#1175704849409654804>.\n\n"
+        "AI: Free members can use the Chorder Bot `!order` flow in <#1175672083183829075>. Subscribers can simply use the `!drop` command directly on any sub island! For extra help with free ordering, check channel <#1516752902591615046>.\n\n"
         "User: how do I order clothes in different variants?\n"
         "AI: Use the lookup channel <#1175771830510948442> first: `!lookup <clothing name>` to get "
         "the HEX ID, `!item <HEX>` to see variant numbers, then `!customize <HEX> <variant number>` "
