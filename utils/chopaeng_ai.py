@@ -1428,6 +1428,7 @@ async def get_ai_answer(
                     channel_context=channel_context,
                     is_subscriber=is_subscriber,
                     is_mod_user=is_mod_user,
+                    accessible_islands=accessible_islands
                 )
             else:
                 answer = await _gemini_answer(
@@ -1462,6 +1463,7 @@ async def _gemini_answer(
     channel_context: Optional[str] = None,
     is_subscriber: bool = False,
     is_mod_user: bool = False,
+    accessible_islands: Optional[list[str]] = None,
 ) -> str:
     """Call the Gemini API asynchronously and return the answer."""
     import google.generativeai as genai  # lazy import
