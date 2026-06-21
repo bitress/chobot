@@ -276,6 +276,79 @@ def _should_skip_live_search(question: str) -> bool:
     return False
 
 
+def _question_signals_no_sub(text: str) -> bool:
+    """Return True when *text* contains explicit natural-language signals that
+    the user does not have a subscriber role / cannot access sub islands.
+
+    Catches phrases like:
+      - 'I don't have access to those sub islands'
+      - 'I can't access the sub islands'
+      - 'I don't have a subscription'
+      - 'I am not a subscriber'
+      - 'free member / free user'
+    but avoids false positives on 'how do I get access?' style questions.
+    """
+    lowered = text.lower().strip()
+
+    # Exclude questions asking *how* to get access — they want instructions, not alternatives.
+    if re.search(
+        r"\b(?:how|what|where)\s+(?:do|can|to)\s+(?:i\s+)?(?:get|obtain|buy|subscribe|gain|earn)\b",
+        lowered,
+    ):
+        return False
+
+    no_access_patterns = [
+        r"\bi\s+(?:don'?t|do\s+not|dont)\s+have\s+access",
+        r"\bi\s+(?:can'?t|cannot|cant)\s+(?:access|see|visit|enter|go\s+to)\s+(?:the\s+)?sub",
+        r"\bno\s+access\s+to\s+(?:the\s+)?sub",
+        r"\bi\s+(?:don'?t|do\s+not|dont)\s+have\s+(?:a\s+)?sub(?:scription)?\b",
+        r"\bi'?m\s+not\s+a?\s+sub(?:scriber)?",
+        r"\bi\s+am\s+not\s+a?\s+sub(?:scriber)?",
+        r"\bnot\s+(?:a\s+)?sub(?:scriber)?\b",
+        r"\bi\s+(?:don'?t|do\s+not|dont)\s+(?:have|own)\s+(?:a\s+)?(?:patreon|membership|member)",
+        r"\b(?:no|without)\s+sub(?:scription)?\b",
+        r"\bfree\s+(?:member|user|account)\b",
+    ]
+    return any(re.search(p, lowered) for p in no_access_patterns)
+
+
+def _resolve_lacks_sub_access(
+    question: str,
+    history: Optional[list[dict]],
+    is_subscriber: bool,
+) -> bool:
+    """Determine whether the user lacks subscriber access, combining three signals:
+
+    1. **Discord role** — ``is_subscriber=False`` is authoritative: if Discord
+       already knows the user has no sub role, treat them as non-subscriber.
+       (Exception: mods may be non-subs but should still get full responses;
+       callers should pass ``is_subscriber=True`` for mods to opt out.)
+    2. **Current message** — explicit natural-language denial in the current turn.
+    3. **Conversation history** — the user said they have no sub in a recent prior
+       turn (checked across the last *_MAX_HISTORY_TURNS* pairs, user turns only).
+    """
+    # Signal 1: authoritative Discord role check.
+    # is_subscriber=False means Discord confirmed the user holds no sub role.
+    if not is_subscriber:
+        return True
+
+    # Signal 2: current message text.
+    if _question_signals_no_sub(question):
+        return True
+
+    # Signal 3: recent history — look back through user turns for a prior denial.
+    if history:
+        for turn in reversed(history):
+            if turn.get("role") == "user" and _question_signals_no_sub(turn.get("content", "")):
+                return True
+
+    return False
+
+
+# Keep the old name as an alias so existing call-sites and tests still work.
+_user_lacks_sub_access = _question_signals_no_sub
+
+
 async def _search_live_api(kind: str, query: str) -> Optional[dict]:
     """Query the live item/villager search endpoint."""
     url = _FIND_VILLAGER_API_URL if kind == "villager" else _FIND_ITEM_API_URL
@@ -318,12 +391,46 @@ def _format_sub_island_mentions(sub_islands: list[str]) -> str:
     return "".join(mentions) if mentions else ""
 
 
-def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
+def _filter_accessible_sub_islands(
+    sub_islands: list[str],
+    accessible_islands: Optional[list[str]],
+) -> list[str]:
+    """Return the subset of *sub_islands* that *accessible_islands* permits.
+
+    Rules:
+    - ``accessible_islands=None`` → no role data available; return all islands
+      unchanged so existing behaviour is preserved.
+    - ``accessible_islands=[]``   → confirmed non-subscriber; return empty list.
+    - non-empty list              → intersect (case-insensitive) with sub_islands.
+    """
+    if accessible_islands is None:
+        return list(sub_islands)
+    accessible_lower = {name.lower() for name in accessible_islands}
+    return [name for name in sub_islands if name.lower() in accessible_lower]
+
+
+def _format_live_search_answer(
+    kind: str,
+    query: str,
+    payload: dict,
+    user_lacks_sub_access: bool = False,
+    accessible_islands: Optional[list[str]] = None,
+) -> str:
     """Convert a live search API payload into a user-facing, conversational answer.
-    
+
     For free islands: references the Dodo Board with visit instructions.
     For sub islands: explains subscriber access and uses #channel-name format for auto-linking.
     For not-found: suggests alternatives or points to ordering/request channels.
+
+    *user_lacks_sub_access* — True when the user has no subscriber role at all;
+    redirects to the orderbot / subscribe path.
+
+    *accessible_islands* — a list of island names the user's Discord roles let
+    them enter.  When provided the sub-island results are filtered to only the
+    channels the user can actually access:
+      - ``None``  → no role data; show all sub islands (existing behaviour).
+      - ``[]``    → confirmed non-subscriber; treat same as user_lacks_sub_access.
+      - non-empty → show only the accessible subset; note any inaccessible ones.
     """
     normalized_query = query.strip().upper()
     results = payload.get("results") or {}
@@ -338,24 +445,47 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
         
         # Build conversational answer based on where it's found
         if free_islands and sub_islands:
-            # Found on both free and sub islands
+            # Found on both free and sub islands.
             if len(free_islands) > 1:
                 free_list = ", ".join(name.capitalize() for name in free_islands[:-1])
                 free_list += f" and {free_islands[-1].capitalize()}"
             else:
                 free_list = free_islands[0].capitalize()
-            sub_list = _format_sub_island_mentions(sub_islands)
+
+            # Filter sub islands to what the user can actually access.
+            my_sub = _filter_accessible_sub_islands(sub_islands, accessible_islands)
+            locked_sub = [n for n in sub_islands if n not in my_sub]
+
+            # No sub access at all (confirmed non-sub or explicit denial).
+            if user_lacks_sub_access or (accessible_islands is not None and not my_sub):
+                if is_villager:
+                    return (
+                        f"Good news! **{normalized_query}** {emoji} is also on free islands 🌴\n"
+                        f"Head to the Dodo Board <#1500493205672825056> to get a Dodo code for {free_list}."
+                    )
+                else:
+                    return (
+                        f"Good news! **{normalized_query}** {emoji} is stocked on free islands too 🌴\n"
+                        f"Head to the Dodo Board <#1500493205672825056> to get a Dodo code for {free_list}."
+                    )
+
+            sub_list = _format_sub_island_mentions(my_sub)
+            locked_note = (
+                f"\n*(You don't have access to {', '.join(n.capitalize() for n in locked_sub)} — those require a different subscription tier.)*"
+                if locked_sub else ""
+            )
+
             if is_villager:
                 return (
                     f"Awesome! **{normalized_query}** {emoji} is available in multiple places!\n\n"
                     f"**Free members**: use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
-                    f"**Subscribers**: go to {sub_list} and type `!senddodo` there."
+                    f"**Subscribers**: go to {sub_list} and type `!senddodo` there.{locked_note}"
                 )
             else:
                 return (
                     f"Great news! **{normalized_query}** {emoji} is stocked on multiple islands!\n\n"
                     f"**Free members**: use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
-                    f"**Subscribers**: go to {sub_list} and type `!senddodo` there."
+                    f"**Subscribers**: go to {sub_list} and type `!senddodo` there.{locked_note}"
                 )
         elif free_islands:
             # Only on free islands
@@ -375,23 +505,55 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
                     f"Go to the Dodo Board <#1500493205672825056> to get the Dodo code and visit!"
                 )
         else:
-            # Only on sub islands
-            sub_list = _format_sub_island_mentions(sub_islands)
-            island_names = ", ".join(name.capitalize() for name in sub_islands[:-1]) + (f" and {sub_islands[-1].capitalize()}" if len(sub_islands) > 1 else sub_islands[0].capitalize()) if sub_islands else ""
-            
+            # Only on sub islands.
+            all_island_names = (
+                ", ".join(name.capitalize() for name in sub_islands[:-1])
+                + (f" and {sub_islands[-1].capitalize()}" if len(sub_islands) > 1 else sub_islands[0].capitalize())
+                if sub_islands else ""
+            )
+
+            # Filter to islands this user's roles actually allow.
+            my_sub = _filter_accessible_sub_islands(sub_islands, accessible_islands)
+            locked_sub = [n for n in sub_islands if n not in my_sub]
+
+            # Confirmed no sub access (boolean flag OR role check returned empty).
+            if user_lacks_sub_access or (accessible_islands is not None and not my_sub):
+                if is_villager:
+                    return (
+                        f"No worries! 🌸 **{normalized_query}** {emoji} is currently only on subscriber islands ({all_island_names}), so it's not reachable without a sub.\n\n"
+                        f"**To get them the free way:** use `!order villager:<id>` in <#1175672083183829075> (Chorder Bot). Find the ID first with `ac!lookup villager {normalized_query.lower()}` in <#943118146259284008>.\n"
+                        f"**Want sub access?** Subscribe via [Patreon](https://www.patreon.com/cw/chopaeng/membership), [YouTube](https://www.youtube.com/@chopaeng), [Twitch](https://twitch.tv/chopaeng), or [TikTok](https://www.tiktok.com/@chopaeng) and link your account to Discord. 🏝️"
+                    )
+                else:
+                    return (
+                        f"No worries! 🌸 **{normalized_query}** {emoji} is currently only on subscriber islands ({all_island_names}), so it's not directly accessible without a sub.\n\n"
+                        f"**Free alternative:** order it via the Chorder Bot — use `!order {normalized_query.lower()}` in <#1175672083183829075>. 📦\n"
+                        f"**Want sub access?** Subscribe via [Patreon](https://www.patreon.com/cw/chopaeng/membership), [YouTube](https://www.youtube.com/@chopaeng), [Twitch](https://twitch.tv/chopaeng), or [TikTok](https://www.tiktok.com/@chopaeng) and link your account to Discord. 🏝️"
+                    )
+
+            # User has access to some (or all) of these sub islands.
+            sub_list = _format_sub_island_mentions(my_sub)
+            my_island_names = (
+                ", ".join(n.capitalize() for n in my_sub[:-1])
+                + (f" and {my_sub[-1].capitalize()}" if len(my_sub) > 1 else my_sub[0].capitalize())
+                if my_sub else all_island_names
+            )
+            locked_note = (
+                f"\n*(You don't have access to {', '.join(n.capitalize() for n in locked_sub)} — those require a different subscription tier.)*"
+                if locked_sub else ""
+            )
+
             if is_villager:
                 return (
-                    f"Hey there! 🌸 **{normalized_query}** {emoji} is waiting for you on the subscriber‑only islands {island_names}.\n\n"
-                    f"Just hop into their Discord channels ({sub_list}) and type `!senddodo` (or `!sd`) to get a Dodo code DM’d to you.\n"
-                    f"Remember, these islands are for subscribers only, so make sure your subscription is active.\n"
+                    f"Hey there! 🌸 **{normalized_query}** {emoji} is waiting for you on {my_island_names}.\n\n"
+                    f"Just hop into their Discord channels ({sub_list}) and type `!senddodo` (or `!sd`) to get a Dodo code DM'd to you.{locked_note}\n"
                     f"Happy hunting! 😊🏝️\n\n"
                     f"If you need support, ask the moderators in <#943118146259284008>."
                 )
             else:
                 return (
-                    f"Hey there! 🌸 For **{normalized_query}** {emoji}, check out the subscriber‑only islands {island_names}.\n\n"
-                    f"Just hop into their Discord channels ({sub_list}) and type `!senddodo` (or `!sd`) to get a Dodo code DM’d to you.\n"
-                    f"Remember, these islands are for subscribers only, so make sure your subscription is active.\n"
+                    f"Hey there! 🌸 For **{normalized_query}** {emoji}, check out {my_island_names}.\n\n"
+                    f"Just hop into their Discord channels ({sub_list}) and type `!senddodo` (or `!sd`) to get a Dodo code DM'd to you.{locked_note}\n"
                     f"Happy hunting for those goodies! 😊🏝️\n\n"
                     f"If you need support, ask the moderators in <#943118146259284008>."
                 )
@@ -418,8 +580,20 @@ def _format_live_search_answer(kind: str, query: str, payload: dict) -> str:
     )
 
 
-async def _try_live_search_answer(question: str) -> Optional[str]:
-    """Return a direct live-search answer for item/villager lookup questions."""
+async def _try_live_search_answer(
+    question: str,
+    user_lacks_sub_access: bool = False,
+    accessible_islands: Optional[list[str]] = None,
+) -> Optional[str]:
+    """Return a direct live-search answer for item/villager lookup questions.
+
+    *user_lacks_sub_access* — True when the user has no sub role at all;
+    redirects to the orderbot / subscribe path.
+
+    *accessible_islands* — list of island names the user's roles permit;
+    passed through to ``_format_live_search_answer`` to filter sub results.
+    When ``None``, no filtering is applied (existing behaviour).
+    """
     if _should_skip_live_search(question):
         return None
 
@@ -437,13 +611,25 @@ async def _try_live_search_answer(question: str) -> Optional[str]:
         last_query = query
 
         if payload.get("found"):
-            return _format_live_search_answer(kind, query, payload)
+            return _format_live_search_answer(
+                kind, query, payload,
+                user_lacks_sub_access=user_lacks_sub_access,
+                accessible_islands=accessible_islands,
+            )
 
         if payload.get("suggestions"):
-            return _format_live_search_answer(kind, query, payload)
+            return _format_live_search_answer(
+                kind, query, payload,
+                user_lacks_sub_access=user_lacks_sub_access,
+                accessible_islands=accessible_islands,
+            )
 
     if last_payload and last_kind and last_query:
-        return _format_live_search_answer(last_kind, last_query, last_payload)
+        return _format_live_search_answer(
+            last_kind, last_query, last_payload,
+            user_lacks_sub_access=user_lacks_sub_access,
+            accessible_islands=accessible_islands,
+        )
 
     return None
 
@@ -1393,7 +1579,14 @@ async def get_ai_answer(
     if live_cache_stale and live_backoff_elapsed:
         await _fetch_live_data()
 
-    live_search_answer = await _try_live_search_answer(q)
+    # Combine Discord role, current message text, and conversation history to
+    # determine whether to show subscriber island instructions or the free alternative.
+    lacks_sub = _resolve_lacks_sub_access(q, history, is_subscriber)
+    live_search_answer = await _try_live_search_answer(
+        q,
+        user_lacks_sub_access=lacks_sub,
+        accessible_islands=accessible_islands,
+    )
     if live_search_answer:
         resp = _append_support_note(live_search_answer)
         if conversation_key:
