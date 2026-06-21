@@ -3631,12 +3631,11 @@ def api_island_update(name):
     island_id = name.lower()
     data      = request.get_json(silent=True) or {}
 
+    # Open the DB ONCE. Let Flask's app context teardown handle the closing.
     db = get_db()
-    try:
-        row      = db.execute("SELECT * FROM islands WHERE id = ?", (island_id,)).fetchone()
-        existing = _row_to_island_dict(dict(row)) if row else {}
-    finally:
-        db.close()
+    
+    row      = db.execute("SELECT * FROM islands WHERE id = ?", (island_id,)).fetchone()
+    existing = _row_to_island_dict(dict(row)) if row else {}
 
     cat    = data.get("cat",    existing.get("cat",    "public"))
     theme  = data.get("theme",  existing.get("theme",  "teal"))
@@ -3653,21 +3652,24 @@ def api_island_update(name):
         except ValueError:
             items_in = [i.strip() for i in items_in.split(",") if i.strip()]
 
-    display_name = (
-        data.get("display_name")
-        if "display_name" in data
-        else data.get("displayName", existing.get("display_name"))
-    )
+    display_name = data.get("display_name", data.get("displayName", existing.get("display_name")))
     display_name = (display_name or "").strip() or None
+    
     is_visible = _json_bool(data, "is_visible", _json_bool(data, "isVisible", existing.get("is_visible", True)))
 
-    dodo_code = data.get("dodoCode") or data.get("dodo_code") or existing.get("dodo_code")
+    dodo_code = data.get("dodoCode", data.get("dodo_code", existing.get("dodo_code")))
     if (dodo_code or "").strip().upper() == REFRESHING_DODO_CODE:
         status = STATUS_REFRESHING
 
-    db2 = get_db()
+    # Safely handle the visitors cast to avoid 500s on empty strings/None
+    raw_visitors = data.get("visitors", existing.get("visitors", 0))
     try:
-        db2.execute(
+        visitors_count = int(raw_visitors) if raw_visitors not in [None, ""] else 0
+    except (ValueError, TypeError):
+        visitors_count = 0
+
+    try:
+        db.execute(
             """INSERT INTO islands
                    (id, name, display_name, is_visible, type, items, theme, cat, description, seasonal,
                     status, visitors, dodo_code, map_url, updated_at)
@@ -3681,27 +3683,32 @@ def api_island_update(name):
                    updated_at=excluded.updated_at""",
             (
                 island_id,
-                data.get("name", existing.get("name", island_id.upper())).upper(),
+                data.get("name", existing.get("name", island_id)).upper(),
                 display_name,
-                int(is_visible),
-                data.get("type",        existing.get("type",        "")),
+                1 if is_visible else 0, # Safer bool to int cast
+                data.get("type", existing.get("type", "")),
                 json.dumps(items_in),
-                theme, cat,
+                theme, 
+                cat,
                 data.get("description", existing.get("description", "")),
-                data.get("seasonal",    existing.get("seasonal",    "")),
+                data.get("seasonal",    existing.get("seasonal", "")),
                 status,
-                int(data.get("visitors", existing.get("visitors", 0))),
+                visitors_count,
                 dodo_code,
                 existing.get("map_url"),
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
-        db2.commit()
-    finally:
-        db2.close()
+        db.commit()
+    except Exception as e:
+        # If it still 500s, this will expose exactly why in your server logs
+        print(f"[!] DB Execute Error on Island Update: {e}")
+        return jsonify({"error": "Database operation failed."}), 500
+        
     return jsonify({"status": "ok", "id": island_id})
 
 
+    
 @dashboard.route("/api/islands/<name>", methods=["DELETE"])
 @api_auth_required
 def api_island_delete(name):

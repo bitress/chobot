@@ -478,14 +478,14 @@ def _format_live_search_answer(
             if is_villager:
                 return (
                     f"Awesome! **{normalized_query}** {emoji} is available in multiple places!\n\n"
-                    f"**Free members**: use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
+                    f"**Free members** can use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
                     f"**Subscribers**: go to {sub_list} and type `!senddodo` there.{locked_note}"
                 )
             else:
                 return (
                     f"Great news! **{normalized_query}** {emoji} is stocked on multiple islands!\n\n"
-                    f"**Free members**: use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
-                    f"**Subscribers**: go to {sub_list} and type `!senddodo` there.{locked_note}"
+                    f"**Free members** can use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
+                    f"**Subscribers** can go to {sub_list} and type `!senddodo` there.{locked_note}"
                 )
         elif free_islands:
             # Only on free islands
