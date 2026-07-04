@@ -13,7 +13,7 @@ villagers, and visit other players' islands. The community includes Filipino and
 |----------|-----|
 | Website | [chopaeng.com](https://chopaeng.com) |
 | Twitch | [twitch.tv/chopaeng](https://twitch.tv/chopaeng) |
-| YouTube | [youtube.com/@chopaeng](https://www.youtube.com/@chopaeng) |
+| YouTube | [youtube.com/@chopaengtv](https://www.youtube.com/@chopaengtv) |
 | Facebook | [facebook.com/ChoPaengTV](https://www.facebook.com/ChoPaengTV) |
 | TikTok | [tiktok.com/@chopaeng](https://www.tiktok.com/@chopaeng) |
 | Discord | [discord.gg/chopaeng](https://discord.gg/chopaeng) |

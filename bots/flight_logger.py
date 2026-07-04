@@ -284,6 +284,7 @@ async def init_db():
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS warnings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 guild_id INTEGER,
                 reason TEXT,
@@ -764,7 +765,7 @@ class NoteModal(discord.ui.Modal, title="Add Note"):
                 await cog.add_warning(target_id, interaction.guild.id, self.note_input.value, interaction.user.id, visit_id, action_type='NOTE')
             await interaction.response.send_message("<:Cho_Notes:1474311464688029817> Note added to the alert.", ephemeral=True)
         except Exception as e:
-            logger.error(f"Error adding note: {e}")
+            logger.error(f"Error adding note: {e}", exc_info=True)
             await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
 
@@ -882,23 +883,21 @@ class TravelerActionView(discord.ui.View):
                 has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in target_user.roles)
                 access_status = "Yes" if has_access else "No"
                 action_value += f"\n**Has Island Access?** {access_status}"
-                
-                # Get destination from embed to check subscription roles
+
+                # Obtain cog and parse member nickname using the cog helpers
+                cog = interaction.client.get_cog("FlightLoggerCog")
+                all_sub_roles = cog.all_sub_roles if cog else set()
+                ign_opts, island_opts = (cog.parse_member_nick(target_user.display_name) if cog else ([], []))
+                max_identities = max(len(ign_opts), len(island_opts))
+
+                # Get destination from embed to check subscription roles using the cog's island_map
                 dest_channel = None
                 for field in embed.fields:
                     if field.name == "Destination":
-                        dest_name = field.value
-                        dest_clean = clean_text(dest_name)
-                        channel_id = self.island_map.get(dest_clean) if hasattr(self, 'island_map') else None
-                        dest_channel = interaction.guild.get_channel(channel_id) if channel_id else None
+                        dest_clean = clean_text(field.value)
+                        channel_id = cog.island_map.get(dest_clean) if cog and getattr(cog, 'island_map', None) else None
+                        dest_channel = interaction.guild.get_channel(channel_id) if channel_id and interaction.guild else None
                         break
-                
-                # Extract subscription roles
-                cog = interaction.client.get_cog("FlightLoggerCog")
-                all_sub_roles = cog.all_sub_roles if cog else set()
-                
-                ign_opts, island_opts = cog.parse_member_nick(target_user.display_name) if cog else ([], [])
-                max_identities = max(len(ign_opts), len(island_opts))
 
                 if dest_channel:
                     sub_roles = {}
@@ -907,7 +906,7 @@ class TravelerActionView(discord.ui.View):
                         if isinstance(target_obj, discord.Role) and can_view:
                             if target_obj.name != "@everyone":
                                 sub_roles[target_obj.id] = target_obj.name
-                    
+
                     current_island_subs = [sub_roles[r.id] for r in target_user.roles if r.id in sub_roles]
                     other_subs = [r.name for r in target_user.roles if r.id in all_sub_roles and r.id not in sub_roles]
                     total_subs = len(current_island_subs) + len(other_subs)
@@ -948,7 +947,7 @@ class TravelerActionView(discord.ui.View):
                 for k in keys_to_remove:
                     cog._pending_alerts.pop(k, None)
         except Exception as e:
-            logger.error(f"Error editing original message: {e}")
+            logger.error(f"Error editing original message: {e}", exc_info=True)
 
     def disable_all_items(self):
         for child in self.children:
@@ -999,7 +998,7 @@ class TravelerActionView(discord.ui.View):
             await message_to_edit.edit(embed=embed, view=self)
             await interaction.followup.send("<:Cho_Investigate:1474310726381338666> Marked as under investigation.", ephemeral=True)
         except Exception as e:
-            logger.error(f"Error marking as under investigation: {e}")
+            logger.error(f"Error marking as under investigation: {e}", exc_info=True)
             await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
     @discord.ui.button(label="Admit", style=discord.ButtonStyle.success, emoji="<:Cho_Check:1456715827213504593>", custom_id="fl_admit", row=0)
@@ -1150,6 +1149,21 @@ class VerifiedFlightFlagView(discord.ui.View):
                 return field.value
         return None
 
+    async def _resolve_member(self, guild: discord.Guild | None, user_id: int) -> discord.Member | None:
+        """Resolve a member by ID using cache first, then fetch if missing."""
+        if not guild:
+            return None
+        member = guild.get_member(user_id)
+        if member is not None:
+            return member
+        try:
+            return await guild.fetch_member(user_id)
+        except discord.NotFound:
+            return None
+        except discord.HTTPException:
+            logger.debug(f"[FLAG] Could not fetch member {user_id} from guild {getattr(guild, 'id', None)}")
+            return None
+
     async def _execute_flag(self, interaction: discord.Interaction, xlog_message: discord.Message):
         """Execute the flag action: create alert and update xlog message. Also flag for xlog if multiple IGNs/islands and multiple subscriptions."""
         embed = xlog_message.embeds[0] if xlog_message.embeds else None
@@ -1174,6 +1188,7 @@ class VerifiedFlightFlagView(discord.ui.View):
 
         # --- Check for multiple IGNs/islands and multiple subscriptions ---
         flagged_for_multi = False
+        debug_info = None
         guild = self.bot.get_guild(Config.GUILD_ID) if self.bot else None
         traveler_member = None
         if guild and embed and embed.description:
@@ -1183,7 +1198,7 @@ class VerifiedFlightFlagView(discord.ui.View):
             if not m:
                 m = re.search(r"`(?P<uid>\d{15,25})`", embed.description)
             if m:
-                traveler_member = guild.get_member(int(m.group("uid")))
+                traveler_member = await self._resolve_member(guild, int(m.group("uid")))
 
         if traveler_member is None and guild and visit_id is not None:
             # Fallback: resolve via island_visits record, if present.
@@ -1192,13 +1207,12 @@ class VerifiedFlightFlagView(discord.ui.View):
                     cur = await db.execute("SELECT user_id FROM island_visits WHERE id = ? LIMIT 1", (visit_id,))
                     row = await cur.fetchone()
                 if row and row[0]:
-                    traveler_member = guild.get_member(int(row[0]))
+                    traveler_member = await self._resolve_member(guild, int(row[0]))
             except Exception:
                 traveler_member = None
 
-        # Last resort fallback: avoid breaking flag flow if we cannot resolve the traveler.
-        if traveler_member is None and interaction.user and guild:
-            traveler_member = guild.get_member(interaction.user.id)
+        # If we cannot reliably resolve the traveler, leave `traveler_member` as None.
+        # Do NOT fall back to the moderator who clicked the button; that causes false positives.
         igns, islands = [], []
         if traveler_member:
             # Use the robust parser from FlightLoggerCog
@@ -1226,6 +1240,7 @@ class VerifiedFlightFlagView(discord.ui.View):
         # If flagged, add a field to the alert and log
         alert_msg = None
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID) if self.bot else None
+        dodo_req = None
         if output_channel:
             guild_icon = guild.icon.url if guild and guild.icon else None
             alert_ts = int(discord.utils.utcnow().timestamp())
@@ -1244,6 +1259,8 @@ class VerifiedFlightFlagView(discord.ui.View):
             alert_embed.add_field(name="Destination", value=destination_display or "Unknown", inline=True)
             alert_embed.add_field(name="Flagged", value=f"<t:{alert_ts}:R>", inline=True)
             alert_embed.add_field(name="Status", value="<:Cho_Investigate:1474310726381338666> **PENDING REVIEW**", inline=True)
+            if debug_info:
+                alert_embed.add_field(name="Debug Info", value=debug_info, inline=False)
             if visit_id is not None:
                 alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
             if flagged_for_multi:
@@ -1289,7 +1306,7 @@ class VerifiedFlightFlagView(discord.ui.View):
         except (discord.NotFound, discord.HTTPException):
             logger.debug(f"[FLAG] Could not update old xlog message, but alert was created in flight log")
         except Exception as e:
-            logger.error(f"[FLAG] Error updating xlog message after flag: {e}")
+            logger.error(f"[FLAG] Error updating xlog message after flag: {e}", exc_info=True)
 
     @discord.ui.button(label="Flag", style=discord.ButtonStyle.secondary, emoji="🚩", custom_id="fl_flag_verified", row=0)
     async def flag_action(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1398,6 +1415,21 @@ class FlightLoggerCog(commands.Cog):
             self._db_conn = connect_async_db()
         return self._db_conn
 
+    async def _resolve_member(self, guild: discord.Guild | None, user_id: int) -> discord.Member | None:
+        """Resolve a member by ID using cache first, then fetch if missing."""
+        if not guild:
+            return None
+        member = guild.get_member(user_id)
+        if member is not None:
+            return member
+        try:
+            return await guild.fetch_member(user_id)
+        except discord.NotFound:
+            return None
+        except discord.HTTPException:
+            logger.debug(f"[FLIGHT] Could not fetch member {user_id} from guild {getattr(guild, 'id', None)}")
+            return None
+
     async def add_warning(self, user_id, guild_id, reason, mod_id, visit_id=None, action_type='WARN'):
         db = await self._get_db()
         await db.execute(
@@ -1482,11 +1514,26 @@ class FlightLoggerCog(commands.Cog):
             'channel': channel,
             'reply_msg': reply_msg,
             'guild_icon': guild_icon,
+            'created_at': discord.utils.utcnow(),
         }
 
     def pop_pending_dodo_request(self, user_id: int) -> dict | None:
         """Remove and return the pending dodo-request info for the given user, or None if not found."""
-        return self._pending_dodo_requests.pop(user_id, None)
+        entry = self._pending_dodo_requests.pop(user_id, None)
+        if not entry:
+            return None
+        created = entry.get('created_at')
+        if not created:
+            return entry
+        try:
+            age = (discord.utils.utcnow() - created).total_seconds()
+        except Exception:
+            return entry
+        # Expire stale requests older than 10 minutes
+        if age > 600:
+            logger.debug(f"[FLIGHT] Dropping stale dodo request for user_id={user_id} (age={age}s)")
+            return None
+        return entry
 
     async def get_recent_visit_id_by_user(self, user_id: int, guild_id: int, hours: int = 6) -> int | None:
         """Find the most recent island_visits.id for the given Discord user within the last N hours."""
@@ -1525,9 +1572,12 @@ class FlightLoggerCog(commands.Cog):
             "timestamp": row[4],
         }
 
-    async def _is_authorized_with_target(self, ign: str, hours: int = 24) -> bool:
-        """Return True if this IGN has a recent visit that was authorized AND has a linked target user."""
-        return await self._get_recent_authorized_target(ign, hours) is not None
+    async def _is_authorized_with_target(self, ign: str, hours: int = 24, guild_id: int | None = None) -> bool:
+        """Return True if this IGN has a recent visit that was authorized AND has a linked target user.
+
+        If `guild_id` is provided, restrict the search to that guild to avoid cross-guild matches.
+        """
+        return await self._get_recent_authorized_target(ign, hours, guild_id=guild_id) is not None
 
     async def _get_actionable_identity_events(
         self,
@@ -1709,7 +1759,7 @@ class FlightLoggerCog(commands.Cog):
                 except discord.Forbidden:
                     logger.error(f"[FLIGHT] Permission Denied: Cannot remove role from {target.display_name}")
                 except Exception as e:
-                    logger.error(f"[FLIGHT] Error removing role: {e}")
+                    logger.error(f"[FLIGHT] Error removing role: {e}", exc_info=True)
 
         try:
             # 2. DM Notification
@@ -1789,7 +1839,7 @@ class FlightLoggerCog(commands.Cog):
         except discord.Forbidden:
             await interaction.followup.send("Permission Denied. Check bot role hierarchy.", ephemeral=True)
         except Exception as e:
-            logger.error(f"Punishment Error: {e}")
+            logger.error(f"Punishment Error: {e}", exc_info=True)
             await interaction.followup.send(f"System Error: {e}", ephemeral=True)
 
     async def cog_load(self):
@@ -1814,6 +1864,9 @@ class FlightLoggerCog(commands.Cog):
     ):
         """Automatically create a manual alert and an xlog entry for suspicious flights."""
         guild = self.bot.get_guild(Config.GUILD_ID)
+        if guild is None:
+            logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} unavailable, skipping flight for {ign}")
+            return
         guild_id = guild.id if guild else None
         guild_icon = guild.icon.url if guild and guild.icon else None
         identity_summary, identity_reasons = summarize_recent_identity_events(recent_identity_events or [])
@@ -1835,6 +1888,7 @@ class FlightLoggerCog(commands.Cog):
         # 2. Create Alert in Flight Log Channel
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
         alert_msg = None
+        dodo_req = None
         if output_channel:
             alert_embed = discord.Embed(
                 description=(
@@ -1858,6 +1912,11 @@ class FlightLoggerCog(commands.Cog):
             alert_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
             
             action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
+            # Merge any pending dodo-code request from this member into the alert
+            dodo_req = self.pop_pending_dodo_request(member.id)
+            if dodo_req is not None:
+                alert_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+
             alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
             
             # Record in DB
@@ -1906,6 +1965,9 @@ class FlightLoggerCog(commands.Cog):
             xlog_view = discord.ui.View()
             if message_url:
                 xlog_view.add_item(discord.ui.Button(label="View Flight Log", url=message_url, style=discord.ButtonStyle.link))
+            # If we popped a dodo request earlier, add a link to it on the xlog view
+            if dodo_req is not None and dodo_req.get('reply_msg'):
+                xlog_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
             if alert_msg:
                 xlog_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
 
@@ -1924,14 +1986,18 @@ class FlightLoggerCog(commands.Cog):
     ):
         """Create a manual alert for matched members with recent nickname/join activity."""
         guild = self.bot.get_guild(Config.GUILD_ID)
-        guild_id = guild.id if guild else None
-        guild_icon = guild.icon.url if guild and guild.icon else None
+        if guild is None:
+            logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} unavailable, aborting recent-identity flag for {ign}")
+            return
+        guild_id = guild.id
+        guild_icon = guild.icon.url if guild.icon else None
         destination_link = self.get_island_channel_link(destination)
         identity_summary, identity_reasons = summarize_recent_identity_events(recent_identity_events)
         reason_text = ", ".join(identity_reasons) if identity_reasons else "Recent identity activity"
 
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
         alert_msg = None
+        dodo_req = None
         if output_channel:
             alert_embed = discord.Embed(
                 description=(
@@ -1951,6 +2017,10 @@ class FlightLoggerCog(commands.Cog):
                 alert_embed.add_field(name="Recent Identity Activity", value=identity_summary, inline=False)
             if visit_id:
                 alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            # Merge any pending dodo-code request from this member into the alert
+            dodo_req = self.pop_pending_dodo_request(member.id)
+            if dodo_req is not None:
+                alert_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
             alert_embed.set_image(url=Config.FOOTER_LINE)
             alert_embed.set_footer(text="Chopaeng Camp - Flight Logger", icon_url=guild_icon)
 
@@ -1982,6 +2052,9 @@ class FlightLoggerCog(commands.Cog):
             xlog_embed.add_field(name="Destination", value=destination_link, inline=True)
             if identity_summary:
                 xlog_embed.add_field(name="Recent Identity Activity", value=identity_summary, inline=False)
+            # If we popped a dodo request earlier, show it on the xlog embed
+            if dodo_req is not None:
+                xlog_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
             if visit_id:
                 xlog_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
             xlog_embed.set_image(url=Config.FOOTER_LINE)
@@ -1990,6 +2063,8 @@ class FlightLoggerCog(commands.Cog):
             xlog_view = discord.ui.View()
             if message_url:
                 xlog_view.add_item(discord.ui.Button(label="View Flight Log", url=message_url, style=discord.ButtonStyle.link))
+            if dodo_req is not None and dodo_req.get('reply_msg'):
+                xlog_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
             if alert_msg:
                 xlog_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
 
@@ -2010,8 +2085,11 @@ class FlightLoggerCog(commands.Cog):
     ):
         """Create a manual alert when a member joins an island they are not subscribed to."""
         guild = self.bot.get_guild(Config.GUILD_ID)
-        guild_id = guild.id if guild else None
-        guild_icon = guild.icon.url if guild and guild.icon else None
+        if guild is None:
+            logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} unavailable, aborting island-access mismatch flag for {ign}")
+            return
+        guild_id = guild.id
+        guild_icon = guild.icon.url if guild.icon else None
         destination_link = self.get_island_channel_link(destination)
         identity_summary, identity_reasons = summarize_recent_identity_events(recent_identity_events or [])
         member_sub_text = " / ".join(r.mention for r in member_sub_roles) if member_sub_roles else "None detected"
@@ -2019,6 +2097,7 @@ class FlightLoggerCog(commands.Cog):
 
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
         alert_msg = None
+        dodo_req = None
         if output_channel:
             alert_embed = discord.Embed(
                 description=(
@@ -2038,6 +2117,10 @@ class FlightLoggerCog(commands.Cog):
                 alert_embed.add_field(name="Recent Identity Activity", value=identity_summary, inline=False)
             if visit_id:
                 alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            # Merge any pending dodo-code request from this member into the alert
+            dodo_req = self.pop_pending_dodo_request(member.id)
+            if dodo_req is not None:
+                alert_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
             alert_embed.set_image(url=Config.FOOTER_LINE)
             alert_embed.set_footer(text="Chopaeng Camp - Flight Logger", icon_url=guild_icon)
 
@@ -2087,6 +2170,8 @@ class FlightLoggerCog(commands.Cog):
             xlog_view = discord.ui.View()
             if message_url:
                 xlog_view.add_item(discord.ui.Button(label="View Flight Log", url=message_url, style=discord.ButtonStyle.link))
+            if dodo_req is not None and dodo_req.get('reply_msg'):
+                xlog_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
             if alert_msg:
                 xlog_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
 
@@ -2172,7 +2257,7 @@ class FlightLoggerCog(commands.Cog):
                         )
                         await db.commit()
                 except Exception as e:
-                    logger.error(f"[FLIGHT] Failed to sync island {island_clean} to DB: {e}")
+                    logger.error(f"[FLIGHT] Failed to sync island {island_clean} to DB: {e}", exc_info=True)
 
             # Also map without leading digits for canonical name lookups
             # e.g. "01alapaap" -> "alapaap"
@@ -2465,7 +2550,7 @@ class FlightLoggerCog(commands.Cog):
             )
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub', message_url=message_url, message_content=message_content)
         except Exception as e:
-            logger.error(f"[FLIGHT] Pipeline error for {ign_raw}: {e}")
+            logger.error(f"[FLIGHT] Pipeline error for {ign_raw}: {e}", exc_info=True)
 
     async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub', message_url=None, message_content=None):
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
@@ -2474,7 +2559,10 @@ class FlightLoggerCog(commands.Cog):
         embed_timestamp = timestamp or discord.utils.utcnow()
         visit_ts = int(embed_timestamp.timestamp()) if hasattr(embed_timestamp, 'timestamp') else int(discord.utils.utcnow().timestamp())
         guild = self.bot.get_guild(Config.GUILD_ID)
-        guild_id = guild.id if guild else None
+        if guild is None:
+            logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} unavailable, aborting log_result for {ign}")
+            return
+        guild_id = guild.id
 
         ambiguous_members = found_members if len(found_members) > 1 else []
         resolved_authorized_target = None
@@ -2685,7 +2773,7 @@ class FlightLoggerCog(commands.Cog):
             try:
                 # If this IGN was already authorized and has a linked target within the last 24 hours,
                 # keep the verbose audit trail but do not create a new manual-review alert.
-                authorized_target = await self._get_recent_authorized_target(ign)
+                authorized_target = await self._get_recent_authorized_target(ign, guild_id=guild_id)
                 if authorized_target:
                     user_id = int(authorized_target["user_id"])
                     visit_id = await self.record_authorized_followup_visit(
@@ -2983,7 +3071,7 @@ class FlightLoggerCog(commands.Cog):
                         processed_count += 1
                         await asyncio.sleep(1.5)
                     except Exception as e:
-                        logger.error(f"[RECOVER] Failed to process message {message.id}: {e}")
+                        logger.error(f"[RECOVER] Failed to process message {message.id}: {e}", exc_info=True)
 
         if dry_run:
             await status_msg.edit(content=f"**Scan Complete (Dry Run)**\nFound: {found_count} matches.\n\nCommand to execute:\n`!recover_flights {hours} run`")
@@ -3195,7 +3283,7 @@ class FlightLoggerCog(commands.Cog):
         except Exception as e:
             success = False
             error_details = f"Unexpected error: {str(e)}"
-            logger.error(f"[FLIGHT-TEST] Error during flight test: {e}")
+            logger.error(f"[FLIGHT-TEST] Error during flight test: {e}", exc_info=True)
         finally:
             # Step 4: Clean up the test message from the listen channel
             if test_msg:
@@ -3385,7 +3473,7 @@ class FlightLoggerCog(commands.Cog):
 
         for i, warn in enumerate(warnings, 1):
             mod_id = warn['mod_id']
-            mod = guild.get_member(mod_id)
+            mod = await self._resolve_member(guild, mod_id)
             mod_text = _format_user_for_embed(mod) if mod else f"ID: {mod_id}"
             
             timestamp = warn['timestamp']
@@ -3451,7 +3539,7 @@ class FlightLoggerCog(commands.Cog):
         if warnings:
             lines = []
             for w in warnings[:MAX_HISTORY_ENTRIES]:
-                mod = guild.get_member(w['mod_id'])
+                mod = await self._resolve_member(guild, w['mod_id'])
                 mod_text = mod.display_name if mod else f"ID: {w['mod_id']}"
                 visit_tag = f" · visit #{w['visit_id']}" if w.get('visit_id') else ""
                 lines.append(f"⚠️ <t:{w['timestamp']}:R> by **{mod_text}**{visit_tag}")

@@ -1654,7 +1654,7 @@ def reveal_dodo(name):
                 {"reason": "missing_global_island_access_role", "channel_id": channel_id},
             )
             return jsonify({
-                "error": "You need the Discord island access role to reveal this Dodo code.",
+                "error": "You need the Discord island access role to reveal this Dodo code. Please accept the rules in the sub-rules channel first: https://discord.com/channels/729590421478703135/783677194576330792.",
                 "code": "missing_global_island_access_role",
             }), 403
 
