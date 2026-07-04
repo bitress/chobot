@@ -425,13 +425,13 @@ def _format_live_search_answer(
             if user_lacks_sub_access or (accessible_islands is not None and not my_sub):
                 if is_villager:
                     return (
-                        f"Good news! **{normalized_query}** {emoji} is also on free islands 🌴\n"
-                        f"Head to the Dodo Board <#1500493205672825056> to get a Dodo code for {free_list}."
+                        f"Nice! **{normalized_query}** {emoji} is also on free islands 🌴\n"
+                        f"You can head to the Dodo Board <#1500493205672825056> to grab a Dodo code for {free_list}."
                     )
                 else:
                     return (
-                        f"Good news! **{normalized_query}** {emoji} is stocked on free islands too 🌴\n"
-                        f"Head to the Dodo Board <#1500493205672825056> to get a Dodo code for {free_list}."
+                        f"Nice! **{normalized_query}** {emoji} is stocked on free islands too 🌴\n"
+                        f"You can head to the Dodo Board <#1500493205672825056> to grab a Dodo code for {free_list}."
                     )
 
             sub_list = _format_sub_island_mentions(my_sub)
@@ -442,15 +442,15 @@ def _format_live_search_answer(
 
             if is_villager:
                 return (
-                    f"Awesome! **{normalized_query}** {emoji} is available in multiple places!\n\n"
-                    f"**Free members** can use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
-                    f"**Subscribers**: go to {sub_list} and type `!senddodo` there.{locked_note}"
+                    f"Awesome! **{normalized_query}** {emoji} is available in a few spots.\n\n"
+                    f"**Free members** can use <#1500493205672825056> to grab a Dodo code for {free_list}.\n"
+                    f"**Subscribers** can head to {sub_list} and type `!senddodo` there.{locked_note}"
                 )
             else:
                 return (
-                    f"Great news! **{normalized_query}** {emoji} is stocked on multiple islands!\n\n"
-                    f"**Free members** can use <#1500493205672825056> to get a Dodo code for {free_list}.\n"
-                    f"**Subscribers** can go to {sub_list} and type `!senddodo` there.{locked_note}"
+                    f"Great news! **{normalized_query}** {emoji} is stocked on multiple islands.\n\n"
+                    f"**Free members** can use <#1500493205672825056> to grab a Dodo code for {free_list}.\n"
+                    f"**Subscribers** can head to {sub_list} and type `!senddodo` there.{locked_note}"
                 )
         elif free_islands:
             # Only on free islands
@@ -462,12 +462,12 @@ def _format_live_search_answer(
             if is_villager:
                 return (
                     f"Perfect! **{normalized_query}** {emoji} is here on {free_list}.\n"
-                    f"Go to the Dodo Board <#1500493205672825056> to get the Dodo code and visit!"
+                    f"You can pop over to the Dodo Board <#1500493205672825056> to get the code and visit!"
                 )
             else:
                 return (
                     f"Score! **{normalized_query}** {emoji} is stocked right now on {free_list}.\n"
-                    f"Go to the Dodo Board <#1500493205672825056> to get the Dodo code and visit!"
+                    f"You can head to the Dodo Board <#1500493205672825056> to grab the code and visit!"
                 )
         else:
             # Only on sub islands.
@@ -527,22 +527,22 @@ def _format_live_search_answer(
         # Format suggestions as a friendly list.
         formatted_suggestions = ", ".join(s.upper() for s in suggestions[:5] if s)
         return (
-            f"Hmm, I didn't find exact match for **{normalized_query}**. "
-            f"Did you mean one of these? {formatted_suggestions} 🤔"
+            f"I couldn't pin down an exact match for **{normalized_query}**. "
+            f"Did you mean {formatted_suggestions}? 🤔"
         )
 
     if kind == "item":
         return (
             f"I couldn't find **{normalized_query}** stocked right now. "
-            f"But no worries! You can order it using the Chorder Bot flow in <#1175672083183829075> "
-            f"and it'll be delivered to your island! 📦"
+            f"No worries though — you can still order it through the Chorder Bot flow in <#1175672083183829075> "
+            f"and it’ll be delivered to your island. 📦"
         )
     # Villager-specific fallback: route through lookup -> order ID flow
     if kind == "villager":
         return (
             f"I couldn't find **{normalized_query}** right now. "
-            f"If you'd like to order them (free members), use the Chorder Bot in <#1175672083183829075> with `!order villager:<id>`. "
-            f"Find the villager ID first using `ac!lookup villager {normalized_query}` in <#943118146259284008>."
+            f"If you want to order them as a free member, the Chorder Bot in <#1175672083183829075> can help with `!order villager:<id>`. "
+            f"You can grab the villager ID first with `ac!lookup villager {normalized_query}` in <#943118146259284008>."
         )
 
     # Generic fallback
@@ -553,10 +553,42 @@ def _format_live_search_answer(
     )
 
 
+def _resolve_followup_question(question: str, history: Optional[list[dict]] = None) -> str:
+    """Turn short affirmations like 'yes' into a search against prior context."""
+    if not question:
+        return question
+
+    lowered = question.strip().lower()
+    if lowered not in {"yes", "yeah", "y", "sure", "ok", "okay"}:
+        return question
+
+    if not history:
+        return question
+
+    for turn in reversed(history):
+        content = (turn.get("content") or "").strip()
+        if not content or turn.get("role") != "assistant":
+            continue
+        match = re.search(r"\b(?:did|do|does|is|was)\s+you\s+mean\b\s+(.+?)(?:\?|$)", content, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        if len(content.split()) <= 8:
+            return content
+
+    for turn in reversed(history):
+        if turn.get("role") == "user":
+            content = (turn.get("content") or "").strip()
+            if content:
+                return content
+
+    return question
+
+
 async def _try_live_search_answer(
     question: str,
     user_lacks_sub_access: bool = False,
     accessible_islands: Optional[list[str]] = None,
+    history: Optional[list[dict]] = None,
 ) -> Optional[str]:
     """Return a direct live-search answer for item/villager lookup questions.
 
@@ -567,14 +599,16 @@ async def _try_live_search_answer(
     passed through to ``_format_live_search_answer`` to filter sub results.
     When ``None``, no filtering is applied (existing behaviour).
     """
-    if _should_skip_live_search(question):
+    resolved_question = _resolve_followup_question(question, history=history)
+    if _should_skip_live_search(resolved_question):
         return None
 
     last_payload: Optional[dict] = None
     last_kind: Optional[str] = None
     last_query: Optional[str] = None
+    suggestion_payload: Optional[tuple[dict, str, str]] = None
 
-    for kind, query in _extract_live_search_candidates(question):
+    for kind, query in _extract_live_search_candidates(resolved_question):
         payload = await _search_live_api(kind, query)
         if not payload:
             continue
@@ -591,11 +625,15 @@ async def _try_live_search_answer(
             )
 
         if payload.get("suggestions"):
-            return _format_live_search_answer(
-                kind, query, payload,
-                user_lacks_sub_access=user_lacks_sub_access,
-                accessible_islands=accessible_islands,
-            )
+            suggestion_payload = (payload, kind, query)
+
+    if suggestion_payload:
+        payload, kind, query = suggestion_payload
+        return _format_live_search_answer(
+            kind, query, payload,
+            user_lacks_sub_access=user_lacks_sub_access,
+            accessible_islands=accessible_islands,
+        )
 
     if last_payload and last_kind and last_query:
         return _format_live_search_answer(
@@ -1517,6 +1555,7 @@ async def get_ai_answer(
         q,
         user_lacks_sub_access=lacks_sub,
         accessible_islands=accessible_islands,
+        history=history,
     )
     if live_search_answer:
         resp = _append_support_note(live_search_answer)
