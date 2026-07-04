@@ -49,11 +49,15 @@ def _clean_query(query: str) -> str:
     q = query.strip().strip("\"' ")
     q = re.sub(r"\s+", " ", q)
     q = re.sub(r"^(?:a|an|the)\s+", "", q, flags=re.IGNORECASE)
-    q = re.sub(r"^(?:villager|villagers)\s+", "", q, flags=re.IGNORECASE)
     q = re.sub(r"\s+(?:on|in|for)\s+(?:any\s+)?islands?$", "", q, flags=re.IGNORECASE)
     q = re.sub(r"\s+(?:here|there)$", "", q, flags=re.IGNORECASE)
     q = q.rstrip("?!.,")
     return q.strip()
+
+
+def _clean_villager_query(query: str) -> str:
+    cleaned = _clean_query(query)
+    return re.sub(r"^(?:villager|villagers)\s+", "", cleaned, flags=re.IGNORECASE).strip()
 
 
 def _is_support_or_meta_question(question: str) -> bool:
@@ -92,11 +96,7 @@ def _looks_like_item_query(query: str) -> bool:
     if re.match(r"^(?:villager|villagers)\b", lowered):
         return False
     tokens = re.findall(r"[a-z]+", lowered)
-    if any(token in _ITEM_KEYWORDS for token in tokens):
-        return True
-    if any(re.search(rf"\b{re.escape(keyword)}\b", lowered) for keyword in _ITEM_KEYWORDS):
-        return True
-    return False
+    return any(token in _ITEM_KEYWORDS for token in tokens)
 
 
 def _looks_like_single_token_villager_name(query: str) -> bool:
@@ -116,10 +116,12 @@ def _looks_like_single_token_villager_name(query: str) -> bool:
 
 
 def _build_intent(intent: str, query: str, candidates: list[tuple[str, str]] | None = None, should_skip: bool = False) -> SearchIntent:
+    cleaned_query = _clean_query(query)
+    normalized_query = cleaned_query.lower()
     return {
         "intent": intent,
-        "query": _clean_query(query),
-        "candidates": list(candidates or []),
+        "query": normalized_query,
+        "candidates": [(kind, _clean_query(candidate_query).lower()) for kind, candidate_query in (candidates or [])],
         "should_skip": should_skip,
     }
 
@@ -148,6 +150,10 @@ def extract_search_intent(question: str) -> SearchIntent:
             return cleaned
         return cleaned.lower()
 
+    def _ambiguous_result(query: str) -> SearchIntent:
+        normalized = _canonical_query(query)
+        return _build_intent("none", normalized, candidates=[("villager", normalized), ("item", normalized)], should_skip=False)
+
     explicit_patterns = [
         (r"^!villager\s+(.+)$", "villager"),
         (r"^!(?:find|locate)\s+(.+)$", "item"),
@@ -161,6 +167,9 @@ def extract_search_intent(question: str) -> SearchIntent:
         match = re.match(pattern, q, flags=re.IGNORECASE)
         if match:
             query = _canonical_query(match.group(1))
+            if kind == "villager":
+                query = _clean_villager_query(match.group(1))
+                return _build_intent(kind, query, candidates=[(kind, query)] if query else [], should_skip=False)
             return _build_intent(kind, query, candidates=[(kind, query)] if query else [], should_skip=False)
 
     where_match = re.match(r"^(?:where\s+is|where's|where\s+are)\s+(.+)$", q, flags=re.IGNORECASE)
@@ -169,12 +178,10 @@ def extract_search_intent(question: str) -> SearchIntent:
         if query and len(query.split()) <= 4:
             lowered_query = _canonical_query(query)
             if re.search(r"\b(?:villager|villagers)\b", q, re.IGNORECASE):
-                return _build_intent("villager", lowered_query, candidates=[], should_skip=False)
-            if _looks_like_item_query(query):
-                return _build_intent("none", lowered_query, candidates=[("villager", lowered_query), ("item", lowered_query)], should_skip=False)
+                return _build_intent("villager", _clean_villager_query(query), candidates=[], should_skip=False)
             if len(query.split()) == 1 and _looks_like_single_token_villager_name(query):
-                return _build_intent("none", lowered_query, candidates=[("villager", lowered_query), ("item", lowered_query)], should_skip=False)
-            return _build_intent("none", lowered_query, candidates=[("villager", lowered_query), ("item", lowered_query)], should_skip=False)
+                return _ambiguous_result(query)
+            return _ambiguous_result(query)
 
     which_island_match = re.match(r"^which\s+island\s+is\s+(.+)\s+on$", q, flags=re.IGNORECASE)
     if which_island_match:
@@ -207,7 +214,7 @@ def extract_search_intent(question: str) -> SearchIntent:
             if query:
                 if re.match(r"^(?:can i find|can you find|could i find|could you find|where can i find|where can you find)\s+", q, flags=re.IGNORECASE):
                     if re.match(r"^(?:villager|villagers)\b", query, flags=re.IGNORECASE):
-                        query = _canonical_query(re.sub(r"^(?:villager|villagers)\b\s*", "", query, flags=re.IGNORECASE))
+                        query = _clean_villager_query(query)
                         if query:
                             return _build_intent("villager", query, candidates=[], should_skip=False)
                     if _looks_like_single_token_villager_name(query):

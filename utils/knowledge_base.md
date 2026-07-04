@@ -15,7 +15,7 @@ villagers, and visit other players' islands. The community includes Filipino and
 | Twitch | [twitch.tv/chopaeng](https://twitch.tv/chopaeng) |
 | YouTube | [youtube.com/@chopaengtv](https://www.youtube.com/@chopaengtv) |
 | Facebook | [facebook.com/ChoPaengTV](https://www.facebook.com/ChoPaengTV) |
-| TikTok | [tiktok.com/@chopaeng](https://www.tiktok.com/@chopaeng) |
+| TikTok | [tiktok.com/@chopaengtv](https://www.tiktok.com/@chopaengtv) |
 | Discord | [discord.gg/chopaeng](https://discord.gg/chopaeng) |
 | Patreon | [patreon.com/chopaeng](https://www.patreon.com/cw/chopaeng/membership) |
 
@@ -161,9 +161,9 @@ Subscribe or become a member via one of these platforms to unlock:
 
 Supported platforms:
 - [Patreon](https://www.patreon.com/cw/chopaeng/membership)
-- [YouTube Channel Membership](https://www.youtube.com/@chopaeng)
+- [YouTube Channel Membership](https://www.youtube.com/@chopaengtv)
 - [Twitch Subscription](https://twitch.tv/chopaeng)
-- [TikTok Community (Basic Plan)](https://www.tiktok.com/@chopaeng)
+- [TikTok Community (Basic Plan)](https://www.tiktok.com/@chopaengtv)
 
 ### Getting Access to Sub Islands (Multiple Platforms)
 After subscribing/joining on any platform, link your account to Discord:
