@@ -218,19 +218,28 @@ class DataManager:
 
     def get_villagers(self, villagers_dirs):
         """Scan villager text files from provided directories (cached for 5 min)"""
-        paths_to_scan = tuple(sorted(p for p in villagers_dirs if p and os.path.exists(p)))
-
-        if not paths_to_scan:
-            return {}
-
+        now = time.time()
         # Return cached data if still fresh.
         # Use _villager_cache_time as sentinel so an empty-result scan is also cached.
-        now = time.time()
         if (
             self._villager_cache_time is not None
             and now - self._villager_cache_time < self._villager_cache_ttl
         ):
             return self._villager_cache
+
+        from utils.agent_client import agent_client
+        if agent_client.enabled:
+            data = agent_client.get_villagers()
+            if data is not None:
+                self._villager_cache = data
+                self._villager_cache_time = now
+                return data
+            logger.warning("Agent client enabled but returned no villager data. Falling back to local files.")
+
+        paths_to_scan = tuple(sorted(p for p in villagers_dirs if p and os.path.exists(p)))
+
+        if not paths_to_scan:
+            return {}
 
         data = {}
 

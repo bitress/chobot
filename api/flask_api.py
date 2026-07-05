@@ -1102,12 +1102,19 @@ _FILE_CACHE_TTL = 3  # seconds
 
 
 def get_file_content(folder_path, filename):
-    """Read file content safely with caching and retry to reduce file-lock contention.
+    """Read file content safely with caching and retry to reduce file-lock contention."""
+    from utils.agent_client import agent_client
+    if agent_client.enabled:
+        island_name = os.path.basename(folder_path) if folder_path else ""
+        status_data = agent_client.get_all_status()
+        if status_data:
+            # Look for the island across all categories
+            for cat, islands in status_data.items():
+                if island_name in islands:
+                    key = filename.split('.')[0].lower() # e.g. "Dodo.txt" -> "dodo"
+                    return islands[island_name].get(key)
+        return None
 
-    The C# SysBot writes to these files with exclusive access (FileShare.None).
-    Caching minimises how often the file is opened, and the retry handles the
-    brief window where C# holds an exclusive write lock.
-    """
     path = os.path.join(folder_path, filename)
 
     now = time.monotonic()
@@ -2152,49 +2159,90 @@ def get_islands():
     results = []
 
     if Config.DIR_FREE and os.path.exists(Config.DIR_FREE):
-        with os.scandir(Config.DIR_FREE) as entries:
-            for entry in entries:
-                if entry.is_dir():
-                    name = entry.name.upper()
+        from utils.agent_client import agent_client
+        if agent_client.enabled:
+            status_data = agent_client.get_all_status()
+            if status_data and "Free" in status_data:
+                for name_raw, island_data in status_data["Free"].items():
+                    name = name_raw.upper()
                     if db_map.get(name, {}).get("is_visible") is False:
                         continue
+                    # Fake entry to pass the name
+                    entry = SimpleNamespace(name=name_raw, path="")
                     results.append(_build_island_response(
                         entry, "Free", db_map.get(name, {}),
                         discord_status.get(name.lower()),
                         viewer_roles,
                         viewer_is_mod,
                     ))
+        else:
+            with os.scandir(Config.DIR_FREE) as entries:
+                for entry in entries:
+                    if entry.is_dir():
+                        name = entry.name.upper()
+                        if db_map.get(name, {}).get("is_visible") is False:
+                            continue
+                        results.append(_build_island_response(
+                            entry, "Free", db_map.get(name, {}),
+                            discord_status.get(name.lower()),
+                            viewer_roles,
+                            viewer_is_mod,
+                        ))
 
     if Config.DIR_VIP and os.path.exists(Config.DIR_VIP):
-        with os.scandir(Config.DIR_VIP) as entries:
-            for entry in entries:
-                if entry.is_dir():
-                    name = entry.name.upper()
+        from utils.agent_client import agent_client
+        if agent_client.enabled:
+            status_data = agent_client.get_all_status()
+            if status_data and "VIP" in status_data:
+                for name_raw, island_data in status_data["VIP"].items():
+                    name = name_raw.upper()
                     if db_map.get(name, {}).get("is_visible") is False:
                         continue
+                    # Fake entry to pass the name
+                    entry = SimpleNamespace(name=name_raw, path="")
                     results.append(_build_island_response(
                         entry, "VIP", db_map.get(name, {}),
                         discord_status.get(name.lower()),
                         viewer_roles,
                         viewer_is_mod,
                     ))
+        else:
+            with os.scandir(Config.DIR_VIP) as entries:
+                for entry in entries:
+                    if entry.is_dir():
+                        name = entry.name.upper()
+                        if db_map.get(name, {}).get("is_visible") is False:
+                            continue
+                        results.append(_build_island_response(
+                            entry, "VIP", db_map.get(name, {}),
+                            discord_status.get(name.lower()),
+                            viewer_roles,
+                            viewer_is_mod,
+                        ))
 
     if Config.DIR_ORDER and os.path.exists(Config.DIR_ORDER):
         order_entries = []
-        direct_order_files = [
-            os.path.join(Config.DIR_ORDER, "Dodo.txt"),
-            os.path.join(Config.DIR_ORDER, "Visitors.txt"),
-            os.path.join(Config.DIR_ORDER, "Villagers.txt"),
-        ]
-        order_name = Config.ORDER_BOT_ISLAND or os.path.basename(Config.DIR_ORDER)
-        basename_matches = clean_text(os.path.basename(Config.DIR_ORDER)) == clean_text(order_name)
-        if basename_matches or any(os.path.exists(path) for path in direct_order_files):
-            order_entries.append(SimpleNamespace(
-                name=order_name,
-                path=Config.DIR_ORDER,
-            ))
-        with os.scandir(Config.DIR_ORDER) as entries:
-            order_entries.extend(entry for entry in entries if entry.is_dir())
+        from utils.agent_client import agent_client
+        if agent_client.enabled:
+            status_data = agent_client.get_all_status()
+            if status_data and "Order" in status_data:
+                for name_raw, island_data in status_data["Order"].items():
+                    order_entries.append(SimpleNamespace(name=name_raw, path=""))
+        else:
+            direct_order_files = [
+                os.path.join(Config.DIR_ORDER, "Dodo.txt"),
+                os.path.join(Config.DIR_ORDER, "Visitors.txt"),
+                os.path.join(Config.DIR_ORDER, "Villagers.txt"),
+            ]
+            order_name = Config.ORDER_BOT_ISLAND or os.path.basename(Config.DIR_ORDER)
+            basename_matches = clean_text(os.path.basename(Config.DIR_ORDER)) == clean_text(order_name)
+            if basename_matches or any(os.path.exists(path) for path in direct_order_files):
+                order_entries.append(SimpleNamespace(
+                    name=order_name,
+                    path=Config.DIR_ORDER,
+                ))
+            with os.scandir(Config.DIR_ORDER) as entries:
+                order_entries.extend(entry for entry in entries if entry.is_dir())
         for entry in order_entries:
             name = entry.name.upper()
             default_order_meta = {

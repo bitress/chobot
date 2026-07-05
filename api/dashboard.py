@@ -626,6 +626,18 @@ def _inject_user():
 # Filesystem helpers
 # ---------------------------------------------------------------------------
 def _read_file(folder_path, filename):
+    from utils.agent_client import agent_client
+    if agent_client.enabled:
+        island_name = os.path.basename(folder_path) if folder_path else ""
+        status_data = agent_client.get_all_status()
+        if status_data:
+            # Look for the island across all categories
+            for cat, islands in status_data.items():
+                if island_name in islands:
+                    key = filename.split('.')[0].lower() # e.g. "Dodo.txt" -> "dodo"
+                    return islands[island_name].get(key)
+        return None
+
     try:
         with open(os.path.join(folder_path, filename), "r", encoding="utf-8-sig") as fh:
             return fh.read().strip()
@@ -696,6 +708,21 @@ def _parse_visitor_list(raw):
 def _collect_fs_islands():
     """Return a dict keyed by uppercase island name with live filesystem data."""
     result = {}
+    from utils.agent_client import agent_client
+    if agent_client.enabled:
+        status_data = agent_client.get_all_status()
+        if status_data:
+            for cat, islands in status_data.items():
+                for name, data in islands.items():
+                    uname = name.upper()
+                    result[uname] = {
+                        "name":        uname,
+                        "fs_path":     f"agent://{cat}/{name}",
+                        "fs_type":     cat,
+                        "fs_dodo":     data.get("dodo"),
+                        "fs_visitors": _parse_visitor_value(data.get("visitors")),
+                    }
+        return result
 
     def _scan(directory, itype):
         if not directory or not os.path.exists(directory):
@@ -1244,6 +1271,21 @@ def _merge_dashboard_fs_islands(db_islands: list[dict]) -> list[dict]:
 def _find_island_filesystem_meta(island_id: str, display_name: str | None = None) -> dict:
     """Return filesystem metadata used by the legacy island detail page."""
     upper = (display_name or island_id).upper()
+    from utils.agent_client import agent_client
+    if agent_client.enabled:
+        status_data = agent_client.get_all_status()
+        if status_data:
+            for cat, islands in status_data.items():
+                for fs_island_name, data in islands.items():
+                    if fs_island_name.upper() == upper or island_id.lower() == fs_island_name.lower():
+                        return {
+                            "fs_path": f"agent://{cat}/{fs_island_name}",
+                            "fs_type": cat,
+                            "fs_dodo": data.get("dodo"),
+                            "fs_visitors": _parse_visitor_value(data.get("visitors")),
+                        }
+        return {"fs_path": None, "fs_type": None, "fs_dodo": None, "fs_visitors": None}
+
     fs_path = fs_type = None
     for directory, itype in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP"), (getattr(Config, "DIR_ORDER", None), "Order")]:
         if not directory:

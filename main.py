@@ -18,6 +18,7 @@ Usage:
     python main.py discord              # Discord bot (with all cogs)
     python main.py discord-find         # Discord bot (find/search cogs only)
     python main.py flight-logger        # Discord bot with FlightLoggerCog only
+    python main.py local-agent          # Run the local file proxy agent
     python main.py flask twitch-find    # Flask + Twitch find only
     ... any combination
 """
@@ -51,6 +52,7 @@ VALID_SERVICES = {
     "twitch", "twitch-find",
     "discord", "discord-find", "flight-logger",
     "migrate-mariadb",
+    "local-agent",
 }
 
 SERVICE_DESCRIPTIONS = {
@@ -62,6 +64,7 @@ SERVICE_DESCRIPTIONS = {
     "discord-find":   "Discord bot (find/search cogs only)",
     "flight-logger":  "Discord bot with FlightLoggerCog only",
     "migrate-mariadb": "Migrate local SQLite database to MariaDB",
+    "local-agent":    "Local file access agent (SysBot proxy for VPS)",
 }
 
 # ============================================================================
@@ -220,12 +223,29 @@ def expand_services(requested: Set[str]) -> dict:
         "discord": "discord" in requested,
         "discord_find_only": "discord-find" in requested,
         "flight_logger_only": "flight-logger" in requested,
+        "local_agent": "local-agent" in requested,
     }
 
 
 # ============================================================================
 # THREAD RUNNERS
 # ============================================================================
+def run_agent():
+    """Run local agent in a thread."""
+    try:
+        logger.info("[AGENT] Starting Local SysBot Agent...")
+        record_service_status("agent", mode="api", status="starting")
+        from api.sysbot_agent import app as agent_app
+        record_service_status("agent", mode="api", status="running")
+        # Agent binds to the port specified in config (or 8101 by default)
+        agent_app.run(host="0.0.0.0", port=8101, use_reloader=False)
+    except Exception as e:
+        logger.error(f"[AGENT] Critical error: {e}")
+        logger.error(traceback.format_exc())
+        record_service_status("agent", mode="api", status="error", error=str(e))
+    finally:
+        record_service_status("agent", mode="api", status="stopped")
+
 def run_flask(data_manager: DataManager):
     """Run Flask API server in a thread."""
     try:
@@ -486,6 +506,14 @@ def main():
         flask_thread.start()
         threads.append(flask_thread)
         logger.info("[MAIN] Flask API thread started ✓")
+
+    if flags.get("local_agent"):
+        agent_thread = threading.Thread(
+            target=run_agent, name="AgentThread"
+        )
+        agent_thread.start()
+        threads.append(agent_thread)
+        logger.info("[MAIN] Local Agent thread started ✓")
 
     if needs_twitch:
         twitch_find_only = flags["twitch_find_only"]

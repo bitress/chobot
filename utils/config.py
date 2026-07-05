@@ -154,6 +154,10 @@ class Config:
     DIR_VIP = VILLAGERS_DIR
     DIR_ORDER = ORDER_BOT_DIR
 
+    # Local Agent (SysBot Data Proxy)
+    SYSBOT_AGENT_URL = os.getenv('SYSBOT_AGENT_URL', '').strip()
+    SYSBOT_AGENT_SECRET = os.getenv('SYSBOT_AGENT_SECRET', '')
+
     # Island Lists (fallback defaults; dynamically updated at runtime from Discord sub-category)
     SUB_ISLANDS = [
         "Adhika", "Alapaap", "Aruga", "Bahaghari", "Bituin", "Bonita", "Dakila",
