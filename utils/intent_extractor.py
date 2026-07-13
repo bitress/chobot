@@ -1,233 +1,185 @@
-"""Structured intent extractor for live item/villager searches.
+"""LLM-based intent + live-search decision layer.
 
-This module provides a small function-call style extractor that returns a
-structured intent dict. It is intentionally conservative and safe to use
-synchronously. The implementation is designed to be easy to extend for an LLM
-function-calling pipeline later, while still working locally without any API
-keys.
+Replaces the standalone regex `extract_search_intent` classifier as the
+PRIMARY path when an LLM (OpenAI or Gemini) is configured. The regex
+extractor is kept only as a fallback for when no API key is present.
+
+The core idea: instead of pre-classifying the question with regex and then
+almost always hitting the live API "just in case", we give the LLM a single
+tool it can call ONLY when it decides live data is actually required. The
+model already has:
+  - the user's question
+  - recent chat history
+  - the rich `live_context` block (island status, villager locations)
+  - the knowledge-base context
+
+If that's enough to answer, it just answers. If not, it calls
+`search_live_data(kind, query)` itself, and we execute that specific search.
+This removes the regex guesswork entirely.
 """
-import re
-from typing import TypedDict
 
+from __future__ import annotations
+
+import json
+import logging
+from typing import Optional, TypedDict
+
+logger = logging.getLogger("ChopaengAI")
 
 class SearchIntent(TypedDict):
-    intent: str
+    intent: str            # "item" | "villager" | "island" | "none"
     query: str
+    needs_search: bool
     candidates: list[tuple[str, str]]
     should_skip: bool
 
+# ---------------------------------------------------------------------------
+# 1. Ask the LLM whether/what to search, returning structured JSON
+# ---------------------------------------------------------------------------
 
-def _normalize_question(question: str) -> str:
-    if not question:
-        return ""
-    q = question.strip()
-    q = re.sub(r"\s+", " ", q)
-    q = q.strip("\"' ")
-    return q.rstrip("?!.,")
+async def decide_live_search_with_llm(
+    question: str,
+    live_context: str,
+    kb_context: str,
+    history_text: str = "",
+    provider: str = "openai",
+    api_key: str = "",
+    base_url: str = "",
+    model: str = "gpt-4o-mini",
+) -> SearchIntent:
+    """Let the LLM decide if a live search is needed and with what query.
 
+    Returns structured JSON (intent, query, needs_search: bool) in one pass.
+    """
+    system_prompt = (
+        "You are the search-decision layer for ChoBot, an ACNH community assistant. "
+        "Decide if answering the user's question requires searching the live Chopaeng API "
+        "for an item, villager, or island.\n\n"
+        "Return ONLY a JSON object exactly matching this schema:\n"
+        "{\n"
+        '  "needs_search": true if the user is asking about an item, villager, or island, false ONLY if it is a general request/greeting,\n'
+        '  "intent": "item" | "villager" | "island" | "none",\n'
+        '  "query": "the search term (e.g., golden shovel, Raymond, Zelda), empty if none"\n'
+        "}\n\n"
+        "ALWAYS set needs_search to true if the user asks for an item, villager, or island theme, so we can fetch live data."
+    )
 
-_NON_VILLAGER_WORDS = {
-    "apple", "apples", "banana", "bananas", "orange", "oranges", "grape", "grapes",
-    "carrot", "carrots", "food", "drink", "water", "fruit", "fruits", "help", "yes",
-    "yeah", "y", "ok", "okay", "no", "maybe", "villager", "villagers", "person",
-    "people", "thing", "things", "place", "places", "time", "times", "name", "names",
-    "question", "questions", "answer", "answers", "command", "commands", "rule", "rules",
-}
+    user_prompt = (
+        f"Live context:\n{live_context}\n\n"
+        f"Knowledge base context:\n{kb_context}\n\n"
+        f"Recent conversation:\n{history_text}\n\n"
+        f"Question: {question}"
+    )
 
-_ITEM_KEYWORDS = {
-    "bells", "shovel", "shovel", "axe", "sword", "dress", "shirt", "hat", "shoe", "shoes",
-    "boot", "boots", "plate", "chair", "furniture", "item", "items", "recipe", "recipes",
-    "flower", "flowers", "fish", "bug", "bugs", "fruit", "fruits", "diy", "diys", "clothing",
-    "clothes", "lamp", "table", "wall", "floor", "door", "tool", "tools", "fence", "fencing",
-    "customization", "customizations", "variant", "variants",
-}
+    content = ""
+    try:
+        if provider == "openai":
+            from openai import OpenAI
+            client_kwargs = {"api_key": api_key}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            client = OpenAI(**client_kwargs)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
+            def _call_openai():
+                return client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                )
+            response = await loop.run_in_executor(None, _call_openai)
+            content = getattr(response.choices[0].message, "content", "")
+            
+        elif provider == "gemini":
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            gemini_model = genai.GenerativeModel(model)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
+            def _call_gemini():
+                return gemini_model.generate_content(
+                    f"{system_prompt}\n\n{user_prompt}",
+                    generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
+                )
+            response = await loop.run_in_executor(None, _call_gemini)
+            content = response.text.strip()
+            
+    except Exception as exc:
+        logger.warning(f"ChopaengAI: LLM intent decision failed for {provider}: {exc}")
+        return _no_search_intent()
 
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning(f"ChopaengAI: could not parse JSON intent args: {exc} | Content: {content}")
+        return _no_search_intent()
 
-def _clean_query(query: str) -> str:
-    if not query:
-        return ""
-    q = query.strip().strip("\"' ")
-    q = re.sub(r"\s+", " ", q)
-    q = re.sub(r"^(?:a|an|the)\s+", "", q, flags=re.IGNORECASE)
-    q = re.sub(r"\s+(?:on|in|for)\s+(?:any\s+)?islands?$", "", q, flags=re.IGNORECASE)
-    q = re.sub(r"\s+(?:here|there)$", "", q, flags=re.IGNORECASE)
-    q = q.rstrip("?!.,")
-    return q.strip()
+    needs_search = bool(data.get("needs_search"))
+    kind = data.get("intent", "none")
+    query = (data.get("query") or "").strip().lower()
 
+    if kind not in ("item", "villager", "island") or not query:
+        needs_search = False
+        kind = "none"
 
-def _clean_villager_query(query: str) -> str:
-    cleaned = _clean_query(query)
-    return re.sub(r"^(?:villager|villagers)\s+", "", cleaned, flags=re.IGNORECASE).strip()
-
-
-def _is_support_or_meta_question(question: str) -> bool:
-    lowered = question.lower().strip()
-    support_patterns = [
-        r"\b(?:open|create|submit|get|start)\s+(?:a\s+)?(?:support\s+)?ticket\b",
-        r"\bsupport\s+ticket\b",
-        r"\bticket\b.*\b(?:help|question|assist)\b",
-        r"\b(?:need|want)\s+help\b.*\b(?:wrong|mistake|worried|unsure|rule)\b",
-        r"\b(?:don'?t|do\s+not)\s+(?:want\s+to\s+)?(?:do\s+)?(?:the\s+)?wrong\b",
-        r"\b(?:talk|speak)\s+to\s+(?:a\s+)?(?:mod|moderator|staff|admin)\b",
-        r"\bhow\s+(?:do|can)\s+i\s+(?:open|get|create|start)\s+(?:a\s+)?(?:support\s+)?ticket\b",
-        r"\b(?:who|where)\s+(?:do|can)\s+i\s+(?:ask|contact)\b",
-        r"\b(?:how|what|where)\s+(?:do|can|to)\s+(?:i\s+)?(?:get|obtain|buy|subscribe|gain|earn)\b.*\b(?:access|mod|privilege|ticket)\b",
-        r"\b(?:command|how\s+to|what\s+(?:command|is\s+the))\b.*\b(?:check|view|see|status|statuses)\b",
-        r"\b(?:check|view|see)\s+(?:island\s+)?status\b",
-    ]
-    if any(re.search(pattern, lowered) for pattern in support_patterns):
-        return True
-
-    if re.search(r"\bis\s+there\s+a\s+way\s+to\b", lowered):
-        return not re.search(
-            r"\bis\s+there\s+a\s+way\s+to\s+(?:find|get|obtain|buy|order|locate|visit|craft|make|trade|bring|invite|catch)\b",
-            lowered,
-        )
-
-    return False
-
-
-def _looks_like_item_query(query: str) -> bool:
-    if not query:
-        return False
-    lowered = query.lower().strip()
-    if not lowered:
-        return False
-    if re.match(r"^(?:villager|villagers)\b", lowered):
-        return False
-    tokens = re.findall(r"[a-z]+", lowered)
-    return any(token in _ITEM_KEYWORDS for token in tokens)
-
-
-def _looks_like_single_token_villager_name(query: str) -> bool:
-    if not query:
-        return False
-    cleaned = _clean_query(query)
-    if not cleaned:
-        return False
-    if len(cleaned.split()) != 1:
-        return False
-    lower = cleaned.lower()
-    if lower in _NON_VILLAGER_WORDS:
-        return False
-    if _looks_like_item_query(cleaned):
-        return False
-    return re.fullmatch(r"[a-z][a-z'-]{2,}", lower) is not None
-
-
-def _build_intent(intent: str, query: str, candidates: list[tuple[str, str]] | None = None, should_skip: bool = False) -> SearchIntent:
-    cleaned_query = _clean_query(query)
-    normalized_query = cleaned_query.lower()
     return {
-        "intent": intent,
-        "query": normalized_query,
-        "candidates": [(kind, _clean_query(candidate_query).lower()) for kind, candidate_query in (candidates or [])],
-        "should_skip": should_skip,
+        "intent": kind,
+        "query": query,
+        "needs_search": needs_search,
+        "candidates": [(kind, query)] if kind != "none" else [],
+        "should_skip": not needs_search,
     }
 
+def _no_search_intent() -> SearchIntent:
+    return {"intent": "none", "query": "", "needs_search": False, "candidates": [], "should_skip": True}
 
-def extract_search_intent(question: str) -> SearchIntent:
-    """Extract intent for live search.
+# ---------------------------------------------------------------------------
+# 3. Regex fallback -- ONLY used when no LLM API key is configured
+# ---------------------------------------------------------------------------
 
-    Returns a dict with keys:
-      - intent: 'item', 'villager', or 'none'
-      - query: cleaned search query string
-      - candidates: optional list of (kind, query) pairs for ambiguous lookups
-      - should_skip: True for support/meta questions that should not hit the live search API
+def get_live_search_intent_fallback(question: str):
+    """Thin wrapper around the legacy regex extractor.
 
-    The extractor is intentionally conservative: prefer 'none' when uncertain.
+    Import lazily so the regex module is not even loaded on the LLM path.
     """
-    if not question or not question.strip():
-        return _build_intent("none", "", candidates=[], should_skip=False)
+    from utils.intent_extractor_legacy import extract_search_intent
+    return extract_search_intent(question)
 
-    q = _normalize_question(question)
-    if _is_support_or_meta_question(q):
-        return _build_intent("none", "", candidates=[], should_skip=True)
+# ---------------------------------------------------------------------------
+# 4. Unified entry point used by the rest of the bot
+# ---------------------------------------------------------------------------
 
-    def _canonical_query(value: str, preserve_case: bool = False) -> str:
-        cleaned = _clean_query(value)
-        if preserve_case:
-            return cleaned
-        return cleaned.lower()
+async def resolve_search_intent(
+    question: str,
+    live_context: str,
+    kb_context: str,
+    history_text: str = "",
+    provider: str = "openai",
+    api_key: str = "",
+    base_url: str = "",
+    model: str = "gpt-4o-mini",
+) -> SearchIntent:
+    """Single call-site the bot should use instead of `get_live_search_intent`.
 
-    def _ambiguous_result(query: str) -> SearchIntent:
-        normalized = _canonical_query(query)
-        return _build_intent("none", normalized, candidates=[("villager", normalized), ("item", normalized)], should_skip=False)
+    - If an API key is configured: use LLM JSON structured output to decide.
+    - Otherwise: fall back to the deterministic regex extractor.
+    """
+    if api_key:
+        return await decide_live_search_with_llm(
+            question=question,
+            live_context=live_context,
+            kb_context=kb_context,
+            history_text=history_text,
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+        )
 
-    explicit_patterns = [
-        (r"^!villager\s+(.+)$", "villager"),
-        (r"^!(?:find|locate)\s+(.+)$", "item"),
-        (r"^villager\s+(.+)$", "villager"),
-        (r"^where\s+can\s+i\s+find\s+villager\s+(.+)$", "villager"),
-        (r"^where\s+is\s+villager\s+(.+)$", "villager"),
-        (r"^(?:find|search)\s+villager\s+(.+)$", "villager"),
-        (r"^(?:find|search)\s+item\s+(.+)$", "item"),
-    ]
-    for pattern, kind in explicit_patterns:
-        match = re.match(pattern, q, flags=re.IGNORECASE)
-        if match:
-            query = _canonical_query(match.group(1))
-            if kind == "villager":
-                query = _clean_villager_query(match.group(1))
-                return _build_intent(kind, query, candidates=[(kind, query)] if query else [], should_skip=False)
-            return _build_intent(kind, query, candidates=[(kind, query)] if query else [], should_skip=False)
-
-    where_match = re.match(r"^(?:where\s+is|where's|where\s+are)\s+(.+)$", q, flags=re.IGNORECASE)
-    if where_match:
-        query = _canonical_query(where_match.group(1), preserve_case=True)
-        if query and len(query.split()) <= 4:
-            lowered_query = _canonical_query(query)
-            if re.search(r"\b(?:villager|villagers)\b", q, re.IGNORECASE):
-                return _build_intent("villager", _clean_villager_query(query), candidates=[], should_skip=False)
-            if len(query.split()) == 1 and _looks_like_single_token_villager_name(query):
-                return _ambiguous_result(query)
-            return _ambiguous_result(query)
-
-    which_island_match = re.match(r"^which\s+island\s+is\s+(.+)\s+on$", q, flags=re.IGNORECASE)
-    if which_island_match:
-        query = _canonical_query(which_island_match.group(1))
-        if query and len(query.split()) <= 4:
-            return _build_intent("none", query, candidates=[("villager", query), ("item", query)], should_skip=False)
-
-    villager_patterns = [
-        (r"^(?:is|are)\s+(?:villager\s+)?(.+?)\s+(?:on\s+any\s+island|here)$", "villager"),
-    ]
-    for pattern, kind in villager_patterns:
-        match = re.match(pattern, q, flags=re.IGNORECASE)
-        if match:
-            query = _canonical_query(match.group(1))
-            if query:
-                return _build_intent(kind, query, candidates=[], should_skip=False)
-
-    item_patterns = [
-        (r"^(?:do you have|does any island(?:s)? have|does any island(?:s)? stock|do any islands have|do any islands stock)\s+(.+)$", "item"),
-        (r"^(?:is there\s+(?:a|any)\s+way\s+to\s+(?:find|get|obtain|buy|order|locate|visit|craft|make|trade|bring|invite|catch)\s+(.+))$", "item"),
-        (r"^(?:can i find|can you find|could i find|could you find|where can i find|where can you find)\s+(.+)$", "item"),
-        (r"^(?:who has|who's got|who has got)\s+(.+)$", "item"),
-        (r"^(?:which islands?\s+(?:have|has|sell|stock)|what islands?\s+(?:have|has))\s+(.+)$", "item"),
-        (r"^(?:find|search|look for)\s+(.+)$", "item"),
-    ]
-    for pattern, kind in item_patterns:
-        match = re.match(pattern, q, flags=re.IGNORECASE)
-        if match:
-            query = _canonical_query(match.group(2) if match.lastindex and match.lastindex >= 2 else match.group(1))
-            if query:
-                if re.match(r"^(?:can i find|can you find|could i find|could you find|where can i find|where can you find)\s+", q, flags=re.IGNORECASE):
-                    if re.match(r"^(?:villager|villagers)\b", query, flags=re.IGNORECASE):
-                        query = _clean_villager_query(query)
-                        if query:
-                            return _build_intent("villager", query, candidates=[], should_skip=False)
-                    if _looks_like_single_token_villager_name(query):
-                        return _build_intent("villager", query, candidates=[], should_skip=False)
-                    if _looks_like_item_query(query):
-                        return _build_intent("item", query, candidates=[], should_skip=False)
-                return _build_intent(kind, query, candidates=[], should_skip=False)
-
-    # Heuristics for single-token names.
-    tokens = re.findall(r"\w+", q)
-    if len(tokens) == 1:
-        query = _canonical_query(q)
-        if _looks_like_single_token_villager_name(query):
-            return _build_intent("villager", query, candidates=[], should_skip=False)
-
-    return _build_intent("none", q, candidates=[], should_skip=False)
+    logger.debug("ChopaengAI: no LLM API key configured, using regex fallback.")
+    return get_live_search_intent_fallback(question)

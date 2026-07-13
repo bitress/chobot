@@ -148,8 +148,6 @@ All island names are Filipino/Tagalog words with meaningful translations.
 | Tala | bright star | Light/star themed furniture |
 | Tinig | voice/sound | General |
 
-Stock rotates regularly across all islands. Use `!find <item>` to check current
-availability.
 
 ## Subscriber Perks
 Subscribe or become a member via one of these platforms to unlock:
