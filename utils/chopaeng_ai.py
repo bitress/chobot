@@ -336,10 +336,20 @@ def _category_islands_from_search_payload(payload: dict) -> tuple[list[str], lis
     return free, sub, order
 
 
-def _search_islands_by_characteristic(query: str) -> Optional[list[str]]:
+def _is_public_island(cat: str | None, island_type: str | None = None) -> bool:
+    cat_norm = (cat or "").strip().lower()
+    type_norm = (island_type or "").strip().lower()
+    return cat_norm in {"public", "free"} or type_norm == "free"
+
+
+def _display_island_name(island: dict) -> str:
+    return str(island.get("canonical_name") or island.get("name") or island.get("id") or "").strip()
+
+
+def _search_islands_by_characteristic(query: str) -> Optional[list[dict]]:
     """Search island descriptions for matching themes/characteristics.
     
-    Returns a list of island names that match the query in their description/theme.
+    Returns matching island summaries from cached live island metadata.
     """
     with _live_cache_lock:
         islands_data = _live_cache.get("islands")
@@ -356,17 +366,17 @@ def _search_islands_by_characteristic(query: str) -> Optional[list[str]]:
     if not query_lower:
         return None
     
-    matching_islands = []
+    matching_islands: list[dict] = []
     for island in islands_data["data"]:
-        name = island.get("name", "").strip()
+        name = _display_island_name(island)
         desc = (island.get("description", "") or "").lower()
         itype = (island.get("type", "") or "").lower()
         theme = (island.get("theme", "") or "").lower()
+        cat = (island.get("cat", "") or "").lower()
         items = island.get("items") or []
         items_lower = " ".join(str(i).lower() for i in items)
         
-        # Skip internal/dummy entries
-        if not name or name.capitalize().startswith("Zx"):
+        if not name or name.capitalize().startswith("Zx") or cat == "order":
             continue
         
         # Match against description, type, name, theme, or items
@@ -375,9 +385,51 @@ def _search_islands_by_characteristic(query: str) -> Optional[list[str]]:
             query_lower in name.lower() or
             query_lower in theme or
             query_lower in items_lower):
-            matching_islands.append(name)
+            matching_islands.append({
+                "name": name,
+                "cat": island.get("cat", ""),
+                "type": island.get("type", ""),
+                "status": island.get("status", ""),
+                "accessible": bool(island.get("accessible") or island.get("viewer_has_access")),
+                "visitors": island.get("visitors", 0),
+                "discord_bot_online": island.get("discord_bot_online"),
+                "matched_items": [
+                    str(item)
+                    for item in items
+                    if query_lower in str(item).lower()
+                ][:5],
+                "description": island.get("description", ""),
+            })
     
     return matching_islands if matching_islands else None
+
+
+def _split_island_matches_by_access(
+    matches: list[dict],
+    accessible_islands: Optional[list[str]] = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Return public, accessible subscriber, and locked subscriber island matches."""
+    public_matches: list[dict] = []
+    accessible_sub: list[dict] = []
+    locked_sub: list[dict] = []
+    accessible_lower = {name.lower() for name in accessible_islands} if accessible_islands is not None else None
+
+    for island in matches:
+        name = str(island.get("name") or "")
+        cat = island.get("cat")
+        island_type = island.get("type")
+        if _is_public_island(cat, island_type):
+            public_matches.append(island)
+            continue
+
+        if accessible_lower is None:
+            accessible_sub.append(island)
+        elif name.lower() in accessible_lower:
+            accessible_sub.append(island)
+        else:
+            locked_sub.append(island)
+
+    return public_matches, accessible_sub, locked_sub
 
 
 def _filter_accessible_sub_islands(
@@ -447,11 +499,21 @@ async def _execute_live_search(
         if kind == "island":
             matching_islands = _search_islands_by_characteristic(query)
             if matching_islands:
+                public_matches, accessible_sub, locked_sub = _split_island_matches_by_access(
+                    matching_islands,
+                    accessible_islands,
+                )
+                if user_lacks_sub_access:
+                    locked_sub = accessible_sub + locked_sub
+                    accessible_sub = []
                 return {
                     "search_type": "island_theme",
                     "query": query,
                     "found": True,
-                    "matching_islands": matching_islands
+                    "matching_islands": matching_islands,
+                    "public_islands": public_matches,
+                    "accessible_sub_islands": accessible_sub,
+                    "locked_sub_islands": locked_sub,
                 }
             continue
         
@@ -518,9 +580,35 @@ def _format_live_search_result_answer(result: Optional[dict]) -> Optional[str]:
     label = query.title() if query else "that"
 
     if result.get("search_type") == "island_theme" and result.get("found"):
-        islands = result.get("matching_islands") or []
-        if islands:
-            return f"I found island matches for `{query}`: {', '.join(islands)}."
+        public_islands = result.get("public_islands") or []
+        accessible_sub = result.get("accessible_sub_islands") or []
+        locked_sub = result.get("locked_sub_islands") or []
+
+        parts: list[str] = []
+        if public_islands:
+            public_names = ", ".join(str(island.get("name")) for island in public_islands if island.get("name"))
+            parts.append(f"free islands: {public_names}")
+        if accessible_sub:
+            sub_names = ", ".join(f"#{str(island.get('name')).lower()}" for island in accessible_sub if island.get("name"))
+            parts.append(f"your sub islands: {sub_names}")
+
+        if parts:
+            answer = f"`{query}` themed islands are " + "; ".join(parts) + "."
+            if public_islands:
+                answer += " For free islands, use the Dodo Board <#1500493205672825056>."
+            if accessible_sub:
+                answer += " For sub islands, use `!senddodo` or `!sd` in the island channel."
+            if locked_sub and not accessible_sub:
+                locked_names = ", ".join(str(island.get("name")).title() for island in locked_sub if island.get("name"))
+                answer += f" It also appears on subscriber islands you may not have access to: {locked_names}."
+            elif locked_sub:
+                locked_names = ", ".join(str(island.get("name")).title() for island in locked_sub if island.get("name"))
+                answer += f" Also found on a different subscription tier: {locked_names}."
+            return answer
+
+        if locked_sub:
+            locked_names = ", ".join(str(island.get("name")).title() for island in locked_sub if island.get("name"))
+            return f"`{query}` themed islands are subscriber-only right now: {locked_names}."
 
     if result.get("found"):
         parts: list[str] = []
@@ -1662,6 +1750,13 @@ async def get_ai_answer(
                 if live_search_result:
                     import json
                     search_result_context = f"[Live API Search Results for '{intent.get('query')}']\n" + json.dumps(live_search_result)
+                    if live_search_result.get("search_type") == "island_theme":
+                        live_answer = _format_live_search_result_answer(live_search_result)
+                        if live_answer:
+                            resp = _append_support_note(live_answer)
+                            if conversation_key:
+                                conversation_store.add(conversation_key, q, resp)
+                            return _auto_link_channels(resp)
             
             # 3. If no search needed or search didn't return an answer, fallback to normal LLM prompt
             if name == "openai":

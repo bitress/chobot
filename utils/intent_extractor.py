@@ -45,6 +45,8 @@ async def decide_live_search_with_llm(
         "}\n\n"
         "Set needs_search=true when the user asks where to find an item, where a "
         "villager is, what an island has, island status, or an island theme. "
+        "Short phrases like 'zelda themed islands?' or 'pink islands?' are island "
+        "theme searches; return intent=island and query='zelda' or 'pink'. "
         "Use intent=item for stock/item availability, villager for villager locations, "
         "and island for island names/status/themes."
     )
@@ -258,6 +260,9 @@ def get_live_search_intent_fallback(question: str) -> SearchIntent:
             return _build_intent("none", query, candidates=[("villager", query), ("item", query)], should_skip=False)
 
     island_patterns = [
+        r"^(.+?)\s+(?:themed\s+)?islands?$",
+        r"^(.+?)\s+theme(?:d)?\s+islands?$",
+        r"^(.+?)\s+theme$",
         r"^(?:which|what)\s+islands?\s+(?:has|have|has got|is|are)\s+(?:the\s+)?(.+?)(?:\s+theme|themed)?$",
         r"^(?:find|search)\s+(?:the\s+)?islands?\s+(?:with|by)\s+(.+)$",
     ]
