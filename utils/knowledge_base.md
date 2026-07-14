@@ -94,59 +94,62 @@ There are 47 islands total: 20 sub islands and 27 free islands.
 All island names are Filipino/Tagalog words with meaningful translations.
 
 ### Sub Islands (20 — requires subscription)
-| Island | Meaning |
-|--------|---------|
-| Adhika | more/extra |
-| Alapaap | cloud |
-| Aruga | care |
-| Bahaghari | rainbow |
-| Bituin | star |
-| Bonita | beautiful |
-| Dakila | great/noble |
-| Dalisay | pure |
-| Diwa | spirit/essence |
-| Gabay | guide |
-| Galak | joy |
-| Giliw | beloved |
-| Hiraya | dreams come true |
-| Kalangitan | sky/heavens |
-| Lakan | nobleman |
-| Likha | creation/art |
-| Malaya | free |
-| Marahuyo | enchanted |
-| Pangarap | dream |
-| Tagumpay | success/victory |
+
+| Island | Type | Items |
+|--------|------|-------|
+| Adhika | Pink Island | Pink furniture, decorations, wall-mounted, ceiling items, villagers |
+| Alapaap | 2.0 Treasure Island | 2.0 items, DIYs, vehicles, gyroids, food, materials, villagers |
+| Aruga | Seasonal Island | Seasonal items, event items, materials, golden tools, NMT, villagers |
+| Bahaghari | 2.0 Treasure Island | 2.0 items, DIYs, vehicles, gyroids, food, materials, villagers |
+| Bituin | Furniture Island | Furniture, appliances, electronics, décor, plants, musical instruments |
+| Bonita | Clothing Island | Tops, bottoms, dress-up, headwear, shoes, bags, accessories, umbrellas |
+| Dakila | 3.0 Treasure Island | Zelda, Splatoon, LEGO, Mario, Hotel, Marble, Kiddie, Artful themes |
+| Dalisay | Materials & DIY Island | DIYs, fish, bugs, sea creatures, flowers, materials, wallpaper, fencing |
+| Diwa | Critters & DIY Island | DIYs, critters, fossils, art, posters, villager photos, models, materials |
+| Gabay | Clothing Island | Complete clothing collection, shoes, accessories, bags, umbrellas |
+| Galak | Seasonal Items Island | Seasonal items, event items, materials, golden tools, NMT, villagers |
+| Giliw | Pink Island | Pink furniture, decorations, wall-mounted, ceiling items, villagers |
+| Hiraya | 1.0 Treasure Island | Furniture sets, Celeste, Sanrio, Mermaid, Zodiac, Gulliver, Mom's items |
+| Kalangitan | 3.0 Island | Zelda, Splatoon, LEGO, Mario, Hotel, Marble, Kiddie, Artful themes |
+| Lakan | Furniture Island | Furniture, appliances, electronics, décor, plants, musical instruments |
+| Likha | Materials & DIY Treasure Island | DIYs, fish, bugs, sea creatures, flowers, materials, wallpaper, fencing |
+| Malaya | 3.0 Island | Zelda, Splatoon, LEGO, Mario, Hotel, Marble, Kiddie, Artful themes |
+| Marahuyo | Critters & DIY Treasure Island | DIYs, art, fossils, posters, villager photos, models, materials |
+| Pangarap | 3.0 Island | Zelda, Splatoon, LEGO, Mario, Hotel, Marble, Kiddie, Artful themes |
+| Tagumpay | 1.0 Treasure Island | Furniture sets, Sanrio, Celeste, Mermaid, Zodiac, Gulliver, Mom's items |
 
 ### Free Islands (27 — open to everyone)
-| Island | Meaning | Specialty |
-|--------|---------|-----------|
-| Amihan | north wind/cool breeze | General |
-| Babaylan | shaman/healer | General |
-| Banaag | glimmer of light | Light/star themed furniture |
-| Bathala | supreme being | Deity/mythical themed rare items |
-| Dalangin | prayer | General |
-| Dangal | honor/dignity | General |
-| Giting | bravery/valor | General |
-| Gunita | memory | General |
-| Harana | serenade | Bugs, fish, sea creatures |
-| Kakanggata | — | General |
-| Kalawakan | outer space | Space/galaxy items, rare furniture, DIYs |
-| Kariktan | beauty/charm | General |
-| Kaulayaw | beloved | General |
-| Kilig | giddy/excited | General |
-| Kundiman | love song | Music-themed, romantic furniture |
-| Maharlika | noble/freedom | General |
-| Marilag | magnificent/radiant | General |
-| Matahom | beautiful (Bisaya) | Clothing (tops, bottoms, accessories, shoes, hats) |
-| Pagsamo | pleading | General |
-| Pagsuyo | love/devotion | Bugs, fish, nature items |
-| Paraluman | muse/guiding star | Clothing, seasonal/themed outfits |
-| Silakbo | outburst of emotion | General |
-| Sinag | ray of light/moonbeam | Light/star themed furniture |
-| Sinagtala | moonlight star | Light/star themed furniture |
-| Tadhana | destiny/fate | General |
-| Tala | bright star | Light/star themed furniture |
-| Tinig | voice/sound | General |
+
+| Island | Type | Items |
+|--------|------|-------|
+| Amihan | Seasonal Island | Seasonal items, Bunny Day, Festivale, materials, golden tools, villagers |
+| Babaylan | Seasonal Island | Cherry Blossom, Bamboo, seasonal items, materials, villagers |
+| Banaag | 3.0 Themed Island | Zelda, Splatoon, LEGO, Mario, Hotel, Marble, Kiddie, Artful themes |
+| Bathala | 2.0 Treasure Island | 2.0 items, DIYs, vehicles, gyroids, food, materials, villagers |
+| Dalangin | 2.0 Treasure Island | 2.0 items, DIYs, vehicles, gyroids, food, materials, villagers |
+| Dangal | 3.0 Themed Island | Zelda, Splatoon, LEGO, Mario, Hotel, Marble, Kiddie, Artful themes |
+| Giting | 3.0 Themed Island | Zelda, Splatoon, LEGO, Mario, Hotel, Marble, Kiddie, Artful themes |
+| Gunita | 2.0 Treasure Island | 2.0 items, DIYs, vehicles, gyroids, food, materials, villagers |
+| Harana | Critters & DIY Island | DIYs, art, fossils, models, posters, plants, critters |
+| Kakanggata | 1.0 Treasure Island | Furniture sets, Sanrio, Celeste, Mermaid, Zodiac, Gulliver, Mom's items |
+| Kalawakan | 1.0 Treasure Island | Furniture sets, Sanrio, Celeste, Mermaid, Zodiac, Gulliver, Mom's items |
+| Kariktan | 3.0 Themed Island | Zelda, Splatoon, LEGO, Mario, Hotel, Marble, Kiddie, Artful themes |
+| Kaulayaw | 2.0 Treasure Island | 2.0 items, DIYs, vehicles, gyroids, food, materials, villagers |
+| Kilig | 1.0 Treasure Island | Furniture sets, Sanrio, Celeste, Mermaid, Zodiac, Gulliver, Mom's items |
+| Kundiman | 1.0 Treasure Island | Furniture sets, Sanrio, Celeste, Mermaid, Zodiac, Gulliver, Mom's items |
+| Maharlika | Furniture Island | Furniture, appliances, electronics, décor, plants, musical instruments |
+| Marilag | Clothing Island | Tops, bottoms, dress-up, headwear, shoes, bags, accessories, umbrellas |
+| Matahom | Clothing Island | Tops, bottoms, dress-up, headwear, shoes, bags, accessories, umbrellas |
+| Pagsamo | Furniture Island | Furniture, appliances, electronics, décor, plants, musical instruments |
+| Pagsuyo | Critters & DIY Island | DIYs, art, fossils, models, posters, plants, critters |
+| Paraluman | Clothing Island | Tops, bottoms, dress-up, headwear, shoes, bags, accessories, umbrellas |
+| Silakbo | Seasonal Island | Seasonal items, Bunny Day, Festivale, materials, golden tools, villagers |
+| Sinag | 3.0 Themed Island | Zelda, Splatoon, LEGO, Mario, Hotel, Marble, Kiddie, Artful themes |
+| Sinagtala | Materials & DIY Island | DIYs, fish, bugs, sea creatures, flowers, materials, wallpaper, fencing |
+| Tadhana | Furniture Island | Furniture, appliances, electronics, décor, plants, musical instruments |
+| Tala | Materials & DIY Island | DIYs, fish, bugs, sea creatures, flowers, materials, wallpaper, fencing |
+| Tinig | Materials & DIY Island | DIYs, fish, bugs, sea creatures, flowers, materials, wallpaper, fencing |
+
 
 
 ## Subscriber Perks
