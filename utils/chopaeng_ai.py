@@ -306,6 +306,36 @@ async def _search_live_api(kind: str, query: str) -> Optional[dict]:
         return None
 
 
+def _category_islands_from_search_payload(payload: dict) -> tuple[list[str], list[str], list[str]]:
+    """Return (free, sub, order) island names from current or legacy search payloads."""
+    results = payload.get("results")
+    if isinstance(results, dict):
+        return (
+            list(results.get("free") or []),
+            list(results.get("sub") or []),
+            list(results.get("order") or []),
+        )
+
+    islands = payload.get("islands") or []
+    cats = payload.get("cats") or []
+    free_aliases = {"free", "public"}
+    sub_aliases = {"sub", "member", "vip"}
+    order_aliases = {"order", "orderbot"}
+
+    free: list[str] = []
+    sub: list[str] = []
+    order: list[str] = []
+    for island_name, raw_cat in zip(islands, cats):
+        cat = str(raw_cat or "").strip().lower()
+        if cat in free_aliases:
+            free.append(island_name)
+        elif cat in sub_aliases:
+            sub.append(island_name)
+        elif cat in order_aliases:
+            order.append(island_name)
+    return free, sub, order
+
+
 def _search_islands_by_characteristic(query: str) -> Optional[list[str]]:
     """Search island descriptions for matching themes/characteristics.
     
@@ -435,8 +465,7 @@ async def _execute_live_search(
         last_query = query
 
         if payload.get("found"):
-            free_islands = [n for n, c in zip(payload.get("islands", []), payload.get("cats", [])) if c == "free"]
-            sub_islands  = [n for n, c in zip(payload.get("islands", []), payload.get("cats", [])) if c == "sub"]
+            free_islands, sub_islands, order_islands = _category_islands_from_search_payload(payload)
             
             my_sub = _filter_accessible_sub_islands(sub_islands, accessible_islands)
             locked_sub = [n for n in sub_islands if n not in my_sub]
@@ -452,6 +481,9 @@ async def _execute_live_search(
                 "free_islands": free_islands,
                 "accessible_sub_islands": my_sub,
                 "locked_sub_islands": locked_sub,
+                "order_islands": order_islands,
+                "resolved_query": payload.get("resolved_query") or query,
+                "source": payload.get("source", ""),
             }
 
         if payload.get("suggestions"):
@@ -473,6 +505,189 @@ async def _execute_live_search(
             "found": False,
             "suggestions": [],
         }
+
+    return None
+
+
+def _format_live_search_result_answer(result: Optional[dict]) -> Optional[str]:
+    """Create a deterministic Discord-safe answer from live search results."""
+    if not result:
+        return None
+
+    query = str(result.get("resolved_query") or result.get("query") or "").strip()
+    label = query.title() if query else "that"
+
+    if result.get("search_type") == "island_theme" and result.get("found"):
+        islands = result.get("matching_islands") or []
+        if islands:
+            return f"I found island matches for `{query}`: {', '.join(islands)}."
+
+    if result.get("found"):
+        parts: list[str] = []
+        free_islands = result.get("free_islands") or []
+        accessible_sub = result.get("accessible_sub_islands") or []
+        locked_sub = result.get("locked_sub_islands") or []
+        order_islands = result.get("order_islands") or []
+
+        if free_islands:
+            parts.append(f"free islands: {', '.join(free_islands)}")
+        if accessible_sub:
+            parts.append(f"your sub islands: {', '.join('#' + name.lower() for name in accessible_sub)}")
+        if order_islands:
+            parts.append(f"order islands: {', '.join(order_islands)}")
+
+        if parts:
+            answer = f"{label} is currently available on " + "; ".join(parts) + "."
+            if locked_sub and not accessible_sub:
+                answer += " It also appears on subscriber islands you may not have access to."
+            return answer
+
+        if locked_sub:
+            return f"{label} is currently only showing on subscriber islands you may not have access to."
+
+    suggestions = result.get("suggestions") or []
+    if suggestions:
+        values = []
+        for suggestion in suggestions[:5]:
+            if isinstance(suggestion, dict):
+                values.append(str(suggestion.get("label") or suggestion.get("key") or "").strip())
+            else:
+                values.append(str(suggestion).strip())
+        values = [value for value in values if value]
+        if values:
+            return f"I couldn't find `{query}` exactly. Did you mean: {', '.join(values)}?"
+
+    if query:
+        return f"I couldn't find `{query}` in the live island data right now."
+    return None
+
+
+def _extract_live_search_candidates(question: str, history: Optional[list[dict]] = None) -> list[tuple[str, str]]:
+    """Backward-compatible candidate extractor for direct live searches."""
+    resolved_question = _resolve_followup_question(question, history)
+    if not resolved_question:
+        return []
+    from utils.intent_extractor import get_live_search_intent_fallback
+
+    intent = get_live_search_intent_fallback(resolved_question)
+    if intent.get("should_skip") or not intent.get("needs_search"):
+        return []
+    return list(intent.get("candidates", []))
+
+
+def _format_live_search_answer(
+    kind: str,
+    query: str,
+    payload: dict,
+    user_lacks_sub_access: bool = False,
+    accessible_islands: Optional[list[str]] = None,
+) -> str:
+    """Format a user-facing live search answer from `/api/find` or `/api/villager` JSON."""
+    display = (payload.get("resolved_query") or query or "").strip()
+    label = display.upper()
+    free_islands, sub_islands, order_islands = _category_islands_from_search_payload(payload)
+    accessible_sub = _filter_accessible_sub_islands(sub_islands, accessible_islands)
+    locked_sub = [name for name in sub_islands if name not in accessible_sub]
+
+    if user_lacks_sub_access or (accessible_islands is not None and not accessible_sub):
+        accessible_sub = []
+        locked_sub = sub_islands
+
+    if payload.get("found"):
+        lines: list[str] = [f"Perfect, I found **{label}**."]
+
+        if free_islands:
+            lines.append(
+                "You can visit the free islands via the Dodo Board <#1500493205672825056>: "
+                f"{', '.join(free_islands)}."
+            )
+
+        if accessible_sub:
+            sub_channels = ", ".join(f"#{name.lower()}" for name in accessible_sub)
+            lines.append(f"Subscribers can use `!senddodo` or `!sd` in {sub_channels}.")
+
+        if order_islands:
+            lines.append(f"It also appears on order islands: {', '.join(order_islands)}.")
+
+        if locked_sub and accessible_sub:
+            locked_names = ", ".join(name.title() for name in locked_sub)
+            lines.append(
+                f"*(Also found on {locked_names}, which may be a different subscription tier.)*"
+            )
+
+        if lines and len(lines) > 1:
+            return " ".join(lines)
+
+        if locked_sub:
+            if kind == "villager":
+                return (
+                    f"**{label}** is only showing on subscriber islands you cannot access right now. "
+                    "Free members can use `!order villager <name>` in <#1175672083183829075>."
+                )
+            return (
+                f"**{label}** is only showing on subscriber islands you cannot access right now. "
+                "Free members can order items in <#1175672083183829075>."
+            )
+
+    suggestions = payload.get("suggestions") or []
+    if suggestions:
+        values = []
+        for suggestion in suggestions[:5]:
+            if isinstance(suggestion, dict):
+                value = suggestion.get("label") or suggestion.get("key") or ""
+            else:
+                value = suggestion
+            if value:
+                values.append(str(value).upper())
+        return f"I couldn't pin down an exact match for **{label}**. Did you mean: {', '.join(values)}?"
+
+    if kind == "villager":
+        return (
+            f"I couldn't find **{label}** in the live island data right now. "
+            "Free members can try `!order villager <name>` in <#1175672083183829075>."
+        )
+    return (
+        f"I couldn't find **{label}** in the live island data right now. "
+        "Free members can try ordering it in <#1175672083183829075>."
+    )
+
+
+async def _try_live_search_answer(
+    question: str,
+    history: Optional[list[dict]] = None,
+    user_lacks_sub_access: bool = False,
+    accessible_islands: Optional[list[str]] = None,
+) -> Optional[str]:
+    """Backward-compatible direct live-search answer path."""
+    candidates = _extract_live_search_candidates(question, history)
+    if not candidates:
+        return None
+
+    suggestion_payload: Optional[tuple[str, str, dict]] = None
+    for kind, query in candidates:
+        payload = await _search_live_api(kind, query)
+        if not payload:
+            continue
+        if payload.get("found"):
+            return _format_live_search_answer(
+                kind,
+                query,
+                payload,
+                user_lacks_sub_access=user_lacks_sub_access,
+                accessible_islands=accessible_islands,
+            )
+        if payload.get("suggestions") and suggestion_payload is None:
+            suggestion_payload = (kind, query, payload)
+
+    if suggestion_payload:
+        kind, query, payload = suggestion_payload
+        return _format_live_search_answer(
+            kind,
+            query,
+            payload,
+            user_lacks_sub_access=user_lacks_sub_access,
+            accessible_islands=accessible_islands,
+        )
 
     return None
 # ---------------------------------------------------------------------------
@@ -1256,6 +1471,7 @@ def _build_model_prompt(
 
     sections = [
         examples_section,
+        search_section,
         kb_section,
         live_section,
         chat_log_section,
@@ -1481,7 +1697,8 @@ async def get_ai_answer(
         except Exception as e:
             logger.warning(f"[ChopaengAI] {name} failed ({e}), trying next fallback.")
 
-    # 4. Keyword Fallback if all providers fail or none configured
+    # 4. Keyword fallback if all providers fail or none are configured. This
+    # still uses live API data when the local intent extractor finds a lookup.
     intent = await resolve_search_intent(
         question=q,
         live_context=live_context,
@@ -1490,7 +1707,18 @@ async def get_ai_answer(
         provider="",
         api_key="",
     )
-    # Note: Keyword Fallback doesn't use the Answer LLM, so if it fails all providers, it won't get live search results. We can safely pass here.
+    if intent.get("needs_search") or intent.get("intent") != "none":
+        live_search_result = await _execute_live_search(
+            intent=intent,
+            user_lacks_sub_access=lacks_sub,
+            accessible_islands=accessible_islands,
+        )
+        live_answer = _format_live_search_result_answer(live_search_result)
+        if live_answer:
+            resp = _append_support_note(live_answer)
+            if conversation_key:
+                conversation_store.add(conversation_key, q, resp)
+            return _auto_link_channels(resp)
 
     answer = _keyword_answer(q, history=history)
     resp = _append_support_note(answer)
@@ -1523,6 +1751,7 @@ async def _gemini_answer(
         is_subscriber=is_subscriber,
         is_mod_user=is_mod_user,
         accessible_islands=accessible_islands,
+        search_result_context=search_result_context,
     )
 
     # Gemini's generate_content is synchronous; run it in a thread to avoid blocking.
@@ -1562,6 +1791,7 @@ async def _openai_answer(
         is_subscriber=is_subscriber,
         is_mod_user=is_mod_user,
         accessible_islands=accessible_islands,
+        search_result_context=search_result_context,
     )
 
     loop = asyncio.get_event_loop()
@@ -1574,11 +1804,7 @@ async def _openai_answer(
                 {"role": "system", "content": _AI_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
                     ],
-                    extra_body={
-                        "reasoning": {
-                            "effort": "medium"
-                        }
-                    },
+                    reasoning={"effort": "medium"},
                 ),
             )
 
