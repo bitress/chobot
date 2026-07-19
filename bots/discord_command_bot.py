@@ -2177,7 +2177,6 @@ class DiscordCommandCog(commands.Cog):
             await self._log_dodo_request_to_xlog(ctx, reply_msg)
         except asyncio.TimeoutError:
             logger.warning(f"[DISCORD] Timeout waiting for island bot !sd response in {ctx.channel.name}")
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
 
     @commands.hybrid_command(name="visitors")
     async def visitors(self, ctx):
@@ -2220,7 +2219,6 @@ class DiscordCommandCog(commands.Cog):
             logger.info(f"[DISCORD] Intercepted and redesigned !visitors response for {ctx.channel.name}")
         except asyncio.TimeoutError:
             logger.warning(f"[DISCORD] Timeout waiting for island bot !visitors response in {ctx.channel.name}")
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
 
     @commands.hybrid_command(name="villagers")
     async def villagers(self, ctx):
@@ -2265,7 +2263,6 @@ class DiscordCommandCog(commands.Cog):
             logger.info(f"[DISCORD] Intercepted and redesigned !villagers response for {ctx.channel.name}")
         except asyncio.TimeoutError:
             logger.warning(f"[DISCORD] Timeout waiting for island bot !villagers response in {ctx.channel.name}")
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
 
     @commands.hybrid_command(name="drop")
     async def drop(self, ctx):
@@ -2305,7 +2302,6 @@ class DiscordCommandCog(commands.Cog):
             logger.info(f"[DISCORD] Intercepted and redesigned !drop response for {ctx.channel.name}")
         except asyncio.TimeoutError:
             logger.warning(f"[DISCORD] Timeout waiting for island bot !drop response in {ctx.channel.name}")
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
 
     @commands.hybrid_command(name="injectvillager", aliases=["iv"])
     async def inject_villager(self, ctx, villager_name: str):
@@ -2357,7 +2353,6 @@ class DiscordCommandCog(commands.Cog):
             logger.info(f"[DISCORD] Intercepted and redesigned !injectvillager response for {ctx.channel.name}")
         except asyncio.TimeoutError:
             logger.warning(f"[DISCORD] Timeout waiting for island bot !injectvillager response in {ctx.channel.name}")
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
 
     @commands.hybrid_command(name="mvi")
     async def multi_inject_villager(self, ctx, villagers: str):
@@ -2440,7 +2435,6 @@ class DiscordCommandCog(commands.Cog):
 
         except asyncio.TimeoutError:
             logger.warning(f"[DISCORD] Timeout waiting for island bot !mvi response in {ctx.channel.name}")
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
             
     def _get_island_name_for_channel(self, channel: discord.TextChannel) -> str | None:
         """Return the island name for the given sub/order channel, or None if unknown."""
