@@ -79,15 +79,11 @@ AUTO_REPLY_PATTERNS = [
     re.compile(r"\b(?:best|fastest|easiest)\s+way\s+to\b", re.IGNORECASE),
 ]
 
-# Nickname submission channel validation
 NICKNAME_SUBMISSION_CHANNEL_ID = 1081147108612124742
-# Format: Nickname[/Nickname...] | Island Name[/Island Name...]
 FREE_DODO_BOARD_INTERVAL_SECONDS = 60
 FREE_DODO_BOARD_EMBEDS_PER_MESSAGE = 10
 FREE_DODO_BOARD_MARKER = "Chopaeng Camp™"
 
-# How long (seconds) a command claim record is kept before being pruned.
-# Any message older than this window is no longer at risk of being replayed.
 COMMAND_CLAIM_EXPIRY_SECONDS = 300  # 5 minutes
 
 # Trivia game settings
@@ -1039,7 +1035,7 @@ class DiscordCommandCog(commands.Cog):
             status_line = "Refreshing"
         else:
             color = discord.Color.red()
-            code_line = "*Unavailable*"
+            code_line = "*Offline*"
             status_line = "Offline"
 
         details = []
@@ -3649,7 +3645,7 @@ class DiscordCommandBot(commands.Bot):
             discord.Activity(type=discord.ActivityType.watching, name="villagers pack up 📦 | !villager"),
             discord.Activity(type=discord.ActivityType.watching, name="shooting stars 🌠"),
             discord.Activity(type=discord.ActivityType.watching, name="the turnip market 📉"),
-
+            discord.Activity(type=discord.ActivityType.watching, name="have you seen The Odyssey?"),
             discord.Activity(type=discord.ActivityType.playing, name="with the Item Database 📚"),
             discord.Activity(type=discord.ActivityType.playing, name="Animal Crossing: New Horizons 🍃"),
             discord.Activity(type=discord.ActivityType.playing, name="Browsing chopaeng.com 🌐"),
@@ -3692,6 +3688,7 @@ class DiscordCommandBot(commands.Bot):
             discord.Activity(type=discord.ActivityType.listening, name="who am i?"),
             discord.Activity(type=discord.ActivityType.listening, name="try asking me question."),
             discord.Activity(type=discord.ActivityType.listening, name="have you seen Game of Thrones?"),
+
         ])
 
     async def setup_hook(self):
