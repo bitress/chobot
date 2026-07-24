@@ -2820,18 +2820,29 @@ class DiscordCommandCog(commands.Cog):
         if not user_ids:
             return
 
+        island_api_map, _ = await self._fetch_islands_api_snapshot()
+        island_meta = island_api_map.get(island_clean) if island_api_map else {}
+        map_url = str(island_meta.get("map_url") or "").strip()
+        island_page_url = f"https://www.chopaeng.com/island/{island_clean.lower()}"
+        island_page_text = f"[View Island Page]({island_page_url})"
+        map_link_text = f"[View Map]({map_url})" if map_url else ""
+
         if online:
             title = "🏝️ Island is Back Up!"
             description = (
                 f"**{island_display.title()}** island is back online and ready to visit! 🎉\n"
-                f"Head to the island channel and use `!senddodo` or `!sd` to get the Dodo code."
+                f"Head to the island channel and use `!senddodo` or `!sd` to get the Dodo code.\n\n"
+                f"{island_page_text}"
+                + (f" • {map_link_text}" if map_link_text else "")
             )
             color = discord.Color.green()
         else:
             title = "🏝️ Island is Down"
             description = (
                 f"**{island_display.title()}** island has gone **offline**.\n"
-                f"You'll be notified again when it comes back up."
+                f"You'll be notified again when it comes back up.\n\n"
+                f"{island_page_text}"
+                + (f" • {map_link_text}" if map_link_text else "")
             )
             color = discord.Color.red()
 
@@ -2840,7 +2851,10 @@ class DiscordCommandCog(commands.Cog):
             description=description,
             color=color,
             timestamp=discord.utils.utcnow(),
+            url=island_page_url,
         )
+        if map_url:
+            embed.set_image(url=map_url)
         embed.set_footer(text="Use !unsubscribe to stop these alerts.")
 
         sent = 0
