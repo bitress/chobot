@@ -3393,6 +3393,39 @@ class DiscordCommandCog(commands.Cog):
         await ctx.reply(embed=embed, ephemeral=True)
         logger.info(f"[DISCORD] {ctx.author.name} checked their subscriptions ({len(subs)} total)")
 
+    async def revive_island_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete island names for revive based on the selected fleet."""
+        fleet_value = None
+        if getattr(interaction, "namespace", None) is not None:
+            fleet_value = getattr(interaction.namespace, "fleet", None)
+
+        if fleet_value is None:
+            for option in interaction.data.get("options", []):
+                if option.get("name") == "fleet":
+                    fleet_value = option.get("value")
+                    break
+
+        if str(fleet_value) == "2":
+            candidates = list(self.sub_island_lookup.keys()) or list(getattr(Config, "SUB_ISLANDS", []))
+        else:
+            candidates = list(
+                set(self.free_island_lookup.keys())
+                | set(self.order_island_lookup.keys())
+            )
+            if not candidates:
+                candidates = list(getattr(Config, "FREE_ISLANDS", [])) + list(
+                    getattr(Config, "ORDER_BOT_ISLANDS", [])
+                )
+
+        current_lower = current.lower()
+        matches = [name for name in candidates if current_lower in name] if current else candidates
+        return [
+            app_commands.Choice(name=name.title(), value=name)
+            for name in sorted(matches)[:25]
+        ]
+
     @commands.hybrid_command(name="revive", description="Restart a crashed island")
     @app_commands.describe(
         fleet="Island Type",
@@ -3404,6 +3437,7 @@ class DiscordCommandCog(commands.Cog):
             app_commands.Choice(name="Sub Island", value="2"),
         ]
     )
+    @app_commands.autocomplete(island=revive_island_autocomplete)
     @is_admin_or_senior_mod()
     async def revive(self, ctx, fleet: str, island: str):
         """Restart a crashed island's Dodo session (Admin or Senior Mod only)."""
