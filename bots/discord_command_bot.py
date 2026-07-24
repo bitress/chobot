@@ -452,6 +452,14 @@ def _discord_conv_key(message: discord.Message) -> str:
     guild_id = message.guild.id if message.guild else "dm"
     return f"discord:{guild_id}:{message.channel.id}:{message.author.id}"
 
+def is_admin_or_senior_mod():
+    async def predicate(ctx):
+        if ctx.author.guild_permissions.administrator:
+            return True
+
+        return any(role.id == Config.SENIOR_MOD_ROLE_ID for role in ctx.author.roles)
+
+    return commands.check(predicate)
 
 # ---------------------------------------------------------------------------
 # Trivia UI
@@ -669,7 +677,7 @@ class DiscordCommandCog(commands.Cog):
         # Validate format
         if not is_valid_acnh_nickname(nickname.strip()):
             await interaction.response.send_message(
-                "❌ **Invalid Format!**\n"
+                "**Invalid Format!**\n"
                 f"Please use: `{NICKNAME_FORMAT_EXAMPLE}`\n"
                 "Example: `ChoPaeng | ChoPaeng Camp` (ensure you include the pipe `|` symbol)",
                 ephemeral=True
@@ -680,7 +688,7 @@ class DiscordCommandCog(commands.Cog):
             # Change the user's nickname in the guild
             await interaction.user.edit(nick=nickname.strip())
             await interaction.response.send_message(
-                f"✅ Your nickname has been set to: `{nickname.strip()}`",
+                f"Your nickname has been set to: `{nickname.strip()}`",
                 ephemeral=True
             )
             
@@ -1846,6 +1854,7 @@ class DiscordCommandCog(commands.Cog):
         logger.info(f"[DISCORD] Trivia question asked by {ctx.author.name}: {q['q'][:60]}")
 
     @commands.hybrid_command(name="status")
+    @is_admin_or_senior_mod()
     async def status(self, ctx):
         """Show bot status"""
         with self.data_manager.lock:
@@ -3365,7 +3374,7 @@ class DiscordCommandCog(commands.Cog):
         logger.info(f"[DISCORD] {ctx.author.name} checked their subscriptions ({len(subs)} total)")
 
     @commands.hybrid_command(name="refresh")
-    @commands.has_permissions(administrator=True)
+    @is_admin_or_senior_mod()
     async def refresh(self, ctx):
         """Manually refresh cache (Mods only)"""
         await ctx.reply("Refreshing cache and island links...")
@@ -3440,16 +3449,15 @@ class DiscordCommandCog(commands.Cog):
             await ctx.reply("You do not have permission to use this command.")
 
     @commands.hybrid_command(name="restart")
-    @commands.has_permissions(administrator=True)
+    @is_admin_or_senior_mod()
     async def restart(self, ctx):
-        """Restart the bot without pulling updates (Admin only)"""
+        """Restart the bot without pulling updates (Owners or Senior Mod only)"""
         await ctx.reply("Restarting bot now...")
         logger.info("[DISCORD] Restart requested by %s. Restarting process...", ctx.author)
 
-        # Reuse the same main-thread restart path as the OTA update command.
         self.bot.restart_requested = True
         await self.bot.close()
-
+   
     @restart.error
     async def restart_error(self, ctx, error):
         """Handle permission errors for restart command"""
