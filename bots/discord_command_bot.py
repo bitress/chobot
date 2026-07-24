@@ -84,6 +84,11 @@ FREE_DODO_BOARD_INTERVAL_SECONDS = 60
 FREE_DODO_BOARD_EMBEDS_PER_MESSAGE = 10
 FREE_DODO_BOARD_MARKER = "Chopaeng Camp™"
 
+ISLAND_REVIVE_BATCH_PATH = os.getenv(
+    "ISLAND_RESTART_BAT_PATH",
+    r"C:\Users\ChoPaeng\Desktop\Relaunch_Island.bat",
+)
+
 COMMAND_CLAIM_EXPIRY_SECONDS = 300  # 5 minutes
 
 # Trivia game settings
@@ -655,6 +660,7 @@ class DiscordCommandCog(commands.Cog):
         self.free_dodo_board_messages: list[discord.Message] = []
         self.free_dodo_board_fingerprints: list[str] = []
         self.free_dodo_board_startup_cleanup_done = False
+        self._revive_lock = asyncio.Lock()
 
         # island_clean -> True (down) / False (up); None = not yet initialized
         self.island_down_states: dict[str, bool | None] = {}
@@ -3372,6 +3378,73 @@ class DiscordCommandCog(commands.Cog):
         )
         await ctx.reply(embed=embed, ephemeral=True)
         logger.info(f"[DISCORD] {ctx.author.name} checked their subscriptions ({len(subs)} total)")
+
+    @commands.hybrid_command(name="revive", description="Restart a crashed island")
+    @app_commands.describe(
+        fleet="Island Type",
+        island="Island Name",
+    )
+    @app_commands.choices(
+        fleet=[
+            app_commands.Choice(name="Free/Order Island", value="1"),
+            app_commands.Choice(name="Sub Island", value="2"),
+        ]
+    )
+    @is_admin_or_senior_mod()
+    async def revive(self, ctx, fleet: str, island: str):
+        """Restart a crashed island's Dodo session (Admin or Senior Mod only)."""
+        fleet_label = {
+            "1": "Free/Order Island",
+            "2": "Sub Island",
+        }.get(str(fleet), str(fleet))
+
+        cleaned = island.strip().replace(" ", "")
+        if not cleaned or any(token in cleaned for token in ("..", "/", "\\", '"')):
+            await ctx.reply("Invalid island name.", ephemeral=True)
+            return
+
+        interaction = getattr(ctx, "interaction", None)
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
+            responder = interaction.followup.send
+        else:
+            responder = ctx.reply
+
+        async with self._revive_lock:
+            try:
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    [ISLAND_REVIVE_BATCH_PATH, str(fleet), cleaned],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    shell=True,
+                )
+            except subprocess.TimeoutExpired:
+                await responder(
+                    f"Timed out trying to revive **{cleaned}**."
+                )
+                return
+
+        output = (result.stdout or "").strip()
+        errout = (result.stderr or "").strip()
+
+        if result.returncode == 0:
+            await responder(
+                f"**{cleaned}** ({fleet_label}) revived.\n```\n{output}\n```"
+            )
+        else:
+            await responder(
+                f"Failed to revive **{cleaned}** ({fleet_label}).\n```\n{output}\n{errout}\n```"
+            )
+
+        logger.info(
+            "[DISCORD] Island revive command invoked by %s for %s (%s), rc=%s",
+            ctx.author,
+            cleaned,
+            fleet_label,
+            result.returncode,
+        )
 
     @commands.hybrid_command(name="refresh")
     @is_admin_or_senior_mod()
