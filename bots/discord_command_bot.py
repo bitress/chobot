@@ -188,6 +188,22 @@ ACNH_TRIVIA_QUESTIONS: list[dict] = [
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chobot.db")
 
 
+def build_island_status_sticky_payload(offline_islands: list[str]) -> tuple[str, str, str | None, discord.Color]:
+    """Build the title/description/body for the sticky island-status embed."""
+    normalized_islands = sorted({name.strip() for name in offline_islands if name and str(name).strip()})
+    if normalized_islands:
+        title = "⚠️ Offline Islands"
+        description = "The following islands are currently offline:"
+        field_value = "\n".join(f"• {name}" for name in normalized_islands)
+        color = discord.Color.red()
+    else:
+        title = "✅ All Islands Online"
+        description = "All monitored islands are currently online."
+        field_value = None
+        color = discord.Color.green()
+    return title, description, field_value, color
+
+
 def _upsert_bot_status(island_id: str, island_name: str, is_online: bool) -> None:
     """Persist the Discord bot online/offline status for an island to the DB.
 
@@ -660,7 +676,9 @@ class DiscordCommandCog(commands.Cog):
         self.free_dodo_board_messages: list[discord.Message] = []
         self.free_dodo_board_fingerprints: list[str] = []
         self.free_dodo_board_startup_cleanup_done = False
+        self.island_status_sticky_startup_cleanup_done = False
         self._revive_lock = asyncio.Lock()
+        self.island_status_sticky_message: discord.Message | None = None
 
         # island_clean -> True (down) / False (up); None = not yet initialized
         self.island_down_states: dict[str, bool | None] = {}
@@ -668,6 +686,7 @@ class DiscordCommandCog(commands.Cog):
         self.island_down_messages: dict[str, discord.Message] = {}
         self.island_monitor_loop.start()
         self.free_dodo_board_loop.start()
+        self.island_status_sticky_loop.start()
 
     def _refresh_order_island_lookup(self) -> None:
         """Refresh the fixed order-bot island lookup."""
@@ -851,13 +870,246 @@ class DiscordCommandCog(commands.Cog):
         """Cleanup on unload"""
         self.island_monitor_loop.cancel()
         self.free_dodo_board_loop.cancel()
+        self.island_status_sticky_loop.cancel()
+
+    async def _refresh_island_status_sticky_message(
+        self,
+        channel: discord.TextChannel | None = None,
+        force_repost: bool = True,
+    ) -> None:
+        """Publish or refresh the sticky island-status embed in the configured channel.
+
+        If *force_repost* is True, the previous sticky message is deleted and a
+        brand-new one is sent, so it jumps to the bottom of the channel (true
+        "sticky" behavior). Otherwise the existing message is edited in place.
+        """
+        target_channel = channel or self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        if not isinstance(target_channel, discord.TextChannel):
+            return
+
+        guild = target_channel.guild
+        if not guild:
+            return
+
+        show_sub = True
+        show_free = True
+
+        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
+        if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
+            logger.warning(f"[DISCORD] ISLAND_BOT_ROLE_ID {Config.ISLAND_BOT_ROLE_ID} not found in guild; bot name matching disabled")
+
+        async def _get_channel_id_for_sub_island(island_name: str) -> int | None:
+            island_clean = clean_text(island_name)
+            channel_id = self.sub_island_lookup.get(island_clean)
+            if channel_id:
+                return channel_id
+            for ch in guild.channels:
+                if isinstance(ch, discord.TextChannel) and island_clean in clean_text(ch.name):
+                    return ch.id
+            return None
+
+        def _format_channel(island_name: str, channel_id: int | None) -> str:
+            if not channel_id:
+                return f"**{island_name}**"
+            ch = guild.get_channel(channel_id)
+            return f"<#{channel_id}>" if ch else f"**{island_name}**"
+
+        sub_results: list = []
+        sub_online = 0
+        if show_sub:
+            await self.fetch_islands()
+            for island in Config.SUB_ISLANDS:
+                island_clean = clean_text(island)
+                channel_id = await _get_channel_id_for_sub_island(island)
+
+                if not channel_id:
+                    sub_results.append((island, "❓", "Channel not found", None))
+                    continue
+
+                channel = guild.get_channel(channel_id)
+                if not channel:
+                    sub_results.append((island, "❓", "Channel not found", None))
+                    continue
+
+                island_bot = None
+                if island_bot_role:
+                    target = clean_text(f"chobot {island}")
+                    for member in island_bot_role.members:
+                        if member.bot and clean_text(member.display_name) == target:
+                            island_bot = member
+                            break
+
+                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
+                    sub_results.append((island, "✅", "Bot online", channel_id))
+                    sub_online += 1
+                    continue
+
+                try:
+                    messages = [msg async for msg in channel.history(limit=25)]
+                except discord.Forbidden:
+                    sub_results.append((island, "❓", "No channel access", channel_id))
+                    continue
+
+                island_up = False
+                status_reason = ""
+                for msg in messages:
+                    if island_bot:
+                        if msg.author.id != island_bot.id:
+                            continue
+                    elif not msg.author.bot:
+                        continue
+                    if DODO_CODE_PATTERN.search(msg.content):
+                        island_up = True
+                        status_reason = "Dodo code active"
+                        break
+                    if ISLAND_HOST_NAME in msg.content.lower():
+                        island_up = True
+                        status_reason = "Chopaeng is visiting"
+                        break
+
+                if island_up:
+                    sub_results.append((island, "✅", status_reason, channel_id))
+                    sub_online += 1
+                else:
+                    sub_results.append((island, "❌", "No recent activity", channel_id))
+
+        free_results: list = []
+        free_online = 0
+        if show_free:
+            await self.fetch_free_islands()
+            for island in Config.FREE_ISLANDS:
+                island_clean = clean_text(island)
+                channel_id = self.free_island_lookup.get(island_clean)
+
+                island_bot = None
+                if island_bot_role:
+                    target = clean_text(f"chobot {island}")
+                    for member in island_bot_role.members:
+                        if member.bot and clean_text(member.display_name) == target:
+                            island_bot = member
+                            break
+
+                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
+                    free_results.append((island, "✅", "Bot online", channel_id))
+                    free_online += 1
+                elif island_bot:
+                    free_results.append((island, "❌", "Bot offline", channel_id))
+                else:
+                    free_results.append((island, "❓", "Bot not found", channel_id))
+
+        sub_total = len(Config.SUB_ISLANDS)
+        free_total = len(Config.FREE_ISLANDS)
+        combined_online = sub_online + free_online
+        total = sub_total + free_total
+        pct = int((combined_online / total) * 100) if total else 0
+
+        def _progress_bar(filled: int, total: int, length: int = 14) -> str:
+            if total == 0:
+                return "░" * length
+            filled_blocks = round((filled / total) * length)
+            return "▰" * filled_blocks + "▱" * (length - filled_blocks)
+
+        if total == 0:
+            color = discord.Color.greyple()
+        elif combined_online == total:
+            color = discord.Color.green()
+        elif combined_online == 0:
+            color = discord.Color.red()
+        else:
+            color = discord.Color.orange()
+
+        embed = discord.Embed(
+            title="🏝️ Island Status",
+            description=f"{_progress_bar(combined_online, total)}  **{combined_online}/{total}** online ({pct}%)",
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+
+        sub_off = [(n, c) for n, s, _, c in sub_results if s != "✅"]
+        free_off = [(n, c) for n, s, _, c in free_results if s != "✅"]
+        all_off = [(n, c, "🏝️") for n, c in sub_off] + [(n, c, "🌴") for n, c in free_off]
+
+        if all_off:
+            down_lines = [f"🔴 {tag} {_format_channel(n, c)}" for n, c, tag in all_off]
+            down_value = "\n".join(down_lines)
+            if len(down_value) > 1024:
+                down_value = down_value[:1000].rsplit("\n", 1)[0] + f"\n…and {len(down_lines) - down_value[:1000].rsplit(chr(10), 1)[0].count(chr(10)) - 1} more"
+            embed.add_field(
+                name=f"{Config.EMOJI_FAIL} Needs attention ({len(all_off)})",
+                value=down_value,
+                inline=False,
+            )
+        else:
+            embed.add_field(name="✅ All clear", value="Every island is active.", inline=False)
+
+        embed.add_field(name=f"{Config.STAR_PINK} Sub", value=f"**{sub_online}**/{sub_total} online", inline=True)
+        embed.add_field(name=f"🌴 Free", value=f"**{free_online}**/{free_total} online", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+        footer_icon_url = guild.icon.url if guild.icon else Config.DEFAULT_PFP
+        embed.set_footer(text="Chopaeng Camp™", icon_url=footer_icon_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+
+        previous_message = self.island_status_sticky_message
+
+        # --- True sticky behavior: delete old, send new, so it jumps to bottom ---
+        if force_repost:
+            if previous_message and previous_message.channel.id == target_channel.id:
+                try:
+                    await previous_message.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                    logger.warning(f"[DISCORD] Could not delete previous sticky island status message: {exc}")
+                self.island_status_sticky_message = None
+                previous_message = None
+            # Fall through to the "send a new message" branch below.
+        else:
+            # --- Normal background refresh: edit in place, no repositioning ---
+            if previous_message and previous_message.channel.id == target_channel.id:
+                try:
+                    await previous_message.edit(embed=embed)
+                    return
+                except (discord.NotFound, discord.HTTPException) as exc:
+                    logger.warning(f"[DISCORD] Previous sticky island status message unavailable, sending a new one: {exc}")
+                    self.island_status_sticky_message = None
+                    previous_message = None
+
+        if previous_message is None:
+            try:
+                async for msg in target_channel.history(limit=100):
+                    if msg.author.id != self.bot.user.id:
+                        continue
+                    if not msg.embeds:
+                        continue
+                    embed_obj = msg.embeds[0]
+                    if not embed_obj.footer or not embed_obj.footer.text:
+                        continue
+                    footer_text = embed_obj.footer.text
+                    if footer_text.startswith("Island status") or footer_text.startswith("This message is kept pinned"):
+                        try:
+                            await msg.delete()
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                            pass
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning(f"[DISCORD] Failed to clean old island status sticky messages in {target_channel.id}: {exc}")
+
+        try:
+            message = await target_channel.send(embed=embed, silent=True)
+            self.island_status_sticky_message = message
+        except Exception as exc:
+            logger.warning(f"[DISCORD] Failed to refresh island status sticky embed in {target_channel.id}: {exc}")
+
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Redirect users to /nick command in the designated channel."""
-        
-        # Ignore bots, DMs, and messages outside the designated channel
-        if message.author.bot or message.guild is None or message.channel.id != NICKNAME_SUBMISSION_CHANNEL_ID:
+        """Redirect users to /nick command in the designated channel and refresh the sticky status embed."""
+        if message.guild is None or message.author.bot:
+            return
+
+        if message.channel.id == Config.XLOG_VERBOSE_CHANNEL_ID:
+            await self._refresh_island_status_sticky_message(message.channel)
+
+        # Redirect nickname-submission messages in the designated channel.
+        if message.channel.id != NICKNAME_SUBMISSION_CHANNEL_ID:
             return
 
         # Nuke all user messages in this channel and tell them to use /nick
@@ -1176,6 +1428,77 @@ class DiscordCommandCog(commands.Cog):
         if deleted:
             logger.info(f"[DISCORD] Deleted {deleted} stale Free Dodo board message(s) in #{channel.name}")
 
+
+    async def _load_existing_island_status_sticky_message(self, channel: discord.TextChannel) -> None:
+        """Find this bot's existing island-status sticky message after a restart, so we
+        edit it in place instead of accidentally creating duplicates."""
+        if self.island_status_sticky_message:
+            return
+        if not self.bot.user:
+            return
+
+        try:
+            async for msg in channel.history(limit=50):
+                if msg.author.id != self.bot.user.id or not msg.embeds:
+                    continue
+                embed_obj = msg.embeds[0]
+                footer_text = embed_obj.footer.text if embed_obj.footer else ""
+                if footer_text and footer_text.startswith("Island status"):
+                    self.island_status_sticky_message = msg
+                    return
+        except discord.Forbidden:
+            logger.warning(f"[DISCORD] Missing permission to read island status history in #{channel.name}")
+        except discord.HTTPException as exc:
+            logger.warning(f"[DISCORD] Failed to read island status history in #{channel.name}: {exc}")
+
+    async def _delete_existing_island_status_sticky_messages(self, channel: discord.TextChannel) -> None:
+        """Delete stale island-status sticky messages left behind by a previous bot process,
+        so a restart always starts from a clean slate (same pattern as the Free Dodo board)."""
+        if not self.bot.user:
+            return
+
+        deleted = 0
+        messages_to_delete = []
+        try:
+            async for msg in channel.history(limit=100):
+                if msg.author.id != self.bot.user.id or not msg.embeds:
+                    continue
+                embed_obj = msg.embeds[0]
+                footer_text = embed_obj.footer.text if embed_obj.footer else ""
+                if footer_text and (
+                    footer_text.startswith("Island status")
+                    or footer_text.startswith("This message is kept pinned")
+                ):
+                    messages_to_delete.append(msg)
+        except discord.Forbidden:
+            logger.warning(f"[DISCORD] Missing permission to delete old island status messages in #{channel.name}")
+            return
+        except discord.HTTPException as exc:
+            logger.warning(f"[DISCORD] Failed while deleting old island status messages in #{channel.name}: {exc}")
+            return
+
+        batch_size = 100
+        for i in range(0, len(messages_to_delete), batch_size):
+            batch = messages_to_delete[i:i + batch_size]
+            try:
+                await channel.delete_messages(batch)
+                deleted += len(batch)
+            except discord.Forbidden:
+                for msg in batch:
+                    try:
+                        await msg.delete()
+                        deleted += 1
+                    except discord.NotFound:
+                        pass
+                    except Exception as e:
+                        logger.warning(f"[DISCORD] Failed to delete message: {e}")
+            except Exception as e:
+                logger.warning(f"[DISCORD] Failed to bulk delete batch: {e}")
+
+        self.island_status_sticky_message = None
+        if deleted:
+            logger.info(f"[DISCORD] Deleted {deleted} stale island status message(s) in #{channel.name}")
+
     async def _publish_free_dodo_board(self, channel: discord.TextChannel, embeds: list[discord.Embed]) -> None:
         """Edit or create individual Discord messages for each Free Dodo board entry."""
         await self._load_existing_free_dodo_board_messages(channel)
@@ -1258,6 +1581,38 @@ class DiscordCommandCog(commands.Cog):
         """Wait until ready before starting the public Free Dodo board."""
         await self.bot.wait_until_ready()
         await self.fetch_free_islands()
+
+    @tasks.loop(seconds=60)
+    async def island_status_sticky_loop(self):
+        channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        if not self.island_status_sticky_startup_cleanup_done:
+            await self._delete_existing_island_status_sticky_messages(channel)
+            self.island_status_sticky_startup_cleanup_done = True
+
+        try:
+            await self._refresh_island_status_sticky_message(channel, force_repost=True)
+        except Exception as exc:
+            logger.error(f"[DISCORD] island_status_sticky_loop iteration failed: {exc}", exc_info=True)
+
+    @island_status_sticky_loop.before_loop
+    async def before_island_status_sticky_loop(self):
+        """Wait until ready before starting the island status sticky loop."""
+        await self.bot.wait_until_ready()
+        # No manual refresh here — tasks.loop runs the body immediately once
+        # before_loop finishes, so the first iteration above handles both
+        # cleanup and the initial post.
+
+
+    @island_status_sticky_loop.error
+    async def island_status_sticky_loop_error(self, error: Exception):
+        """Safety net: log and restart the loop if it still somehow crashes."""
+        logger.error(f"[DISCORD] island_status_sticky_loop crashed: {error}", exc_info=True)
+        if not self.island_status_sticky_loop.is_running():
+            self.island_status_sticky_loop.restart()
+
 
     def check_cooldown(self, user_id: str, cooldown_sec: int = 3) -> bool:
         """Check if user is on cooldown"""
@@ -3042,6 +3397,11 @@ class DiscordCommandCog(commands.Cog):
                     self.island_down_states[state_key] = False
                     await self._send_order_island_status_alert(channel, island, online=True)
 
+        try:
+            await self._refresh_island_status_sticky_message()
+        except Exception as exc:
+            logger.warning(f"[DISCORD] Failed to refresh island status sticky embed: {exc}")
+
     @island_monitor_loop.before_loop
     async def before_island_monitor_loop(self):
         """Wait until bot is ready before starting the island monitor."""
@@ -3049,7 +3409,7 @@ class DiscordCommandCog(commands.Cog):
         await self.fetch_islands()
         await self.fetch_free_islands()
         self._refresh_order_island_lookup()
-
+        await self._refresh_island_status_sticky_message(force_repost=False)
     # ── Period choices shared by both leaderboard commands ──────────────────
     _PERIOD_LABELS = {
         "today":   "Today",
