@@ -933,6 +933,7 @@ class DiscordCommandCog(commands.Cog):
 
         show_sub = True
         show_free = True
+        show_order = True
 
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
         if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
@@ -1037,10 +1038,36 @@ class DiscordCommandCog(commands.Cog):
                 else:
                     free_results.append((island, "❓", "Bot not found", channel_id))
 
+        order_results: list = []
+        order_online = 0
+        if show_order:
+            self._refresh_order_island_lookup()
+            order_bot_member = None
+            if Config.ORDER_BOT_DISCORD_ID:
+                order_bot_member = guild.get_member(Config.ORDER_BOT_DISCORD_ID)
+                if order_bot_member is None:
+                    try:
+                        order_bot_member = await guild.fetch_member(Config.ORDER_BOT_DISCORD_ID)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        order_bot_member = None
+
+            for island in getattr(Config, "ORDER_BOT_ISLANDS", []):
+                island_clean = clean_text(island)
+                channel_id = self.order_island_lookup.get(island_clean)
+
+                if order_bot_member and order_bot_member.status in ONLINE_DISCORD_STATUSES:
+                    order_results.append((island, "✅", "Bot online", channel_id))
+                    order_online += 1
+                elif order_bot_member:
+                    order_results.append((island, "❌", "Bot offline", channel_id))
+                else:
+                    order_results.append((island, "❓", "Bot not found", channel_id))
+
         sub_total = len(Config.SUB_ISLANDS)
         free_total = len(Config.FREE_ISLANDS)
-        combined_online = sub_online + free_online
-        total = sub_total + free_total
+        order_total = len(getattr(Config, "ORDER_BOT_ISLANDS", []))
+        combined_online = sub_online + free_online + order_online
+        total = sub_total + free_total + order_total
         pct = int((combined_online / total) * 100) if total else 0
 
         def _progress_bar(filled: int, total: int, length: int = 14) -> str:
@@ -1067,7 +1094,12 @@ class DiscordCommandCog(commands.Cog):
 
         sub_off = [(n, c) for n, s, _, c in sub_results if s != "✅"]
         free_off = [(n, c) for n, s, _, c in free_results if s != "✅"]
-        all_off = [(n, c, "🏝️") for n, c in sub_off] + [(n, c, "🌴") for n, c in free_off]
+        order_off = [(n, c) for n, s, _, c in order_results if s != "✅"]
+        all_off = (
+            [(n, c, "🏝️") for n, c in sub_off]
+            + [(n, c, "🌴") for n, c in free_off]
+            + [(n, c, "📦") for n, c in order_off]
+        )
 
         if all_off:
             down_lines = [f"🔴 {tag} {_format_channel(n, c)}" for n, c, tag in all_off]
@@ -1084,7 +1116,7 @@ class DiscordCommandCog(commands.Cog):
 
         embed.add_field(name=f"{Config.STAR_PINK} Sub", value=f"**{sub_online}**/{sub_total} online", inline=True)
         embed.add_field(name=f"🌴 Free", value=f"**{free_online}**/{free_total} online", inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        embed.add_field(name=f"📦 Order", value=f"**{order_online}**/{order_total} online", inline=True)
 
         footer_icon_url = guild.icon.url if guild.icon else Config.DEFAULT_PFP
         embed.set_footer(text="Chopaeng Camp™", icon_url=footer_icon_url)
@@ -1144,9 +1176,6 @@ class DiscordCommandCog(commands.Cog):
         """Redirect users to /nick command in the designated channel and refresh the sticky status embed."""
         if message.guild is None or message.author.bot:
             return
-
-        if message.channel.id == Config.XLOG_VERBOSE_CHANNEL_ID:
-            await self._refresh_island_status_sticky_message(message.channel)
 
         # Redirect nickname-submission messages in the designated channel.
         if message.channel.id != NICKNAME_SUBMISSION_CHANNEL_ID:
@@ -3449,7 +3478,7 @@ class DiscordCommandCog(commands.Cog):
         await self.fetch_islands()
         await self.fetch_free_islands()
         self._refresh_order_island_lookup()
-        await self._refresh_island_status_sticky_message(force_repost=False)
+        await self._refresh_island_status_sticky_message(force_repost=True)
     # ── Period choices shared by both leaderboard commands ──────────────────
     _PERIOD_LABELS = {
         "today":   "Today",
@@ -3968,13 +3997,13 @@ class DiscordCommandCog(commands.Cog):
         confirm_view = RebootConfirmView(author_id=ctx.author.id)
         status_msg = await responder(
             embed=self._build_revive_embed(
-                title="⚠️ Confirm Reboot",
+                title="Confirm Reboot",
                 color=discord.Color.orange(),
                 cleaned=cleaned,
                 fleet_label=fleet_label,
                 description=(
                     f"{status_line}\n\n"
-                    "Rebooting will restart this island's Dodo session regardless of its "
+                    "Rebooting will restart the island regardless of its "
                     "current status. Continue?"
                 ),
                 requester=ctx.author,
