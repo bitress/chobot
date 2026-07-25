@@ -663,6 +663,46 @@ class SuggestionView(discord.ui.View):
             return False
         return True
 
+class RebootConfirmView(discord.ui.View):
+    """Confirm/cancel buttons shown before actually rebooting an island."""
+
+    def __init__(self, author_id: int, timeout: float = 30.0):
+        super().__init__(timeout=timeout)
+        self.author_id = author_id
+        self.result: bool | None = None  # True = confirmed, False = cancelled, None = timed out
+        self.interaction: discord.Interaction | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the person who ran this command can confirm it.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    def _disable_all(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="Reboot", style=discord.ButtonStyle.danger, emoji="🔄")
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.result = True
+        self.interaction = interaction
+        self._disable_all()
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.result = False
+        self.interaction = interaction
+        self._disable_all()
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        self.result = None
+        self._disable_all()
+
 class DiscordCommandCog(commands.Cog):
     """Cog for Discord treasure hunt commands"""
 
@@ -3786,6 +3826,91 @@ class DiscordCommandCog(commands.Cog):
             for name in sorted(matches)[:25]
         ]
 
+    REVIVE_OUTPUT_MAX_LENGTH = 900
+
+    def _build_revive_embed(
+        self,
+        *,
+        title: str,
+        color: discord.Color,
+        cleaned: str,
+        fleet_label: str,
+        description: str | None = None,
+        output: str | None = None,
+        errout: str | None = None,
+        elapsed: float | None = None,
+        requester: discord.abc.User | None = None,
+    ) -> discord.Embed:
+        """Build a consistently styled embed for every stage of the revive flow."""
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name=f"{Config.STAR_PINK} Island Name", value=f"**{cleaned}**", inline=True)
+        embed.add_field(name=f"{Config.STAR_PINK} Island Type", value=fleet_label, inline=True)
+        if elapsed is not None:
+            embed.add_field(name=f"{Config.STAR_PINK} Duration", value=f"{elapsed:.1f}s", inline=True)
+
+        if output:
+            trimmed = output[: self.REVIVE_OUTPUT_MAX_LENGTH]
+            suffix = "\n…(truncated)" if len(output) > self.REVIVE_OUTPUT_MAX_LENGTH else ""
+            embed.add_field(name="Output", value=f"```\n{trimmed}{suffix}\n```", inline=False)
+        if errout:
+            trimmed_err = errout[: self.REVIVE_OUTPUT_MAX_LENGTH]
+            suffix_err = "\n…(truncated)" if len(errout) > self.REVIVE_OUTPUT_MAX_LENGTH else ""
+            embed.add_field(name="Error Output", value=f"```\n{trimmed_err}{suffix_err}\n```", inline=False)
+
+        if requester:
+            pfp_url = requester.avatar.url if requester.avatar else Config.DEFAULT_PFP
+            embed.set_footer(text=f"Requested by {requester.display_name}", icon_url=pfp_url)
+        embed.set_image(url=Config.FOOTER_LINE)
+        return embed
+
+    @staticmethod
+    async def _send_or_edit(
+        existing_msg: discord.Message | None,
+        responder,
+        embed: discord.Embed,
+    ) -> discord.Message:
+        """Send a new message via *responder* if none exists yet, otherwise edit *existing_msg*.
+
+        Always returns the resulting message so callers can keep editing it on later steps.
+        """
+        if existing_msg is not None:
+            await existing_msg.edit(embed=embed)
+            return existing_msg
+        return await responder(embed=embed)
+
+
+    async def _get_island_online_status(
+        self, guild: discord.Guild, island: str, fleet: str
+    ) -> bool | None:
+        """Check whether *island* is currently online for the given fleet.
+
+        Returns True/False if determinable, or None if the island isn't found
+        in any known lookup (so we can't say either way).
+        """
+        island_clean = clean_text(island)
+        if str(fleet) == "2":
+            lookup = self.sub_island_lookup
+        else:
+            # Free/Order fleet — check whichever lookup actually has it
+            if island_clean in self.order_island_lookup:
+                lookup = self.order_island_lookup
+            else:
+                lookup = self.free_island_lookup
+
+        if island_clean not in lookup:
+            return None
+
+        try:
+            return await self._check_island_online(guild, island, lookup=lookup)
+        except Exception as exc:
+            logger.warning(f"[DISCORD] Could not determine online status for {island}: {exc}")
+            return None
+
     @commands.hybrid_command(name="revive", description="Restart a crashed island")
     @app_commands.describe(
         fleet="Island Type",
@@ -3808,7 +3933,17 @@ class DiscordCommandCog(commands.Cog):
 
         cleaned = island.strip().replace(" ", "")
         if not cleaned or any(token in cleaned for token in ("..", "/", "\\", '"')):
-            await ctx.reply("Invalid island name.", ephemeral=True)
+            await ctx.reply(
+                embed=self._build_revive_embed(
+                    title="❌ Invalid Island Name",
+                    color=discord.Color.red(),
+                    cleaned=island.strip() or "*(empty)*",
+                    fleet_label=fleet_label,
+                    description="Island names can't contain path separators or quotes. Try again with a plain island name.",
+                    requester=ctx.author,
+                ),
+                ephemeral=True,
+            )
             return
 
         interaction = getattr(ctx, "interaction", None)
@@ -3818,7 +3953,87 @@ class DiscordCommandCog(commands.Cog):
         else:
             responder = ctx.reply
 
+        # --- Step 1: check current online status ---
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        is_online = await self._get_island_online_status(guild, cleaned, fleet) if guild else None
+
+        if is_online is True:
+            status_line = "🟢 This island currently appears to be **online**."
+        elif is_online is False:
+            status_line = "🔴 This island currently appears to be **offline**."
+        else:
+            status_line = "❓ Could not determine this island's current status."
+
+        # --- Step 2: ask for confirmation ---
+        confirm_view = RebootConfirmView(author_id=ctx.author.id)
+        status_msg = await responder(
+            embed=self._build_revive_embed(
+                title="⚠️ Confirm Reboot",
+                color=discord.Color.orange(),
+                cleaned=cleaned,
+                fleet_label=fleet_label,
+                description=(
+                    f"{status_line}\n\n"
+                    "Rebooting will restart this island's Dodo session regardless of its "
+                    "current status. Continue?"
+                ),
+                requester=ctx.author,
+            ),
+            view=confirm_view,
+        )
+
+        await confirm_view.wait()
+
+        if confirm_view.result is not True:
+            cancel_embed = self._build_revive_embed(
+                title="✖️ Reboot Cancelled" if confirm_view.result is False else "⌛ Confirmation Timed Out",
+                color=discord.Color.greyple(),
+                cleaned=cleaned,
+                fleet_label=fleet_label,
+                description="No changes were made." if confirm_view.result is False
+                            else "No response received in time — no changes were made.",
+                requester=ctx.author,
+            )
+            if confirm_view.interaction is not None:
+                await confirm_view.interaction.response.edit_message(embed=cancel_embed, view=None)
+            else:
+                await status_msg.edit(embed=cancel_embed, view=None)
+            logger.info(
+                "[DISCORD] Island reboot %s for %s (%s) by %s",
+                "cancelled" if confirm_view.result is False else "timed out",
+                cleaned, fleet_label, ctx.author,
+            )
+            return
+
+        # Acknowledge the button click and drop the view before proceeding
+        await confirm_view.interaction.response.edit_message(view=None)
+
+        # --- Step 3: let them know a revive is already queued, if applicable ---
+        if self._revive_lock.locked():
+            await status_msg.edit(
+                embed=self._build_revive_embed(
+                    title="⏳ Reboot Queued",
+                    color=discord.Color.orange(),
+                    cleaned=cleaned,
+                    fleet_label=fleet_label,
+                    description="Another revive is currently in progress. This one will run right after it finishes.",
+                    requester=ctx.author,
+                )
+            )
+
+        start = time.monotonic()
         async with self._revive_lock:
+            await status_msg.edit(
+                embed=self._build_revive_embed(
+                    title="🔄 Rebooting Island…",
+                    color=discord.Color.blurple(),
+                    cleaned=cleaned,
+                    fleet_label=fleet_label,
+                    description="Sending restart request. This can take up to a minute.",
+                    requester=ctx.author,
+                )
+            )
+
             try:
                 result = await asyncio.to_thread(
                     subprocess.run,
@@ -3829,29 +4044,60 @@ class DiscordCommandCog(commands.Cog):
                     shell=True,
                 )
             except subprocess.TimeoutExpired:
-                await responder(
-                    f"Timed out trying to revive **{cleaned}**."
+                elapsed = time.monotonic() - start
+                await status_msg.edit(
+                    embed=self._build_revive_embed(
+                        title="⏱️ Reboot Timed Out",
+                        color=discord.Color.orange(),
+                        cleaned=cleaned,
+                        fleet_label=fleet_label,
+                        description="The restart script didn't finish within 60 seconds. It may still be running in the background — check the island channel before retrying.",
+                        elapsed=elapsed,
+                        requester=ctx.author,
+                    )
+                )
+                logger.warning(
+                    "[DISCORD] Island reboot timed out: %s (%s) requested by %s",
+                    cleaned, fleet_label, ctx.author,
                 )
                 return
 
+        elapsed = time.monotonic() - start
         output = (result.stdout or "").strip()
         errout = (result.stderr or "").strip()
 
         if result.returncode == 0:
-            await responder(
-                f"**{cleaned}** ({fleet_label}) revived.\n```\n{output}\n```"
+            embed = self._build_revive_embed(
+                title="✅ Island Rebooted",
+                color=discord.Color.green(),
+                cleaned=cleaned,
+                fleet_label=fleet_label,
+                output=output or None,
+                elapsed=elapsed,
+                requester=ctx.author,
             )
         else:
-            await responder(
-                f"Failed to revive **{cleaned}** ({fleet_label}).\n```\n{output}\n{errout}\n```"
+            embed = self._build_revive_embed(
+                title="❌ Reboot Failed",
+                color=discord.Color.red(),
+                cleaned=cleaned,
+                fleet_label=fleet_label,
+                description=f"Script exited with code `{result.returncode}`.",
+                output=output or None,
+                errout=errout or None,
+                elapsed=elapsed,
+                requester=ctx.author,
             )
 
+        await status_msg.edit(embed=embed)
+
         logger.info(
-            "[DISCORD] Island revive command invoked by %s for %s (%s), rc=%s",
+            "[DISCORD] Island revive command invoked by %s for %s (%s), rc=%s, elapsed=%.1fs",
             ctx.author,
             cleaned,
             fleet_label,
             result.returncode,
+            elapsed,
         )
 
     @commands.hybrid_command(name="refresh")
