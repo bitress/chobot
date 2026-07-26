@@ -792,7 +792,7 @@ class DiscordCommandCog(commands.Cog):
                             break
 
                 if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    sub_results.append((island, "✅", "Bot online", channel_id))
+                    sub_results.append((island, "🟢", "Bot online", channel_id))
                     sub_online += 1
                     continue
 
@@ -820,7 +820,7 @@ class DiscordCommandCog(commands.Cog):
                         break
 
                 if island_up:
-                    sub_results.append((island, "✅", status_reason, channel_id))
+                    sub_results.append((island, "🟢", status_reason, channel_id))
                     sub_online += 1
                 else:
                     sub_results.append((island, "❌", "No recent activity", channel_id))
@@ -843,7 +843,7 @@ class DiscordCommandCog(commands.Cog):
                             break
 
                 if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    free_results.append((island, "✅", "Bot online", channel_id))
+                    free_results.append((island, "🟢", "Bot online", channel_id))
                     free_online += 1
                 elif island_bot:
                     free_results.append((island, "❌", "Bot offline", channel_id))
@@ -870,7 +870,7 @@ class DiscordCommandCog(commands.Cog):
                 display_name = "Sinta"  # order-bot island is always shown as "Sinta"
 
                 if order_bot_member and order_bot_member.status in ONLINE_DISCORD_STATUSES:
-                    order_results.append((display_name, "✅", "Bot online", channel_id))
+                    order_results.append((display_name, "🟢", "Bot online", channel_id))
                     order_online += 1
                 elif order_bot_member:
                     order_results.append((display_name, "❌", "Bot offline", channel_id))
