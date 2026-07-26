@@ -2366,10 +2366,11 @@ class DiscordCommandCog(commands.Cog):
         """Return formatted lines for only the non-online entries in a results list."""
         lines = []
         for n, s, _, c in results:
+            if s == "🟢":
+                continue  # <-- skip islands that are actually online
             icon = "🔴" if s == "❌" else "❓"
             lines.append(f"{icon} {format_channel(n, c)}")
         return lines
-
     @staticmethod
     def _chunk_lines(lines: list[str], limit: int = 1024) -> list[str]:
         """Split a list of lines into chunks that each fit Discord's 1024-char field limit."""
