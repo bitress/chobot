@@ -792,7 +792,7 @@ class DiscordCommandCog(commands.Cog):
                             break
 
                 if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    sub_results.append((island, "🟢", "Bot online", channel_id))
+                    sub_results.append((island, "✅", "Bot online", channel_id))
                     sub_online += 1
                     continue
 
@@ -820,7 +820,7 @@ class DiscordCommandCog(commands.Cog):
                         break
 
                 if island_up:
-                    sub_results.append((island, "🟢", status_reason, channel_id))
+                    sub_results.append((island, "✅", status_reason, channel_id))
                     sub_online += 1
                 else:
                     sub_results.append((island, "❌", "No recent activity", channel_id))
@@ -843,7 +843,7 @@ class DiscordCommandCog(commands.Cog):
                             break
 
                 if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    free_results.append((island, "🟢", "Bot online", channel_id))
+                    free_results.append((island, "✅", "Bot online", channel_id))
                     free_online += 1
                 elif island_bot:
                     free_results.append((island, "❌", "Bot offline", channel_id))
@@ -870,7 +870,7 @@ class DiscordCommandCog(commands.Cog):
                 display_name = "Sinta"  # order-bot island is always shown as "Sinta"
 
                 if order_bot_member and order_bot_member.status in ONLINE_DISCORD_STATUSES:
-                    order_results.append((display_name, "🟢", "Bot online", channel_id))
+                    order_results.append((display_name, "✅", "Bot online", channel_id))
                     order_online += 1
                 elif order_bot_member:
                     order_results.append((display_name, "❌", "Bot offline", channel_id))
@@ -1113,9 +1113,9 @@ class DiscordCommandCog(commands.Cog):
                 timestamp=discord.utils.utcnow(),
             )
 
-            sub_off = [(n, c) for n, s, _, c in sub_results if s != "🟢"]
-            free_off = [(n, c) for n, s, _, c in free_results if s != "🟢"]
-            order_off = [(n, c) for n, s, _, c in order_results if s != "🟢"]
+            sub_off = [(n, c) for n, s, _, c in sub_results if s != "✅"]
+            free_off = [(n, c) for n, s, _, c in free_results if s != "✅"]
+            order_off = [(n, c) for n, s, _, c in order_results if s != "✅"]
             all_off = (
                 [(n, c, "🏝️") for n, c in sub_off]
                 + [(n, c, "🌴") for n, c in free_off]
@@ -2366,7 +2366,7 @@ class DiscordCommandCog(commands.Cog):
         """Return formatted lines for only the non-online entries in a results list."""
         lines = []
         for n, s, _, c in results:
-            if s == "🟢":
+            if s == "✅":
                 continue  # <-- skip islands that are actually online
             icon = "🔴" if s == "❌" else "❓"
             lines.append(f"{icon} {format_channel(n, c)}")
@@ -2390,11 +2390,11 @@ class DiscordCommandCog(commands.Cog):
     def _add_attention_fields(self, embed: discord.Embed, name: str, lines: list[str]) -> None:
         """Add one or more 'needs attention' fields, chunked to fit the 1024-char limit."""
         if not lines:
-            embed.add_field(name=f"✅ {name} — All Clear", value="Every island is active.", inline=False)
+            embed.add_field(name=f"{Config.STAR_PINK} {name} — All Clear", value="Every island is active.", inline=False)
             return
         chunks = self._chunk_lines(lines)
         for i, chunk in enumerate(chunks):
-            label = f"⚠️ {name} — Needs Attention ({len(lines)})" if i == 0 else f"⚠️ {name} (cont.)"
+            label = f"{Config.EMOJI_FAIL} {name} — Needs Attention ({len(lines)})" if i == 0 else f"⚠️ {name} (cont.)"
             embed.add_field(name=label, value=chunk, inline=False)
 
     @commands.hybrid_command(name="islands", aliases=["islandstatus", "checkislands"])
