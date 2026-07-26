@@ -88,6 +88,14 @@ ISLAND_REVIVE_BATCH_PATH = os.getenv(
     "ISLAND_RESTART_BAT_PATH",
     r"C:\Users\ChoPaeng\Desktop\Relaunch_Island.bat",
 )
+DODO_SENT_TIPS = [
+    "**DO NOT** share your order code with anyone else. Only the person who placed the order may visit that island. Sharing a code may result in a permanent bot ban.",
+    "Free up your home storage before visiting so you can unload full pockets quickly and fly back for another run.",
+    "Change your server nickname to the format: `Character Name | Island Name`. This helps the team identify you.",
+    "**NEVER** press the minus (-) button to leave. Always walk to the airport and fly home through Orville. Leaving with the minus button may cause the island to crash for other visitors and you may lose items.",
+    "NAT Type A or B is required for smooth online play. If you have NAT Type C or D you may experience connection problems — please resolve this before joining.",
+    "Do not drop unwanted items on the ground. Trash bins are placed all over each island — please use them. Litter prevents islands from refreshing their item spawns for everyone.",
+]
 
 COMMAND_CLAIM_EXPIRY_SECONDS = 300  # 5 minutes
 
@@ -734,6 +742,149 @@ class DiscordCommandCog(commands.Cog):
         if Config.ORDER_BOT_CHANNEL_ID and Config.ORDER_BOT_ISLAND:
             self.order_island_lookup[clean_text(Config.ORDER_BOT_ISLAND)] = Config.ORDER_BOT_CHANNEL_ID
 
+
+    async def _compute_island_status(
+        self,
+        guild: discord.Guild,
+        include_sub: bool = True,
+        include_free: bool = True,
+        include_order: bool = True,
+    ) -> dict:
+        """Compute sub/free/order island status results.
+
+        Shared by the sticky embed refresher and the /islands command so the
+        two never drift out of sync with each other.
+        """
+        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
+        if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
+            logger.warning(f"[DISCORD] ISLAND_BOT_ROLE_ID {Config.ISLAND_BOT_ROLE_ID} not found in guild; bot name matching disabled")
+
+        # --- Sub island results ---
+        sub_results: list = []
+        sub_online = 0
+        if include_sub:
+            await self.fetch_islands()
+            for island in Config.SUB_ISLANDS:
+                island_clean = clean_text(island)
+                channel_id = self.sub_island_lookup.get(island_clean)
+
+                if not channel_id:
+                    for ch in guild.channels:
+                        if isinstance(ch, discord.TextChannel) and island_clean in clean_text(ch.name):
+                            channel_id = ch.id
+                            break
+
+                if not channel_id:
+                    sub_results.append((island, "❓", "Channel not found", None))
+                    continue
+
+                channel = guild.get_channel(channel_id)
+                if not channel:
+                    sub_results.append((island, "❓", "Channel not found", None))
+                    continue
+
+                island_bot = None
+                if island_bot_role:
+                    target = clean_text(f"chobot {island}")
+                    for member in island_bot_role.members:
+                        if member.bot and clean_text(member.display_name) == target:
+                            island_bot = member
+                            break
+
+                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
+                    sub_results.append((island, "✅", "Bot online", channel_id))
+                    sub_online += 1
+                    continue
+
+                try:
+                    messages = [msg async for msg in channel.history(limit=25)]
+                except discord.Forbidden:
+                    sub_results.append((island, "❓", "No channel access", channel_id))
+                    continue
+
+                island_up = False
+                status_reason = ""
+                for msg in messages:
+                    if island_bot:
+                        if msg.author.id != island_bot.id:
+                            continue
+                    elif not msg.author.bot:
+                        continue
+                    if DODO_CODE_PATTERN.search(msg.content):
+                        island_up = True
+                        status_reason = "Dodo code active"
+                        break
+                    if ISLAND_HOST_NAME in msg.content.lower():
+                        island_up = True
+                        status_reason = "Chopaeng is visiting"
+                        break
+
+                if island_up:
+                    sub_results.append((island, "✅", status_reason, channel_id))
+                    sub_online += 1
+                else:
+                    sub_results.append((island, "❌", "No recent activity", channel_id))
+
+        # --- Free island results ---
+        free_results: list = []
+        free_online = 0
+        if include_free:
+            await self.fetch_free_islands()
+            for island in Config.FREE_ISLANDS:
+                island_clean = clean_text(island)
+                channel_id = self.free_island_lookup.get(island_clean)
+
+                island_bot = None
+                if island_bot_role:
+                    target = clean_text(f"chobot {island}")
+                    for member in island_bot_role.members:
+                        if member.bot and clean_text(member.display_name) == target:
+                            island_bot = member
+                            break
+
+                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
+                    free_results.append((island, "✅", "Bot online", channel_id))
+                    free_online += 1
+                elif island_bot:
+                    free_results.append((island, "❌", "Bot offline", channel_id))
+                else:
+                    free_results.append((island, "❓", "Bot not found", channel_id))
+
+        # --- Order island results ---
+        order_results: list = []
+        order_online = 0
+        if include_order:
+            self._refresh_order_island_lookup()
+            order_bot_member = None
+            if Config.ORDER_BOT_DISCORD_ID:
+                order_bot_member = guild.get_member(Config.ORDER_BOT_DISCORD_ID)
+                if order_bot_member is None:
+                    try:
+                        order_bot_member = await guild.fetch_member(Config.ORDER_BOT_DISCORD_ID)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        order_bot_member = None
+
+            for island in getattr(Config, "ORDER_BOT_ISLANDS", []):
+                island_clean = clean_text(island)
+                channel_id = self.order_island_lookup.get(island_clean)
+                display_name = "Sinta"  # order-bot island is always shown as "Sinta"
+
+                if order_bot_member and order_bot_member.status in ONLINE_DISCORD_STATUSES:
+                    order_results.append((display_name, "✅", "Bot online", channel_id))
+                    order_online += 1
+                elif order_bot_member:
+                    order_results.append((display_name, "❌", "Bot offline", channel_id))
+                else:
+                    order_results.append((display_name, "❓", "Bot not found", channel_id))
+
+        return {
+            "sub_results": sub_results, "sub_online": sub_online, "sub_total": len(Config.SUB_ISLANDS),
+            "free_results": free_results, "free_online": free_online, "free_total": len(Config.FREE_ISLANDS),
+            "order_results": order_results, "order_online": order_online,
+            "order_total": len(getattr(Config, "ORDER_BOT_ISLANDS", [])),
+        }
+
+
     @app_commands.command(name="nick", description="Set your ACNH nickname and island name")
     @app_commands.describe(nickname="Format: Character Name | Island Name (e.g. ChoPaeng | ChoPaeng Camp)")
     async def nick_command(self, interaction: discord.Interaction, nickname: str):
@@ -913,264 +1064,130 @@ class DiscordCommandCog(commands.Cog):
         self.island_status_sticky_loop.cancel()
 
     async def _refresh_island_status_sticky_message(
-        self,
-        channel: discord.TextChannel | None = None,
-        force_repost: bool = True,
-    ) -> None:
-        """Publish or refresh the sticky island-status embed in the configured channel.
+            self,
+            channel: discord.TextChannel | None = None,
+            force_repost: bool = True,
+        ) -> None:
+            target_channel = channel or self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+            if not isinstance(target_channel, discord.TextChannel):
+                return
 
-        If *force_repost* is True, the previous sticky message is deleted and a
-        brand-new one is sent, so it jumps to the bottom of the channel (true
-        "sticky" behavior). Otherwise the existing message is edited in place.
-        """
-        target_channel = channel or self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
-        if not isinstance(target_channel, discord.TextChannel):
-            return
+            guild = target_channel.guild
+            if not guild:
+                return
 
-        guild = target_channel.guild
-        if not guild:
-            return
-
-        show_sub = True
-        show_free = True
-        show_order = True
-
-        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
-        if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
-            logger.warning(f"[DISCORD] ISLAND_BOT_ROLE_ID {Config.ISLAND_BOT_ROLE_ID} not found in guild; bot name matching disabled")
-
-        async def _get_channel_id_for_sub_island(island_name: str) -> int | None:
-            island_clean = clean_text(island_name)
-            channel_id = self.sub_island_lookup.get(island_clean)
-            if channel_id:
-                return channel_id
-            for ch in guild.channels:
-                if isinstance(ch, discord.TextChannel) and island_clean in clean_text(ch.name):
-                    return ch.id
-            return None
-
-        def _format_channel(island_name: str, channel_id: int | None) -> str:
-            if not channel_id:
-                return f"**{island_name}**"
-            ch = guild.get_channel(channel_id)
-            return f"<#{channel_id}>" if ch else f"**{island_name}**"
-
-        sub_results: list = []
-        sub_online = 0
-        if show_sub:
-            await self.fetch_islands()
-            for island in Config.SUB_ISLANDS:
-                island_clean = clean_text(island)
-                channel_id = await _get_channel_id_for_sub_island(island)
-
+            def _format_channel(island_name: str, channel_id: int | None) -> str:
                 if not channel_id:
-                    sub_results.append((island, "❓", "Channel not found", None))
-                    continue
+                    return f"**{island_name}**"
+                ch = guild.get_channel(channel_id)
+                return f"<#{channel_id}>" if ch else f"**{island_name}**"
 
-                channel = guild.get_channel(channel_id)
-                if not channel:
-                    sub_results.append((island, "❓", "Channel not found", None))
-                    continue
+            status = await self._compute_island_status(guild)
+            sub_results, sub_online, sub_total = status["sub_results"], status["sub_online"], status["sub_total"]
+            free_results, free_online, free_total = status["free_results"], status["free_online"], status["free_total"]
+            order_results, order_online, order_total = status["order_results"], status["order_online"], status["order_total"]
 
-                island_bot = None
-                if island_bot_role:
-                    target = clean_text(f"chobot {island}")
-                    for member in island_bot_role.members:
-                        if member.bot and clean_text(member.display_name) == target:
-                            island_bot = member
-                            break
+            combined_online = sub_online + free_online + order_online
+            total = sub_total + free_total + order_total
+            pct = int((combined_online / total) * 100) if total else 0
 
-                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    sub_results.append((island, "✅", "Bot online", channel_id))
-                    sub_online += 1
-                    continue
+            def _progress_bar(filled: int, total: int, length: int = 14) -> str:
+                if total == 0:
+                    return "░" * length
+                filled_blocks = round((filled / total) * length)
+                return "▰" * filled_blocks + "▱" * (length - filled_blocks)
 
-                try:
-                    messages = [msg async for msg in channel.history(limit=25)]
-                except discord.Forbidden:
-                    sub_results.append((island, "❓", "No channel access", channel_id))
-                    continue
-
-                island_up = False
-                status_reason = ""
-                for msg in messages:
-                    if island_bot:
-                        if msg.author.id != island_bot.id:
-                            continue
-                    elif not msg.author.bot:
-                        continue
-                    if DODO_CODE_PATTERN.search(msg.content):
-                        island_up = True
-                        status_reason = "Dodo code active"
-                        break
-                    if ISLAND_HOST_NAME in msg.content.lower():
-                        island_up = True
-                        status_reason = "Chopaeng is visiting"
-                        break
-
-                if island_up:
-                    sub_results.append((island, "✅", status_reason, channel_id))
-                    sub_online += 1
-                else:
-                    sub_results.append((island, "❌", "No recent activity", channel_id))
-
-        free_results: list = []
-        free_online = 0
-        if show_free:
-            await self.fetch_free_islands()
-            for island in Config.FREE_ISLANDS:
-                island_clean = clean_text(island)
-                channel_id = self.free_island_lookup.get(island_clean)
-
-                island_bot = None
-                if island_bot_role:
-                    target = clean_text(f"chobot {island}")
-                    for member in island_bot_role.members:
-                        if member.bot and clean_text(member.display_name) == target:
-                            island_bot = member
-                            break
-
-                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    free_results.append((island, "✅", "Bot online", channel_id))
-                    free_online += 1
-                elif island_bot:
-                    free_results.append((island, "❌", "Bot offline", channel_id))
-                else:
-                    free_results.append((island, "❓", "Bot not found", channel_id))
-
-        order_results: list = []
-        order_online = 0
-        if show_order:
-            self._refresh_order_island_lookup()
-            order_bot_member = None
-            if Config.ORDER_BOT_DISCORD_ID:
-                order_bot_member = guild.get_member(Config.ORDER_BOT_DISCORD_ID)
-                if order_bot_member is None:
-                    try:
-                        order_bot_member = await guild.fetch_member(Config.ORDER_BOT_DISCORD_ID)
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        order_bot_member = None
-
-            for island in getattr(Config, "ORDER_BOT_ISLANDS", []):
-                island_clean = clean_text(island)
-                channel_id = self.order_island_lookup.get(island_clean)
-
-                if order_bot_member and order_bot_member.status in ONLINE_DISCORD_STATUSES:
-                    order_results.append((island, "✅", "Bot online", channel_id))
-                    order_online += 1
-                elif order_bot_member:
-                    order_results.append((island, "❌", "Bot offline", channel_id))
-                else:
-                    order_results.append((island, "❓", "Bot not found", channel_id))
-
-        sub_total = len(Config.SUB_ISLANDS)
-        free_total = len(Config.FREE_ISLANDS)
-        order_total = len(getattr(Config, "ORDER_BOT_ISLANDS", []))
-        combined_online = sub_online + free_online + order_online
-        total = sub_total + free_total + order_total
-        pct = int((combined_online / total) * 100) if total else 0
-
-        def _progress_bar(filled: int, total: int, length: int = 14) -> str:
             if total == 0:
-                return "░" * length
-            filled_blocks = round((filled / total) * length)
-            return "▰" * filled_blocks + "▱" * (length - filled_blocks)
+                color = discord.Color.greyple()
+            elif combined_online == total:
+                color = discord.Color.green()
+            elif combined_online == 0:
+                color = discord.Color.red()
+            else:
+                color = discord.Color.orange()
 
-        if total == 0:
-            color = discord.Color.greyple()
-        elif combined_online == total:
-            color = discord.Color.green()
-        elif combined_online == 0:
-            color = discord.Color.red()
-        else:
-            color = discord.Color.orange()
-
-        embed = discord.Embed(
-            title="🏝️ Island Status",
-            description=f"{_progress_bar(combined_online, total)}  **{combined_online}/{total}** online ({pct}%)",
-            color=color,
-            timestamp=discord.utils.utcnow(),
-        )
-
-        sub_off = [(n, c) for n, s, _, c in sub_results if s != "✅"]
-        free_off = [(n, c) for n, s, _, c in free_results if s != "✅"]
-        order_off = [(n, c) for n, s, _, c in order_results if s != "✅"]
-        all_off = (
-            [(n, c, "🏝️") for n, c in sub_off]
-            + [(n, c, "🌴") for n, c in free_off]
-            + [(n, c, "📦") for n, c in order_off]
-        )
-
-        if all_off:
-            down_lines = [f"🔴 {tag} {_format_channel(n, c)}" for n, c, tag in all_off]
-            down_value = "\n".join(down_lines)
-            if len(down_value) > 1024:
-                down_value = down_value[:1000].rsplit("\n", 1)[0] + f"\n…and {len(down_lines) - down_value[:1000].rsplit(chr(10), 1)[0].count(chr(10)) - 1} more"
-            embed.add_field(
-                name=f"{Config.EMOJI_FAIL} Needs attention ({len(all_off)})",
-                value=down_value,
-                inline=False,
+            embed = discord.Embed(
+                title="🏝️ Island Status",
+                description=f"{_progress_bar(combined_online, total)}  **{combined_online}/{total}** online ({pct}%)",
+                color=color,
+                timestamp=discord.utils.utcnow(),
             )
-        else:
-            embed.add_field(name="✅ All clear", value="Every island is active.", inline=False)
 
-        embed.add_field(name=f"{Config.STAR_PINK} Sub", value=f"**{sub_online}**/{sub_total} online", inline=True)
-        embed.add_field(name=f"🌴 Free", value=f"**{free_online}**/{free_total} online", inline=True)
-        embed.add_field(name=f"📦 Order", value=f"**{order_online}**/{order_total} online", inline=True)
+            sub_off = [(n, c) for n, s, _, c in sub_results if s != "✅"]
+            free_off = [(n, c) for n, s, _, c in free_results if s != "✅"]
+            order_off = [(n, c) for n, s, _, c in order_results if s != "✅"]
+            all_off = (
+                [(n, c, "🏝️") for n, c in sub_off]
+                + [(n, c, "🌴") for n, c in free_off]
+                + [(n, c, "📦") for n, c in order_off]
+            )
 
-        footer_icon_url = guild.icon.url if guild.icon else Config.DEFAULT_PFP
-        embed.set_footer(text="Chopaeng Camp™", icon_url=footer_icon_url)
-        embed.set_image(url=Config.FOOTER_LINE)
+            if all_off:
+                down_lines = [f"🔴 {tag} {_format_channel(n, c)}" for n, c, tag in all_off]
+                down_value = "\n".join(down_lines)
+                if len(down_value) > 1024:
+                    down_value = down_value[:1000].rsplit("\n", 1)[0] + f"\n…and {len(down_lines) - down_value[:1000].rsplit(chr(10), 1)[0].count(chr(10)) - 1} more"
+                embed.add_field(
+                    name=f"{Config.EMOJI_FAIL} Needs attention ({len(all_off)})",
+                    value=down_value,
+                    inline=False,
+                )
+            else:
+                embed.add_field(name="✅ All clear", value="Every island is active.", inline=False)
 
-        previous_message = self.island_status_sticky_message
+            embed.add_field(name=f"{Config.STAR_PINK} Sub", value=f"**{sub_online}**/{sub_total} online", inline=True)
+            embed.add_field(name=f"🌴 Free", value=f"**{free_online}**/{free_total} online", inline=True)
+            embed.add_field(name=f"📦 Order", value=f"**{order_online}**/{order_total} online", inline=True)
 
-        # --- True sticky behavior: delete old, send new, so it jumps to bottom ---
-        if force_repost:
-            if previous_message and previous_message.channel.id == target_channel.id:
-                try:
-                    await previous_message.delete()
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
-                    logger.warning(f"[DISCORD] Could not delete previous sticky island status message: {exc}")
-                self.island_status_sticky_message = None
-                previous_message = None
-            # Fall through to the "send a new message" branch below.
-        else:
-            # --- Normal background refresh: edit in place, no repositioning ---
-            if previous_message and previous_message.channel.id == target_channel.id:
-                try:
-                    await previous_message.edit(embed=embed)
-                    return
-                except (discord.NotFound, discord.HTTPException) as exc:
-                    logger.warning(f"[DISCORD] Previous sticky island status message unavailable, sending a new one: {exc}")
+            footer_icon_url = guild.icon.url if guild.icon else Config.DEFAULT_PFP
+            embed.set_footer(text="Chopaeng Camp™", icon_url=footer_icon_url)
+            embed.set_image(url=Config.FOOTER_LINE)
+
+            previous_message = self.island_status_sticky_message
+
+            if force_repost:
+                if previous_message and previous_message.channel.id == target_channel.id:
+                    try:
+                        await previous_message.delete()
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                        logger.warning(f"[DISCORD] Could not delete previous sticky island status message: {exc}")
                     self.island_status_sticky_message = None
                     previous_message = None
+            else:
+                if previous_message and previous_message.channel.id == target_channel.id:
+                    try:
+                        await previous_message.edit(embed=embed)
+                        return
+                    except (discord.NotFound, discord.HTTPException) as exc:
+                        logger.warning(f"[DISCORD] Previous sticky island status message unavailable, sending a new one: {exc}")
+                        self.island_status_sticky_message = None
+                        previous_message = None
 
-        if previous_message is None:
+            if previous_message is None:
+                try:
+                    async for msg in target_channel.history(limit=100):
+                        if msg.author.id != self.bot.user.id:
+                            continue
+                        if not msg.embeds:
+                            continue
+                        embed_obj = msg.embeds[0]
+                        if not embed_obj.footer or not embed_obj.footer.text:
+                            continue
+                        footer_text = embed_obj.footer.text
+                        if footer_text.startswith("Island status") or footer_text.startswith("This message is kept pinned"):
+                            try:
+                                await msg.delete()
+                            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                                pass
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    logger.warning(f"[DISCORD] Failed to clean old island status sticky messages in {target_channel.id}: {exc}")
+
             try:
-                async for msg in target_channel.history(limit=100):
-                    if msg.author.id != self.bot.user.id:
-                        continue
-                    if not msg.embeds:
-                        continue
-                    embed_obj = msg.embeds[0]
-                    if not embed_obj.footer or not embed_obj.footer.text:
-                        continue
-                    footer_text = embed_obj.footer.text
-                    if footer_text.startswith("Island status") or footer_text.startswith("This message is kept pinned"):
-                        try:
-                            await msg.delete()
-                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                            pass
-            except (discord.Forbidden, discord.HTTPException) as exc:
-                logger.warning(f"[DISCORD] Failed to clean old island status sticky messages in {target_channel.id}: {exc}")
-
-        try:
-            message = await target_channel.send(embed=embed, silent=True)
-            self.island_status_sticky_message = message
-        except Exception as exc:
-            logger.warning(f"[DISCORD] Failed to refresh island status sticky embed in {target_channel.id}: {exc}")
-
-
+                message = await target_channel.send(embed=embed, silent=True)
+                self.island_status_sticky_message = message
+            except Exception as exc:
+                logger.warning(f"[DISCORD] Failed to refresh island status sticky embed in {target_channel.id}: {exc}")
+                
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Redirect users to /nick command in the designated channel and refresh the sticky status embed."""
@@ -2337,14 +2354,58 @@ class DiscordCommandCog(commands.Cog):
         await ctx.reply(f"{answer}")
         logger.info(f"[DISCORD] Ask command by {ctx.author.name}: {question[:80]}")
 
+    @staticmethod
+    def _progress_bar(filled: int, total: int, length: int = 14) -> str:
+        if total == 0:
+            return "░" * length
+        filled_blocks = round((filled / total) * length)
+        return "▰" * filled_blocks + "▱" * (length - filled_blocks)
+
+    @staticmethod
+    def _problem_lines(results: list, format_channel) -> list[str]:
+        """Return formatted lines for only the non-online entries in a results list."""
+        lines = []
+        for n, s, _, c in results:
+            icon = "🔴" if s == "❌" else "❓"
+            lines.append(f"{icon} {format_channel(n, c)}")
+        return lines
+
+    @staticmethod
+    def _chunk_lines(lines: list[str], limit: int = 1024) -> list[str]:
+        """Split a list of lines into chunks that each fit Discord's 1024-char field limit."""
+        chunks, current = [], ""
+        for line in lines:
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) > limit:
+                if current:
+                    chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        return chunks or ["*none*"]
+
+    def _add_attention_fields(self, embed: discord.Embed, name: str, lines: list[str]) -> None:
+        """Add one or more 'needs attention' fields, chunked to fit the 1024-char limit."""
+        if not lines:
+            embed.add_field(name=f"✅ {name} — All Clear", value="Every island is active.", inline=False)
+            return
+        chunks = self._chunk_lines(lines)
+        for i, chunk in enumerate(chunks):
+            label = f"⚠️ {name} — Needs Attention ({len(lines)})" if i == 0 else f"⚠️ {name} (cont.)"
+            embed.add_field(name=label, value=chunk, inline=False)
+
     @commands.hybrid_command(name="islands", aliases=["islandstatus", "checkislands"])
-    @app_commands.describe(kind="Which islands to check: sub, free, or leave blank for both.")
+    @app_commands.describe(kind="Which islands to check: sub, free, order, or leave blank for all.")
     @app_commands.choices(kind=[
-        app_commands.Choice(name="sub — Sub Islands",   value="sub"),
-        app_commands.Choice(name="free — Free Islands", value="free"),
+        app_commands.Choice(name="Sub Islands",   value="sub"),
+        app_commands.Choice(name="Free Islands",  value="free"),
+        app_commands.Choice(name="Order Islands", value="order"),
     ])
+    @is_admin_or_senior_mod()
     async def island_status(self, ctx, kind: str = ""):
-        """Check island bot status. Use 'sub', 'free', or leave blank for both."""
+        """Check island bot status. Use 'sub', 'free', 'order', or leave blank for all."""
         await ctx.defer()
 
         guild = self.bot.get_guild(Config.GUILD_ID)
@@ -2354,13 +2415,13 @@ class DiscordCommandCog(commands.Cog):
 
         kind = kind.strip().lower()
 
-        # Validate explicit arguments
-        if kind and kind not in ("sub", "free"):
-            await ctx.reply("Usage: `/islands [sub|free]`", ephemeral=True)
+        if kind and kind not in ("sub", "free", "order"):
+            await ctx.reply("Usage: `/islands [sub|free|order]`", ephemeral=True)
             return
 
-        show_sub  = kind in ("", "sub")
-        show_free = kind in ("", "free")
+        show_sub   = kind in ("", "sub")
+        show_free  = kind in ("", "free")
+        show_order = kind in ("", "order")
 
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
         if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
@@ -2409,7 +2470,7 @@ class DiscordCommandCog(commands.Cog):
                     sub_results.append((island, "❓", "No channel access", channel_id))
                     continue
 
-                island_up   = False
+                island_up = False
                 status_reason = ""
                 for msg in messages:
                     if island_bot:
@@ -2457,31 +2518,55 @@ class DiscordCommandCog(commands.Cog):
                 else:
                     free_results.append((island, "❓", "Bot not found", channel_id))
 
+        # --- Order island results ---
+        order_results: list = []
+        order_online = 0
+        if show_order:
+            self._refresh_order_island_lookup()
+            order_bot_member = None
+            if Config.ORDER_BOT_DISCORD_ID:
+                order_bot_member = guild.get_member(Config.ORDER_BOT_DISCORD_ID)
+                if order_bot_member is None:
+                    try:
+                        order_bot_member = await guild.fetch_member(Config.ORDER_BOT_DISCORD_ID)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        order_bot_member = None
+
+            for island in getattr(Config, "ORDER_BOT_ISLANDS", []):
+                island_clean = clean_text(island)
+                channel_id = self.order_island_lookup.get(island_clean)
+                display_name = "Sinta"
+
+                if order_bot_member and order_bot_member.status in ONLINE_DISCORD_STATUSES:
+                    order_results.append((display_name, "✅", "Bot online", channel_id))
+                    order_online += 1
+                elif order_bot_member:
+                    order_results.append((display_name, "❌", "Bot offline", channel_id))
+                else:
+                    order_results.append((display_name, "❓", "Bot not found", channel_id))
+
         # --- Build embed(s) ---
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
 
-        def format_channel(island_name: str, channel_id: int) -> str:
+        def format_channel(island_name: str, channel_id: int | None) -> str:
             if not channel_id:
-                return f"**{island_name}**"
+                return f"{island_name}"
             ch = guild.get_channel(channel_id)
             if ch and ch.permissions_for(ctx.author).read_messages:
                 return f"<#{channel_id}>"
-            return f"**{island_name}**"
+            return f"{island_name}"
 
         if kind == "sub":
             total = len(Config.SUB_ISLANDS)
             embed = discord.Embed(
                 title="🏝️ Sub Island Status",
-                description=f"**{sub_online}/{total}** islands active",
+                description=f"{self._progress_bar(sub_online, total)}  **{sub_online}/{total}** online",
                 color=discord.Color.green() if sub_online == total else (
                     discord.Color.orange() if sub_online > 0 else discord.Color.red()
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            on_lines  = [format_channel(n, c) for n, s, _, c in sub_results if s == "✅"]
-            off_lines = [format_channel(n, c) for n, s, _, c in sub_results if s != "✅"]
-            embed.add_field(name="🟢 ONLINE",  value="\n".join(on_lines)  or "*none*", inline=True)
-            embed.add_field(name="🔴 OFFLINE", value="\n".join(off_lines) or "*none*", inline=True)
+            self._add_attention_fields(embed, "Sub", self._problem_lines(sub_results, format_channel))
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
             embed.set_image(url=Config.FOOTER_LINE)
             await ctx.reply(embed=embed)
@@ -2491,88 +2576,63 @@ class DiscordCommandCog(commands.Cog):
             total = len(Config.FREE_ISLANDS)
             embed = discord.Embed(
                 title="🌴 Free Island Status",
-                description=f"**{free_online}/{total}** islands active",
+                description=f"{self._progress_bar(free_online, total)}  **{free_online}/{total}** online",
                 color=discord.Color.green() if free_online == total else (
                     discord.Color.orange() if free_online > 0 else discord.Color.red()
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            on_lines  = [format_channel(n, c) for n, s, _, c in free_results if s == "✅"]
-            off_lines = [format_channel(n, c) for n, s, _, c in free_results if s != "✅"]
-            embed.add_field(name="🟢 ONLINE",  value="\n".join(on_lines)  or "*none*", inline=True)
-            embed.add_field(name="🔴 OFFLINE", value="\n".join(off_lines) or "*none*", inline=True)
+            self._add_attention_fields(embed, "Free", self._problem_lines(free_results, format_channel))
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
             embed.set_image(url=Config.FOOTER_LINE)
             await ctx.reply(embed=embed)
             logger.info(f"[DISCORD] Free island status check: {free_online}/{total} online")
 
+        elif kind == "order":
+            total = len(getattr(Config, "ORDER_BOT_ISLANDS", []))
+            embed = discord.Embed(
+                title="📦 Order Island Status",
+                description=f"{self._progress_bar(order_online, total)}  **{order_online}/{total}** online",
+                color=discord.Color.green() if order_online == total else (
+                    discord.Color.orange() if order_online > 0 else discord.Color.red()
+                ),
+                timestamp=discord.utils.utcnow()
+            )
+            self._add_attention_fields(embed, "Order", self._problem_lines(order_results, format_channel))
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
+            embed.set_image(url=Config.FOOTER_LINE)
+            await ctx.reply(embed=embed)
+            logger.info(f"[DISCORD] Order island status check: {order_online}/{total} online")
+
         else:
             # Combined embed (no argument)
-            sub_total  = len(Config.SUB_ISLANDS)
-            free_total = len(Config.FREE_ISLANDS)
-            total      = sub_total + free_total
-            combined_online = sub_online + free_online
+            sub_total   = len(Config.SUB_ISLANDS)
+            free_total  = len(Config.FREE_ISLANDS)
+            order_total = len(getattr(Config, "ORDER_BOT_ISLANDS", []))
+            total       = sub_total + free_total + order_total
+            combined_online = sub_online + free_online + order_online
+
             embed = discord.Embed(
                 title="🏝️ Island Status",
-                description=f"**{combined_online}/{total}** islands active",
+                description=(
+                    f"{self._progress_bar(combined_online, total)}  **{combined_online}/{total}** online\n\n"
+                    f"🏝️ Sub `{sub_online}/{sub_total}` • 🌴 Free `{free_online}/{free_total}` • 📦 Order `{order_online}/{order_total}`"
+                ),
                 color=discord.Color.green() if combined_online == total else (
                     discord.Color.orange() if combined_online > 0 else discord.Color.red()
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            sub_on  = [format_channel(n, c) for n, s, _, c in sub_results  if s == "✅"]
-            sub_off = [format_channel(n, c) for n, s, _, c in sub_results  if s != "✅"]
-            free_on  = [format_channel(n, c) for n, s, _, c in free_results if s == "✅"]
-            free_off = [format_channel(n, c) for n, s, _, c in free_results if s != "✅"]
-            embed.add_field(
-                name=f"🏝️ Sub — {sub_online}/{sub_total}",
-                value=(
-                    ("🟢 " + "\n🟢 ".join(sub_on)  if sub_on  else "") +
-                    ("\n" if sub_on and sub_off else "") +
-                    ("🔴 " + "\n🔴 ".join(sub_off) if sub_off else "") or "*none*"
-                ),
-                inline=True,
-            )
-            embed.add_field(
-                name=f"🌴 Free — {free_online}/{free_total}",
-                value=(
-                    ("🟢 " + "\n🟢 ".join(free_on)  if free_on  else "") +
-                    ("\n" if free_on and free_off else "") +
-                    ("🔴 " + "\n🔴 ".join(free_off) if free_off else "") or "*none*"
-                ),
-                inline=True,
-            )
+            self._add_attention_fields(embed, "Sub",   self._problem_lines(sub_results, format_channel))
+            self._add_attention_fields(embed, "Free",  self._problem_lines(free_results, format_channel))
+            self._add_attention_fields(embed, "Order", self._problem_lines(order_results, format_channel))
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
             embed.set_image(url=Config.FOOTER_LINE)
             await ctx.reply(embed=embed)
-            logger.info(f"[DISCORD] Combined island status: sub {sub_online}/{sub_total}, free {free_online}/{free_total}")
-
-    # Backward-compatible aliases so !freeislands / !freeislandstatus still work
-    @commands.command(name="freeislands", aliases=["freeislandstatus", "checkfreeislands"], hidden=True)
-    async def free_island_status(self, ctx):
-        """Alias for !islands free"""
-        await self.island_status(ctx, kind="free")
-
-    async def _check_sub_island_status(self, ctx) -> bool:
-        """Check if the sub island bot is online. Replies with a down embed and returns False if not."""
-        if not self._is_sub_island_channel(ctx.channel):
-            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
-            return False
-
-        if self.check_cooldown(str(ctx.author.id)):
-            return False
-
-        guild = self.bot.get_guild(Config.GUILD_ID)
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-            logger.info(f"[DISCORD] Island bot online for {ctx.channel.name}, doing nothing")
-            return True
-
-        await ctx.reply(embed=self._create_island_down_embed(ctx))
-        logger.info(f"[DISCORD] Island bot offline for {ctx.channel.name}")
-        return False
-
+            logger.info(
+                f"[DISCORD] Combined island status: sub {sub_online}/{sub_total}, "
+                f"free {free_online}/{free_total}, order {order_online}/{order_total}"
+            )
     @commands.hybrid_command(name="senddodo", aliases=["sd"])
     async def send_dodo(self, ctx):
         """Send the dodo code to a user via DM"""
@@ -3076,6 +3136,7 @@ class DiscordCommandCog(commands.Cog):
             timestamp=discord.utils.utcnow()
         )
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+
         warning = nickname_warning_for(ctx.author.display_name)
         if warning:
             embed.add_field(
@@ -3083,6 +3144,13 @@ class DiscordCommandCog(commands.Cog):
                 value=warning,
                 inline=False,
             )
+
+        embed.add_field(
+            name="<:ChoLove:818216528449241128> Reminder",
+            value=random.choice(DODO_SENT_TIPS),
+            inline=False,
+        )
+
         embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
         embed.set_image(url=Config.FOOTER_LINE)
         return embed
@@ -3877,10 +3945,10 @@ class DiscordCommandCog(commands.Cog):
             color=color,
             timestamp=discord.utils.utcnow(),
         )
-        embed.add_field(name=f"{Config.STAR_PINK} Island Name", value=f"**{cleaned}**", inline=True)
-        embed.add_field(name=f"{Config.STAR_PINK} Island Type", value=fleet_label, inline=True)
+        embed.add_field(name=f"Island Name", value=f"{cleaned.upper()}", inline=True)
+        embed.add_field(name=f"Island Type", value=fleet_label, inline=True)
         if elapsed is not None:
-            embed.add_field(name=f"{Config.STAR_PINK} Duration", value=f"{elapsed:.1f}s", inline=True)
+            embed.add_field(name=f"Duration", value=f"{elapsed:.1f}s", inline=True)
 
         if output:
             trimmed = output[: self.REVIVE_OUTPUT_MAX_LENGTH]
@@ -3964,7 +4032,7 @@ class DiscordCommandCog(commands.Cog):
         if not cleaned or any(token in cleaned for token in ("..", "/", "\\", '"')):
             await ctx.reply(
                 embed=self._build_revive_embed(
-                    title="❌ Invalid Island Name",
+                    title="Invalid Island Name",
                     color=discord.Color.red(),
                     cleaned=island.strip() or "*(empty)*",
                     fleet_label=fleet_label,
@@ -4015,7 +4083,7 @@ class DiscordCommandCog(commands.Cog):
 
         if confirm_view.result is not True:
             cancel_embed = self._build_revive_embed(
-                title="✖️ Reboot Cancelled" if confirm_view.result is False else "⌛ Confirmation Timed Out",
+                title="Reboot Cancelled" if confirm_view.result is False else "⌛ Confirmation Timed Out",
                 color=discord.Color.greyple(),
                 cleaned=cleaned,
                 fleet_label=fleet_label,
@@ -4041,7 +4109,7 @@ class DiscordCommandCog(commands.Cog):
         if self._revive_lock.locked():
             await status_msg.edit(
                 embed=self._build_revive_embed(
-                    title="⏳ Reboot Queued",
+                    title="Reboot Queued",
                     color=discord.Color.orange(),
                     cleaned=cleaned,
                     fleet_label=fleet_label,
@@ -4054,7 +4122,7 @@ class DiscordCommandCog(commands.Cog):
         async with self._revive_lock:
             await status_msg.edit(
                 embed=self._build_revive_embed(
-                    title="🔄 Rebooting Island…",
+                    title="Rebooting Island…",
                     color=discord.Color.blurple(),
                     cleaned=cleaned,
                     fleet_label=fleet_label,
@@ -4076,7 +4144,7 @@ class DiscordCommandCog(commands.Cog):
                 elapsed = time.monotonic() - start
                 await status_msg.edit(
                     embed=self._build_revive_embed(
-                        title="⏱️ Reboot Timed Out",
+                        title="⏱Reboot Timed Out",
                         color=discord.Color.orange(),
                         cleaned=cleaned,
                         fleet_label=fleet_label,
@@ -4097,7 +4165,7 @@ class DiscordCommandCog(commands.Cog):
 
         if result.returncode == 0:
             embed = self._build_revive_embed(
-                title="✅ Island Rebooted",
+                title="Island Rebooted",
                 color=discord.Color.green(),
                 cleaned=cleaned,
                 fleet_label=fleet_label,
