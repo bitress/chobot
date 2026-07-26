@@ -2371,6 +2371,45 @@ class DiscordCommandCog(commands.Cog):
             icon = "🔴" if s == "❌" else "❓"
             lines.append(f"{icon} {format_channel(n, c)}")
         return lines
+
+    @staticmethod
+    def _all_lines(results: list, format_channel) -> list[str]:
+        """Return formatted lines for every island in a results list, online included.
+        Matches the 🟢/🔴/❓ + channel-mention style used in the sticky status embed."""
+        lines = []
+        for n, s, _, c in results:
+            icon = "🟢" if s == "✅" else "🔴" if s == "❌" else "❓"
+            lines.append(f"{icon} {format_channel(n, c)}")
+        return lines
+
+    def _add_status_fields(
+        self,
+        embed: discord.Embed,
+        name: str,
+        emoji: str,
+        results: list,
+        online: int,
+        total: int,
+        format_channel,
+        view: str,
+    ) -> None:
+        """Add island status field(s) for one category, formatted per the requested view.
+
+        view == 'all'     -> every island, header shows 'Sub — 19/20' style, like the screenshot.
+        view == 'summary' -> only non-online islands ('needs attention').
+        """
+        if view == "all":
+            lines = self._all_lines(results, format_channel)
+            if not lines:
+                embed.add_field(name=f"{emoji} {name} — 0/0", value="*No islands configured.*", inline=True)
+                return
+            chunks = self._chunk_lines(lines)
+            for i, chunk in enumerate(chunks):
+                label = f"{emoji} {name} — {online}/{total}" if i == 0 else f"{emoji} {name} (cont.)"
+                embed.add_field(name=label, value=chunk, inline=True)
+        else:
+            self._add_attention_fields(embed, name, self._problem_lines(results, format_channel))
+            
     @staticmethod
     def _chunk_lines(lines: list[str], limit: int = 1024) -> list[str]:
         """Split a list of lines into chunks that each fit Discord's 1024-char field limit."""
@@ -2398,14 +2437,23 @@ class DiscordCommandCog(commands.Cog):
             embed.add_field(name=label, value=chunk, inline=False)
 
     @commands.hybrid_command(name="islands", aliases=["islandstatus", "checkislands"])
-    @app_commands.describe(kind="Which islands to check: sub, free, order, or leave blank for all.")
-    @app_commands.choices(kind=[
-        app_commands.Choice(name="Sub Islands",   value="sub"),
-        app_commands.Choice(name="Free Islands",  value="free"),
-        app_commands.Choice(name="Order Islands", value="order"),
-    ])
+    @app_commands.describe(
+        island="Which islands to check: sub, free, order, or leave blank for all.",
+        view="Display mode: 'summary' (problems only, default) or 'all' (every island with status).",
+    )
+    @app_commands.choices(
+        island=[
+            app_commands.Choice(name="Sub Islands",   value="sub"),
+            app_commands.Choice(name="Free Islands",  value="free"),
+            app_commands.Choice(name="Order Islands", value="order"),
+        ],
+        view=[
+            app_commands.Choice(name="Summary (problems only)", value="summary"),
+            app_commands.Choice(name="All (every island with status)", value="all"),
+        ],
+    )
     @is_admin_or_senior_mod()
-    async def island_status(self, ctx, kind: str = ""):
+    async def island_status(self, ctx, island: str = "", view: str = "summary"):
         """Check island bot status. Use 'sub', 'free', 'order', or leave blank for all."""
         await ctx.defer()
 
@@ -2414,10 +2462,15 @@ class DiscordCommandCog(commands.Cog):
             await ctx.reply("Guild not found.")
             return
 
-        kind = kind.strip().lower()
+        kind = island.strip().lower()
+        view = view.strip().lower() if view else "summary"
 
         if kind and kind not in ("sub", "free", "order"):
             await ctx.reply("Usage: `/islands [sub|free|order]`", ephemeral=True)
+            return
+
+        if view not in ("summary", "all"):
+            await ctx.reply("Usage: view must be 'summary' or 'all'", ephemeral=True)
             return
 
         show_sub   = kind in ("", "sub")
@@ -2433,8 +2486,8 @@ class DiscordCommandCog(commands.Cog):
         sub_online = 0
         if show_sub:
             await self.fetch_islands()
-            for island in Config.SUB_ISLANDS:
-                island_clean = clean_text(island)
+            for isl in Config.SUB_ISLANDS:
+                island_clean = clean_text(isl)
                 channel_id = self.sub_island_lookup.get(island_clean)
 
                 if not channel_id:
@@ -2444,31 +2497,31 @@ class DiscordCommandCog(commands.Cog):
                             break
 
                 if not channel_id:
-                    sub_results.append((island, "❓", "Channel not found", None))
+                    sub_results.append((isl, "❓", "Channel not found", None))
                     continue
 
                 channel = guild.get_channel(channel_id)
                 if not channel:
-                    sub_results.append((island, "❓", "Channel not found", None))
+                    sub_results.append((isl, "❓", "Channel not found", None))
                     continue
 
                 island_bot = None
                 if island_bot_role:
-                    target = clean_text(f"chobot {island}")
+                    target = clean_text(f"chobot {isl}")
                     for member in island_bot_role.members:
                         if member.bot and clean_text(member.display_name) == target:
                             island_bot = member
                             break
 
                 if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    sub_results.append((island, "✅", "Bot online", channel_id))
+                    sub_results.append((isl, "✅", "Bot online", channel_id))
                     sub_online += 1
                     continue
 
                 try:
                     messages = [msg async for msg in channel.history(limit=25)]
                 except discord.Forbidden:
-                    sub_results.append((island, "❓", "No channel access", channel_id))
+                    sub_results.append((isl, "❓", "No channel access", channel_id))
                     continue
 
                 island_up = False
@@ -2489,35 +2542,35 @@ class DiscordCommandCog(commands.Cog):
                         break
 
                 if island_up:
-                    sub_results.append((island, "✅", status_reason, channel_id))
+                    sub_results.append((isl, "✅", status_reason, channel_id))
                     sub_online += 1
                 else:
-                    sub_results.append((island, "❌", "No recent activity", channel_id))
+                    sub_results.append((isl, "❌", "No recent activity", channel_id))
 
         # --- Free island results ---
         free_results: list = []
         free_online = 0
         if show_free:
             await self.fetch_free_islands()
-            for island in Config.FREE_ISLANDS:
-                island_clean = clean_text(island)
+            for isl in Config.FREE_ISLANDS:
+                island_clean = clean_text(isl)
                 channel_id = self.free_island_lookup.get(island_clean)
 
                 island_bot = None
                 if island_bot_role:
-                    target = clean_text(f"chobot {island}")
+                    target = clean_text(f"chobot {isl}")
                     for member in island_bot_role.members:
                         if member.bot and clean_text(member.display_name) == target:
                             island_bot = member
                             break
 
                 if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    free_results.append((island, "✅", "Bot online", channel_id))
+                    free_results.append((isl, "✅", "Bot online", channel_id))
                     free_online += 1
                 elif island_bot:
-                    free_results.append((island, "❌", "Bot offline", channel_id))
+                    free_results.append((isl, "❌", "Bot offline", channel_id))
                 else:
-                    free_results.append((island, "❓", "Bot not found", channel_id))
+                    free_results.append((isl, "❓", "Bot not found", channel_id))
 
         # --- Order island results ---
         order_results: list = []
@@ -2533,8 +2586,8 @@ class DiscordCommandCog(commands.Cog):
                     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                         order_bot_member = None
 
-            for island in getattr(Config, "ORDER_BOT_ISLANDS", []):
-                island_clean = clean_text(island)
+            for isl in getattr(Config, "ORDER_BOT_ISLANDS", []):
+                island_clean = clean_text(isl)
                 channel_id = self.order_island_lookup.get(island_clean)
                 display_name = "Sinta"
 
@@ -2559,15 +2612,21 @@ class DiscordCommandCog(commands.Cog):
 
         if kind == "sub":
             total = len(Config.SUB_ISLANDS)
+            title = "🏝️ Sub Island Status"
+            desc = (
+                f"{self._progress_bar(sub_online, total)}  **{sub_online}/{total}** online"
+                if view == "summary"
+                else f"**{sub_online}/{total}** islands active"
+            )
             embed = discord.Embed(
-                title="🏝️ Sub Island Status",
-                description=f"{self._progress_bar(sub_online, total)}  **{sub_online}/{total}** online",
+                title=title,
+                description=desc,
                 color=discord.Color.green() if sub_online == total else (
                     discord.Color.orange() if sub_online > 0 else discord.Color.red()
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            self._add_attention_fields(embed, "Sub", self._problem_lines(sub_results, format_channel))
+            self._add_status_fields(embed, "Sub", "🏝️", sub_results, sub_online, total, format_channel, view)
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
             embed.set_image(url=Config.FOOTER_LINE)
             await ctx.reply(embed=embed)
@@ -2575,15 +2634,21 @@ class DiscordCommandCog(commands.Cog):
 
         elif kind == "free":
             total = len(Config.FREE_ISLANDS)
+            title = "🌴 Free Island Status"
+            desc = (
+                f"{self._progress_bar(free_online, total)}  **{free_online}/{total}** online"
+                if view == "summary"
+                else f"**{free_online}/{total}** islands active"
+            )
             embed = discord.Embed(
-                title="🌴 Free Island Status",
-                description=f"{self._progress_bar(free_online, total)}  **{free_online}/{total}** online",
+                title=title,
+                description=desc,
                 color=discord.Color.green() if free_online == total else (
                     discord.Color.orange() if free_online > 0 else discord.Color.red()
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            self._add_attention_fields(embed, "Free", self._problem_lines(free_results, format_channel))
+            self._add_status_fields(embed, "Free", "🌴", free_results, free_online, total, format_channel, view)
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
             embed.set_image(url=Config.FOOTER_LINE)
             await ctx.reply(embed=embed)
@@ -2591,15 +2656,21 @@ class DiscordCommandCog(commands.Cog):
 
         elif kind == "order":
             total = len(getattr(Config, "ORDER_BOT_ISLANDS", []))
+            title = "📦 Order Island Status"
+            desc = (
+                f"{self._progress_bar(order_online, total)}  **{order_online}/{total}** online"
+                if view == "summary"
+                else f"**{order_online}/{total}** islands active"
+            )
             embed = discord.Embed(
-                title="📦 Order Island Status",
-                description=f"{self._progress_bar(order_online, total)}  **{order_online}/{total}** online",
+                title=title,
+                description=desc,
                 color=discord.Color.green() if order_online == total else (
                     discord.Color.orange() if order_online > 0 else discord.Color.red()
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            self._add_attention_fields(embed, "Order", self._problem_lines(order_results, format_channel))
+            self._add_status_fields(embed, "Order", "📦", order_results, order_online, total, format_channel, view)
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
             embed.set_image(url=Config.FOOTER_LINE)
             await ctx.reply(embed=embed)
@@ -2613,20 +2684,25 @@ class DiscordCommandCog(commands.Cog):
             total       = sub_total + free_total + order_total
             combined_online = sub_online + free_online + order_online
 
-            embed = discord.Embed(
-                title="🏝️ Island Status",
-                description=(
+            if view == "all":
+                desc = f"**{combined_online}/{total}** islands active"
+            else:
+                desc = (
                     f"{self._progress_bar(combined_online, total)}  **{combined_online}/{total}** online\n\n"
                     f"🏝️ Sub `{sub_online}/{sub_total}` • 🌴 Free `{free_online}/{free_total}` • 📦 Order `{order_online}/{order_total}`"
-                ),
+                )
+
+            embed = discord.Embed(
+                title="🏝️ Island Status",
+                description=desc,
                 color=discord.Color.green() if combined_online == total else (
                     discord.Color.orange() if combined_online > 0 else discord.Color.red()
                 ),
                 timestamp=discord.utils.utcnow()
             )
-            self._add_attention_fields(embed, "Sub",   self._problem_lines(sub_results, format_channel))
-            self._add_attention_fields(embed, "Free",  self._problem_lines(free_results, format_channel))
-            self._add_attention_fields(embed, "Order", self._problem_lines(order_results, format_channel))
+            self._add_status_fields(embed, "Sub",   "🏝️", sub_results,   sub_online,   sub_total,   format_channel, view)
+            self._add_status_fields(embed, "Free",  "🌴", free_results,  free_online,  free_total,  format_channel, view)
+            self._add_status_fields(embed, "Order", "📦", order_results, order_online, order_total, format_channel, view)
             embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
             embed.set_image(url=Config.FOOTER_LINE)
             await ctx.reply(embed=embed)
@@ -2634,6 +2710,8 @@ class DiscordCommandCog(commands.Cog):
                 f"[DISCORD] Combined island status: sub {sub_online}/{sub_total}, "
                 f"free {free_online}/{free_total}, order {order_online}/{order_total}"
             )
+        
+        
     @commands.hybrid_command(name="senddodo", aliases=["sd"])
     async def send_dodo(self, ctx):
         """Send the dodo code to a user via DM"""
