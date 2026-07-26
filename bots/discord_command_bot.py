@@ -1113,9 +1113,9 @@ class DiscordCommandCog(commands.Cog):
                 timestamp=discord.utils.utcnow(),
             )
 
-            sub_off = [(n, c) for n, s, _, c in sub_results if s != "✅"]
-            free_off = [(n, c) for n, s, _, c in free_results if s != "✅"]
-            order_off = [(n, c) for n, s, _, c in order_results if s != "✅"]
+            sub_off = [(n, c) for n, s, _, c in sub_results if s != "🟢"]
+            free_off = [(n, c) for n, s, _, c in free_results if s != "🟢"]
+            order_off = [(n, c) for n, s, _, c in order_results if s != "🟢"]
             all_off = (
                 [(n, c, "🏝️") for n, c in sub_off]
                 + [(n, c, "🌴") for n, c in free_off]
@@ -1133,7 +1133,7 @@ class DiscordCommandCog(commands.Cog):
                     inline=False,
                 )
             else:
-                embed.add_field(name="✅ All clear", value="Every island is active.", inline=False)
+                embed.add_field(name="All clear", value="Every island is active.", inline=False)
 
             embed.add_field(name=f"{Config.STAR_PINK} Sub", value=f"**{sub_online}**/{sub_total} online", inline=True)
             embed.add_field(name=f"🌴 Free", value=f"**{free_online}**/{free_total} online", inline=True)
