@@ -726,6 +726,7 @@ class DiscordCommandCog(commands.Cog):
         self.free_dodo_board_startup_cleanup_done = False
         self.island_status_sticky_startup_cleanup_done = False
         self._revive_lock = asyncio.Lock()
+        self._island_sticky_lock = asyncio.Lock()
         self.island_status_sticky_message: discord.Message | None = None
 
         # island_clean -> True (down) / False (up); None = not yet initialized
@@ -1066,8 +1067,9 @@ class DiscordCommandCog(commands.Cog):
     async def _refresh_island_status_sticky_message(
             self,
             channel: discord.TextChannel | None = None,
-            force_repost: bool = True,
+            force_repost: bool = False,
         ) -> None:
+        async with self._island_sticky_lock:
             target_channel = channel or self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
             if not isinstance(target_channel, discord.TextChannel):
                 return
@@ -1187,7 +1189,7 @@ class DiscordCommandCog(commands.Cog):
                 self.island_status_sticky_message = message
             except Exception as exc:
                 logger.warning(f"[DISCORD] Failed to refresh island status sticky embed in {target_channel.id}: {exc}")
-                
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Redirect users to /nick command in the designated channel and refresh the sticky status embed."""
@@ -3613,8 +3615,11 @@ class DiscordCommandCog(commands.Cog):
                     self.island_down_states[state_key] = False
                     await self._send_order_island_status_alert(channel, island, online=True)
 
+        # Sticky message is managed by island_status_sticky_loop; just
+        # request a non-reposting (edit-in-place) refresh so the embed
+        # data stays current without sending duplicate messages.
         try:
-            await self._refresh_island_status_sticky_message()
+            await self._refresh_island_status_sticky_message(force_repost=False)
         except Exception as exc:
             logger.warning(f"[DISCORD] Failed to refresh island status sticky embed: {exc}")
 
@@ -3625,7 +3630,8 @@ class DiscordCommandCog(commands.Cog):
         await self.fetch_islands()
         await self.fetch_free_islands()
         self._refresh_order_island_lookup()
-        await self._refresh_island_status_sticky_message(force_repost=True)
+        # Note: sticky message posting is handled by island_status_sticky_loop.
+        # No need to force_repost here — it would race with the sticky loop.
     # ── Period choices shared by both leaderboard commands ──────────────────
     _PERIOD_LABELS = {
         "today":   "Today",
