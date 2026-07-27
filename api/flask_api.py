@@ -6,6 +6,7 @@ Combines all API endpoints:
 - Patreon Posts
 """
 
+import asyncio
 import os
 import re
 import time
@@ -41,6 +42,7 @@ from utils.discord_membership import (
     refresh_user_payload,
     should_refresh,
 )
+from utils.nookipedia import NookipediaClient
 from utils.ops_status import build_health_payload, get_maintenance_settings, record_service_status, set_active_data_manager
 from api.dashboard import (
     dashboard,
@@ -2511,6 +2513,14 @@ def api_refresh():
     t.start()
     return jsonify({"status": "refresh started"}), 202
 
+
+@app.route("/api/v1/villager/<name>")
+def villager_route(name):
+    data = asyncio.run(NookipediaClient.get_villager_info(name))
+    return jsonify({
+        "success": True,
+        "villager": data
+    })
 
 def run_flask_app(host='0.0.0.0', port=8100):
     """Run Flask app with retry logic for port binding after OTA restart."""
