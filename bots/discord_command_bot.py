@@ -39,6 +39,12 @@ MESSAGE_HISTORY_LIMIT = 30
 ISLAND_DOWN_IMAGE_URL = "https://cdn.chopaeng.com/misc/Bot-is-Down.jpg"
 ONLINE_DISCORD_STATUSES = {discord.Status.online, discord.Status.idle, discord.Status.dnd}
 
+ISLAND_STATUS_DISPLAY = {
+    "ONLINE": ("\U0001F7E2", "Online", "green"),        # 🟢
+    "OFFLINE": ("\U0001F534", "Offline", "red"),        # 🔴
+    "REFRESHING": ("\U0001F7E1", "Refreshing", "orange"),  # 🟡
+}
+
 # Patterns for intercepting island bot responses
 ISLAND_VISITORS_PATTERN = re.compile(r"The following visitors are on (.+?):", re.IGNORECASE)
 ISLAND_VILLAGERS_PATTERN = re.compile(r"The following villagers are on (.+?):", re.IGNORECASE)
@@ -285,6 +291,22 @@ def _init_settings_db() -> None:
             )
     except Exception as exc:
         logger.error(f"[DISCORD] Failed to init settings table: {exc}")
+
+
+def _resolve_island_by_channel(self, channel_id: int) -> str | None:
+    """Look up the island name whose channel_id matches *channel_id*, straight
+    from the `islands` table. Returns None if this channel isn't linked to
+    any island (e.g. a general chat channel)."""
+    try:
+        with connect_db() as conn:
+            row = conn.execute(
+                "SELECT name FROM islands WHERE channel_id = ?",
+                (str(channel_id),),
+            ).fetchone()
+            return row.get("name") if row else None
+    except Exception as exc:
+        logger.error(f"[DISCORD] Failed to resolve island for channel {channel_id}: {exc}")
+        return None
 
 
 def _get_setting(key: str, default: str = "") -> str:
@@ -1308,6 +1330,136 @@ class DiscordCommandCog(commands.Cog):
         if re.fullmatch(r"\d+\s*/\s*7", text):
             return text.replace(" ", "")
         return text[:32]
+
+    @staticmethod
+    def _resolve_island_status(record: dict) -> tuple[str, str, "discord.Color"]:
+        """Map an island API record's status to (icon, label, embed color)."""
+        status = str(record.get("status") or "").strip().upper()
+        dodo_code = str(record.get("dodo_code") or "").strip().upper()
+
+        if status not in ISLAND_STATUS_DISPLAY:
+            # Fall back to inferring status from the dodo code when the API
+            # doesn't supply a normalized status string.
+            if not dodo_code or dodo_code in ("GETTIN'", "00000", "-----"):
+                status = "REFRESHING"
+            elif dodo_code == "FULL":
+                status = "ONLINE"
+            else:
+                status = "ONLINE" if DODO_CODE_PATTERN.fullmatch(dodo_code) else "OFFLINE"
+
+        icon, label, color_name = ISLAND_STATUS_DISPLAY.get(status, ISLAND_STATUS_DISPLAY["OFFLINE"])
+        color = {
+            "green": discord.Color.green(),
+            "red": discord.Color.red(),
+            "orange": discord.Color.orange(),
+        }[color_name]
+        return icon, label, color
+
+
+    def _items_on_island(self, island_clean: str, limit: int = 40) -> list[str]:
+        """Reverse-lookup item display names currently available on *island_clean*.
+
+        Only used as a fallback when the island API record doesn't already
+        include an `items` list of its own.
+        """
+        with self.data_manager.lock:
+            cache = self.data_manager.cache
+            display_map = cache.get("_display", {})
+            snapshot = {k: v for k, v in cache.items() if not k.startswith("_")}
+
+        found = []
+        for key, locations in snapshot.items():
+            if not locations:
+                continue
+            loc_keys = {clean_text(loc) for loc in str(locations).split(", ")}
+            if island_clean in loc_keys:
+                found.append(display_map.get(key, key.title()))
+                if len(found) >= limit:
+                    break
+        return sorted(found)
+
+
+    def _villagers_on_island(self, island_clean: str) -> list[str]:
+        """Reverse-lookup villager display names currently residing on *island_clean*."""
+        villager_map = self.data_manager.get_villagers([
+            Config.VILLAGERS_DIR,
+            Config.TWITCH_VILLAGERS_DIR,
+        ])
+
+        found = []
+        for key, locations in villager_map.items():
+            if not locations:
+                continue
+            loc_keys = {clean_text(loc) for loc in str(locations).split(", ")}
+            if island_clean in loc_keys:
+                found.append(key.title())
+        return sorted(found)
+
+
+    async def _build_island_info_embed(self, ctx, record: dict, island_clean: str) -> discord.Embed:
+        """Build the full island-details embed for /island."""
+        raw_name = str(record.get("name") or island_clean).strip()
+        display_name = raw_name.title()
+        description = (str(record.get("description") or "").strip()
+                    or "No description available for this island yet.")
+        map_url = str(record.get("map_url") or "").strip()
+        visitors = self._parse_visitor_count(record.get("visitors"))
+
+        cat = str(record.get("cat") or record.get("type") or "").strip().lower()
+        access_label = (
+            "Order Bot" if cat == "order"
+            else "Subscribers Only" if cat == "member"
+            else "Public"
+        )
+
+        icon, status_label, color = self._resolve_island_status(record)
+        island_url = f"https://www.chopaeng.com/island/{raw_name.lower()}"
+
+        embed = discord.Embed(
+            title=f"\U0001F3DD\uFE0F {display_name}",
+            url=island_url,
+            description=description[:2000],
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+
+        embed.add_field(name="Status", value=f"{icon} {status_label}", inline=True)
+        embed.add_field(name="Passengers", value=visitors, inline=True)
+        embed.add_field(name="Gate Type", value=access_label, inline=True)
+
+        # Items — prefer the API record's own list; fall back to the item cache.
+        items = record.get("items")
+        if not isinstance(items, list) or not items:
+            items = await asyncio.to_thread(self._items_on_island, island_clean)
+        if items:
+            lines = [f"\u2022 {item}" for item in items]
+            chunks = self._chunk_lines(lines)
+            for i, chunk in enumerate(chunks):
+                label = f"Available Loot ({len(items)})" if i == 0 else "Available Loot (cont.)"
+                embed.add_field(name=label, value=chunk, inline=False)
+        else:
+            embed.add_field(name="Available Loot", value="*No items currently tracked.*", inline=False)
+
+        # Villagers / current residents
+        villagers = await asyncio.to_thread(self._villagers_on_island, island_clean)
+        if villagers:
+            lines = [f"\U0001F3E0 {v}" for v in villagers]
+            chunks = self._chunk_lines(lines)
+            for i, chunk in enumerate(chunks):
+                label = f"Current Residents ({len(villagers)})" if i == 0 else "Current Residents (cont.)"
+                embed.add_field(name=label, value=chunk, inline=False)
+        else:
+            embed.add_field(name="Current Residents", value="*No residents currently tracked.*", inline=False)
+
+        if map_url:
+            embed.set_image(url=map_url)
+            embed.set_thumbnail(url=map_url)  # harmless if Discord ignores the duplicate
+
+        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
+        embed.set_footer(text=f"Requested by {ctx.author.display_name} \u2022 Chopaeng Camp\u2122", icon_url=pfp_url)
+
+        return embed
+
 
     def _read_free_dodo_files(self) -> list[dict]:
         """Fallback reader for free-island Dodo files when the API is unavailable."""
@@ -3948,6 +4100,68 @@ class DiscordCommandCog(commands.Cog):
                 f"You weren't subscribed to **{island_clean.title()}** alerts.",
                 ephemeral=True,
             )
+
+    
+    @commands.hybrid_command(name="island", aliases=["islandinfo", "ii"])
+    @app_commands.describe(island="The island to look up. Leave blank to auto-detect from the current channel.")
+    @app_commands.autocomplete(island=island_name_autocomplete)
+    async def island_info(self, ctx, *, island: str = ""):
+        """Show full island details: map, status, visitors, description, items, and residents.
+
+        Run with no arguments inside an island's own channel to auto-detect it;
+        otherwise pass a name, e.g. `!island alapaap`.
+        """
+        if self.check_cooldown(str(ctx.author.id)):
+            return
+
+        island_clean = clean_text(island) if island else ""
+        auto_detected = False
+
+        if not island_clean:
+            auto_name = self._resolve_island_by_channel(ctx.channel.id)
+            if not auto_name:
+                await ctx.reply(
+                    "Usage: `!island <name>` \u2014 e.g. `!island alapaap`\n"
+                    "Or just run `!island` with no name inside an island's own channel to look it up automatically.",
+                    ephemeral=True,
+                )
+                return
+            island_clean = clean_text(auto_name)
+            auto_detected = True
+
+        await ctx.defer()
+
+        island_map, _ = await self._fetch_islands_api_snapshot()
+        record = (island_map or {}).get(island_clean)
+
+        if not record:
+            if auto_detected:
+                # This channel is linked to an island in the DB, but the live API
+                # snapshot doesn't have it (e.g. API lag or a renamed island) —
+                # say so plainly instead of pretending it's a typo to fuzzy-match.
+                await ctx.reply(
+                    f"This channel is linked to **{island_clean.title()}**, but I couldn't "
+                    "find live data for it right now. Please try again shortly."
+                )
+                logger.warning(f"[DISCORD] /island auto-detected {island_clean} for channel {ctx.channel.id} but API had no record")
+                return
+
+            all_islands = sorted((island_map or {}).keys())
+            suggestion = ""
+            if all_islands:
+                best = process.extractOne(island_clean, all_islands, scorer=fuzz.ratio)
+                if best and best[1] >= 60:
+                    suggestion = f" Did you mean **{best[0].title()}**?"
+            await ctx.reply(f"Island **{island_clean.title()}** not found.{suggestion}")
+            logger.info(f"[DISCORD] /island miss: {island_clean}")
+            return
+
+        embed = await self._build_island_info_embed(ctx, record, island_clean)
+        await ctx.reply(embed=embed)
+        logger.info(
+            f"[DISCORD] /island lookup by {ctx.author.name}: {island_clean}"
+            + (" (auto-detected)" if auto_detected else "")
+        )
 
     @commands.hybrid_command(name="mysubscriptions", aliases=["mysubs", "myalerts"])
     async def my_subscriptions(self, ctx):

@@ -2522,6 +2522,108 @@ def villager_route(name):
         "villager": data
     })
 
+
+@app.route("/api/v1/guild/human-members")
+def guild_human_members():
+    """Return the count of human (non-bot) members in the configured Discord guild.
+
+    Uses the Discord REST API to paginate through all guild members and
+    counts only those where the ``bot`` field is falsy.
+
+    Returns:
+        200  - success with human_members count
+        403  - bot is not in the guild (Missing Access)
+        404  - guild does not exist
+        503  - Discord token / GUILD_ID not configured, or member intent unavailable
+    """
+    guild_id = str(Config.GUILD_ID or "").strip()
+    if not guild_id or guild_id in ("0", "None"):
+        return jsonify({"success": False, "error": "GUILD_ID is not configured."}), 503
+
+    auth_value = _discord_bot_auth_value()
+    if not auth_value:
+        return jsonify({"success": False, "error": "Discord bot token is not configured."}), 503
+
+    # Step 1: Verify the guild exists and the bot can see it.
+    guild_payload = _discord_api_json(f"/guilds/{guild_id}")
+
+    if guild_payload is None:
+        # Network / token error – treat as service unavailable.
+        return jsonify({"success": False, "error": "Could not reach Discord API. Please try again later."}), 503
+
+    if isinstance(guild_payload, dict):
+        error_code = guild_payload.get("code")
+        if error_code == 10004 or guild_payload.get("message") == "Unknown Guild":
+            return jsonify({"success": False, "error": "Guild not found."}), 404
+        if error_code in (50013, 50001):
+            return jsonify({"success": False, "error": "Bot is not a member of the specified guild."}), 403
+        if "message" in guild_payload and "id" not in guild_payload:
+            return jsonify({"success": False, "error": guild_payload.get("message", "Discord API error.")}), 502
+
+    guild_name = guild_payload.get("name", "") if isinstance(guild_payload, dict) else ""
+
+    # Step 2: Paginate through guild members and count humans.
+    human_count = 0
+    after = 0  # snowflake cursor; 0 means start from the beginning
+    page_limit = 1000  # maximum allowed by Discord
+    first_page = True
+
+    while True:
+        path = f"/guilds/{guild_id}/members?limit={page_limit}&after={after}"
+        members_payload = _discord_api_json(path)
+
+        if members_payload is None:
+            return jsonify({"success": False, "error": "Could not reach Discord API while fetching members."}), 503
+
+        # Discord returns an error dict when the bot lacks GUILD_MEMBERS intent
+        # or when access is denied.
+        if isinstance(members_payload, dict):
+            error_code = members_payload.get("code")
+            if error_code == 10004:
+                return jsonify({"success": False, "error": "Guild not found."}), 404
+            if error_code in (50013, 50001):
+                return jsonify({"success": False, "error": "Bot is not a member of the specified guild."}), 403
+            return jsonify({"success": False, "error": members_payload.get("message", "Discord API error.")}), 502
+
+        if not isinstance(members_payload, list):
+            return jsonify({"success": False, "error": "Unexpected response from Discord API."}), 502
+
+        # If the first page returns an empty list the bot is in the guild but
+        # member intent (GUILD_MEMBERS privileged intent) is not enabled.
+        if first_page and len(members_payload) == 0:
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Member data is unavailable. "
+                    "Ensure the bot has the GUILD_MEMBERS privileged intent enabled."
+                ),
+            }), 503
+        first_page = False
+
+        for member in members_payload:
+            user = member.get("user") or {}
+            if not user.get("bot"):
+                human_count += 1
+
+        # If we received fewer entries than the page limit, we have reached the end.
+        if len(members_payload) < page_limit:
+            break
+
+        # Advance the cursor to the last member's user ID for the next page.
+        last_member = members_payload[-1]
+        last_user_id = (last_member.get("user") or {}).get("id")
+        if not last_user_id:
+            break
+        after = int(last_user_id)
+
+    return jsonify({
+        "success": True,
+        "guild_id": int(guild_id),
+        "guild_name": guild_name,
+        "human_members": human_count,
+    })
+
+
 def run_flask_app(host='0.0.0.0', port=8100):
     """Run Flask app with retry logic for port binding after OTA restart."""
     logger.info(f"[FLASK] Starting API server on {host}:{port}...")
