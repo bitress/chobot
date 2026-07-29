@@ -191,13 +191,15 @@ class Config:
     DEFAULT_PFP = "https://static-cdn.jtvnw.net/jtv_user_pictures/cf6b6d6c-f9b6-4bad-b034-391d7d32b9c3-profile_image-70x70.png"
 
     @classmethod
-    def validate(cls):
+    def validate(cls, needs_twitch: bool = True):
         """Validate required environment variables exist and are not empty"""
         required_vars = [
-            'TWITCH_TOKEN', 'TWITCH_CHANNEL', 'DISCORD_TOKEN',
+            'DISCORD_TOKEN',
             'WORKBOOK_NAME', 'GUILD_ID', 'CATEGORY_ID',
             'PATREON_TOKEN', 'PATREON_CAMPAIGN_ID'
         ]
+        if needs_twitch:
+            required_vars.extend(['TWITCH_TOKEN', 'TWITCH_CHANNEL'])
 
         missing = []
         for var in required_vars:

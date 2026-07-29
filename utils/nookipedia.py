@@ -43,3 +43,37 @@ class NookipediaClient:
         except Exception as e:
             logger.error(f"Failed to fetch from Nookipedia: {e}")
             return None
+
+    @staticmethod
+    def get_villager_info_sync(name: str):
+        """Fetch villager data synchronously from Nookipedia API"""
+        if not Config.NOOKIPEDIA_KEY:
+            logger.warning("NOOKIPEDIA_KEY is not set.")
+            return None
+
+        import requests
+        headers = {
+            "X-API-KEY": Config.NOOKIPEDIA_KEY,
+            "Accept-Version": "1.0.0"
+        }
+        params = {
+            "name": name,
+            "nhdetails": "true"
+        }
+
+        try:
+            resp = requests.get(NookipediaClient.BASE_URL, headers=headers, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    return data[0]
+                return data
+            elif resp.status_code == 404:
+                logger.info(f"Villager {name} not found on Nookipedia.")
+                return None
+            else:
+                logger.error(f"Nookipedia API Error: {resp.status_code} - {resp.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to fetch from Nookipedia (sync): {e}")
+            return None

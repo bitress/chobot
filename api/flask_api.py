@@ -455,243 +455,6 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
             return user
     return None
 
-def _is_mod(roles: list[str]) -> bool:
-    """True if the user holds one of the configured moderator roles."""
-    mod_ids = {
-        str(Config.ADMIN_ROLE_ID),
-        str(Config.SENIOR_MOD_ROLE_ID),
-        str(Config.BABY_MOD_ROLE_ID),
-    } - {"None", "0", ""}
-    return bool(mod_ids & set(roles))
-
-def _has_island_access(roles: list[str], required_roles: list[str], is_mod: bool = False) -> bool:
-    """True if the user may see this island's dodo code.
-
-    Access is granted when:
-    - The island has no required_roles (free/public)
-    - The user is a mod (token is_mod=true, ADMIN_ROLE_ID, SENIOR_MOD_ROLE_ID, or BABY_MOD_ROLE_ID)
-    - The user holds at least one of the island's required_roles
-    """
-    if not required_roles:
-        return True
-    if is_mod:
-        return True
-    if _is_mod(roles):
-        return True
-    return bool(set(required_roles) & set(roles))
-
-
-def _configured_subscription_role_ids() -> list[str]:
-    """Return configured subscription role IDs for member-only islands."""
-    role_ids: list[str] = []
-    for attr_name in (
-        "ISLAND_ACCESS_ROLE",
-        "SUBSCRIPTION_ROLE_ID",
-        "SUBSCRIPTION_ROLE_IDS",
-        "MEMBER_ROLE_ID",
-        "MEMBER_ROLE_IDS",
-    ):
-        value = getattr(Config, attr_name, None)
-        if value in (None, "", "0", "None"):
-            continue
-        if isinstance(value, (list, tuple, set)):
-            for item in value:
-                if item not in (None, "", "0", "None"):
-                    role_ids.append(str(item))
-        else:
-            role_ids.append(str(value))
-    return list(dict.fromkeys(role_ids))
-
-
-def _discord_bot_auth_value() -> str | None:
-    token = str(Config.DISCORD_TOKEN or "").strip()
-    if not token:
-        return None
-    return token if token.lower().startswith("bot ") else f"Bot {token}"
-
-
-def _discord_api_json(path: str, timeout: int = 10) -> dict | list | None:
-    auth_value = _discord_bot_auth_value()
-    if not auth_value:
-        return None
-    try:
-        resp = discord_request(
-            f"https://discord.com/api/v10{path}",
-            headers={"Authorization": auth_value, "User-Agent": _DISCORD_UA},
-            timeout=timeout,
-        )
-        return json.loads(resp.body)
-    except Exception as exc:
-        logger.warning("Discord API request failed for %s: %s", path, exc)
-        return None
-
-
-def _discord_channel_overwrite_roles(channel_id: str | None) -> tuple[list[str] | None, str | None]:
-    """Return role IDs allowed to view a channel from Discord, or None when unavailable."""
-    if not channel_id:
-        return None, None
-
-    channel_key = str(channel_id)
-    now = time.monotonic()
-    cached = _CHANNEL_OVERWRITE_CACHE.get(channel_key)
-    if cached and now - cached[2] < _CHANNEL_OVERWRITE_CACHE_TTL:
-        return cached[0], cached[1]
-
-    payload = _discord_api_json(f"/channels/{channel_key}")
-    if not isinstance(payload, dict):
-        _CHANNEL_OVERWRITE_CACHE[channel_key] = (None, None, now)
-        return None, None
-
-    role_ids: list[str] = []
-    for overwrite in payload.get("permission_overwrites") or []:
-        if str(overwrite.get("type")) not in {"0", "role"}:
-            continue
-        role_id = str(overwrite.get("id") or "")
-        if not role_id or role_id == str(Config.GUILD_ID or ""):
-            continue
-        try:
-            allow_bits = int(overwrite.get("allow") or 0)
-        except (TypeError, ValueError):
-            allow_bits = 0
-        if allow_bits & _VIEW_CHANNEL_PERM:
-            role_ids.append(role_id)
-
-    resolved = list(dict.fromkeys(role_ids))
-    resolved_channel_id = str(payload.get("id") or channel_key)
-    _CHANNEL_OVERWRITE_CACHE[channel_key] = (resolved, resolved_channel_id, now)
-    return resolved, resolved_channel_id
-
-
-def _discord_guild_channels() -> list[dict] | None:
-    global _GUILD_CHANNELS_CACHE
-    guild_id = str(Config.GUILD_ID or "")
-    if not guild_id:
-        return None
-
-    now = time.monotonic()
-    if _GUILD_CHANNELS_CACHE and now - _GUILD_CHANNELS_CACHE[1] < _GUILD_CHANNELS_CACHE_TTL:
-        return _GUILD_CHANNELS_CACHE[0]
-
-    payload = _discord_api_json(f"/guilds/{guild_id}/channels")
-    if not isinstance(payload, list):
-        return None
-
-    channels = [channel for channel in payload if isinstance(channel, dict)]
-    _GUILD_CHANNELS_CACHE = (channels, now)
-    return channels
-
-
-def _find_discord_island_channel_id(island_name: str | None) -> str | None:
-    """Find a member island channel by normalized island name in the configured sub category."""
-    island_clean = re.sub(r"^\d+", "", clean_text(island_name or ""))
-    if not island_clean:
-        return None
-
-    category_id = str(Config.CATEGORY_ID or "")
-    channels = _discord_guild_channels()
-    if not channels:
-        return None
-
-    for channel in channels:
-        if category_id and str(channel.get("parent_id") or "") != category_id:
-            continue
-        channel_clean = re.sub(r"^\d+", "", clean_text(str(channel.get("name") or "")))
-        if channel_clean == island_clean:
-            return str(channel.get("id") or "")
-    return None
-
-
-def _is_member_island(cat: str | None, island_type: str | None = None) -> bool:
-    """Return whether an island should be gated behind member roles."""
-    return (cat or "").strip().lower() == "member" or (island_type or "").strip().upper() == "VIP"
-
-
-def _effective_island_required_roles(
-    cat: str | None,
-    required_roles: list[str] | None,
-    island_type: str | None = None,
-) -> list[str]:
-    """Return explicit island roles, or configured member roles for member/VIP islands."""
-    roles = [str(role_id) for role_id in (required_roles or []) if str(role_id)]
-    if _is_member_island(cat, island_type) and not roles:
-        roles = _configured_subscription_role_ids()
-    return roles
-
-
-def _resolved_island_required_roles(
-    island_name: str | None,
-    cat: str | None,
-    required_roles: list[str] | None,
-    island_type: str | None = None,
-    channel_id: str | None = None,
-) -> tuple[list[str], str | None, str]:
-    """Resolve island access roles using live Discord channel overwrites first."""
-    if _is_member_island(cat, island_type):
-        resolved_channel_id = str(channel_id) if channel_id else None
-        dynamic_roles: list[str] | None = None
-        if resolved_channel_id:
-            dynamic_roles, fetched_channel_id = _discord_channel_overwrite_roles(resolved_channel_id)
-            resolved_channel_id = fetched_channel_id or resolved_channel_id
-        if dynamic_roles is None:
-            found_channel_id = _find_discord_island_channel_id(island_name)
-            if found_channel_id:
-                dynamic_roles, fetched_channel_id = _discord_channel_overwrite_roles(found_channel_id)
-                resolved_channel_id = fetched_channel_id or found_channel_id
-        if dynamic_roles is not None:
-            return dynamic_roles, resolved_channel_id, "discord_channel"
-
-    return _effective_island_required_roles(cat, required_roles, island_type), channel_id, "database"
-
-
-def _excluded_profile_role_ids() -> set[str]:
-    """Role IDs that should not appear as user subscription roles."""
-    excluded = {
-        str(Config.GUILD_ID or ""),
-        str(Config.ISLAND_BOT_ROLE_ID or ""),
-    }
-    return {rid for rid in excluded if rid and rid not in {"0", "None"}}
-
-
-def _get_guild_role_names() -> dict[str, str]:
-    """Fetch guild role ID -> name mapping from Discord, cached briefly."""
-    guild_id = str(Config.GUILD_ID or "")
-    if not guild_id or not Config.DISCORD_TOKEN:
-        return {}
-
-    now = time.monotonic()
-    cached = _ROLE_NAME_CACHE.get(guild_id)
-    if cached and now - cached[1] < _ROLE_NAME_CACHE_TTL:
-        return cached[0]
-
-    auth_value = _discord_bot_auth_value()
-    if not auth_value:
-        return {}
-    try:
-        resp = discord_request(
-            f"https://discord.com/api/v10/guilds/{guild_id}/roles",
-            headers={"Authorization": auth_value, "User-Agent": _DISCORD_UA},
-            timeout=10,
-        )
-        roles = json.loads(resp.body)
-        role_names = {
-            str(role.get("id")): str(role.get("name") or role.get("id"))
-            for role in roles
-            if role.get("id") and role.get("name") != "@everyone"
-        }
-        _ROLE_NAME_CACHE[guild_id] = (role_names, now)
-        return role_names
-    except Exception as exc:
-        logger.warning("Failed to fetch Discord guild role names: %s", exc)
-        return cached[0] if cached else {}
-
-
-def _role_payload(role_id: str, role_names: dict[str, str]) -> dict:
-    """Small role object for profile responses."""
-    return {
-        "id": str(role_id),
-        "name": role_names.get(str(role_id), str(role_id)),
-    }
-
 
 # Keep legacy helper names stable while sharing the access engine with dashboard APIs.
 _is_mod = island_access.is_mod
@@ -949,6 +712,9 @@ def _load_profile_visit_stats(user_id: str) -> dict:
     return empty
 
 
+_DODO_WEBHOOK_DEBOUNCE = {}
+_DODO_WEBHOOK_DEBOUNCE_TTL = 300  # 5 minutes
+
 def _fire_dodo_webhook(
     username: str,
     nickname: str,
@@ -962,6 +728,13 @@ def _fire_dodo_webhook(
     url = Config.DODO_LOG_WEBHOOK_URL
     if not url:
         return
+
+    now = time.monotonic()
+    cache_key = f"{user_id}:{island_name}"
+    last_fired = _DODO_WEBHOOK_DEBOUNCE.get(cache_key)
+    if last_fired and now - last_fired < _DODO_WEBHOOK_DEBOUNCE_TTL:
+        return
+    _DODO_WEBHOOK_DEBOUNCE[cache_key] = now
 
     display_name = (nickname or "").strip() or (username or "").strip() or "Unknown User"
 
@@ -2516,7 +2289,7 @@ def api_refresh():
 
 @app.route("/api/v1/villager/<name>")
 def villager_route(name):
-    data = asyncio.run(NookipediaClient.get_villager_info(name))
+    data = NookipediaClient.get_villager_info_sync(name)
     return jsonify({
         "success": True,
         "villager": data

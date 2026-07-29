@@ -2997,6 +2997,38 @@ def api_search_aliases():
     return jsonify({"ok": True, "alias": alias, "target": target, "kind": kind})
 
 
+def _send_dodo_queue_dm(user_id: str, island_name: str):
+    token = str(Config.DISCORD_TOKEN or "").strip()
+    if not token:
+        return
+    try:
+        auth = token if token.lower().startswith("bot ") else f"Bot {token}"
+        headers = {"Authorization": auth, "Content-Type": "application/json", "User-Agent": _DISCORD_USER_AGENT}
+        
+        resp = discord_request(
+            "https://discord.com/api/v10/users/@me/channels",
+            method="POST",
+            headers=headers,
+            data=json.dumps({"recipient_id": user_id}).encode("utf-8"),
+            timeout=5,
+        )
+        ch_id = json.loads(resp.body).get("id")
+        if not ch_id:
+            return
+            
+        discord_request(
+            f"https://discord.com/api/v10/channels/{ch_id}/messages",
+            method="POST",
+            headers=headers,
+            data=json.dumps({
+                "content": f"✈️ **It's your turn!** You have been called for **{island_name}**. Please check the dashboard to reveal your Dodo code now."
+            }).encode("utf-8"),
+            timeout=5,
+        )
+    except Exception as e:
+        logger.warning("Failed to send queue DM to %s: %s", user_id, e)
+
+
 @dashboard.route("/api/dodo-queue", methods=["GET", "PATCH"])
 @api_auth_required
 def api_dodo_queue():
@@ -3021,11 +3053,27 @@ def api_dodo_queue():
         note = (data.get("note") or "").strip()[:500]
         if not entry_id or status not in {"waiting", "called", "done", "cancelled", "investigating"}:
             return jsonify({"ok": False, "error": "id and valid status are required"}), 400
+            
+        row = db.execute("SELECT * FROM dodo_queue WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "entry not found"}), 404
+        prev_status = row.get("status")
+
         cur = db.execute(
             "UPDATE dodo_queue SET status = ?, note = ?, updated_at = ? WHERE id = ?",
             (status, note, int(time.time()), entry_id),
         )
         db.commit()
+        
+        if status == "called" and prev_status != "called":
+            uid = str(row.get("user_id") or "")
+            iname = str(row.get("island_name") or "")
+            if uid and iname:
+                threading.Thread(
+                    target=_send_dodo_queue_dm,
+                    args=(uid, iname),
+                    daemon=True,
+                ).start()
     except Exception as exc:
         db.rollback()
         return jsonify({"ok": False, "error": str(exc)}), 500

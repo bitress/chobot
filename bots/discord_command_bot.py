@@ -819,28 +819,15 @@ class DiscordCommandCog(commands.Cog):
                     sub_online += 1
                     continue
 
-                try:
-                    messages = [msg async for msg in channel.history(limit=25)]
-                except discord.Forbidden:
-                    sub_results.append((island, "❓", "No channel access", channel_id))
-                    continue
-
                 island_up = False
                 status_reason = ""
-                for msg in messages:
-                    if island_bot:
-                        if msg.author.id != island_bot.id:
-                            continue
-                    elif not msg.author.bot:
-                        continue
-                    if DODO_CODE_PATTERN.search(msg.content):
-                        island_up = True
-                        status_reason = "Dodo code active"
-                        break
-                    if ISLAND_HOST_NAME in msg.content.lower():
-                        island_up = True
-                        status_reason = "Chopaeng is visiting"
-                        break
+                with connect_db() as conn:
+                    row = conn.execute("SELECT dodo_code FROM islands WHERE id = ?", (island_clean,)).fetchone()
+                    if row:
+                        dodo_code = row.get("dodo_code")
+                        if dodo_code and str(dodo_code).strip() not in ["", "00000", "-----", "GETTIN'"]:
+                            island_up = True
+                            status_reason = "Dodo code active"
 
                 if island_up:
                     sub_results.append((island, "✅", status_reason, channel_id))

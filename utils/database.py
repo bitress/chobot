@@ -111,10 +111,23 @@ class Connection:
             return StaticCursor([(self._last_rowcount,)], ["changes()"])
 
         sql, params = _adapt_sql(sql, params or (), self._dialect)
-        cur = self._conn.cursor()
-        cur.execute(sql, tuple(params or ()))
-        self._last_rowcount = cur.rowcount
-        return Cursor(cur)
+        
+        retries = 5
+        while True:
+            try:
+                cur = self._conn.cursor()
+                cur.execute(sql, tuple(params or ()))
+                self._last_rowcount = cur.rowcount
+                return Cursor(cur)
+            except Exception as e:
+                err_str = str(e).lower()
+                if "database is locked" in err_str or "operationalerror" in err_str:
+                    retries -= 1
+                    if retries > 0:
+                        import time
+                        time.sleep(1.0)
+                        continue
+                raise
 
     def commit(self):
         self._conn.commit()
@@ -294,6 +307,8 @@ def _adapt_sql(sql: str, params: Iterable[Any], dialect: str):
     adapted = re.sub(r"\browid\b", "id", adapted, flags=re.I)
     adapted = re.sub(r'"([A-Za-z_][A-Za-z0-9_]*)"', r"`\1`", adapted)
     adapted = _quote_settings_key(adapted)
+    # Escape existing % characters so PyMySQL doesn't misinterpret them
+    adapted = adapted.replace("%", "%%")
     adapted = _replace_qmarks(adapted)
     return adapted, params
 

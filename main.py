@@ -439,7 +439,7 @@ def main():
 
     # ---- Validate config ---------------------------------------------------
     try:
-        Config.validate()
+        Config.validate(needs_twitch=needs_twitch)
         logger.info("[CONFIG] All environment variables validated ✓")
     except ValueError as e:
         logger.critical(f"[CONFIG] Configuration error: {e}")
