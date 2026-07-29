@@ -1331,6 +1331,66 @@ class VerifiedFlightFlagView(discord.ui.View):
             logger.error(f"[FLAG] Error in flag_action: {e}", exc_info=True)
             await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
+class ProfileTimelineView(discord.ui.View):
+    def __init__(self, timeline: list, base_embed: discord.Embed, items_per_page: int = 5):
+        super().__init__(timeout=180)
+        self.timeline = timeline
+        self.base_embed = base_embed
+        self.items_per_page = items_per_page
+        self.current_page = 0
+        self.max_pages = max(1, (len(timeline) - 1) // items_per_page + 1)
+        self._update_buttons()
+
+    def _update_buttons(self):
+        self.prev_button.disabled = self.current_page <= 0
+        self.next_button.disabled = self.current_page >= self.max_pages - 1
+
+    def _build_embed(self) -> discord.Embed:
+        embed = self.base_embed.copy()
+        
+        if not self.timeline:
+            embed.add_field(name="Timeline", value="No recent activity.", inline=False)
+            return embed
+
+        start_idx = self.current_page * self.items_per_page
+        page_items = self.timeline[start_idx : start_idx + self.items_per_page]
+        
+        for item in page_items:
+            t_type = item["type"]
+            label = item["label"]
+            title = item["title"]
+            timestamp = item["timestamp"]
+            
+            icon = "⚪"
+            if item["severity"] == "critical":
+                icon = "🔴"
+            elif item["severity"] == "warning":
+                icon = "🟠"
+            elif item["severity"] == "attention":
+                icon = "🟡"
+            elif item["severity"] == "info":
+                icon = "🔵"
+                
+            if t_type == "visit":
+                icon = "✈️" if item["payload"]["authorized"] else "🚨"
+            
+            val = f"{icon} **{label}**: {title}"
+            embed.add_field(name=timestamp, value=val, inline=False)
+            
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.max_pages} • Total Events: {len(self.timeline)}")
+        return embed
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, custom_id="prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, custom_id="next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
 # Compiled once at module level; shared by all flight-monitoring cogs.
 JOIN_PATTERN = re.compile(
@@ -3555,6 +3615,251 @@ class FlightLoggerCog(commands.Cog):
             await ctx.interaction.followup.send(embed=embed, ephemeral=True)
         else:
             await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="profile")
+    @app_commands.describe(user="The user to check")
+    @commands.has_permissions(manage_messages=True)
+    async def profile(self, ctx, user: discord.Member):
+        """View a user's trust profile and timeline."""
+        is_slash = ctx.interaction is not None
+        if is_slash:
+            await ctx.interaction.response.defer(ephemeral=True)
+        
+        user_id = str(user.id)
+        guild_id = str(ctx.guild.id)
+        
+        async with connect_async_db() as db:
+            params = [user_id, guild_id]
+            guild_clause = " AND guild_id = ?"
+            
+            visit_summary_cur = await db.execute(
+                "SELECT COUNT(*) AS total_visits, "
+                "SUM(CASE WHEN authorized = 1 THEN 1 ELSE 0 END) AS authorized_visits, "
+                "SUM(CASE WHEN authorized = 0 THEN 1 ELSE 0 END) AS unauthorized_visits, "
+                "MAX(timestamp) AS last_visit_at "
+                f"FROM island_visits WHERE user_id = ?{guild_clause}",
+                params,
+            )
+            visit_summary = await visit_summary_cur.fetchone()
+            
+            warning_summary_cur = await db.execute(
+                "SELECT COUNT(*) AS total_actions, "
+                "SUM(CASE WHEN UPPER(action_type) = 'WARN' THEN 1 ELSE 0 END) AS warnings, "
+                "SUM(CASE WHEN UPPER(action_type) = 'KICK' THEN 1 ELSE 0 END) AS kicks, "
+                "SUM(CASE WHEN UPPER(action_type) = 'BAN' THEN 1 ELSE 0 END) AS bans, "
+                "MAX(timestamp) AS last_action_at "
+                f"FROM warnings WHERE user_id = ?{guild_clause}",
+                params,
+            )
+            warning_summary = await warning_summary_cur.fetchone()
+            
+            recent_visits_cur = await db.execute(
+                "SELECT ign, destination, authorized, timestamp "
+                f"FROM island_visits WHERE user_id = ?{guild_clause} "
+                "ORDER BY timestamp DESC LIMIT 30",
+                params,
+            )
+            recent_visits = await recent_visits_cur.fetchall()
+            
+            recent_actions_cur = await db.execute(
+                "SELECT action_type, reason, mod_id, timestamp "
+                f"FROM warnings WHERE user_id = ?{guild_clause} "
+                "ORDER BY timestamp DESC LIMIT 30",
+                params,
+            )
+            recent_actions = await recent_actions_cur.fetchall()
+            
+            dodo_reveals_cur = await db.execute(
+                "SELECT island_clean, message_url, username, nickname, created_at "
+                "FROM dodo_reveal_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 30",
+                (user_id,),
+            )
+            dodo_reveals = await dodo_reveals_cur.fetchall()
+            
+            identity_events_cur = await db.execute(
+                "SELECT event_type, old_display_name, new_display_name, created_at "
+                f"FROM member_identity_events WHERE user_id = ?{guild_clause} "
+                "ORDER BY created_at DESC LIMIT 30",
+                params,
+            )
+            identity_events = await identity_events_cur.fetchall()
+            
+            latest_auth_cur = await db.execute(
+                "SELECT MAX(timestamp) AS authorized_at "
+                f"FROM island_visits WHERE user_id = ?{guild_clause} AND authorized = 1",
+                params,
+            )
+            latest_authorized_visit = await latest_auth_cur.fetchone()
+            
+            known_igns_cur = await db.execute(
+                "SELECT ign, COUNT(*) AS visit_count, MAX(timestamp) AS last_seen_at "
+                f"FROM island_visits WHERE user_id = ?{guild_clause} "
+                "GROUP BY ign ORDER BY visit_count DESC, last_seen_at DESC LIMIT 10",
+                params,
+            )
+            known_igns = await known_igns_cur.fetchall()
+            
+        def _get_val(row, key, default=0):
+            if not row: return default
+            if isinstance(row, dict):
+                return row.get(key) or default
+            elif hasattr(row, 'keys'):
+                return row[key] if key in row.keys() and row[key] is not None else default
+            return default
+
+        total_visits = int(_get_val(visit_summary, "total_visits", 0))
+        total_actions = int(_get_val(warning_summary, "total_actions", 0))
+        warnings_count = int(_get_val(warning_summary, "warnings", 0))
+        kicks_count = int(_get_val(warning_summary, "kicks", 0))
+        bans_count = int(_get_val(warning_summary, "bans", 0))
+        unauthorized_count = int(_get_val(visit_summary, "unauthorized_visits", 0))
+        
+        risk_score = min(
+            100,
+            warnings_count * 20
+            + kicks_count * 35
+            + bans_count * 60
+            + unauthorized_count * 5,
+        )
+        
+        risk_flags = []
+        if warnings_count >= 2:
+            risk_flags.append("repeat_warning")
+        if kicks_count > 0:
+            risk_flags.append("has_kick_action")
+        if bans_count > 0:
+            risk_flags.append("has_ban_action")
+        if unauthorized_count > 0:
+            risk_flags.append("unauthorized_visit_history")
+            
+        latest_authorized_at = int(_get_val(latest_authorized_visit, "authorized_at", 0))
+        actionable_identity_events = [
+            row for row in identity_events
+            if int(_get_val(row, "created_at", 0)) > latest_authorized_at
+        ]
+        
+        if actionable_identity_events:
+            risk_flags.append("recent_identity_activity")
+            
+        if bans_count or risk_score >= 80:
+            trust_state = "restricted"
+        elif kicks_count or risk_score >= 45:
+            trust_state = "watch"
+        elif warnings_count or unauthorized_count:
+            trust_state = "warned"
+        elif total_visits >= 5:
+            trust_state = "trusted"
+        else:
+            trust_state = "new"
+            
+        timeline = []
+        for row in recent_visits:
+            timeline.append({
+                "type": "visit",
+                "label": "Authorized visit" if _get_val(row, "authorized") else "Unknown visit",
+                "title": f"{_get_val(row, 'ign')} visited {_get_val(row, 'destination')}",
+                "timestamp": f"<t:{_get_val(row, 'timestamp')}:R>",
+                "timestamp_raw": _get_val(row, "timestamp"),
+                "severity": "info" if _get_val(row, "authorized") else "warning",
+                "payload": {
+                    "ign": _get_val(row, "ign"),
+                    "destination": _get_val(row, "destination"),
+                    "authorized": bool(_get_val(row, "authorized")),
+                },
+            })
+        for row in recent_actions:
+            action = (_get_val(row, "action_type") or "WARN").upper()
+            timeline.append({
+                "type": "moderation",
+                "label": action,
+                "title": _get_val(row, "reason") or action,
+                "timestamp": f"<t:{_get_val(row, 'timestamp')}:R>",
+                "timestamp_raw": _get_val(row, "timestamp"),
+                "severity": "critical" if action == "BAN" else "warning" if action in {"WARN", "KICK"} else "attention",
+                "payload": {
+                    "mod_id": _get_val(row, "mod_id"),
+                    "reason": _get_val(row, "reason"),
+                    "action_type": action,
+                },
+            })
+        for row in dodo_reveals:
+            row_dict = {}
+            if hasattr(row, 'keys'):
+                for k in row.keys(): row_dict[k] = row[k]
+            else:
+                row_dict = dict(row)
+                
+            timeline.append({
+                "type": "dodo_reveal",
+                "label": "Dodo reveal",
+                "title": f"Revealed {_get_val(row, 'island_clean')}",
+                "timestamp": f"<t:{_get_val(row, 'created_at')}:R>",
+                "timestamp_raw": _get_val(row, "created_at"),
+                "severity": "info",
+                "payload": row_dict,
+            })
+        for row in identity_events:
+            created_at = _get_val(row, "created_at")
+            cleared = bool(latest_authorized_at and int(created_at or 0) <= latest_authorized_at)
+            
+            old_name = _get_val(row, 'old_display_name') or 'Unknown'
+            new_name = _get_val(row, 'new_display_name') or 'Unknown'
+            
+            row_dict = {}
+            if hasattr(row, 'keys'):
+                for k in row.keys(): row_dict[k] = row[k]
+            else:
+                row_dict = dict(row)
+                
+            payload = dict(row_dict)
+            payload["cleared_by_authorization"] = cleared
+            payload["cleared_authorized_at"] = latest_authorized_at if cleared else None
+            timeline.append({
+                "type": "identity",
+                "label": _get_val(row, "event_type"),
+                "title": f"{old_name} -> {new_name}",
+                "timestamp": f"<t:{created_at}:R>",
+                "timestamp_raw": created_at,
+                "severity": "info" if cleared else "attention",
+                "payload": payload,
+            })
+            
+        timeline.sort(key=lambda item: int(item.get("timestamp_raw") or 0), reverse=True)
+        
+        # Build Base Embed
+        embed_color = 0x2ECC71 # Green
+        if trust_state == "restricted": embed_color = 0x992D22 # Red
+        elif trust_state == "watch": embed_color = 0xE67E22 # Orange
+        elif trust_state == "warned": embed_color = 0xF1C40F # Yellow
+        elif trust_state == "new": embed_color = 0x3498DB # Blue
+
+        embed = discord.Embed(
+            title=f"Trust Profile — {user.display_name}",
+            description=f"Status: **{trust_state.replace('_', ' ').title()}**",
+            color=embed_color,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_thumbnail(url=user.display_avatar.url)
+        
+        # Summary Fields
+        embed.add_field(name="Visits", value=f"Total: {total_visits}\nAuth: {int(_get_val(visit_summary, 'authorized_visits', 0))}\nUnauth: {unauthorized_count}", inline=True)
+        embed.add_field(name="Moderation", value=f"Total: {total_actions}\nWarn/Kick/Ban: {warnings_count}/{kicks_count}/{bans_count}", inline=True)
+        
+        flags_text = ", ".join(f"`{f}`" for f in risk_flags) if risk_flags else "None"
+        embed.add_field(name="Risk Score", value=f"Score: **{risk_score}/100**\nFlags: {flags_text}", inline=False)
+        
+        if known_igns:
+            ign_text = ", ".join(f"`{_get_val(r, 'ign')}` ({_get_val(r, 'visit_count')})" for r in known_igns)
+            if len(ign_text) > 1024:
+                ign_text = ign_text[:1021] + "..."
+            embed.add_field(name="Known IGNs", value=ign_text, inline=False)
+
+        view = ProfileTimelineView(timeline, embed, items_per_page=5)
+        
+        if is_slash:
+            await ctx.interaction.followup.send(embed=view._build_embed(), view=view, ephemeral=True)
+        else:
+            await ctx.send(embed=view._build_embed(), view=view)
 
 async def setup(bot):
     await bot.add_cog(FlightLoggerCog(bot))
