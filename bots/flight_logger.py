@@ -185,7 +185,8 @@ _SQLITE_AUTOINCREMENT_TABLES = {
             mod_id INTEGER,
             timestamp INTEGER,
             visit_id INTEGER REFERENCES island_visits(id),
-            action_type TEXT NOT NULL DEFAULT 'WARN'
+            action_type TEXT NOT NULL DEFAULT 'WARN',
+            r1_reminder_sent INTEGER NOT NULL DEFAULT 0
         )
     """,
     "dodo_reveal_messages": """
@@ -304,6 +305,11 @@ async def init_db():
             await db.execute("ALTER TABLE warnings ADD COLUMN action_type TEXT NOT NULL DEFAULT 'WARN'")
         except Exception:
             pass  # Column already exists
+        # Migrate existing databases: add r1_reminder_sent column if it doesn't exist
+        try:
+            await db.execute("ALTER TABLE warnings ADD COLUMN r1_reminder_sent INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # Column already exists
         # Migrate existing databases: add island_type column if it doesn't exist
         try:
             await db.execute("ALTER TABLE island_visits ADD COLUMN island_type TEXT NOT NULL DEFAULT 'sub'")
@@ -354,7 +360,7 @@ DEFAULT_REASON_TEXT = (
 )
 
 REASON_TEMPLATES = {
-    "rule_top_1": "Breaking [Sub Top Rule](https://discord.com/channels/729590421478703135/783677194576330792/1249835404098801756) or [Sub Rule #1](https://discord.com/channels/729590421478703135/783677194576330792/1249835467067752461). We have removed your island access for now.",
+    "rule_top_1": "Breaking [Sub Top Rule](https://discord.com/channels/729590421478703135/783677194576330792/1249835404098801756) or [Sub Rule #1](https://discord.com/channels/729590421478703135/783677194576330792/1249835467067752461). We have removed your island access for now. Please contact someone on the mod team in regards to your recent warning. If we do not hear anything within 24 hours you will be banned.",
     "rule_2": "Breaking [Sub Rule #2](https://discord.com/channels/729590421478703135/783677194576330792/1137904975553499217). We have removed your island access for now. Please read the <#783677194576330792> again to gain access.",
     "rule_3_4": "Breaking [Sub Rule #3](https://discord.com/channels/729590421478703135/783677194576330792/1137905005433733211)/[Sub Rule #4](https://discord.com/channels/729590421478703135/783677194576330792/1137905033699151893). We have removed your island access for now.",
     "rule_6": "Breaking [Sub Rule #6](https://discord.com/channels/729590421478703135/783677194576330792/1137905106919096442). We have removed your island access for now. Please read the <#783677194576330792> again to gain access.",
@@ -1411,6 +1417,7 @@ class FlightLoggerCog(commands.Cog):
         self._pending_dodo_requests: dict[int, dict] = {}
         self.fetch_islands_task.start()
         self.cleanup_warnings_task.start()
+        self.check_r1_reminders_task.start()
 
     async def _load_sub_roles_from_db(self) -> set[int]:
         """Fallback: derive subscription role IDs from islands.required_roles in SQLite."""
@@ -1896,6 +1903,8 @@ class FlightLoggerCog(commands.Cog):
                     mod_log_url=sent_log.jump_url if sent_log else None
                 )
 
+            # The R1 Notification Reminder is now handled by the persistent background task check_r1_reminders_task
+
         except discord.Forbidden:
             await interaction.followup.send("Permission Denied. Check bot role hierarchy.", ephemeral=True)
         except Exception as e:
@@ -2240,6 +2249,7 @@ class FlightLoggerCog(commands.Cog):
     def cog_unload(self):
         self.fetch_islands_task.cancel()
         self.cleanup_warnings_task.cancel()
+        self.check_r1_reminders_task.cancel()
         if self._db_conn:
             asyncio.create_task(self._db_conn.close())
 
@@ -2259,6 +2269,77 @@ class FlightLoggerCog(commands.Cog):
 
     @cleanup_warnings_task.before_loop
     async def before_cleanup(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=5)
+    async def check_r1_reminders_task(self):
+        """Periodically check for R1 warnings that have hit the 24 hour mark."""
+        db = await self._get_db()
+        # Look for R1 warnings older than 23.95 hours and newer than 48 hours to avoid super old ones
+        cutoff_max = int((discord.utils.utcnow() - datetime.timedelta(hours=23.95)).timestamp())
+        cutoff_min = int((discord.utils.utcnow() - datetime.timedelta(hours=48)).timestamp())
+        
+        cursor = await db.execute(
+            """SELECT id, user_id, guild_id, timestamp, visit_id, reason 
+               FROM warnings 
+               WHERE action_type = 'WARN' 
+                 AND (reason LIKE '%Sub Top Rule%' OR reason LIKE '%Sub Rule #1%')
+                 AND r1_reminder_sent = 0
+                 AND timestamp >= ? AND timestamp <= ?""",
+            (cutoff_min, cutoff_max)
+        )
+        rows = await cursor.fetchall()
+        for row in rows:
+            warning_id, user_id, guild_id, timestamp, visit_id, reason = row
+            guild = self.bot.get_guild(guild_id)
+            if not guild: continue
+            
+            member = guild.get_member(user_id)
+            if not member:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.HTTPException:
+                    member = None
+            if not member:
+                # Can't find member, mark as sent anyway
+                await db.execute("UPDATE warnings SET r1_reminder_sent = 1 WHERE id = ?", (warning_id,))
+                await db.commit()
+                continue
+                
+            x_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+            if x_channel:
+                now = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
+                case_val = f"FL-{now.strftime('%y%m')}-{hex(int(now.timestamp()))[2:][-4:].upper()}"
+                
+                desc = (
+                    f"**{_format_user_for_embed(member)}** was warned for {reason} 24 hours ago (Case `{case_val}`).\n\n"
+                    f"**Action Required:** If they have not contacted the mod team regarding their warning, they are due for a ban at the 24-hour mark."
+                )
+                
+                embed = discord.Embed(
+                    title="⏰ R1 Ban Deadline Approaching",
+                    description=desc,
+                    color=COLOR_ALERT,
+                    timestamp=discord.utils.utcnow()
+                )
+                
+                embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{member.display_name}```", inline=True)
+                embed.add_field(name="Status", value="<:Cho_Investigate:1474310726381338666> **PENDING REVIEW**", inline=True)
+                if visit_id is not None:
+                    embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+                    
+                view = TravelerActionView(bot=self.bot, ign=member.display_name, visit_id=visit_id)
+                for item in list(view.children):
+                    if getattr(item, 'custom_id', None) not in ['fl_ban', 'fl_dismiss']:
+                        view.remove_item(item)
+                        
+                await x_channel.send(embed=embed, view=view)
+            
+            await db.execute("UPDATE warnings SET r1_reminder_sent = 1 WHERE id = ?", (warning_id,))
+            await db.commit()
+
+    @check_r1_reminders_task.before_loop
+    async def before_check_r1_reminders(self):
         await self.bot.wait_until_ready()
 
     async def fetch_islands(self):
