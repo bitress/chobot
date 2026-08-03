@@ -573,13 +573,13 @@ def _format_live_search_answer(
                     return (
                         f"No worries! 🌸 **{normalized_query}** {emoji} is currently only on subscriber islands ({all_island_names}), so it's not reachable without a sub.\n\n"
                         f"**To get them the free way:** use `!order villager:<id>` in <#1175672083183829075> (Chorder Bot). Find the ID first with `ac!lookup villager {normalized_query.lower()}` in <#943118146259284008>.\n"
-                        f"**Want sub access?** Subscribe via [Patreon](https://www.patreon.com/cw/chopaeng/membership), [YouTube](https://www.youtube.com/@chopaeng), [Twitch](https://twitch.tv/chopaeng), or [TikTok](https://www.tiktok.com/@chopaeng) and link your account to Discord. 🏝️"
+                        f"**Want sub access?** Subscribe via [Patreon](https://www.patreon.com/cw/chopaeng/membership), [YouTube](https://www.youtube.com/@chopaengtv), [Twitch](https://twitch.tv/chopaeng), or [TikTok](https://www.tiktok.com/@chopaengtv) and link your account to Discord. 🏝️"
                     )
                 else:
                     return (
                         f"No worries! 🌸 **{normalized_query}** {emoji} is currently only on subscriber islands ({all_island_names}), so it's not directly accessible without a sub.\n\n"
                         f"**Free alternative:** order it via the Chorder Bot — use `!order {normalized_query.lower()}` in <#1175672083183829075>. 📦\n"
-                        f"**Want sub access?** Subscribe via [Patreon](https://www.patreon.com/cw/chopaeng/membership), [YouTube](https://www.youtube.com/@chopaeng), [Twitch](https://twitch.tv/chopaeng), or [TikTok](https://www.tiktok.com/@chopaeng) and link your account to Discord. 🏝️"
+                        f"**Want sub access?** Subscribe via [Patreon](https://www.patreon.com/cw/chopaeng/membership), [YouTube](https://www.youtube.com/@chopaengtv), [Twitch](https://twitch.tv/chopaeng), or [TikTok](https://www.tiktok.com/@chopaengtv) and link your account to Discord. 🏝️"
                     )
 
             # User has access to some (or all) of these sub islands.
