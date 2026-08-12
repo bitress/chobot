@@ -293,6 +293,11 @@ Alternatively, visit a sub island's Discord channel and use the **[Dropping Item
 This guide and the <#1516752902591615046> chorder-bot-how channel are only for
 the free orderbot/ordering flow, not general free island questions.
 
+### How to Access OrderBot
+1. READ THE <#755522711492493342> FIRST if you haven't read it yet.
+2. Navigate to <#762351782382141440> channel and under **Games you play**, get the **Animal Crossing** role.
+3. Go to <#1262585130397208636>. Read and click **Done** to gain access to our <#1175672083183829075> channel.
+
 ### How to Place an Order
 Submit your order using the command `!order <item names>` in the designated order channels. Ensure item names are spelled correctly as they appear in-game. For easier ordering commands, drops, and injections, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** — select variations, lookup items/villagers/recipes, copy the generated command, and paste it into the appropriate channel.
 
@@ -403,6 +408,10 @@ Subscribers can request villagers on sub islands using inject commands.
 7. Invite them to your island
 
 Need help? Check <#782872507551055892>  for subscriber support.
+
+### Fast Evict Your Villager
+Watch this video tutorial to learn how to evict your villagers fast:
+[Fast Villager Eviction Tutorial](https://www.youtube.com/watch?v=AOMNJ96loCU)
 
 ### Villager Wake Schedules
 
@@ -563,6 +572,7 @@ Check [chopaeng.com](https://chopaeng.com) for the latest info.
 - Popular villagers (Raymond, Marshal, Judy, etc.) often appear on sub islands first.
 
 ## Troubleshooting
+- **"No access" to #chorder-bot or OrderBot?** Make sure you follow the access steps: 1. READ THE `#rules` FIRST. 2. Go to `#get-roles` and select the **Animal Crossing** role under *Games you play*. 3. Go to `#chorder-rules`, read the rules, and click **Done** to gain access to <#1175672083183829075> (`#chorder-bot`).
 - **Someone is on the phone / I cannot enter?** The Nook Phone message is only
   a general in-game connection message. It can appear when someone is joining,
   leaving, using their phone, using the trash can, selling, or doing another

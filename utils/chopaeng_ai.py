@@ -126,15 +126,33 @@ async def _fetch_live_data() -> None:
 async def _fetch_explorer_data() -> None:
     """Fetch item explorer data for the Order Assistant and cache it."""
     import asyncio
+    data = None
     try:
         session = await _get_http_session()
         async with session.get(_EXPLORER_JSON_URL) as resp:
             resp.raise_for_status()
             data = await resp.json()
-            
+    except Exception as exc:
+        _explorer_cache["last_error_at"] = time.time()
+        logger.warning(f"[ChopaengAI] Failed to fetch explorer data via HTTP: {exc}")
+
+    if not data:
+        local_explorer_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "explorer.json"
+        )
+        if os.path.exists(local_explorer_path):
+            try:
+                with open(local_explorer_path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                logger.info("[ChopaengAI] Loaded explorer data from local explorer.json fallback.")
+            except Exception as local_exc:
+                logger.warning(f"[ChopaengAI] Failed to load local explorer.json: {local_exc}")
+
+    if data:
         items_list = data.get("items", [])
         if not isinstance(items_list, list):
-            items_list = data  # Fallback if the structure changes
+            items_list = data  # Fallback if structure changes
 
         items_map = {}
         for item in items_list:
@@ -144,14 +162,11 @@ async def _fetch_explorer_data() -> None:
             if name_lower not in items_map:
                 items_map[name_lower] = []
             items_map[name_lower].append(item)
-            
+
         _explorer_cache["items"] = items_map
         _explorer_cache["fetched_at"] = time.time()
         _explorer_cache["last_error_at"] = 0.0
         logger.debug("[ChopaengAI] Explorer data refreshed.")
-    except Exception as exc:
-        _explorer_cache["last_error_at"] = time.time()
-        logger.warning(f"[ChopaengAI] Failed to fetch explorer data: {exc}")
 
 
 def _build_live_context() -> str:
@@ -229,6 +244,16 @@ _SEARCH_WHERE_IS_RE = re.compile(r"^where\s+is\s+(.+)$", re.IGNORECASE)
 _SEARCH_WHICH_ISLAND_RE = re.compile(r"^which\s+islands?\s+is\s+(.+)\s+on$", re.IGNORECASE)
 _SEARCH_FIND_RE = re.compile(r"^(?:find|search)\s+(.+)$", re.IGNORECASE)
 
+def _clean_search_query(q: str) -> str:
+    cleaned = re.sub(
+        r"\s+(?:on\s+(?:free|sub|any)\s+islands?|on\s+any\s+island|here|stocked(?:\s+right\s+now)?)$",
+        "",
+        q.strip(),
+        flags=re.IGNORECASE
+    )
+    return cleaned.strip(" '")
+
+
 def _extract_live_search_candidates(question: str) -> list[tuple[str, str]]:
     """Infer item/villager live-search queries from natural language prompts."""
     q = question.strip()
@@ -238,7 +263,7 @@ def _extract_live_search_candidates(question: str) -> list[tuple[str, str]]:
     for kind, pattern, _reason in _LIVE_SEARCH_PATTERNS:
         match = pattern.match(lowered)
         if match:
-            query = match.group(1).strip(" '")
+            query = _clean_search_query(match.group(1))
             if query:
                 candidates.append((kind, query))
             break
@@ -246,7 +271,7 @@ def _extract_live_search_candidates(question: str) -> list[tuple[str, str]]:
     if not candidates:
         match = _SEARCH_WHERE_IS_RE.match(lowered)
         if match:
-            query = match.group(1).strip(" '")
+            query = _clean_search_query(match.group(1))
             if query and len(query.split()) <= 4:
                 candidates.append(("villager", query))
                 candidates.append(("item", query))
@@ -254,7 +279,7 @@ def _extract_live_search_candidates(question: str) -> list[tuple[str, str]]:
     if not candidates:
         match = _SEARCH_WHICH_ISLAND_RE.match(lowered)
         if match:
-            query = match.group(1).strip(" '")
+            query = _clean_search_query(match.group(1))
             if query and len(query.split()) <= 4:
                 candidates.append(("villager", query))
                 candidates.append(("item", query))
@@ -262,7 +287,7 @@ def _extract_live_search_candidates(question: str) -> list[tuple[str, str]]:
     if not candidates:
         match = _SEARCH_FIND_RE.match(lowered)
         if match:
-            query = match.group(1).strip(" '")
+            query = _clean_search_query(match.group(1))
             if query and len(query.split()) <= 4 and "how to" not in lowered:
                 candidates.append(("item", query))
 
@@ -644,6 +669,8 @@ async def _try_live_search_answer(
     if _should_skip_live_search(question):
         return None
 
+    is_explicit_command = question.strip().startswith("!")
+
     last_payload: Optional[dict] = None
     last_kind: Optional[str] = None
     last_query: Optional[str] = None
@@ -671,7 +698,9 @@ async def _try_live_search_answer(
                 accessible_islands=accessible_islands,
             )
 
-    if last_payload and last_kind and last_query:
+    # For explicit prefix commands like `!find item`, return formatted search fallback.
+    # For conversational questions with 0 exact matches, let LLM answer with full context.
+    if is_explicit_command and last_payload and last_kind and last_query:
         return _format_live_search_answer(
             last_kind, last_query, last_payload,
             user_lacks_sub_access=user_lacks_sub_access,
@@ -925,6 +954,12 @@ _CHANNEL_ALIASES = {
     "ordering": "1175672083183829075",
     "lookup": "1175771830510948442",
     "i-report": "1451664423637876848",
+    "faq": "1086127868863578132",
+    "dodo-board": "1500493205672825056",
+    "ticket": "943118146259284008",
+    "rules": "755522711492493342",
+    "get-roles": "762351782382141440",
+    "chorder-rules": "1262585130397208636",
     # Island channels
     "adhika": "1480590246763561074",
     "alapaap": "1103147265163546644",
@@ -958,70 +993,91 @@ def _is_variant_ordering_question(text: str) -> bool:
     return has_variant and has_order_intent and has_item_context
 
 
-
-_FAQ_RESPONSES: list[tuple[tuple[str, ...], str]] = [
+_FAQ_REGEX_ENTRIES: list[tuple[re.Pattern, str]] = [
     (
-        ("phone", "cannot enter", "can't enter", "cant enter", "someone on the phone", "nook phone"),
+        re.compile(
+            r"\b(?:"
+            r"how\s+to\s+access\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)|"
+            r"get\s+access\s+to\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)|"
+            r"access\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)|"
+            r"no\s+access\b.*(?:orderbot|chorder|order|channel)|"
+            r"says\s+no\s+access\b|"
+            r"can'?t\s+(?:see|access|find|use)\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)"
+            r")\b",
+            re.I
+        ),
+        "If you see 'no access' or cannot view `#chorder-bot`, follow these steps to get access:\n\n"
+        "1. READ THE #rules FIRST if you haven't read it yet.\n"
+        "2. Navigate to #get-roles channel and under **Games you play**, get the **Animal Crossing** role.\n"
+        "3. Go to #chorder-rules.\n"
+        "4. Read and click **Done** to gain access to our #chorder-bot channel! 📦",
+    ),
+    (
+        re.compile(r"\b(?:fast\s+evict|evict\s+(?:a\s+)?villager\s+fast|evict\s+villagers?\s+fast|fast\s+villager\s+eviction|evict\s+fast|kick\s+villager\s+out\s+fast|move\s+out\s+villager\s+fast)\b", re.I),
+        "Watch the video below to learn how to evict your villagers fast! 🏡\nhttps://www.youtube.com/watch?v=AOMNJ96loCU",
+    ),
+    (
+        re.compile(r"\b(?:phone|cannot\s+enter|can'?t\s+enter|someone\s+on\s+(?:the\s+)?phone|nook\s+phone)\b", re.I),
         "The Nook Phone message is just a general connection message. It can happen when someone is joining, leaving, using their phone, using the trash can, selling, or doing another action that blocks travel. Please be patient and keep trying.",
     ),
     (
-        ("island down", "island is down", "channel closed"),
+        re.compile(r"\b(?:island\s+is\s+down|island\s+down|channel\s+closed)\b", re.I),
         "If the island channel is closed or you see an island down message, then the island is down. Please use another island for now or wait for it to come back up.",
     ),
     (
-        ("bot not responding", "bot ignored", "command ignored", "bot not working"),
+        re.compile(r"\b(?:bot\s+not\s+responding|bot\s+ignored|command\s+ignored|bot\s+not\s+working)\b", re.I),
         "If the bot isn't responding to commands, someone may be flying in (loading screen). Wait until they land, then try again. If the island channel is closed, then the island is completely offline.",
     ),
     (
-        ("bot crash", "crashed", "crashing"),
+        re.compile(r"\b(?:bot\s+crash|bot\s+crashed|bot\s+crashing)\b", re.I),
         "Please be patient. Bot crashes can happen because of unstable internet, someone leaving quietly, bot updates, or rule-breaking during a visit. Use another island if possible, and report quiet leaves or rule-breaking in <#1451664423637876848> with evidence.",
     ),
     (
-        ("left quietly", "leave quietly", "quiet leave"),
+        re.compile(r"\b(?:left\s+quietly|leave\s+quietly|quiet\s+leave)\b", re.I),
         "If you know who left quietly or have evidence, please report it in <#1451664423637876848> with as much evidence as you can.",
     ),
     (
-        ("bot abuser", "free island ban", "free islands ban", "orderbot ban"),
+        re.compile(r"\b(?:bot\s+abuser|free\s+islands?\s+ban|orderbot\s+ban)\b", re.I),
         "A bot abuser flag means the bot detected a second account being used to order and cut ahead instead of waiting in line. Since the detection is automatic, staff cannot manually unban it when the bot has flagged the behavior.",
     ),
     (
-        ("server nickname", "change nickname", "second warning", "sub rule 2", "nickname warning", "set nick", "set nickname"),
-        "Go to #server-nickname and change your server nickname to this format: `Your ACNH Character Name | Your ACNH Island Name`. Example: `ChoPaeng | ChoPaeng Camp`. You can right-click your name in the server member list and choose **Change Nickname**, or use Server Settings > Profile.",
+        re.compile(r"\b(?:server\s+nickname|change\s+nickname|second\s+warning|sub\s+rule\s+2|nickname\s+warning|set\s+nick|set\s+nickname)\b", re.I),
+        "Go to <#1081147108612124742> (`#server-nickname`) and change your server nickname to this format: `Your ACNH Character Name | Your ACNH Island Name`. Example: `ChoPaeng | ChoPaeng Camp`. You can right-click your name in the server member list and choose **Change Nickname**, or use Server Settings > Profile.",
     ),
     (
-        ("3.0 island", "3.0 islands", "3.0", "new island channels"),
+        re.compile(r"\b(?:3\.0\s+islands?|cannot\s+see\s+3\.0|unlock\s+3\.0\s+channels)\b", re.I),
         "Some 3.0 islands are available. If you cannot see them, go to the co-owners channel and follow the posted steps to unlock the new island channels.",
     ),
     (
-        ("linking account", "link account", "authorized apps", "deauthorize", "phone linking"),
+        re.compile(r"\b(?:linking\s+account|link\s+account|authorized\s+apps|deauthorize|phone\s+linking)\b", re.I),
         "As a last resort, unlink your account first. Then go to Discord settings, open Authorized Apps, choose the linked app name, and deauthorize it. Fully close Discord and the linked app, then reopen them and connect again through the link. If this removes you from the server, rejoin and reopen a ticket.",
     ),
     (
-        ("accept sub rules", "accepting sub rules", "sub rules", "subscriber rules", "can't see sub islands", "cant see sub islands"),
+        re.compile(r"\b(?:accept\s+sub\s+rules|accepting\s+sub\s+rules|how\s+to\s+accept\s+sub\s+rules|can'?t\s+see\s+sub\s+islands)\b", re.I),
         "Go to <#783677194576330792>, read the subscriber rules carefully, and accept each one until you see the palm tree confirmation. Then check the sticky message at the bottom of each island channel and use the command shown there to get the code by DM.",
     ),
     (
-        ("sanrio villager", "amiibo villager", "sanrio character", "amiibo character", "in-boxes", "in boxes"),
+        re.compile(r"\b(?:sanrio\s+villager|amiibo\s+villager|sanrio\s+character|amiibo\s+character|in-boxes\s+villager)\b", re.I),
         "For Sanrio/Amiibo villagers, first inject any standard placeholder villager into the first plot before flying. After you arrive on that island, inject the Sanrio/Amiibo character and wait for **VILLAGER INJECTED**. Then enter the first plot, talk to the placeholder-looking villager, and invite them. If you inject the Amiibo/Sanrio character before flying, they will not move in.",
     ),
     (
-        ("how to order villager", "order villager", "ordering villager", "how do i order villagers", "how can i order", "how to get villagers", "request villager", "request villagers"),
+        re.compile(r"\b(?:how\s+(?:to|do\s+i|can\s+i)\s+(?:order|request|inject)\s+villagers?|order\s+villager|ordering\s+villagers?|request\s+villagers?)\b", re.I),
         "**Free members:** Create an order using the **[Command Builder](https://www.chopaeng.com/command-builder)** and paste it in <#1175672083183829075> (`chorder-bot`). You'll need an empty plot ready. ⚠️ Avoid ordering between 10 PM–8 AM BST (villager may be sleeping).\n\n**Subscribers:** Use the **[Command Builder](https://www.chopaeng.com/command-builder)** to generate a `!injectvillager` or `!mvi` command and paste it in a sub island channel. DO NOT be on the island when injecting — fly in AFTER confirmation!",
     ),
     (
-        ("server booster", "nitro boost", "booster perks", "boost the server"),
+        re.compile(r"\b(?:server\s+booster|nitro\s+boost|booster\s+perks|boost\s+the\s+server)\b", re.I),
         "Server Boosters get exclusive access to two premium sub-islands: **Hiraya** (1.0 items) and **Alapaap** (2.0 items). Thanks for supporting the community!",
     ),
     (
-        ("open a ticket", "create a ticket", "how to open ticket", "submit ticket"),
+        re.compile(r"\b(?:open\s+a\s+ticket|create\s+a\s+ticket|how\s+to\s+open\s+(?:a\s+)?ticket|submit\s+ticket)\b", re.I),
         "To open a support ticket, go to the <#943118146259284008> channel. Before doing so, please check the FAQ channel (<#1086127868863578132>) and make sure you aren't asking about drop commands (which go in <#782872507551055892>). Choose **Sub Ticket** if it's about your subscription, or **General Ticket** for other help.",
     ),
     (
-        ("disconnected", "lost connection", "kicked out", "items didn't save", "inventory empty"),
+        re.compile(r"\b(?:disconnected\s+while|lost\s+connection\s+while|kicked\s+out\s+while|items\s+didn'?t\s+save)\b", re.I),
         "If you disconnected while visiting, your items may not have saved. Fly back in and re-collect them. Always check your internet and ensure you have NAT Type A or B before visiting to prevent drops!",
     ),
     (
-        ("how to get diy", "order diy", "order recipe", "drop recipe", "find diy", "how to get recipe"),
+        re.compile(r"\b(?:how\s+to\s+(?:get|order|drop)\s+diy|order\s+diy|order\s+recipe|drop\s+recipe|how\s+to\s+get\s+recipe)\b", re.I),
         "For DIY recipes, we recommend using the **[Command Builder](https://www.chopaeng.com/command-builder)** to easily generate the right command! Free members can paste the `!order` command in <#1175672083183829075>, while subscribers can paste the `!drop` command directly in a sub island.",
     ),
 ]
@@ -1029,9 +1085,9 @@ _FAQ_RESPONSES: list[tuple[tuple[str, ...], str]] = [
 
 def _direct_faq_answer(text: str) -> Optional[str]:
     """Return deterministic answers for high-frequency support/rules questions."""
-    t = text.lower().strip()
-    for triggers, response in _FAQ_RESPONSES:
-        if any(trigger in t for trigger in triggers):
+    t = text.strip()
+    for pattern, response in _FAQ_REGEX_ENTRIES:
+        if pattern.search(t):
             return response
     return None
 
@@ -1069,33 +1125,40 @@ _STOPWORDS = {
 
 
 def _parse_kb() -> list[tuple[str, str]]:
-    """Parse the knowledge base into (heading, content) section pairs.
+    """Parse the knowledge base into (heading, content) section pairs with hierarchy.
 
-    Each section is keyed by its nearest Markdown heading.  Table rows and
+    Each section is keyed by its parent and child Markdown headings. Table rows and
     bullet points are included in the section text so the keyword scorer
     can match against them.
     """
     sections: list[tuple[str, str]] = []
+    parent_heading = "General"
     current_heading = "General"
     current_lines: list[str] = []
 
     for line in CHOPAENG_KNOWLEDGE.splitlines():
         stripped = line.strip()
         if stripped.startswith('#'):
-            # Flush previous section
             if current_lines:
-                sections.append((current_heading, ' '.join(current_lines)))
+                full_title = f"{parent_heading} > {current_heading}" if parent_heading != current_heading else current_heading
+                sections.append((full_title, ' '.join(current_lines)))
                 current_lines = []
-            current_heading = stripped.lstrip('#').strip()
+
+            level = len(stripped) - len(stripped.lstrip('#'))
+            title = stripped.lstrip('#').strip()
+            if level <= 2:
+                parent_heading = title
+                current_heading = title
+            else:
+                current_heading = title
         elif stripped and not re.match(r'^[\|\-\s:]+$', stripped):
-            # Include table rows (strip leading |), bullets, and prose.
-            # Skip table separator rows (e.g. |---|---|).
             clean = stripped.lstrip('|-').strip()
             if clean:
                 current_lines.append(clean)
 
     if current_lines:
-        sections.append((current_heading, ' '.join(current_lines)))
+        full_title = f"{parent_heading} > {current_heading}" if parent_heading != current_heading else current_heading
+        sections.append((full_title, ' '.join(current_lines)))
 
     return sections
 
@@ -1114,29 +1177,39 @@ def _extract_keywords(text: str) -> list[str]:
     return [w for w in all_words if w not in _STOPWORDS] or all_words
 
 
-def _score_kb_sections(question: str) -> list[tuple[int, float, str, str]]:
-    """Score KB sections by keyword relevance, returning best matches first."""
+def _score_kb_sections(question: str) -> list[tuple[float, float, str, str]]:
+    """Score KB sections using keyword relevance and RapidFuzz fuzzy token similarity."""
+    from rapidfuzz import fuzz
+
     keywords = _extract_keywords(question)
     if not keywords:
         return []
 
-    scored: list[tuple[int, float, str, str]] = []
+    scored: list[tuple[float, float, str, str]] = []
     phrase = question.lower().strip()
+
     for heading, body in _KB_SECTIONS:
         heading_lower = heading.lower()
         body_lower = body.lower()
-        score = (
-            sum(3 for kw in keywords if _wb_match(kw, heading_lower))
-            + sum(1 for kw in keywords if _wb_match(kw, body_lower))
+
+        kw_score = (
+            sum(4.0 for kw in keywords if _wb_match(kw, heading_lower))
+            + sum(1.5 for kw in keywords if _wb_match(kw, body_lower))
         )
+
+        heading_fuzzy = fuzz.token_set_ratio(phrase, heading_lower) / 20.0
+        body_fuzzy = fuzz.token_set_ratio(phrase, body_lower) / 25.0
+
+        total_score = kw_score + heading_fuzzy + body_fuzzy
         if phrase and len(phrase) > 8:
             if phrase in heading_lower:
-                score += 4
+                total_score += 5.0
             if phrase in body_lower:
-                score += 2
-        if score > 0:
+                total_score += 3.0
+
+        if total_score > 3.0:
             word_count = max(len(body.split()), 1)
-            scored.append((score, score / word_count, heading, body))
+            scored.append((total_score, total_score / word_count, heading, body))
 
     return sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)
 
@@ -1144,12 +1217,19 @@ def _score_kb_sections(question: str) -> list[tuple[int, float, str, str]]:
 def _retrieve_kb_context(question: str, limit: int = 5) -> str:
     """Return only the most relevant KB sections for the current question."""
     sections = _score_kb_sections(question)[:limit]
-    if not sections:
-        return ""
 
     lines: list[str] = []
-    for _score, _density, heading, body in sections:
-        lines.append(f"## {heading}\n{body}")
+    if sections:
+        for _score, _density, heading, body in sections:
+            lines.append(f"## {heading}\n{body}")
+    else:
+        lines.append(
+            "## Core Community Overview\n"
+            "Chopaeng community features 47 islands (27 Free, 20 Sub). Free island Dodo codes are on Dodo Board <#1500493205672825056>. "
+            "OrderBot in <#1175672083183829075> allows free members to order items using !order and DM codes. "
+            "Subscribers use !senddodo or !drop commands on sub islands. For support tickets use <#943118146259284008>."
+        )
+
     return "\n\n".join(lines)
 
 
@@ -1162,17 +1242,16 @@ def _trim_to_sentences(text: str, n: int = 3) -> str:
     splits where the period is preceded by a digit (numbered list markers like
     ``1. ``, ``2. ``).
     """
-    # Use a 2-char lookbehind: char before '.' must be a non-digit letter.
     sentences = _TRIM_SENTENCES_RE.split(text.strip())
     trimmed = ' '.join(sentences[:n])
     return trimmed
 
 
 def _auto_link_channels(text: str, accessible_islands: Optional[list[str]] = None) -> str:
-    """Automatically convert raw 17-20 digit Discord channel IDs into <#ID> links.
+    """Automatically convert raw channel IDs and #channel-names into Discord <#ID> mentions.
     
-    Skips IDs that are already part of a mention (<#ID>, <@ID>, etc.) or look like
-    part of a URL or path.
+    Prevents corruption by sorting aliases by length (longest first) and avoiding
+    plain-word conversions for common English nouns (rules, faq, ticket).
     """
     if not text:
         return text
@@ -1181,13 +1260,18 @@ def _auto_link_channels(text: str, accessible_islands: Optional[list[str]] = Non
     acc_set = {a.lower() for a in accessible_islands} if accessible_islands is not None else None
     _NON_ISLAND_ALIASES = {
         "server-nickname", "set-nick", "sub-rules", "chobot-how", 
-        "chorder-bot-how", "chorder-bot", "ordering", "lookup", "i-report"
+        "chorder-bot-how", "chorder-bot", "ordering", "lookup", "i-report",
+        "faq", "dodo-board", "ticket", "rules", "get-roles", "chorder-rules",
     }
 
     # Normalize common LLM-style channel attempts like "#<#123>" or "#123".
     text = re.sub(r'(?<!<)#(<#\d{17,20}>)', r'\1', text)
     text = re.sub(r'(?<![<\w])#(\d{17,20})\b', r'<#\1>', text)
-    for channel_name, channel_id in _CHANNEL_ALIASES.items():
+
+    # Sort aliases longest-first so `#chorder-rules` is replaced before `#rules`!
+    sorted_aliases = sorted(_CHANNEL_ALIASES.items(), key=lambda item: len(item[0]), reverse=True)
+
+    for channel_name, channel_id in sorted_aliases:
         if channel_name not in _NON_ISLAND_ALIASES and acc_set is not None:
             if channel_name.lower() not in acc_set:
                 # User lacks access; replace hashtag mention with plain capitalized name.
@@ -1207,19 +1291,16 @@ def _auto_link_channels(text: str, accessible_islands: Optional[list[str]] = Non
             flags=re.IGNORECASE,
         )
 
-    # Also link plain safe channel alias mentions (e.g. "chorder-bot") so short
-    # references get turned into proper channel mentions. This intentionally avoids
-    # linking generic words like "lookup" or command names such as "!lookup".
-    _PLAIN_CHANNEL_ALIASES = {
-        "chorder-bot": _CHANNEL_ALIASES["chorder-bot"],
-        "chorder-bot-how": _CHANNEL_ALIASES["chorder-bot-how"],
-        "chobot-how": _CHANNEL_ALIASES["chobot-how"],
+    # Plain channel alias mentions (e.g. standalone island names or "chorder-bot").
+    # Intentionally EXCLUDE common English words so prose ("read the rules", "create a ticket") isn't mangled.
+    _UNSAFE_PLAIN_ALIASES = {
+        "rules", "faq", "ticket", "get-roles", "chorder-rules", "sub-rules",
+        "lookup", "ordering", "set-nick", "server-nickname", "i-report", "dodo-board",
     }
-    
-    # Include all sub islands and unique aliases in plain linking
-    _UNSAFE_PLAIN_ALIASES = {"lookup", "ordering", "set-nick", "server-nickname", "sub-rules", "i-report"}
-    for alias_name, alias_id in _CHANNEL_ALIASES.items():
-        if alias_name not in _UNSAFE_PLAIN_ALIASES and alias_name not in _PLAIN_CHANNEL_ALIASES:
+
+    _PLAIN_CHANNEL_ALIASES = {}
+    for alias_name, alias_id in sorted_aliases:
+        if alias_name not in _UNSAFE_PLAIN_ALIASES:
             _PLAIN_CHANNEL_ALIASES[alias_name] = alias_id
 
     for channel_name, channel_id in _PLAIN_CHANNEL_ALIASES.items():
@@ -1228,7 +1309,7 @@ def _auto_link_channels(text: str, accessible_islands: Optional[list[str]] = Non
                 continue
 
         text = re.sub(
-            rf'(?<![<\w!]){re.escape(channel_name)}(?![\w-])',
+            rf'(?<![<\w!/#]){re.escape(channel_name)}(?![\w-])',
             f'<#{channel_id}>',
             text,
             flags=re.IGNORECASE,
@@ -1330,7 +1411,7 @@ _AI_SYSTEM_PROMPT = (
     "contradict community rules.\n\n"
 
     "# CORE DIRECTIVES\n"
-    "1. **Cheerful and Concise.** Greet users warmly and answer directly with 5 sentences. Use 1-2 friendly emojis (like 🌟, 😊, or 🏝️) to keep an upbeat tone.\n"
+    "1. **Cheerful and Concise.** Greet users warmly and answer directly in 2 to 4 concise sentences. Use 1-2 friendly emojis (like 🌟, 😊, or 🏝️) to keep an upbeat tone.\n"
     "2. **No Fillers or Reassurances.** Do not add explanations unless asked. "
     "Never end with 'let me know' or similar follow-up phrases. \n"
     "3. **Answer specifically.** Give only what was asked. Don't dump the full command "
@@ -1364,10 +1445,12 @@ _AI_SYSTEM_PROMPT = (
     "If you are unsure just check the knowledge base and answer based on that. If the question is vague, ask for clarification. "
 
     "# REQUEST-SPECIFIC BEHAVIOR\n"
+    "- If the user asks how to access OrderBot / chorder-bot or reports seeing 'no access' when trying to order, explain the exact 3 steps: 1. Read `#rules` first, 2. Navigate to `#get-roles` and select the **Animal Crossing** role under *Games you play*, 3. Go to `#chorder-rules`, read and click **Done** to gain access to <#1175672083183829075> (`#chorder-bot`). NEVER tell users to grab orderbot Dodo codes from the Dodo Board.\n"
+    "- If the user asks how to evict a villager fast / kick villager out quickly, explain the fast eviction method and provide the video tutorial link: https://www.youtube.com/watch?v=AOMNJ96loCU.\n"
     "- If the user asks how to get items:\n"
     "  * **For subscribers:** Explain using `!drop` on sub islands while on the island. Note that `!drop` is ONLY for subscribers! Natively recommend that they use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to create drop commands easily.\n"
     "  * **For free members:** Explain the Chorder Bot workflow. Note that `!order` is ONLY for free members! Tell them to use "
-    "`!order <item names>` in <#1175672083183829075>. They will NOT receive a Dodo code from this flow; instead, just link them to the Dodo Board <#1500493205672825056>. Recommend using **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to build their order command.\n"
+    "`!order <item names>` in <#1175672083183829075>. The bot will notify them of their queue position and DM them a Dodo code when their turn arrives to visit order island Sinta. Recommend using **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to build their order command.\n"
     "- If the user asks how to request a villager, explain `!injectvillager <house#> <name>` "
     "or `!mvi <name1> <name2> ...`. Emphasize that these inject commands are ONLY for subscribers! Remind them not to be on the island during "
     "injection, and point them to <#782872507551055892> for extra help. Recommend using **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to easily create inject commands.\n"
@@ -1856,6 +1939,7 @@ async def get_ai_answer(
                     channel_context=channel_context,
                     is_subscriber=is_subscriber,
                     is_mod_user=is_mod_user,
+                    accessible_islands=accessible_islands,
                 )
 
             if conversation_key:
@@ -1884,12 +1968,18 @@ async def _gemini_answer(
     import google.generativeai as genai  # lazy import
 
     genai.configure(api_key=api_key)
-    gemini_model = genai.GenerativeModel(model)
+    try:
+        gemini_model = genai.GenerativeModel(model, system_instruction=_AI_SYSTEM_PROMPT)
+        include_sys = False
+    except Exception:
+        gemini_model = genai.GenerativeModel(model)
+        include_sys = True
+
     prompt = _build_model_prompt(
         question,
         history=history,
         channel_context=channel_context,
-        include_system_prompt=True,
+        include_system_prompt=include_sys,
         is_subscriber=is_subscriber,
         is_mod_user=is_mod_user,
         accessible_islands=accessible_islands,
