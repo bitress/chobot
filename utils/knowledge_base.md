@@ -257,116 +257,25 @@ you will automatically gain access to all sub island channels. Make sure to read
 
 **Remember: Always follow our rules to maintain access!**
 
-## How to Get Items (Step by Step)
+## Ordering & Getting Items
 
-### For Subscribers
-1. Type `!find <item>` in Discord to search.
-2. The bot shows which islands currently have it.
-3. Go to that island's Discord channel. Type `!senddodo` or `!sd` to get the
-   Dodo code sent to your DMs.
-4. In ACNH, go to Dodo Airlines and fly using the code.
-5. Collect your items and leave via the airport.
+**For Subscribers (Sub Islands):**
+Subscribers can request specific items from ChoBot using `!drop` commands directly while on a sub island.
+- Use `!find <item>` to check which islands have the item in their regular stock. If found, use `!senddodo` (or `!sd`) in that island's channel to get the code, fly in, and collect it.
+- **Requesting Items:** Use `!drop <item name>` or `!drop <item code>` while on a sub island. You can drop up to 9 items per line (e.g., `!drop Pagoda, Golden Axe, Harp`).
+- **DIY Recipes:** `!recipe <item>` gets the recipe code (e.g., `!recipe Golden Axe` → `297000016A2`), then use `!drop <code>`.
+- **Customizing:** Look up with `!lookup <item>`, see variants with `!item <code>`, generate custom code with `!customize <code> <variant>`, and drop it with `!drop <customized code>`.
+- For easier command building, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Select your items, DIYs, or variations, use the **Drop Bot** section to copy the command, and paste it on the island.
 
-Alternatively, visit a sub island's Discord channel and use the **[Dropping Items with !drop](#dropping-items-with-drop)** section below to request specific items from ChoBot.
+**For Free Members (Chorder Bot):**
+Free members must use the Chorder Bot in <#1175672083183829075> to place custom orders. The order island is named *Sinta*.
+- **Accessing OrderBot:** Read <#755522711492493342>, get the Animal Crossing role in <#762351782382141440>, then read and click **Done** in <#1262585130397208636>.
+- **Placing an Order:** Use `!order <item names>` in <#1175672083183829075> (e.g., `!order nook miles ticket`).
+- **Rules:** Change server nickname to `Character Name | Island Name`. Do NOT share the Dodo code. Have a stable internet connection (15-25 Mbps).
+- **Looking up Items / Customizing:** Use `!lookup <item>`, `!item <code>`, and `!customize` in <#1175771830510948442> (NOT the order channel). Copy the long code to order: `!order <long code>`.
+- For the easiest ordering experience, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Click the **Order** button, copy the command, and paste it into <#1175672083183829075>.
+- When your turn arrives, the bot will instruct you to go to the airport and provide a Dodo code. Fly to *Sinta* to pick up your order in front of the airport.
 
-## Item Requests & Ordering
-
-**For Subscribers:**
-- Use `!drop` commands while on a sub island to request specific items from ChoBot
-- You can request up to 9 items per line
-- You can place multiple requests across different islands or at different times
-- Need help with commands? Check the <#782872507551055892> channel
-
-**For Non-Subscribers:**
-- Use the Chorder Bot in the <#1175672083183829075> channel to request items
-- Follow the ordering flow to place custom requests
-- Multiple orders of the same item are allowed
-- Need help with free orderbot ordering? Check the <#1516752902591615046> (chorder-bot-how) channel
-- Do not use <#1516752902591615046> for free island questions; use the Dodo Board <#1500493205672825056> or the specific free island channel instead.
-
-**If an item isn't currently stocked on any island:**
-- Subscribers should use `!drop` on a sub island to get the item immediately.
-- Free members ONLY must use the Chorder Bot `!order` in <#1175672083183829075> to request it.
-
-## Chorder Bot Ordering Guide (For Non-Subscribers)
-
-This guide and the <#1516752902591615046> chorder-bot-how channel are only for
-the free orderbot/ordering flow, not general free island questions.
-
-### How to Access OrderBot
-1. READ THE <#755522711492493342> FIRST if you haven't read it yet.
-2. Navigate to <#762351782382141440> channel and under **Games you play**, get the **Animal Crossing** role.
-3. Go to <#1262585130397208636>. Read and click **Done** to gain access to our <#1175672083183829075> channel.
-
-### How to Place an Order
-Submit your order using the command `!order <item names>` in the designated order channels. Ensure item names are spelled correctly as they appear in-game. For easier ordering commands, drops, and injections, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** — select variations, lookup items/villagers/recipes, copy the generated command, and paste it into the appropriate channel.
-
-**Important:** Do not use plural forms of item names. For example, "blue ornament" is valid (and will automatically stack to the maximum quantity), but "blue ornaments" is not recognized by the bot.
-
-### Order Examples
-
-**40 max stacks of Nook Miles Tickets:**
-```
-!order nook miles ticket
-```
-
-**10 full stacks each of: gold nuggets, large star fragments, large snowflakes, cherry-blossom petals:**
-```
-!order gold nugget, large star fragment, large snowflake, cherry-blossom petal
-```
-
-**Every variation of puppy plushie:**
-```
-!order puppy plushie
-```
-
-**One of every variation of dollhouse, kids' tent, pop-up book, plus stacks of pearls:**
-```
-!order dollhouse, kids' tent, pop-up book, pearl
-```
-
-**Multiple items by item codes (separate by spaces):**
-```
-!order 14BB 16DB
-```
-*Note: You cannot combine IDs and item names in the same order command.*
-
-### Ordering in Other Languages
-Include the language code before the item name:
-```
-!order jp, マイルりょこうけん
-!order de, Meilenticket
-!order es, cupón de millas Nook
-!order fr, ticket Miles Nook
-!order it, coupon miglia di Nook
-!order ko, 마일 여행권
-!order zhs, 里数旅行券
-!order zht, 哩數旅行券
-```
-
-### Looking Up Items
-Use these commands in the <#1175771830510948442> channel (NOT in chorder-bot):
-- `!lookup <item names>` — Example: `!lookup golden axe`
-- `!lookuplang <language code> <item names>` — Example: `!lookuplang fr bloupe`
-
-**Note:** Lookup commands are case-sensitive. For easier ordering, dropping, and villager/recipe commands, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to select variations and copy the command directly.
-
-### Customizing Item Variations
-For easier lookup and item customization, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to select variations directly and copy the generated command.
-
-Alternatively, to do it manually, use these commands in the lookup channel <#1175771830510948442>, not the order channel:
-1. `!lookup <clothing name>` - get the short HEX item ID. Example: `!lookup dreamy sweater`
-2. `!item <HEX>` - see the color/design variant numbers. Example: `!item 14DA`
-3. `!customize <HEX> <variant number>` - generate the long customized code. Example: `!customize 14DA 1`
-4. Copy the long code, then order it in <#1175672083183829075> with `!order <long code>`.
-
-### Ordering DIY Recipes
-1. Use `!recipe <recipe name>` to get the recipe code. Example: `!recipe golden axe`
-2. Or use `!recipelang <language code> <recipe name>` for other languages. Example: `!recipelang fr coiffe`
-3. Copy the long item code (ending in `16A2`) and include it in your order. Example: `!order 00F0000016A2`
-4. Multiple recipes: `!order 00F0000016A2 02A000016A2`
-
-*For an easier way to order DIY recipes, use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to select recipes, variations, and copy the command directly.*
 
 ## How to Order Villagers
 
@@ -472,33 +381,7 @@ You can also order ONLY a villager: `!order villager:tig06`
 
 Click "Done!" in the rules channel after understanding to gain orderbot access.
 
-## Dropping Items with !drop
-You must be on the island before using drop commands.
 
-**By item code:** `!drop <item code>` — e.g. `!drop 2656`. Use `!lookup <item>` to
-find the item code. Up to 9 items per line: `!drop 2656 0EE8 074E`.
-
-**By name:** `!drop <item name>` — e.g. `!drop Pagoda` or `!drop Pagoda, Golden Axe, Harp`.
-
-**Stacks:** Add a prefix before the item code:
-| Stack Size | Prefix | Example |
-|------------|--------|---------|
-| 10 | `090000` | `!drop 0900002656` |
-| 30 | `1D0000` | `!drop 1D000009C6` |
-| 50 | `310000` | `!drop 3100002656` |
-
-## Getting DIY Recipes
-1. `!recipe <item>` — get the recipe order code (e.g. `!recipe Golden Axe` → `297000016A2`).
-2. `!drop <code>` — drop the recipe card. Up to 9 per line.
-
-## Customizing Items
-1. `!lookup <item>` — find the item code.
-2. `!item <item code>` — see color/variant options (e.g. `!item 0EE8` → `0=Green, 1=Brown, 2=White, 3=Black`).
-3. `!customize <item code> <code>` — generate customized code (e.g. `!customize 0EE8 2` → `0000000200000EE8`).
-4. `!drop <customized code>` — drop the item.
-
-For items with both color AND design options, add both decimal codes together.
-Example: mug with Pink (5) + Square Logo (32) = 37 → `!customize 074E 37`.
 
 ## Injecting Villagers
 **Important: Do NOT be on the island when injecting. Fly in after confirmation.**

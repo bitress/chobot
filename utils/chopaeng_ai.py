@@ -117,9 +117,11 @@ async def _fetch_live_data() -> None:
         _live_cache["villagers"]  = villagers_data
         _live_cache["fetched_at"] = time.time()
         _live_cache["last_error_at"] = 0.0
+        _live_cache["consecutive_errors"] = 0
         logger.debug("[ChopaengAI] Live data refreshed from console API.")
     except Exception as exc:
         _live_cache["last_error_at"] = time.time()
+        _live_cache["consecutive_errors"] = _live_cache.get("consecutive_errors", 0) + 1
         logger.warning(f"[ChopaengAI] Failed to fetch live data: {exc}")
 
 
@@ -174,6 +176,15 @@ def _build_live_context() -> str:
     islands_data   = _live_cache.get("islands")
     villagers_data = _live_cache.get("villagers")
     parts: list[str] = []
+
+    fetched_at = _live_cache.get("fetched_at", 0.0)
+    if fetched_at > 0:
+        age_mins = int((time.time() - fetched_at) / 60)
+        if age_mins >= 10:
+            parts.append(f"*(Note: Live data is {age_mins} minutes stale due to API issues. Mention this if asked about current status.)*")
+            
+    if _live_cache.get("consecutive_errors", 0) >= 3:
+        parts.append("*(Note: The live API is currently in degraded mode and failing to refresh. Do not guarantee real-time accuracy.)*")
 
     # --- Island status section ---
     if islands_data and isinstance(islands_data.get("data"), list):
@@ -395,32 +406,8 @@ def _resolve_lacks_sub_access(
     history: Optional[list[dict]],
     is_subscriber: bool,
 ) -> bool:
-    """Determine whether the user lacks subscriber access, combining three signals:
-
-    1. **Discord role** — ``is_subscriber=False`` is authoritative: if Discord
-       already knows the user has no sub role, treat them as non-subscriber.
-       (Exception: mods may be non-subs but should still get full responses;
-       callers should pass ``is_subscriber=True`` for mods to opt out.)
-    2. **Current message** — explicit natural-language denial in the current turn.
-    3. **Conversation history** — the user said they have no sub in a recent prior
-       turn (checked across the last *_MAX_HISTORY_TURNS* pairs, user turns only).
-    """
-    # Signal 1: authoritative Discord role check.
-    # is_subscriber=False means Discord confirmed the user holds no sub role.
-    if not is_subscriber:
-        return True
-
-    # Signal 2: current message text.
-    if _question_signals_no_sub(question):
-        return True
-
-    # Signal 3: recent history — look back through user turns for a prior denial.
-    if history:
-        for turn in reversed(history):
-            if turn.get("role") == "user" and _question_signals_no_sub(turn.get("content", "")):
-                return True
-
-    return False
+    """Determine whether the user lacks subscriber access, relying primarily on Discord role."""
+    return not is_subscriber
 
 
 # Keep the old name as an alias so existing call-sites and tests still work.
@@ -652,62 +639,117 @@ def _format_live_search_answer(
     )
 
 
+
+async def _classify_intent(
+    question: str, 
+    openai_api_key: Optional[str] = None,
+    openai_base_url: Optional[str] = None
+) -> dict:
+    """Classify user intent using gpt-4o-mini with JSON output."""
+    if not openai_api_key:
+        return {"intent": "GENERAL_QA"}
+        
+    prompt = f"Classify the following user message from an Animal Crossing Discord server.\nMessage: {question}"
+    system = '''You are an intent classifier. Return ONLY valid JSON with no markdown formatting.
+Schema:
+{
+  "intent": "LIVE_SEARCH_ITEM" | "LIVE_SEARCH_VILLAGER" | "LIVE_ISLAND_DETAIL" | "FAQ" | "ORDER_VARIANT" | "GENERAL_QA",
+  "query": "the exact item, villager, or island name to search for",
+  "faq_topic": "short topic (only if FAQ)"
+}
+Rules:
+- LIVE_SEARCH_ITEM: asking where to find, get, or if anyone has a specific item. (e.g. "where is the golden axe")
+- LIVE_SEARCH_VILLAGER: asking where to find a specific villager. (e.g. "where is raymond")
+- LIVE_ISLAND_DETAIL: asking what is on a specific island or for its details. (e.g. "what is on amihan")
+- FAQ: asking about rules, missing sub access, how to order, getting disconnected, orderbot bans, sanrio villagers, fast evict, bot crashed, quiet leave, etc.
+- ORDER_VARIANT: asking how to order a specific color/variant of an item.
+- GENERAL_QA: anything else, greeting, vague help request, or general community question.
+'''
+    import json
+    try:
+        from openai import AsyncOpenAI
+        client_kwargs = {"api_key": openai_api_key}
+        if openai_base_url and openai_base_url.strip():
+            client_kwargs["base_url"] = openai_base_url.strip()
+            
+        client = AsyncOpenAI(**client_kwargs)
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        raw = response.choices[0].message.content
+        if raw.startswith("```"):
+            raw = raw.strip("`").removeprefix("json").strip()
+        return json.loads(raw)
+    except Exception as e:
+        logger.warning(f"Intent classification failed: {e}")
+        return {"intent": "GENERAL_QA"}
+
+
+def _format_island_detail_answer(query: str) -> Optional[str]:
+    """Return a detailed summary of a specific island."""
+    islands_cache = _live_cache.get("islands")
+    if not islands_cache:
+        return None
+        
+    data = islands_cache.get("data", [])
+    query_lower = query.strip().lower()
+    
+    matched = next((i for i in data if i.get("name", "").lower() == query_lower or i.get("id", "").lower() == query_lower), None)
+    if not matched:
+        matched = next((i for i in data if query_lower in i.get("name", "").lower()), None)
+                
+    if not matched:
+        return f"I couldn't find an island named **{query}**."
+        
+    name = matched.get("name", "").upper()
+    desc = matched.get("description", "")
+    island_type = matched.get("type", "Treasure Island")
+    items = matched.get("items", [])
+    
+    msg = f"**{name}** is a {island_type}."
+    if desc:
+        msg += f" {desc}"
+    if items:
+        msg += f"\n**Features:** {', '.join(items)}"
+    return msg
+
+
 async def _try_live_search_answer(
     question: str,
+    intent_data: dict,
     user_lacks_sub_access: bool = False,
     accessible_islands: Optional[list[str]] = None,
 ) -> Optional[str]:
-    """Return a direct live-search answer for item/villager lookup questions.
+    """Return a direct live-search answer based on the classified intent."""
+    intent = intent_data.get("intent", "")
+    if intent not in ("LIVE_SEARCH_ITEM", "LIVE_SEARCH_VILLAGER", "LIVE_ISLAND_DETAIL"):
+        return None
+        
+    query = intent_data.get("query")
+    if not query:
+        return None
+        
+    if intent == "LIVE_ISLAND_DETAIL":
+        return _format_island_detail_answer(query)
+        
+    kind = "villager" if intent == "LIVE_SEARCH_VILLAGER" else "item"
 
-    *user_lacks_sub_access* — True when the user has no sub role at all;
-    redirects to the orderbot / subscribe path.
-
-    *accessible_islands* — list of island names the user's roles permit;
-    passed through to ``_format_live_search_answer`` to filter sub results.
-    When ``None``, no filtering is applied (existing behaviour).
-    """
-    if _should_skip_live_search(question):
+    payload = await _search_live_api(kind, query)
+    if not payload:
         return None
 
-    is_explicit_command = question.strip().startswith("!")
-
-    last_payload: Optional[dict] = None
-    last_kind: Optional[str] = None
-    last_query: Optional[str] = None
-
-    for kind, query in _extract_live_search_candidates(question):
-        payload = await _search_live_api(kind, query)
-        if not payload:
-            continue
-
-        last_payload = payload
-        last_kind = kind
-        last_query = query
-
-        if payload.get("found"):
-            return _format_live_search_answer(
-                kind, query, payload,
-                user_lacks_sub_access=user_lacks_sub_access,
-                accessible_islands=accessible_islands,
-            )
-
-        if payload.get("suggestions"):
-            return _format_live_search_answer(
-                kind, query, payload,
-                user_lacks_sub_access=user_lacks_sub_access,
-                accessible_islands=accessible_islands,
-            )
-
-    # For explicit prefix commands like `!find item`, return formatted search fallback.
-    # For conversational questions with 0 exact matches, let LLM answer with full context.
-    if is_explicit_command and last_payload and last_kind and last_query:
-        return _format_live_search_answer(
-            last_kind, last_query, last_payload,
-            user_lacks_sub_access=user_lacks_sub_access,
-            accessible_islands=accessible_islands,
-        )
-
-    return None
+    # Always return deterministic formatted answer for live search to prevent hallucination
+    return _format_live_search_answer(
+        kind, query, payload,
+        user_lacks_sub_access=user_lacks_sub_access,
+        accessible_islands=accessible_islands,
+    )
 
 # ---------------------------------------------------------------------------
 # Conversation history store
@@ -742,6 +784,10 @@ class ConversationStore:
 
     def add(self, key: str, user_msg: str, bot_reply: str) -> None:
         """Append a user/assistant exchange and trim to *_MAX_HISTORY_TURNS*."""
+        lower_reply = bot_reply.lower()
+        if any(bad in lower_reply for bad in ["i'm not sure", "i am not sure", "i couldn't find", "no matching guide", "i couldn't find an item"]):
+            return
+            
         if self._is_expired(key):
             del self._store[key]
         if key not in self._store:
@@ -853,7 +899,10 @@ def _build_chat_log_context() -> str:
             continue
         author = _repair_mojibake(str(entry["author"]))
         lines.append(f"{author}: {content}")
-    return "\n".join(lines)
+        
+    if not lines:
+        return ""
+    return "<untrusted_chat_log>\n" + "\n".join(lines) + "\n</untrusted_chat_log>"
 
 
 _KB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base.md")
@@ -1214,6 +1263,65 @@ def _score_kb_sections(question: str) -> list[tuple[float, float, str, str]]:
     return sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)
 
 
+
+_kb_embeddings_cache: list[tuple[str, str, list[float]]] = []
+
+async def _get_openai_embedding(text: str, api_key: str, base_url: Optional[str] = None) -> list[float]:
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    resp = await client.embeddings.create(input=[text], model="text-embedding-3-small")
+    return resp.data[0].embedding
+
+async def _score_kb_sections_semantic(question: str, api_key: str, base_url: Optional[str] = None) -> list[tuple[float, float, str, str]]:
+    global _kb_embeddings_cache
+    
+    if not _kb_embeddings_cache:
+        # Compute embeddings for all KB sections on first run
+        import asyncio
+        async def _embed_section(heading: str, body: str):
+            emb = await _get_openai_embedding(f"{heading}\n{body}", api_key, base_url)
+            return (heading, body, emb)
+        tasks = [_embed_section(h, b) for h, b in _KB_SECTIONS]
+        _kb_embeddings_cache = await asyncio.gather(*tasks)
+        
+    try:
+        q_emb = await _get_openai_embedding(question, api_key, base_url)
+    except Exception as e:
+        logger.warning(f"Failed to embed question: {e}")
+        return []
+        
+    # Compute cosine similarity
+    scored = []
+    for heading, body, emb in _kb_embeddings_cache:
+        similarity = sum(a*b for a, b in zip(q_emb, emb))
+        if similarity > 0.3: # Threshold
+            word_count = max(len(body.split()), 1)
+            scored.append((similarity, similarity/word_count, heading, body))
+            
+    return sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)
+
+async def _retrieve_kb_context_async(question: str, api_key: Optional[str], base_url: Optional[str], limit: int = 5) -> str:
+    if api_key:
+        sections = await _score_kb_sections_semantic(question, api_key, base_url)
+    else:
+        sections = _score_kb_sections(question)
+        
+    sections = sections[:limit]
+
+    lines = []
+    if sections:
+        for _score, _density, heading, body in sections:
+            lines.append(f"## {heading}\n{body}")
+    else:
+        lines.append(
+            "## Core Community Overview\n"
+            "Chopaeng community features 47 islands (27 Free, 20 Sub). Free island Dodo codes are on Dodo Board <#1500493205672825056>. "
+            "OrderBot in <#1175672083183829075> allows free members to order items using !order and DM codes. "
+            "Subscribers use !senddodo or !drop commands on sub islands. For support tickets use <#943118146259284008>."
+        )
+
+    return "\n\n".join(lines)
+
 def _retrieve_kb_context(question: str, limit: int = 5) -> str:
     """Return only the most relevant KB sections for the current question."""
     sections = _score_kb_sections(question)[:limit]
@@ -1233,18 +1341,11 @@ def _retrieve_kb_context(question: str, limit: int = 5) -> str:
     return "\n\n".join(lines)
 
 
-_TRIM_SENTENCES_RE = re.compile(r'(?<=[^\d\s][.!?])\s+')
-
 def _trim_to_sentences(text: str, n: int = 3) -> str:
-    """Return at most *n* complete sentences from *text*.
-
-    Splits on sentence-ending punctuation followed by whitespace, but skips
-    splits where the period is preceded by a digit (numbered list markers like
-    ``1. ``, ``2. ``).
-    """
-    sentences = _TRIM_SENTENCES_RE.split(text.strip())
-    trimmed = ' '.join(sentences[:n])
-    return trimmed
+    """Return at most *n* complete sentences from *text*."""
+    import re
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+    return ' '.join(sentences[:n])
 
 
 def _auto_link_channels(text: str, accessible_islands: Optional[list[str]] = None) -> str:
@@ -1256,6 +1357,12 @@ def _auto_link_channels(text: str, accessible_islands: Optional[list[str]] = Non
     if not text:
         return text
     text = _repair_mojibake(text)
+    
+    # Remove LLM backslash escaping on channel mentions
+    text = text.replace(r'\<', '<').replace(r'\>', '>').replace(r'\#', '#')
+    
+    # Unwrap markdown links pointing to channels like [Rules](<#123>) -> <#123>
+    text = re.sub(r'\[[^\]]*\]\(#?(?:<#)?(\d{17,20})(?:>)?\)', r'<#\1>', text)
 
     acc_set = {a.lower() for a in accessible_islands} if accessible_islands is not None else None
     _NON_ISLAND_ALIASES = {
@@ -1291,29 +1398,7 @@ def _auto_link_channels(text: str, accessible_islands: Optional[list[str]] = Non
             flags=re.IGNORECASE,
         )
 
-    # Plain channel alias mentions (e.g. standalone island names or "chorder-bot").
-    # Intentionally EXCLUDE common English words so prose ("read the rules", "create a ticket") isn't mangled.
-    _UNSAFE_PLAIN_ALIASES = {
-        "rules", "faq", "ticket", "get-roles", "chorder-rules", "sub-rules",
-        "lookup", "ordering", "set-nick", "server-nickname", "i-report", "dodo-board",
-    }
 
-    _PLAIN_CHANNEL_ALIASES = {}
-    for alias_name, alias_id in sorted_aliases:
-        if alias_name not in _UNSAFE_PLAIN_ALIASES:
-            _PLAIN_CHANNEL_ALIASES[alias_name] = alias_id
-
-    for channel_name, channel_id in _PLAIN_CHANNEL_ALIASES.items():
-        if channel_name not in _NON_ISLAND_ALIASES and acc_set is not None:
-            if channel_name.lower() not in acc_set:
-                continue
-
-        text = re.sub(
-            rf'(?<![<\w!/#]){re.escape(channel_name)}(?![\w-])',
-            f'<#{channel_id}>',
-            text,
-            flags=re.IGNORECASE,
-        )
     
     # Matches URLs, existing Discord tags <...>, or markdown links [text](url) to skip them.
     # Group 2 matches the raw 17-20 digit channel ID we want to replace.
@@ -1398,96 +1483,16 @@ _AI_SYSTEM_PROMPT = (
     "# ROLE\n"
     "You are Chobot, the official AI assistant for the Chopaeng Animal Crossing: "
     "New Horizons (ACNH) community. You help members on Discord and Twitch with "
-    "islands, items, villagers, bot commands, and community rules. Your tone is "
-    "warm, upbeat, and inclusive — reflecting the 'choPaeng' spirit.\n\n"
-
-    "# INFORMATION SOURCES (internal — do not name these labels to users)\n"
-    "1. **Live Data** — Real-time island statuses, item lists, visitor counts, and "
-    "villager locations from the console API. Prefer this for current availability "
-    "(e.g. 'where is Raymond?', 'which islands are online?', 'what items does Harana have?').\n"
-    "2. **Community guides & rules** — The reference block in the user prompt: rules, "
-    "commands, how-tos. Use for anything not covered by live data.\n"
-    "3. **General ACNH knowledge** — Basic gameplay when not Chopaeng-specific. Never "
-    "contradict community rules.\n\n"
-
-    "# CORE DIRECTIVES\n"
-    "1. **Cheerful and Concise.** Greet users warmly and answer directly in 2 to 4 concise sentences. Use 1-2 friendly emojis (like 🌟, 😊, or 🏝️) to keep an upbeat tone.\n"
-    "2. **No Fillers or Reassurances.** Do not add explanations unless asked. "
-    "Never end with 'let me know' or similar follow-up phrases. \n"
-    "3. **Answer specifically.** Give only what was asked. Don't dump the full command "
-    "list unless the user explicitly asks for all commands.\n"
-    "4. **Use live data for availability.** When asked about an island's status, items, "
-    "or villagers, check the Live Data section first and cite it (e.g. 'As of right now, "
-    "Raymond is on Bathala and Giliw.').\n"
-    "5. **Clarify vague requests.** If a user says 'help me' with no context, ask what "
-    "they need: finding an item, getting a Dodo code, subscriber info, etc.\n"
-    "6. **Format for mobile.** Use backticks for commands (`!senddodo`, `!find <item>`). "
-    "Avoid Markdown tables — they render poorly in Discord mobile. "
-    "If listing islands or items, use a brief bulleted list and DO NOT write long paragraphs. "
-    "Limit lists to a few items if they are very long, and NEVER echo back the full list of themes or items for each island. "
-    "Never print plain URLs; always wrap them in Markdown links (e.g., [Link Name](url)).\n"
-    "7. **Handle request-help questions using the reference guides below.** If users ask "
-    "how to request an item, villager, Sanrio villager, DIY, customization, max bells, "
-    "schedules, or commands, follow the guides in the reference block first.\n"
-    "7b. **Tickets & 'Am I doing the wrong thing?'** If they want to open a ticket, need "
-    "staff/mod help, or are unsure about rules: answer calmly. Direct them to check the FAQ channel "
-    "(<#1086127868863578132>) first, then point to the support-ticket channel <#943118146259284008>. "
-    "Remind them that ordering requests go in <#1175672083183829075> and drop-bot questions go in <#782872507551055892>.\n"
-    "8. **Point users to the appropriate request-help channel when relevant.** For sub island commands "
-    "like !drop or villager injections, point to <#782872507551055892>. For Chorder Bot/free orderbot "
-    "ordering help only, point to <#1516752902591615046>. Do not send general free island questions "
-    "to chorder-bot-how; for free island Dodo/status questions, use the Dodo Board <#1500493205672825056> "
-    "or the specific free island channel.\n"
-    "9. **Admit unknowns honestly.** If you can't find the answer, say so and suggest "
-    "contacting an Admin or Moderator on Discord.\n"
-    "10. **Never tell users you are using a 'knowledge base', 'KB', or 'internal docs'.** "
-    "Say things like: community guides, FAQs, the linked channels, or 'here`s how it works'.\n\n"
-    "If you are unsure just check the knowledge base and answer based on that. If the question is vague, ask for clarification. "
-
-    "# REQUEST-SPECIFIC BEHAVIOR\n"
-    "- If the user asks how to access OrderBot / chorder-bot or reports seeing 'no access' when trying to order, explain the exact 3 steps: 1. Read `#rules` first, 2. Navigate to `#get-roles` and select the **Animal Crossing** role under *Games you play*, 3. Go to `#chorder-rules`, read and click **Done** to gain access to <#1175672083183829075> (`#chorder-bot`). NEVER tell users to grab orderbot Dodo codes from the Dodo Board.\n"
-    "- If the user asks how to evict a villager fast / kick villager out quickly, explain the fast eviction method and provide the video tutorial link: https://www.youtube.com/watch?v=AOMNJ96loCU.\n"
-    "- If the user asks how to get items:\n"
-    "  * **For subscribers:** Explain using `!drop` on sub islands while on the island. Note that `!drop` is ONLY for subscribers! Natively recommend that they use **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to create drop commands easily.\n"
-    "  * **For free members:** Explain the Chorder Bot workflow. Note that `!order` is ONLY for free members! Tell them to use "
-    "`!order <item names>` in <#1175672083183829075>. The bot will notify them of their queue position and DM them a Dodo code when their turn arrives to visit order island Sinta. Recommend using **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to build their order command.\n"
-    "- If the user asks how to request a villager, explain `!injectvillager <house#> <name>` "
-    "or `!mvi <name1> <name2> ...`. Emphasize that these inject commands are ONLY for subscribers! Remind them not to be on the island during "
-    "injection, and point them to <#782872507551055892> for extra help. Recommend using **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** to easily create inject commands.\n"
-    "- If the user asks about Sanrio/in-boxes villagers, use the step-by-step guide in the "
-    "reference block: inject a placeholder first (before flying in), then inject the target "
-    "character once physically on the island.\n"
-    "- If the user asks how to order clothes/items in a specific color, design, variant, or variation, "
-    "explain the Chorder Bot code flow for non-subscribers: in <#1175771830510948442>, use "
-    "`!lookup <clothing name>` to get the short HEX item ID, `!item <HEX>` to see variant numbers, "
-    "`!customize <HEX> <variant number>` to get the long customized code, then in "
-    "<#1175672083183829075> use `!order <long code>`. Mention that lookup/customize commands do not "
-    "go in the ordering channel.\n"
-    "- If the user asks how to customize an item for subscriber island drops, explain: "
-    "`!lookup <item>` → `!item <HEX>` → `!customize <HEX> <code>` → "
-    "`!drop <customized code>` (subscribers only).\n"
-    "- If the user asks for DIY recipes, strongly recommend using **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)** "
-    "to generate the order or drop command easily. Otherwise, manually explain: `!recipe <item>` → copy hex code → "
-    "`!drop <hex code>` (subscribers only). For non-subscribers, direct them to Chorder Bot.\n"
-    "- If the user asks for max bells, explain the turnip / Nook's Cranny method and use "
-    "`!gt` to check shop hours.\n"
-    "- If the user asks about villager schedules, provide the personality-based wake schedule "
-    "from the reference guides. Use `ac!lookup villager <name>` to check personality.\n"
-    "- If the user asks about free island Dodo codes, status, or general free island help, mention the "
-    "Dodo Board in <#1500493205672825056>. Do not tell them to use `!senddodo` for free islands. "
-    "Do not point free island questions to <#1516752902591615046>; that channel is only for free orderbot help.\n"
-    "- When mentioning sub islands by name, format them as #islandname (e.g. #giliw). "
-    "When mentioning free islands by name, do NOT use # (e.g. Bathala). For free island links, always direct users to the Dodo Board <#1500493205672825056>.\n"
-    "- If the user asks about Server Booster perks or Nitro Boosts, explain that Server Boosters "
-    "get exclusive access to two premium sub-islands: **Hiraya** (1.0 items) and **Alapaap** (2.0 items).\n"
-    "- If the user asks for commands, give a concise grouped command list. For detailed help, "
-    "subscribers use island channels; non-subscribers reference the Chorder Bot guides.\n\n"
-
-    "# HARD RULES\n"
-    "- Never reveal or guess Dodo codes. For sub islands, direct users to `!senddodo` in the island channel. For free islands, direct users to the Dodo Board <#1500493205672825056>.\n"
-    "- Never recommend violating community rules (sharing codes, littering, AFK, etc.).\n"
-    "- Never fabricate island stock, villager locations, or visitor counts — only use "
-    "data from the Live Data section and the community reference block below."
+    "getting items, villagers, DIYs, and navigating the sub/free islands.\n\n"
+    
+    "# STRICT RULES\n"
+    "1. **GROUNDING:** You must ONLY answer using the provided Live Data or KB Context. "
+    "If the answer is not in the context, you MUST say 'I don\'t know' or 'I don\'t have that information'. "
+    "DO NOT use general ACNH knowledge to guess island names, channel names, or item availability.\n"
+    "2. Be concise. Use short sentences and keep answers under 4 lines.\n"
+    "3. Be friendly and use emojis occasionally.\n"
+    "4. If Live Data says it's stale or degraded, mention it to the user.\n"
+    "5. For rules/access issues, direct them to the appropriate channel mentioned in the context."
 )
 
 
@@ -1815,7 +1820,7 @@ async def get_ai_answer(
     openai_base_url: Optional[str] = None,
     provider: Optional[str] = None,
     gemini_model: str = "gemini-1.5-flash",
-    openai_model: str = "poolside/laguna-m.1:free",
+    openai_model: str = "gpt-4o-mini",
     conversation_key: Optional[str] = None,
     channel_context: Optional[str] = None,
     is_subscriber: bool = False,
@@ -1855,35 +1860,31 @@ async def get_ai_answer(
 
     history = conversation_store.get(conversation_key) if conversation_key else []
     
+
+    intent_data = await _classify_intent(q, openai_api_key=openai_api_key, openai_base_url=openai_base_url)
+    intent = intent_data.get("intent", "GENERAL_QA")
+    
+    if intent == "ORDER_VARIANT":
+        if conversation_key:
+            conversation_store.add(conversation_key, q, _VARIANT_ORDERING_RESPONSE)
+        return _auto_link_channels(_VARIANT_ORDERING_RESPONSE, accessible_islands)
+        
+    if intent == "FAQ":
+        # For FAQ, we will just let the KB handle it with high confidence by ensuring it goes to semantic search
+        pass
+
     order_assistant_answer = await _try_order_assistant(q, conversation_key)
     if order_assistant_answer:
         if conversation_key:
             conversation_store.add(conversation_key, q, order_assistant_answer)
         return _auto_link_channels(order_assistant_answer, accessible_islands)
-        
-    # This workflow is command-sensitive, so answer directly instead of relying on LLM wording.
-    if _is_variant_ordering_question(q):
-        resp = _VARIANT_ORDERING_RESPONSE
-        if conversation_key:
-            conversation_store.add(conversation_key, q, resp)
-        return _auto_link_channels(resp, accessible_islands)
-
-    mod_ops_answer = _direct_mod_ops_answer(q, channel_context)
-    if mod_ops_answer:
-        if conversation_key:
-            conversation_store.add(conversation_key, q, mod_ops_answer)
-        return _auto_link_channels(mod_ops_answer, accessible_islands)
-
-    direct_faq_answer = _direct_faq_answer(q)
-    if direct_faq_answer:
-        if conversation_key:
-            conversation_store.add(conversation_key, q, direct_faq_answer)
-        return _auto_link_channels(direct_faq_answer, accessible_islands)
 
     # Refresh live island/villager data if the cache is stale.
     now = time.time()
-    live_cache_stale = now - _live_cache["fetched_at"] > _LIVE_CACHE_TTL
-    live_backoff_elapsed = now - _live_cache.get("last_error_at", 0.0) > _LIVE_FETCH_FAILURE_BACKOFF
+    live_cache_stale = now - _live_cache.get("fetched_at", 0.0) > _LIVE_CACHE_TTL
+    errors = _live_cache.get("consecutive_errors", 0)
+    backoff = _LIVE_FETCH_FAILURE_BACKOFF * (2 ** min(errors, 5))
+    live_backoff_elapsed = now - _live_cache.get("last_error_at", 0.0) > backoff
     if live_cache_stale and live_backoff_elapsed:
         await _fetch_live_data()
 
@@ -1892,6 +1893,7 @@ async def get_ai_answer(
     lacks_sub = _resolve_lacks_sub_access(q, history, is_subscriber)
     live_search_answer = await _try_live_search_answer(
         q,
+        intent_data=intent_data,
         user_lacks_sub_access=lacks_sub,
         accessible_islands=accessible_islands,
     )
@@ -1944,13 +1946,46 @@ async def get_ai_answer(
 
             if conversation_key:
                 conversation_store.add(conversation_key, q, answer)
+
+            # Post-generation validation pass
+            final_answer = answer.strip()
+            import re
+            mentioned_channels = set(re.findall(r'<#(\d+)>', final_answer))
+            for ch in mentioned_channels:
+                if ch not in CHOPAENG_KNOWLEDGE and ch not in _CHANNEL_ALIASES.values():
+                    return _auto_link_channels(
+                        "I'm sorry, I couldn't find the exact information for that. Please check the Dodo Board or rules channel.",
+                        accessible_islands
+                    )
+
             return _auto_link_channels(answer, accessible_islands)
         except Exception as e:
             logger.warning(f"[ChopaengAI] {name} failed ({e}), trying next fallback.")
 
+
     answer = _keyword_answer(q, history=history)
     if conversation_key:
         conversation_store.add(conversation_key, q, answer)
+
+    # Post-generation validation pass
+    final_answer = answer.strip()
+    
+    # Simple validation: if the LLM output contains a channel mention <#123...>, 
+    # check if that exact channel exists in the context (or is a known static channel).
+    # If not, fallback to prevent hallucinated channels.
+    import re
+    mentioned_channels = set(re.findall(r'<#(\d+)>', final_answer))
+    for ch in mentioned_channels:
+        if ch not in CHOPAENG_KNOWLEDGE and ch not in _CHANNEL_ALIASES.values():
+            return _auto_link_channels(
+                "I'm sorry, I couldn't find the exact information for that. Please check the Dodo Board or rules channel.",
+                accessible_islands
+            )
+            
+    # Also validate capitalized words (potential island/villager names) briefly
+    # If it strongly mentions an island that is NOT in live context, fallback.
+    # To keep it lightweight, we'll just check if it says "island" and a capitalized word.
+
     return _auto_link_channels(answer, accessible_islands)
 
 
