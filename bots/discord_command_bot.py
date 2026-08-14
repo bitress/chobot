@@ -4278,6 +4278,139 @@ class DiscordCommandCog(commands.Cog):
             elapsed,
         )
 
+    @commands.hybrid_command(name="revive_all_offline", description="Restart all offline islands in a fleet")
+    @app_commands.describe(
+        fleet="Island Type",
+    )
+    @app_commands.choices(
+        fleet=[
+            app_commands.Choice(name="Free/Order Island", value="1"),
+            app_commands.Choice(name="Sub Island", value="2"),
+        ]
+    )
+    @is_admin_or_senior_mod()
+    async def revive_all_offline(self, ctx, fleet: str):
+        """Restart all offline islands in the selected fleet (Admin or Senior Mod only)."""
+        fleet_label = {
+            "1": "Free/Order Island",
+            "2": "Sub Island",
+        }.get(str(fleet), str(fleet))
+
+        interaction = getattr(ctx, "interaction", None)
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
+            responder = interaction.followup.send
+        else:
+            responder = ctx.reply
+
+        if str(fleet) == "2":
+            candidates = list(self.sub_island_lookup.keys()) or list(getattr(Config, "SUB_ISLANDS", []))
+        else:
+            candidates = list(
+                set(self.free_island_lookup.keys())
+                | set(self.order_island_lookup.keys())
+            )
+            if not candidates:
+                candidates = list(getattr(Config, "FREE_ISLANDS", [])) + list(
+                    getattr(Config, "ORDER_BOT_ISLANDS", [])
+                )
+
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        
+        status_msg = await responder(
+            embed=discord.Embed(
+                title="Checking Islands",
+                description=f"Checking status for {len(candidates)} {fleet_label}s...",
+                color=discord.Color.blurple(),
+            )
+        )
+
+        offline_islands = []
+        for cand in candidates:
+            is_online = await self._get_island_online_status(guild, cand, fleet) if guild else None
+            if is_online is False:
+                offline_islands.append(cand)
+                
+        if not offline_islands:
+            await status_msg.edit(
+                embed=discord.Embed(
+                    title="No Offline Islands",
+                    description=f"All {len(candidates)} {fleet_label}s appear to be online or their status cannot be determined.",
+                    color=discord.Color.green(),
+                )
+            )
+            return
+
+        confirm_view = RebootConfirmView(author_id=ctx.author.id)
+        await status_msg.edit(
+            embed=discord.Embed(
+                title="Confirm Bulk Reboot",
+                description=(
+                    f"Found **{len(offline_islands)}** offline {fleet_label}(s):\n"
+                    f"{', '.join(offline_islands)}\n\n"
+                    "Rebooting will restart these islands sequentially. Continue?"
+                ),
+                color=discord.Color.orange(),
+            ),
+            view=confirm_view,
+        )
+
+        await confirm_view.wait()
+
+        if confirm_view.result is not True:
+            embed = discord.Embed(
+                title="Reboot Cancelled" if confirm_view.result is False else "⌛ Confirmation Timed Out",
+                description="No changes were made.",
+                color=discord.Color.greyple(),
+            )
+            if confirm_view.interaction is not None:
+                await confirm_view.interaction.response.edit_message(embed=embed, view=None)
+            else:
+                await status_msg.edit(embed=embed, view=None)
+            return
+
+        if confirm_view.interaction is not None:
+            await confirm_view.interaction.response.edit_message(view=None)
+
+        success = []
+        failed = []
+
+        await status_msg.edit(
+            embed=discord.Embed(
+                title="Bulk Reboot in Progress",
+                description=f"Rebooting {len(offline_islands)} {fleet_label}(s)... This will take a while.",
+                color=discord.Color.blurple(),
+            )
+        )
+
+        for island in offline_islands:
+            async with self._revive_lock:
+                try:
+                    result = await asyncio.to_thread(
+                        subprocess.run,
+                        [ISLAND_REVIVE_BATCH_PATH, str(fleet), island],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        shell=True,
+                    )
+                    if result.returncode == 0:
+                        success.append(island)
+                    else:
+                        failed.append(island)
+                except subprocess.TimeoutExpired:
+                    failed.append(island)
+
+        embed = discord.Embed(
+            title="Bulk Reboot Complete",
+            color=discord.Color.green() if not failed else discord.Color.orange(),
+        )
+        embed.add_field(name="Successful", value=", ".join(success) if success else "None", inline=False)
+        if failed:
+            embed.add_field(name="Failed/Timed Out", value=", ".join(failed), inline=False)
+            
+        await status_msg.edit(embed=embed)
+
     @commands.hybrid_command(name="refresh")
     @is_admin_or_senior_mod()
     async def refresh(self, ctx):

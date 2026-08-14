@@ -1358,11 +1358,9 @@ def _auto_link_channels(text: str, accessible_islands: Optional[list[str]] = Non
         return text
     text = _repair_mojibake(text)
     
-    # Remove LLM backslash escaping on channel mentions
-    text = text.replace(r'\<', '<').replace(r'\>', '>').replace(r'\#', '#')
-    
-    # Unwrap markdown links pointing to channels like [Rules](<#123>) -> <#123>
-    text = re.sub(r'\[[^\]]*\]\(#?(?:<#)?(\d{17,20})(?:>)?\)', r'<#\1>', text)
+    # Remove HTML entities and LLM backslash escaping on channel mentions
+    text = text.replace("&lt;", "<").replace("&gt;", ">")
+    text = re.sub(r'\\+([<#>])', r'\1', text)
 
     acc_set = {a.lower() for a in accessible_islands} if accessible_islands is not None else None
     _NON_ISLAND_ALIASES = {
@@ -1398,7 +1396,11 @@ def _auto_link_channels(text: str, accessible_islands: Optional[list[str]] = Non
             flags=re.IGNORECASE,
         )
 
-
+    # Unwrap markdown links pointing to channels like [Rules](<#123>) -> <#123>
+    text = re.sub(r'\[[^\]]*\]\(#?(?:<#)?(\d{17,20})(?:>)?\)', r'<#\1>', text)
+    
+    # Strip markdown links that ONLY contain a channel mention, regardless of URL e.g., [<#123>](https://...) -> <#123>
+    text = re.sub(r'\[\s*(<#\d{17,20}>)\s*\]\([^)]+\)', r'\1', text)
     
     # Matches URLs, existing Discord tags <...>, or markdown links [text](url) to skip them.
     # Group 2 matches the raw 17-20 digit channel ID we want to replace.
@@ -1492,7 +1494,9 @@ _AI_SYSTEM_PROMPT = (
     "2. Be concise. Use short sentences and keep answers under 4 lines.\n"
     "3. Be friendly and use emojis occasionally.\n"
     "4. If Live Data says it's stale or degraded, mention it to the user.\n"
-    "5. For rules/access issues, direct them to the appropriate channel mentioned in the context."
+    "5. For rules/access issues, direct them to the appropriate channel mentioned in the context.\n"
+    "6. ALWAYS prefix website links with `https://` so they are clickable in Discord.\n"
+    "7. Distinguish between 'order' (free members using OrderBot in <#1175672083183829075>) and 'drop' (subscribers spawning items on sub islands). If a user specifically asks how to 'order', explain the OrderBot flow, NOT the drop flow."
 )
 
 
