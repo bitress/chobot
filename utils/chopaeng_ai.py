@@ -15,6 +15,10 @@ import time
 from typing import Optional
 
 logger = logging.getLogger("ChopaengAI")
+if os.getenv("CHOPAENG_AI_DEBUG", "false").lower() in ("true", "1", "yes") or os.getenv("LOG_LEVEL", "").upper() == "DEBUG":
+    logger.setLevel(logging.DEBUG)
+else:
+    logger.setLevel(logging.INFO)
 
 # Path to the JSON file used to persist the rolling chat-log across restarts.
 # Lives in the project root (same directory as chobot.db).
@@ -526,6 +530,13 @@ def _format_live_search_answer(
             # Filter sub islands to what the user can actually access.
             my_sub = _filter_accessible_sub_islands(sub_islands, accessible_islands)
             locked_sub = [n for n in sub_islands if n not in my_sub]
+            logger.debug(
+                "[ChopaengAI] sub_island_filter query=%r all_sub=%s "
+                "accessible_islands=%s my_sub=%s locked_sub=%s "
+                "user_lacks_sub_access=%s",
+                query, sub_islands, accessible_islands,
+                my_sub, locked_sub, user_lacks_sub_access,
+            )
 
             # No sub access at all (confirmed non-sub or explicit denial).
             if user_lacks_sub_access or (accessible_islands is not None and not my_sub):
@@ -643,9 +654,10 @@ def _format_live_search_answer(
 async def _classify_intent(
     question: str, 
     openai_api_key: Optional[str] = None,
-    openai_base_url: Optional[str] = None
+    openai_base_url: Optional[str] = None,
+    model: str = "gpt-4o-mini",
 ) -> dict:
-    """Classify user intent using gpt-4o-mini with JSON output."""
+    """Classify user intent using OpenAI with JSON output."""
     if not openai_api_key:
         return {"intent": "GENERAL_QA"}
         
@@ -674,7 +686,7 @@ Rules:
             
         client = AsyncOpenAI(**client_kwargs)
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model or "gpt-4o-mini",
             temperature=0.0,
             response_format={"type": "json_object"},
             messages=[
@@ -1042,19 +1054,23 @@ def _is_variant_ordering_question(text: str) -> bool:
     return has_variant and has_order_intent and has_item_context
 
 
+# Named constant for the context-sensitive "no access" FAQ entry.
+# Referenced by identity in _direct_faq_answer for history/subscriber-aware disambiguation.
+_NO_ACCESS_CHORDER_PATTERN = re.compile(
+    r"\b(?:"
+    r"how\s+to\s+access\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)|"
+    r"get\s+access\s+to\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)|"
+    r"access\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)|"
+    r"no\s+access\b.*(?:orderbot|chorder|order|channel)|"
+    r"says?\s+no\s+access\b|"
+    r"can'?t\s+(?:see|access|find|use)\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)"
+    r")\b",
+    re.I,
+)
+
 _FAQ_REGEX_ENTRIES: list[tuple[re.Pattern, str]] = [
     (
-        re.compile(
-            r"\b(?:"
-            r"how\s+to\s+access\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)|"
-            r"get\s+access\s+to\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)|"
-            r"access\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)|"
-            r"no\s+access\b.*(?:orderbot|chorder|order|channel)|"
-            r"says\s+no\s+access\b|"
-            r"can'?t\s+(?:see|access|find|use)\s+(?:the\s+)?(?:orderbot|chorder[- ]bot|ordering)"
-            r")\b",
-            re.I
-        ),
+        _NO_ACCESS_CHORDER_PATTERN,
         "If you see 'no access' or cannot view `#chorder-bot`, follow these steps to get access:\n\n"
         "1. READ THE #rules FIRST if you haven't read it yet.\n"
         "2. Navigate to #get-roles channel and under **Games you play**, get the **Animal Crossing** role.\n"
@@ -1090,7 +1106,7 @@ _FAQ_REGEX_ENTRIES: list[tuple[re.Pattern, str]] = [
         "A bot abuser flag means the bot detected a second account being used to order and cut ahead instead of waiting in line. Since the detection is automatic, staff cannot manually unban it when the bot has flagged the behavior.",
     ),
     (
-        re.compile(r"\b(?:server\s+nickname|change\s+nickname|second\s+warning|sub\s+rule\s+2|nickname\s+warning|set\s+nick|set\s+nickname)\b", re.I),
+        re.compile(r"\b(?:server\s+nickname|change\s+nickname|second\s+warning|sub\s+rule\s+2|nickname\s+warning|set\s+(?:my\s+)?nick(?:name)?|how\s+(?:do\s+i|to)\s+(?:change|set)\s+(?:my\s+)?nickname)\b", re.I),
         "Go to <#1081147108612124742> (`#server-nickname`) and change your server nickname to this format: `Your ACNH Character Name | Your ACNH Island Name`. Example: `ChoPaeng | ChoPaeng Camp`. You can right-click your name in the server member list and choose **Change Nickname**, or use Server Settings > Profile.",
     ),
     (
@@ -1129,15 +1145,231 @@ _FAQ_REGEX_ENTRIES: list[tuple[re.Pattern, str]] = [
         re.compile(r"\b(?:how\s+to\s+(?:get|order|drop)\s+diy|order\s+diy|order\s+recipe|drop\s+recipe|how\s+to\s+get\s+recipe)\b", re.I),
         "For DIY recipes, we recommend using the **[Command Builder](https://www.chopaeng.com/command-builder)** to easily generate the right command! Free members can paste the `!order` command in <#1175672083183829075>, while subscribers can paste the `!drop` command directly in a sub island.",
     ),
+    (
+        re.compile(
+            r"\b(?:"
+            r"how\s+(?:to|do\s+i|can\s+i)\s+get\s+(?:a\s+)?dodo(?:\s+code)?|"
+            r"where\s+(?:to|do\s+i|can\s+i)\s+(?:get|find)\s+(?:a\s+)?dodo(?:\s+code)?|"
+            r"how\s+(?:do\s+i|to)\s+visit\s+(?:free\s+)?islands?|"
+            r"get\s+(?:a\s+)?dodo\s+code|"
+            r"how\s+(?:does\s+)?(?:!senddodo|!sd|senddodo)\s+work|"
+            r"how\s+to\s+use\s+(?:!senddodo|!sd|senddodo)"
+            r")\b",
+            re.I,
+        ),
+        "Here is how to get a Dodo code to visit:\n\n"
+        "🌴 **Free Islands (27 free islands):** Head to the **Dodo Board** channel (<#1500493205672825056>)! Dodo codes for all free islands are posted there live (free islands do **not** use `!senddodo` commands).\n\n"
+        "⭐ **Sub Islands (20 sub islands):** Go to that specific sub island's Discord channel and type `!senddodo` (or `!sd`). The bot will DM the code directly to you!",
+    ),
 ]
 
 
-def _direct_faq_answer(text: str) -> Optional[str]:
-    """Return deterministic answers for high-frequency support/rules questions."""
+# ---------------------------------------------------------------------------
+# Context-aware FAQ dispatch helpers
+# ---------------------------------------------------------------------------
+
+_CLAIM_DONE_PATTERNS: list[str] = [
+    "i am a subscriber",
+    "i'm a subscriber",
+    "im a subscriber",
+    "already a subscriber",
+    "already did",
+    "already linked",
+    "already completed",
+    "already subscribed",
+    "i already",
+    "i've already",
+    "ive already",
+]
+
+_ASSUMES_NOT_DONE_FRAGMENTS: list[str] = [
+    "sub-rules",
+    "subscriber rules",
+    "verification",
+    "link your",
+    "go to #",
+    "go to <#",
+    "navigate to #",
+    "navigate to <#",
+    "read the #rules",
+    "read and click",
+]
+
+# Topic signals used to disambiguate "no access" questions via conversation history.
+# _ORDER_BOT_TOPIC_SIGNALS: used on full history text (both roles) — 'order' is safe
+# at this granularity because the context is several full sentences.
+_ORDER_BOT_TOPIC_SIGNALS: frozenset = frozenset({
+    "order", "chorder", "chorder-bot", "orderbot", "chorder bot",
+    "1175672083183829075",  # chorder-bot channel ID
+})
+# _ORDER_BOT_QUESTION_SIGNALS: used on the live user message only — excludes bare
+# 'order' to avoid false-positives like "in order for me to..."
+_ORDER_BOT_QUESTION_SIGNALS: frozenset = frozenset({
+    "chorder", "chorder-bot", "orderbot", "chorder bot",
+    "1175672083183829075",  # chorder-bot channel ID
+})
+_SUB_ISLAND_TOPIC_SIGNALS: frozenset = frozenset({
+    "sub island", "sub-rules", "sub islands", "drop", "senddodo",
+})
+
+_NO_ACCESS_SUBSCRIBER_CHORDER_ANSWER = (
+    "The Chorder Bot channel (<#1175672083183829075>) is scoped to **free members only** \u2014 "
+    "subscribers intentionally don't have access to it, because you don't need it! \U0001f389\n\n"
+    "As a subscriber, here's how to get items instead:\n"
+    "- Use `!lookup <item>` in <#1175771830510948442> to find the item code\n"
+    "- Then head to any sub island you have access to and type `!drop <code>`\n"
+    "- Or use the **[Command Builder](https://www.chopaeng.com/command-builder)** "
+    "to generate the full command in one step.\n\n"
+    "Need help with a specific item? Check <#782872507551055892> for subscriber drop support."
+)
+
+_NO_ACCESS_CLARIFY_ANSWER = (
+    "Just to confirm \u2014 are you having trouble accessing the **Chorder Bot order channel** "
+    "(used by free members to place orders), or the **sub island channels** themselves? \U0001f914\n\n"
+    "- **Order channel issue:** Let me know and I'll walk you through the free-member access steps.\n"
+    "- **Sub island issue:** Make sure you've completed the subscriber verification steps "
+    "in <#783677194576330792> and clicked **I Understand**."
+)
+
+_CONTRADICTION_FALLBACK = (
+    "It sounds like you may have already completed that step! \U0001f44d "
+    "If you're still seeing an access issue, it might be a role-sync delay "
+    "(wait a few minutes and try again) or a permissions glitch. "
+    "If it persists, open a ticket at <#943118146259284008> and a moderator will sort it out."
+)
+
+
+def _answer_contradicts_user_claim(question: str, canned_answer: str) -> bool:
+    """Heuristic: does the user's message assert a status the canned answer assumes is false?"""
+    q = question.lower()
+    a = canned_answer.lower()
+    claims_done = any(p in q for p in _CLAIM_DONE_PATTERNS)
+    assumes_not_done = any(p in a for p in _ASSUMES_NOT_DONE_FRAGMENTS)
+    return claims_done and assumes_not_done
+
+
+def _count_signal_hits(text: str, signals: frozenset) -> int:
+    """Count signal occurrences without double-counting substrings of longer signals present in the same set."""
+    sorted_signals = sorted(signals, key=len, reverse=True)
+    remaining = text
+    total = 0
+    for sig in sorted_signals:
+        count = remaining.count(sig)
+        total += count
+        if count:
+            remaining = remaining.replace(sig, " ")
+    return total
+
+
+def _history_topic(history: Optional[list[dict]], n_turns: int = 2) -> Optional[str]:
+    """Return 'order_bot' | 'sub_island' | None based on weighted signal counts
+    across the last n_turns exchanges (both roles).
+
+    Counts all occurrences on each side rather than short-circuiting on the
+    first hit, so user messages that correct the topic (e.g. 'sub islands')
+    can outweigh incidental mentions in canned assistant replies.
+    """
+    if not history:
+        return None
+    recent = history[-(n_turns * 2):]
+    combined = " ".join(t["content"].lower() for t in recent)
+    order_hits = _count_signal_hits(combined, _ORDER_BOT_TOPIC_SIGNALS)
+    sub_hits = _count_signal_hits(combined, _SUB_ISLAND_TOPIC_SIGNALS)
+    logger.debug(
+        "[ChopaengAI] history_topic order_hits=%d sub_hits=%d combined_len=%d",
+        order_hits, sub_hits, len(combined),
+    )
+    if order_hits == 0 and sub_hits == 0:
+        return None
+    return "order_bot" if order_hits >= sub_hits else "sub_island"
+
+
+def _resolve_no_access_faq(
+    question: str,
+    history: Optional[list[dict]],
+    is_subscriber: bool,
+    canned_answer: str,
+) -> str:
+    """
+    Disambiguate 'no access' among three cases:
+
+    A) Subscriber + order-bot topic in recent history or current message
+       \u2192 Chorder Bot is free-member-only; redirect to !drop on a sub island.
+    B) Subscriber + no clear topic signal
+       \u2192 Ask a short clarifying question instead of guessing.
+    C) Non-subscriber (or unknown status)
+       \u2192 Apply contradiction guard first; then fall through to the existing
+          verification-flow answer.
+    """
+    if is_subscriber:
+        topic = _history_topic(history)
+        if topic == "order_bot":
+            logger.debug(
+                "[ChopaengAI] no_access_faq resolution=subscriber_chorder_answer "
+                "is_subscriber=%s history_topic=%s",
+                is_subscriber, topic,
+            )
+            return _NO_ACCESS_SUBSCRIBER_CHORDER_ANSWER
+        # Also trigger when the question itself contains explicit order-bot signals.
+        # Use the narrower _ORDER_BOT_QUESTION_SIGNALS (excludes bare 'order') to
+        # avoid false-positives like "in order for me to fix this".
+        q_lower = question.lower()
+        if any(sig in q_lower for sig in _ORDER_BOT_QUESTION_SIGNALS):
+            logger.debug(
+                "[ChopaengAI] no_access_faq resolution=subscriber_chorder_answer "
+                "is_subscriber=%s history_topic=%s (matched question signals)",
+                is_subscriber, topic,
+            )
+            return _NO_ACCESS_SUBSCRIBER_CHORDER_ANSWER
+        # Ambiguous \u2014 ask for clarification rather than guessing.
+        logger.debug(
+            "[ChopaengAI] no_access_faq resolution=clarify_question "
+            "is_subscriber=%s history_topic=%s",
+            is_subscriber, topic,
+        )
+        return _NO_ACCESS_CLARIFY_ANSWER
+    # Non-subscriber: apply contradiction guard before returning the verification walkthrough.
+    if _answer_contradicts_user_claim(question, canned_answer):
+        logger.debug(
+            "[ChopaengAI] no_access_faq resolution=contradiction_fallback "
+            "is_subscriber=%s",
+            is_subscriber,
+        )
+        return _CONTRADICTION_FALLBACK
+    logger.debug(
+        "[ChopaengAI] no_access_faq resolution=verification_flow "
+        "is_subscriber=%s",
+        is_subscriber,
+    )
+    return canned_answer
+
+
+def _direct_faq_answer(
+    text: str,
+    history: Optional[list[dict]] = None,
+    is_subscriber: bool = False,
+) -> Optional[str]:
+    """Return deterministic answers for high-frequency support/rules questions.
+
+    When *history* and *is_subscriber* are provided, context-sensitive entries
+    (like the 'no access' entry) are disambiguated using conversation context
+    instead of blindly returning the generic canned answer.
+    """
     t = text.strip()
     for pattern, response in _FAQ_REGEX_ENTRIES:
-        if pattern.search(t):
-            return response
+        if not pattern.search(t):
+            continue
+        # Context-sensitive disambiguation for the "no access" entry.
+        if pattern is _NO_ACCESS_CHORDER_PATTERN:
+            return _resolve_no_access_faq(t, history, is_subscriber, response)
+        # Contradiction guard: user claims a precondition the canned answer assumes is unmet.
+        if _answer_contradicts_user_claim(t, response):
+            logger.debug(
+                "[ChopaengAI] faq_contradiction_guard matched_pattern=%r is_subscriber=%s question=%r",
+                pattern.pattern[:60], is_subscriber, t,
+            )
+            return _CONTRADICTION_FALLBACK
+        return response
     return None
 
 
@@ -1148,11 +1380,13 @@ def _direct_mod_ops_answer(text: str, channel_context: Optional[str] = None) -> 
         return None
     t = text.lower().strip()
     if any(term in t for term in ("bot status", "service status", "ops", "health", "cache", "database", "db health")):
+        logger.debug("[ChopaengAI] mod_ops_answer branch=ops_status channel_context=%r", channel_context)
         return (
             "For operational status, use the ChoBot dashboard **Ops** page or `/api/health`. "
             "Check service heartbeats, cache age, Google Sheets refresh status, DB health, and recent errors before restarting anything."
         )
     if any(term in t for term in ("incident", "unknown traveler", "warnings", "investigation", "trust profile")):
+        logger.debug("[ChopaengAI] mod_ops_answer branch=incident_triage channel_context=%r", channel_context)
         return (
             "For moderation triage, open the dashboard **Incidents** page first, then use **Trust Profile** with the Discord user ID. "
             "Review unknown flights, active warnings, Dodo reveal history, nickname changes, and risk flags together."
@@ -1496,7 +1730,9 @@ _AI_SYSTEM_PROMPT = (
     "4. If Live Data says it's stale or degraded, mention it to the user.\n"
     "5. For rules/access issues, direct them to the appropriate channel mentioned in the context.\n"
     "6. ALWAYS prefix website links with `https://` so they are clickable in Discord.\n"
-    "7. Distinguish between 'order' (free members using OrderBot in <#1175672083183829075>) and 'drop' (subscribers spawning items on sub islands). If a user specifically asks how to 'order', explain the OrderBot flow, NOT the drop flow."
+    "7. Distinguish between 'order' (free members using OrderBot in <#1175672083183829075>) and 'drop' (subscribers spawning items on sub islands). If a user specifically asks how to 'order', explain the OrderBot flow, NOT the drop flow.\n"
+    "8. Free islands do NOT support !drop, !senddodo, !injectvillager, or !mvi. On free islands, Dodo codes come from the Dodo Board channel (no bot command) and item requests go through Chorder Bot (!order). These four commands are sub-island-only.\n"
+    "9. `!find` (and `!locate`) is strictly for searching Sub Islands and is only for Sub Island members / Subscribers. Free members do not use `!find`."
 )
 
 
@@ -1583,8 +1819,8 @@ def _build_model_prompt(
         "AI: I'm here to help! What are you having trouble with? Let me know if you need "
         "help finding items, understanding the rules, or getting a Dodo code.\n\n"
         "User: how to get dodo code\n"
-        "AI: To get a Dodo code, go to the specific island's channel in our Discord "
-        "server and type `!senddodo` or `!sd`. The bot will DM the code to you!\n\n"
+        "AI: For **free islands**, visit the Dodo Board <#1500493205672825056> to see active Dodo codes (free islands do not use commands). "
+        "For **sub islands**, go to that specific sub island's channel and type `!senddodo` or `!sd` to receive the code via DM!\n\n"
         "User: how do I order clothes in different variants?\n"
         "AI: Use <#1175771830510948442> first: `!lookup <clothing name>`, `!item <HEX>`, "
         "then `!customize <HEX> <variant number>`. Then order the long code in "
@@ -1599,6 +1835,13 @@ def _build_model_prompt(
         f"{access_section}"
         f"{conversation_context}"
         f"\n### Current Question ###\n{question}"
+    )
+    logger.debug(
+        "[ChopaengAI] prompt_access_context is_subscriber=%s is_mod_user=%s "
+        "accessible_islands=%s role_section=%r access_section=%r",
+        is_subscriber, is_mod_user, accessible_islands,
+        role_section[:120] if role_section else "",
+        access_section[:120] if access_section else "",
     )
     return f"{_AI_SYSTEM_PROMPT}\n\n{prompt}" if include_system_prompt else prompt
 
@@ -1644,7 +1887,9 @@ def _get_variant_key(variant: dict) -> str:
     return "NA"
 
 def _get_variant_command_parts(parent_id, variant: dict):
-    vid = variant.get("id") if variant else None
+    if not variant:
+        return {"baseId": parent_id, "variantId": "NA"}
+    vid = variant.get("id")
     variant_id = str(vid) if _has_meaningful_variant_id(vid) else "NA"
     base_id = (variant.get("pokerId") or parent_id) if variant_id == "NA" else parent_id
     return {"baseId": base_id, "variantId": variant_id}
@@ -1722,7 +1967,20 @@ def _generate_final_order_response(item: dict, selected_variant: Optional[dict],
 
 _ORDER_INTENT_RE = re.compile(r"^(order|drop|lookup)\s+(.+)$", re.IGNORECASE)
 
-async def _try_order_assistant(question: str, conversation_key: Optional[str]) -> Optional[str]:
+# Detects model output that incorrectly applies sub-only commands to free islands.
+# Order-agnostic: matches both "free island ... !drop" and "!drop ... free island".
+_FREE_ISLAND_CMDS_RE = re.compile(
+    r"(?:free\s+islands?\b.{0,40}\b(?:drop|senddodo|injectvillager|mvi)\b"
+    r"|\b(?:drop|senddodo|injectvillager|mvi)\b.{0,40}\bfree\s+islands?\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+async def _try_order_assistant(
+    question: str,
+    conversation_key: Optional[str],
+    is_subscriber: bool = False,
+    accessible_islands: Optional[list[str]] = None,
+) -> Optional[str]:
     q_clean = question.strip().lower()
     
     # 1. Check active state
@@ -1765,7 +2023,57 @@ async def _try_order_assistant(question: str, conversation_key: Optional[str]) -
     if qty_match:
         quantity = int(qty_match.group(1))
         item_query = qty_match.group(2).strip()
-        
+
+    # --- Subscription-aware routing ---
+    if action == "order" and is_subscriber:
+        if accessible_islands:
+            # Subscriber with a known sub island → redirect to !lookup + !drop.
+            island_list = _format_island_list(accessible_islands)
+            logger.debug(
+                "[ChopaengAI] order_routing branch=subscriber_drop_redirect "
+                "is_subscriber=%s accessible_islands=%s item=%r",
+                is_subscriber, accessible_islands, item_query,
+            )
+            return (
+                f"As a subscriber, you don't need the Chorder Bot! \U0001f389\n\n"
+                f"To get **{item_query}**, use <#1175771830510948442> to find the item code:\n"
+                f"1. `!lookup {item_query}` \u2014 get the short HEX code\n"
+                f"2. Head to {island_list} and type `!drop <code>` directly\n\n"
+                f"Or use the **[Command Builder](https://www.chopaeng.com/command-builder)** "
+                f"to generate the full `!drop` command in one step!"
+            )
+        elif accessible_islands is not None:
+            # accessible_islands=[] means the tier is confirmed but unlocks no sub island.
+            logger.debug(
+                "[ChopaengAI] order_routing branch=subscriber_tier_limitation "
+                "is_subscriber=%s accessible_islands=%s item=%r",
+                is_subscriber, accessible_islands, item_query,
+            )
+            return (
+                f"You're a subscriber, but your current tier doesn't include access to a "
+                f"sub island for dropping items directly. In the meantime, you can still use "
+                f"the free-member Chorder Bot flow:\n"
+                f"Use `!order {item_query}` in <#1175672083183829075>."
+            )
+        # accessible_islands is None → role data unavailable; fall through silently
+        # to the free-member flow rather than assuming tier limitation.
+        logger.debug(
+            "[ChopaengAI] order_routing branch=subscriber_no_role_data_fallthrough "
+            "is_subscriber=%s accessible_islands=None item=%r",
+            is_subscriber, item_query,
+        )
+
+    # Free member typing "lookup X" → give manual lookup-channel workflow instead of raw hex.
+    if action == "lookup" and not is_subscriber:
+        return (
+            f"To look up **{item_query}**, head to <#1175771830510948442>:\n"
+            f"1. `!lookup {item_query}` — get the short HEX item code\n"
+            f"2. `!item <HEX>` — see color/variant options\n"
+            f"3. `!customize <HEX> <variant>` — generate a customized code\n"
+            f"Then paste the long code in <#1175672083183829075> with `!order <long code>`. "
+            f"Or use the **[Command Builder](https://www.chopaeng.com/command-builder)** for the easiest experience! 📦"
+        )
+
     if action == "drop":
         if quantity > 9 or len(item_query.split(",")) > 9:
             return "❌ Maximum 9 items for drop commands."
@@ -1830,6 +2138,7 @@ async def get_ai_answer(
     is_subscriber: bool = False,
     is_mod_user: bool = False,
     accessible_islands: Optional[list[str]] = None,
+    role_data_computed_at: Optional[float] = None,
 ) -> str:
     """
     Answer a question about Chopaeng.
@@ -1850,35 +2159,78 @@ async def get_ai_answer(
         return _GREETING_RESPONSE
 
     q = question.strip()
+    role_age = f"{time.time() - role_data_computed_at:.1f}s" if role_data_computed_at else "unknown"
+    logger.debug(
+        "[ChopaengAI] access_context user_q=%r is_subscriber=%s accessible_islands=%s "
+        "role_data_age=%s conversation_key=%s channel_context=%s",
+        q, is_subscriber, accessible_islands, role_age, conversation_key, channel_context,
+    )
+
     # Respond to greetings warmly without hitting the KB or API.
     if _is_greeting(q):
+        logger.debug("[ChopaengAI] branch=greeting is_subscriber=%s", is_subscriber)
         if conversation_key:
             conversation_store.add(conversation_key, q, _GREETING_RESPONSE)
         return _auto_link_channels(_GREETING_RESPONSE, accessible_islands)
 
     # Respond to vague help requests with a clarifying question.
     if _is_vague_request(q):
+        logger.debug("[ChopaengAI] branch=vague_request is_subscriber=%s", is_subscriber)
         if conversation_key:
             conversation_store.add(conversation_key, q, _VAGUE_RESPONSE)
         return _auto_link_channels(_VAGUE_RESPONSE, accessible_islands)
 
     history = conversation_store.get(conversation_key) if conversation_key else []
-    
 
-    intent_data = await _classify_intent(q, openai_api_key=openai_api_key, openai_base_url=openai_base_url)
+    intent_data = await _classify_intent(
+        q,
+        openai_api_key=openai_api_key,
+        openai_base_url=openai_base_url,
+        model=openai_model,
+    )
     intent = intent_data.get("intent", "GENERAL_QA")
     
     if intent == "ORDER_VARIANT":
+        logger.debug(
+            "[ChopaengAI] branch=order_variant is_subscriber=%s",
+            is_subscriber,
+        )
         if conversation_key:
             conversation_store.add(conversation_key, q, _VARIANT_ORDERING_RESPONSE)
         return _auto_link_channels(_VARIANT_ORDERING_RESPONSE, accessible_islands)
         
-    if intent == "FAQ":
-        # For FAQ, we will just let the KB handle it with high confidence by ensuring it goes to semantic search
-        pass
+    # --- FAQ short-circuit (runs before LLM, independent of intent classification) ---
+    # _classify_intent can silently fall back to GENERAL_QA on timeout/key-failure,
+    # so we run the deterministic pattern matcher regardless of the intent label.
+    _faq_direct = _direct_faq_answer(q, history=history, is_subscriber=is_subscriber)
+    if _faq_direct is None and channel_context:
+        _faq_direct = _direct_mod_ops_answer(q, channel_context)
+    if _faq_direct is not None:
+        logger.debug(
+            "[ChopaengAI] branch=faq_direct is_subscriber=%s "
+            "accessible_islands=%s answer_preview=%r",
+            is_subscriber, accessible_islands, _faq_direct[:80],
+        )
+        _faq_linked = _auto_link_channels(_faq_direct, accessible_islands)
+        if conversation_key:
+            conversation_store.add(conversation_key, q, _faq_linked)
+        return _faq_linked
 
-    order_assistant_answer = await _try_order_assistant(q, conversation_key)
+    # Determine subscription status early so the order assistant can route correctly.
+    lacks_sub = _resolve_lacks_sub_access(q, history, is_subscriber)
+
+    order_assistant_answer = await _try_order_assistant(
+        q,
+        conversation_key,
+        is_subscriber=is_subscriber,
+        accessible_islands=accessible_islands,
+    )
     if order_assistant_answer:
+        logger.debug(
+            "[ChopaengAI] branch=order_assistant is_subscriber=%s "
+            "accessible_islands=%s answer_preview=%r",
+            is_subscriber, accessible_islands, order_assistant_answer[:80],
+        )
         if conversation_key:
             conversation_store.add(conversation_key, q, order_assistant_answer)
         return _auto_link_channels(order_assistant_answer, accessible_islands)
@@ -1892,9 +2244,6 @@ async def get_ai_answer(
     if live_cache_stale and live_backoff_elapsed:
         await _fetch_live_data()
 
-    # Combine Discord role, current message text, and conversation history to
-    # determine whether to show subscriber island instructions or the free alternative.
-    lacks_sub = _resolve_lacks_sub_access(q, history, is_subscriber)
     live_search_answer = await _try_live_search_answer(
         q,
         intent_data=intent_data,
@@ -1902,6 +2251,11 @@ async def get_ai_answer(
         accessible_islands=accessible_islands,
     )
     if live_search_answer:
+        logger.debug(
+            "[ChopaengAI] branch=live_search is_subscriber=%s "
+            "accessible_islands=%s lacks_sub=%s answer_preview=%r",
+            is_subscriber, accessible_islands, lacks_sub, live_search_answer[:80],
+        )
         if conversation_key:
             conversation_store.add(conversation_key, q, live_search_answer)
         return _auto_link_channels(live_search_answer, accessible_islands)
@@ -1953,31 +2307,56 @@ async def get_ai_answer(
 
             # Post-generation validation pass
             final_answer = answer.strip()
-            import re
             mentioned_channels = set(re.findall(r'<#(\d+)>', final_answer))
             for ch in mentioned_channels:
                 if ch not in CHOPAENG_KNOWLEDGE and ch not in _CHANNEL_ALIASES.values():
+                    logger.debug(
+                        "[ChopaengAI] branch=llm_hallucinated_channel "
+                        "provider=%s channel_id=%s is_subscriber=%s",
+                        name, ch, is_subscriber,
+                    )
                     return _auto_link_channels(
                         "I'm sorry, I couldn't find the exact information for that. Please check the Dodo Board or rules channel.",
                         accessible_islands
                     )
 
+            # Guard against hallucinated sub-only commands applied to free islands.
+            if _FREE_ISLAND_CMDS_RE.search(final_answer):
+                logger.debug(
+                    "[ChopaengAI] branch=llm_free_island_cmd_guard "
+                    "provider=%s is_subscriber=%s",
+                    name, is_subscriber,
+                )
+                return _auto_link_channels(
+                    "I'm sorry, I couldn't find the exact information for that. Please check the Dodo Board or rules channel.",
+                    accessible_islands
+                )
+
+            logger.debug(
+                "[ChopaengAI] branch=llm_success provider=%s "
+                "is_subscriber=%s accessible_islands=%s answer_preview=%r",
+                name, is_subscriber, accessible_islands, answer[:80],
+            )
             return _auto_link_channels(answer, accessible_islands)
         except Exception as e:
             logger.warning(f"[ChopaengAI] {name} failed ({e}), trying next fallback.")
 
 
     answer = _keyword_answer(q, history=history)
+    logger.debug(
+        "[ChopaengAI] branch=keyword_fallback is_subscriber=%s "
+        "accessible_islands=%s answer_preview=%r",
+        is_subscriber, accessible_islands, answer[:80],
+    )
     if conversation_key:
         conversation_store.add(conversation_key, q, answer)
 
     # Post-generation validation pass
     final_answer = answer.strip()
-    
-    # Simple validation: if the LLM output contains a channel mention <#123...>, 
+
+    # Simple validation: if the output contains a channel mention <#123...>,
     # check if that exact channel exists in the context (or is a known static channel).
     # If not, fallback to prevent hallucinated channels.
-    import re
     mentioned_channels = set(re.findall(r'<#(\d+)>', final_answer))
     for ch in mentioned_channels:
         if ch not in CHOPAENG_KNOWLEDGE and ch not in _CHANNEL_ALIASES.values():
@@ -1985,10 +2364,13 @@ async def get_ai_answer(
                 "I'm sorry, I couldn't find the exact information for that. Please check the Dodo Board or rules channel.",
                 accessible_islands
             )
-            
-    # Also validate capitalized words (potential island/villager names) briefly
-    # If it strongly mentions an island that is NOT in live context, fallback.
-    # To keep it lightweight, we'll just check if it says "island" and a capitalized word.
+
+    # Guard against hallucinated sub-only commands applied to free islands.
+    if _FREE_ISLAND_CMDS_RE.search(final_answer):
+        return _auto_link_channels(
+            "I'm sorry, I couldn't find the exact information for that. Please check the Dodo Board or rules channel.",
+            accessible_islands
+        )
 
     return _auto_link_channels(answer, accessible_islands)
 

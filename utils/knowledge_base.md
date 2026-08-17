@@ -39,14 +39,14 @@ The official website for Chopaeng serves as a central hub for viewers and member
 ## Commands
 | Command | Description | Where to use |
 |---------|-------------|--------------|
-| `!find <item>` or `!locate <item>` | Search which islands have an item | Anywhere |
+| `!find <item>` or `!locate <item>` | Search which sub islands have an item | #find-bot (Sub Island members only) |
 | `!villager <name>` | Find a villager across islands | Anywhere |
 | `!ask <question>` | Ask the AI about the community | Anywhere |
 | `!random` | Random item suggestion with location | Anywhere |
 | `!status` | Bot health and system status | Anywhere |
 | `!ping` | Bot response time | Anywhere |
 | `!help` | Full command list | Anywhere |
-| `!senddodo` or `!sd` | Get the Dodo code (DM) | Island channel |
+| `!senddodo` or `!sd` | Get the Dodo code (DM) | Sub Island channels only |
 | `!visitors` | Current visitors on a sub island | Island channel |
 | `!villagers` | Villagers currently on the island | Island channel |
 | `!lookup <item>` or `!li <item>` | Look up an item's code | Island channel |
@@ -59,14 +59,11 @@ The official website for Chopaeng serves as a central hub for viewers and member
 | `!gt` | Current in-game time on the island | Island channel |
 | `ac!lookup villager <name>` | Check villager personality | #villager-check |
 
-## Getting a Dodo Code (!senddodo)
+## Getting a Dodo Code
 A Dodo code is a 5-character code used in ACNH to visit a Chopaeng island via Dodo Airlines.
-To get the Dodo code for an island, go to that island's channel in Discord and type `!senddodo`
-or `!sd`. The bot will DM the code directly to you. Keep the code private — do not share it
-with anyone, including friends or family. If an island is offline, `!senddodo` will tell you
-instead of sending a code.
 
-**For Free Islands:** You can also find Dodo codes and information about each free island in the <#1500493205672825056> (Dodo Board) channel. This channel displays current codes and details about all 27 free islands, making it easy to browse and choose which island to visit.
+- **For Free Islands (27 free islands):** Free islands do **NOT** use `!senddodo` or `!sd` commands. Instead, go directly to the **Dodo Board** channel (<#1500493205672825056>). The Dodo Board displays the live Dodo codes and statuses for all 27 free islands.
+- **For Sub Islands (20 sub islands):** Go to that specific sub island's channel in Discord and type `!senddodo` or `!sd`. The bot will DM the code directly to you. Keep the code private — do not share it with anyone, including friends or family. If an island is offline, `!senddodo` will tell you instead of sending a code.
 
 ## Using the command builder for orders, drops, and villager injects
 
@@ -148,8 +145,7 @@ All island names are Filipino/Tagalog words with meaningful translations.
 | Tala | bright star | Light/star themed furniture |
 | Tinig | voice/sound | General |
 
-Stock rotates regularly across all islands. Use `!find <item>` to check current
-availability.
+Stock rotates regularly across all islands. Sub members can use `!find <item>` in <#1450554092626903232> to check availability across Sub Islands.
 
 ## Subscriber Perks
 Subscribe or become a member via one of these platforms to unlock:
@@ -261,7 +257,7 @@ you will automatically gain access to all sub island channels. Make sure to read
 
 **For Subscribers (Sub Islands):**
 Subscribers can request specific items from ChoBot using `!drop` commands directly while on a sub island.
-- Use `!find <item>` to check which islands have the item in their regular stock. If found, use `!senddodo` (or `!sd`) in that island's channel to get the code, fly in, and collect it.
+- Use `!find <item>` to check which islands have the item in their regular stock. If found on a sub island, use `!senddodo` (or `!sd`) in that sub island's channel to get the code, fly in, and collect it. If found on a free island, check the Dodo Board <#1500493205672825056>.
 - **Requesting Items:** Use `!drop <item name>` or `!drop <item code>` while on a sub island. You can drop up to 9 items per line (e.g., `!drop Pagoda, Golden Axe, Harp`).
 - **DIY Recipes:** `!recipe <item>` gets the recipe code (e.g., `!recipe Golden Axe` → `297000016A2`), then use `!drop <code>`.
 - **Customizing:** Look up with `!lookup <item>`, see variants with `!item <code>`, generate custom code with `!customize <code> <variant>`, and drop it with `!drop <customized code>`.

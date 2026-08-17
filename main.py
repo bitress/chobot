@@ -67,14 +67,38 @@ SERVICE_DESCRIPTIONS = {
 # ============================================================================
 # LOGGING
 # ============================================================================
+_log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+_log_level = getattr(logging, _log_level_str, logging.INFO)
+if os.getenv("DEBUG", "false").lower() in ("true", "1", "yes") or os.getenv("CHOPAENG_AI_DEBUG", "false").lower() in ("true", "1", "yes"):
+    _log_level = logging.DEBUG
+
+_log_handlers = [
+    logging.FileHandler("bot.log", encoding="utf-8"),
+    logging.StreamHandler(),
+]
+for _h in _log_handlers:
+    _h.setLevel(_log_level)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level,
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log", encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
+    handlers=_log_handlers,
 )
+
+# Enable configured log level on all bot-specific modules
+for _mod_name in [
+    "Main", "ChopaengAI", "DiscordCommandBot", "FlightLogger",
+    "TwitchBot", "DataManager", "IslandAccess", "DiscordMembership",
+    "DiscordHTTP", "DBMigration", "AuthTokens", "NookipediaClient",
+    "FlaskAPI", "Dashboard",
+]:
+    logging.getLogger(_mod_name).setLevel(_log_level)
+
+# Keep noisy third-party libraries manageable unless explicitly requested
+if os.getenv("VERBOSE_LIBS", "false").lower() not in ("true", "1", "yes"):
+    for _lib in ("discord.gateway", "discord.http", "websockets", "httpcore", "httpx", "asyncio"):
+        logging.getLogger(_lib).setLevel(logging.INFO)
+
 logger = logging.getLogger("Main")
 
 
