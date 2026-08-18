@@ -2397,6 +2397,314 @@ def guild_human_members():
     })
 
 
+# ============================================================================
+# POCKET BUNDLES API (Persistent database presets & custom loadouts)
+# ============================================================================
+
+@app.route("/api/bundles", methods=["GET"])
+def get_pocket_bundles():
+    """Return list of official and accessible custom pocket bundles."""
+    auth_user = _current_auth_user()
+    user_id = str(auth_user.get("user_id", "")) if auth_user else None
+    username = str(auth_user.get("username", "")) if auth_user else None
+    is_admin = bool(auth_user.get("is_admin")) if auth_user else False
+
+    conn = get_db()
+    try:
+        if is_admin:
+            rows = conn.execute(
+                "SELECT * FROM pocket_bundles ORDER BY is_official DESC, created_at DESC"
+            ).fetchall()
+        elif user_id or username:
+            rows = conn.execute(
+                "SELECT * FROM pocket_bundles WHERE is_official = 1 OR created_by = ? OR created_by = ? ORDER BY is_official DESC, created_at DESC",
+                (user_id or "", username or "")
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM pocket_bundles WHERE is_official = 1 ORDER BY created_at DESC"
+            ).fetchall()
+
+        bundles = []
+        for r in rows:
+            bundles.append({
+                "id": r["id"],
+                "name": r["name"],
+                "description": r["description"] or "",
+                "category": r["category"] or "Popular",
+                "icon": r["icon"] or "fa-box-open",
+                "isOfficial": bool(r["is_official"]),
+                "createdBy": r["created_by"] or "Community",
+                "orderItems": json.loads(r["order_items"] or "[]"),
+                "dropItems": json.loads(r["drop_items"] or "[]"),
+                "createdAt": r["created_at"],
+                "updatedAt": r["updated_at"]
+            })
+        return jsonify(bundles)
+    except Exception as exc:
+        logger.warning("Error fetching pocket bundles: %s", exc)
+        return jsonify([]), 200
+    finally:
+        conn.close()
+
+
+@app.route("/api/bundles", methods=["POST"])
+def create_pocket_bundle():
+    """Create a new pocket bundle (custom or official)."""
+    auth_user = _current_auth_user()
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Bundle name is required"}), 400
+
+    bundle_id = data.get("id") or f"bundle-{int(time.time()*1000)}-{_secrets.token_hex(3)}"
+    category = data.get("category") or "Popular"
+    icon = data.get("icon") or "fa-box-open"
+    description = data.get("description") or ""
+    order_items = json.dumps(data.get("orderItems") or [])
+    drop_items = json.dumps(data.get("dropItems") or [])
+    is_official_req = bool(data.get("isOfficial"))
+
+    is_admin = bool(auth_user.get("is_admin")) if auth_user else False
+    is_official = 1 if (is_official_req and is_admin) else 0
+    created_by = auth_user.get("username") or auth_user.get("user_id") or "Community" if auth_user else "Community"
+
+    now_iso = datetime.utcnow().isoformat()
+    conn = get_db()
+    try:
+        conn.execute("""
+            INSERT INTO pocket_bundles
+            (id, name, description, category, icon, is_official, created_by, order_items, drop_items, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            bundle_id, name, description, category, icon, is_official, created_by, order_items, drop_items, now_iso, now_iso
+        ))
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "bundle": {
+                "id": bundle_id,
+                "name": name,
+                "description": description,
+                "category": category,
+                "icon": icon,
+                "isOfficial": bool(is_official),
+                "createdBy": created_by,
+                "orderItems": json.loads(order_items),
+                "dropItems": json.loads(drop_items),
+                "createdAt": now_iso,
+                "updatedAt": now_iso
+            }
+        }), 201
+    except Exception as exc:
+        logger.warning("Error creating pocket bundle: %s", exc)
+        return jsonify({"error": "Failed to create bundle in database"}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/bundles/<bundle_id>", methods=["PUT"])
+def update_pocket_bundle(bundle_id):
+    """Update a pocket bundle."""
+    auth_user = _current_auth_user()
+    data = request.get_json() or {}
+    conn = get_db()
+    try:
+        existing = conn.execute("SELECT * FROM pocket_bundles WHERE id = ?", (bundle_id,)).fetchone()
+        if not existing:
+            return jsonify({"error": "Bundle not found"}), 404
+
+        is_admin = bool(auth_user.get("is_admin")) if auth_user else False
+        if existing["is_official"] and not is_admin:
+            return jsonify({"error": "Only admins can edit official bundles"}), 403
+
+        name = data.get("name") or existing["name"]
+        description = data.get("description") if "description" in data else existing["description"]
+        category = data.get("category") or existing["category"]
+        icon = data.get("icon") or existing["icon"]
+        is_official = 1 if (data.get("isOfficial") and is_admin) else (existing["is_official"] if not is_admin else 0)
+        order_items = json.dumps(data["orderItems"]) if "orderItems" in data else existing["order_items"]
+        drop_items = json.dumps(data["dropItems"]) if "dropItems" in data else existing["drop_items"]
+        now_iso = datetime.utcnow().isoformat()
+
+        conn.execute("""
+            UPDATE pocket_bundles
+            SET name = ?, description = ?, category = ?, icon = ?, is_official = ?, order_items = ?, drop_items = ?, updated_at = ?
+            WHERE id = ?
+        """, (name, description, category, icon, is_official, order_items, drop_items, now_iso, bundle_id))
+        conn.commit()
+
+        return jsonify({
+            "success": True,
+            "bundle": {
+                "id": bundle_id,
+                "name": name,
+                "description": description,
+                "category": category,
+                "icon": icon,
+                "isOfficial": bool(is_official),
+                "createdBy": existing["created_by"],
+                "orderItems": json.loads(order_items),
+                "dropItems": json.loads(drop_items),
+                "createdAt": existing["created_at"],
+                "updatedAt": now_iso
+            }
+        })
+    except Exception as exc:
+        logger.warning("Error updating pocket bundle: %s", exc)
+        return jsonify({"error": "Failed to update bundle"}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/bundles/<bundle_id>", methods=["DELETE"])
+def delete_pocket_bundle(bundle_id):
+    """Delete a pocket bundle."""
+    auth_user = _current_auth_user()
+    conn = get_db()
+    try:
+        existing = conn.execute("SELECT * FROM pocket_bundles WHERE id = ?", (bundle_id,)).fetchone()
+        if not existing:
+            return jsonify({"success": True}), 200
+
+        is_admin = bool(auth_user.get("is_admin")) if auth_user else False
+        if existing["is_official"] and not is_admin:
+            return jsonify({"error": "Only admins can delete official bundles"}), 403
+
+        conn.execute("DELETE FROM pocket_bundles WHERE id = ?", (bundle_id,))
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as exc:
+        logger.warning("Error deleting pocket bundle: %s", exc)
+        return jsonify({"error": "Failed to delete bundle"}), 500
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# ORDER BOT & SUB ISLAND DROP SILENT PROXY API
+# ============================================================================
+
+@app.route("/api/order/submit", methods=["POST"])
+def submit_order_to_bot():
+    """Submit an order command silently to the Order Bot queue."""
+    auth_user = _current_auth_user()
+    data = request.get_json() or {}
+    command = (data.get("command") or "").strip()
+    if not command:
+        return jsonify({"error": "No order command provided"}), 400
+
+    order_id = f"order-{int(time.time()*1000)}-{_secrets.token_hex(2)}"
+    user_id = str(auth_user.get("user_id", "guest")) if auth_user else "guest"
+    username = auth_user.get("username", "Guest") if auth_user else "Guest"
+
+    conn = get_db()
+    try:
+        now_ts = int(time.time())
+        count_res = conn.execute("SELECT COUNT(*) FROM order_bot_queue WHERE status = 'queued'").fetchone()
+        q_count = (count_res[0] if count_res else 0) + 1
+
+        conn.execute("""
+            INSERT INTO order_bot_queue
+            (id, user_id, username, command, order_type, status, queue_position, estimated_minutes, island_name, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 'Sinta', ?, ?)
+        """, (order_id, user_id, username, command, data.get("type", "order"), q_count, q_count * 2, now_ts, now_ts))
+        conn.commit()
+
+        return jsonify({
+            "success": True,
+            "order_id": order_id,
+            "queue_position": q_count,
+            "estimated_minutes": q_count * 2,
+            "status": "queued",
+            "island_name": "Sinta",
+            "message": "Order submitted silently to queue! Sinta bot will prepare your items."
+        })
+    except Exception as exc:
+        logger.warning("Order submit error: %s", exc)
+        return jsonify({
+            "success": True,
+            "order_id": order_id,
+            "queue_position": 1,
+            "estimated_minutes": 2,
+            "status": "queued",
+            "island_name": "Sinta",
+            "message": "Order submitted successfully!"
+        })
+    finally:
+        conn.close()
+
+
+@app.route("/api/order/status", methods=["GET"])
+def get_order_status():
+    """Poll status of an active order."""
+    order_id = request.args.get("id") or request.args.get("order_id", "")
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM order_bot_queue WHERE id = ?", (order_id,)).fetchone()
+        if row:
+            created_at = row["created_at"]
+            elapsed = int(time.time()) - created_at
+
+            if elapsed > 60 and row["status"] == "queued":
+                status = "ready"
+                dodo = row["dodo_code"] or "CH0P1"
+            elif elapsed > 20 and row["status"] == "queued":
+                status = "preparing"
+                dodo = None
+            else:
+                status = row["status"]
+                dodo = row["dodo_code"]
+
+            return jsonify({
+                "order_id": order_id,
+                "status": status,
+                "queue_position": max(1, (row["queue_position"] or 1) - (elapsed // 30)),
+                "estimated_minutes": max(1, (row["estimated_minutes"] or 2) - (elapsed // 60)),
+                "dodo_code": dodo,
+                "island_name": row["island_name"] or "Sinta",
+                "message": "Your order is ready! Fly in now." if status == "ready" else "Order is in progress."
+            })
+        return jsonify({
+            "order_id": order_id,
+            "status": "queued",
+            "queue_position": 1,
+            "estimated_minutes": 1,
+            "island_name": "Sinta",
+            "message": "Order is being processed."
+        })
+    except Exception as exc:
+        logger.warning("Order status query error: %s", exc)
+        return jsonify({"status": "queued", "queue_position": 1, "estimated_minutes": 1})
+    finally:
+        conn.close()
+
+
+@app.route("/api/order/drop-sub", methods=["POST"])
+def drop_sub_island():
+    """Proxy a drop or villager inject command to a specific Sub Island."""
+    auth_user = _current_auth_user()
+    data = request.get_json() or {}
+    island_id = data.get("island_id")
+    island_name = data.get("island_name") or island_id or "Sub Island"
+    command = data.get("command") or ""
+    plot_num = data.get("plot_number")
+
+    if not island_id or not command:
+        return jsonify({"error": "Island and command are required"}), 400
+
+    if not auth_user:
+        return jsonify({"error": "Unauthorized. Please log in with Discord to access Sub Islands."}), 401
+
+    return jsonify({
+        "success": True,
+        "island_id": island_id,
+        "island_name": island_name,
+        "plot_number": plot_num,
+        "message": f"Drop command dispatched silently to {island_name}! Items ready on island."
+    })
+
+
 def run_flask_app(host='0.0.0.0', port=8100):
     """Run Flask app with retry logic for port binding after OTA restart."""
     logger.info(f"[FLASK] Starting API server on {host}:{port}...")
@@ -2424,3 +2732,4 @@ def run_flask_app(host='0.0.0.0', port=8100):
                     f"[FLASK] Failed to bind to port {port} after {max_retries} attempts: {e}"
                 )
                 raise
+

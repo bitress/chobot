@@ -4144,9 +4144,7 @@ class DiscordCommandCog(commands.Cog):
                     | set(self.order_island_lookup.keys())
                 )
                 if not candidates:
-                    candidates = list(getattr(Config, "FREE_ISLANDS", [])) + list(
-                        getattr(Config, "ORDER_BOT_ISLANDS", [])
-                    )
+                    candidates = list(getattr(Config, "FREE_ISLANDS", [])) + ["sinta"]
 
             if not candidates:
                 await responder(
