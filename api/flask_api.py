@@ -2577,8 +2577,105 @@ def delete_pocket_bundle(bundle_id):
     except Exception as exc:
         logger.warning("Error deleting pocket bundle: %s", exc)
         return jsonify({"error": "Failed to delete bundle"}), 500
+# ============================================================================
+# SHARED POCKETS API (Short unique-id pocket URLs)
+# ============================================================================
+
+# Crockford's Base32 Alphabet (excludes I, L, O, U to avoid confusion)
+_ULID_ENCODING = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _generate_ulid() -> str:
+    """Generate a standard 26-character Crockford Base32 ULID.
+    - 48 bits of UNIX timestamp in milliseconds (10 characters)
+    - 80 bits of cryptographic randomness (16 characters)
+    - Lexicographically sortable by creation time.
+    """
+    ts_ms = int(time.time() * 1000)
+    time_chars = [_ULID_ENCODING[(ts_ms >> (45 - 5 * i)) & 0x1F] for i in range(10)]
+    rand_val = _secrets.randbits(80)
+    rand_chars = [_ULID_ENCODING[(rand_val >> (75 - 5 * i)) & 0x1F] for i in range(16)]
+    return "".join(time_chars + rand_chars)
+
+
+@app.route("/api/pockets/share", methods=["POST"])
+def create_shared_pocket():
+    """Save a pocket configuration and return a unique ULID."""
+    auth_user = _current_auth_user()
+    data = request.get_json() or {}
+    name = (data.get("name") or "ACNH Pocket").strip()[:60]
+    order_items = data.get("orderItems") or []
+    drop_items = data.get("dropItems") or []
+
+    if not order_items and not drop_items:
+        return jsonify({"error": "Cannot share an empty pocket"}), 400
+
+    conn = get_db()
+    try:
+        pocket_id = _generate_ulid()
+
+        created_by = auth_user.get("username") or auth_user.get("user_id") if auth_user else "Guest"
+        now_iso = datetime.utcnow().isoformat()
+
+        conn.execute("""
+            INSERT INTO shared_pockets (id, name, order_items, drop_items, created_by, views, created_at)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+        """, (
+            pocket_id,
+            name,
+            json.dumps(order_items),
+            json.dumps(drop_items),
+            created_by,
+            now_iso
+        ))
+        conn.commit()
+
+        return jsonify({
+            "success": True,
+            "id": pocket_id,
+            "name": name,
+            "orderItems": order_items,
+            "dropItems": drop_items,
+            "createdAt": now_iso
+        }), 201
+    except Exception as exc:
+        logger.warning("Error saving shared pocket: %s", exc)
+        return jsonify({"error": "Failed to save shared pocket"}), 500
     finally:
         conn.close()
+
+
+@app.route("/api/pockets/share/<pocket_id>", methods=["GET"])
+def get_shared_pocket(pocket_id: str):
+    """Retrieve shared pocket data by short unique ID."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM shared_pockets WHERE id = ?", (pocket_id,)).fetchone()
+        if not row:
+            return jsonify({"error": "Shared pocket not found"}), 404
+
+        # Increment view count
+        try:
+            conn.execute("UPDATE shared_pockets SET views = views + 1 WHERE id = ?", (pocket_id,))
+            conn.commit()
+        except Exception:
+            pass
+
+        return jsonify({
+            "id": row["id"],
+            "name": row["name"],
+            "orderItems": json.loads(row["order_items"] or "[]"),
+            "dropItems": json.loads(row["drop_items"] or "[]"),
+            "createdBy": row["created_by"],
+            "views": row["views"],
+            "createdAt": row["created_at"]
+        })
+    except Exception as exc:
+        logger.warning("Error fetching shared pocket %s: %s", pocket_id, exc)
+        return jsonify({"error": "Failed to retrieve shared pocket"}), 500
+    finally:
+        conn.close()
+
 
 
 # ============================================================================
