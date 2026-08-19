@@ -211,3 +211,42 @@ class AuthToken(Base):
     user_json: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class CommunityLoadout(Base):
+    __tablename__ = "community_loadouts"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    short_code: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tags: Mapped[str] = mapped_column(String(255), nullable=False, default="[]")
+    category: Mapped[str] = mapped_column(String(64), nullable=False, default="General")
+    order_items: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    drop_items: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False, default="Community")
+    upvotes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    views: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_official: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        Index("ix_community_loadouts_upvotes", "upvotes"),
+        Index("ix_community_loadouts_category", "category"),
+    )
+
+
+
+
+class CommunityLoadoutUpvote(Base):
+    __tablename__ = "community_loadout_upvotes"
+
+    loadout_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        Index("ix_loadout_upvotes_user", "user_id"),
+    )

@@ -1,3 +1,4 @@
+import json
 """
 Discord Command Bot Module
 Handles Discord commands for item and villager search with rich embeds
@@ -4844,6 +4845,24 @@ class DiscordCommandBot(commands.Bot):
         if message.author == self.user:
             return
 
+        
+        # Handle !pocket or $pocket prefix command
+        if message.content.startswith(("!pocket", "$pocket", "?pocket", "/pocket")):
+            parts = message.content.split()
+            if len(parts) > 1:
+                code_query = parts[1].strip()
+                embed, view = self._build_pocket_embed_and_view(code_query)
+                if embed:
+                    await message.reply(embed=embed, view=view)
+                else:
+                    await message.reply(f"❌ **Loadout Not Found:** No pocket build matching `{code_query}` was found.\nBrowse builds on https://chopaeng.com/command-builder")
+            else:
+                await message.reply("ℹ️ **Usage:** `!pocket <code_or_id>`\nExample: `!pocket CHOP-COTT` or `!pocket CHOP-RICH`")
+            return
+
+
+
+
         # Ignore messages from specific bot user ID
         if message.author.id == 1218852297988112395:
             return
@@ -5049,3 +5068,120 @@ class DiscordCommandBot(commands.Bot):
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
                     return
         await self.process_commands(message)
+
+    
+    
+    @app_commands.command(name="pocket", description="Look up a community pocket loadout or shared build")
+    @app_commands.describe(code_or_id="The 6-character shortcode (e.g. CHOP-COTT) or loadout ID")
+    async def pocket_command(self, interaction: discord.Interaction, code_or_id: str):
+        """Slash command to view a community loadout with full item preview and web import link."""
+        embed, view = self._build_pocket_embed_and_view(code_or_id.strip())
+        if not embed:
+            await interaction.response.send_message(
+                f"❌ **Loadout Not Found:** No pocket build matching `{code_or_id}` was found.\nBrowse community builds on [chopaeng.com/command-builder](https://chopaeng.com/command-builder).",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+
+    def _build_pocket_embed_and_view(self, code_or_id: str):
+        """Fetch loadout from database and construct a rich Discord embed with item details and action buttons."""
+        code = code_or_id.strip().upper()
+        conn = connect_db()
+        row = None
+        try:
+            row = conn.execute(
+                "SELECT * FROM community_loadouts WHERE UPPER(short_code) = ? OR id = ?",
+                (code, code_or_id)
+            ).fetchone()
+            if not row:
+                row = conn.execute("SELECT * FROM shared_pockets WHERE id = ?", (code_or_id,)).fetchone()
+                if row:
+                    row = {
+                        "id": row["id"],
+                        "short_code": row["id"],
+                        "name": row["name"],
+                        "description": "Shared pocket build",
+                        "category": "Custom Builds",
+                        "tags": '["shared"]',
+                        "order_items": row["order_items"] or "[]",
+                        "drop_items": row["drop_items"] or "[]",
+                        "created_by": row["created_by"],
+                        "upvotes": 0,
+                        "views": row["views"],
+                        "is_official": 0
+                    }
+        except Exception as e:
+            logger.warning(f"[POCKET] Error fetching loadout {code_or_id}: {e}")
+        finally:
+            conn.close()
+
+        if not row:
+            return None, None
+
+        name = row["name"] or "ACNH Pocket Build"
+        short_code = row["short_code"] or row["id"]
+        desc = row["description"] or "Community pocket loadout on Chopaeng"
+        category = row["category"] or "General"
+        author = row["created_by"] or "Community"
+        upvotes = row["upvotes"] or 0
+        views = row["views"] or 0
+        order_items = json.loads(row["order_items"] or "[]")
+        drop_items = json.loads(row["drop_items"] or "[]")
+        all_items = order_items if order_items else drop_items
+
+        total_slots = len(all_items)
+        total_qty = sum(it.get("quantity", 1) for it in all_items)
+
+        color = 0x2ECC71 if category == "Starter Kits" else (0xF1C40F if "Wealth" in category else 0x9B59B6)
+        embed = discord.Embed(
+            title=f"🎒 {name}",
+            description=f"{desc}\n\n**Category:** `{category}` • **Author:** `{author}`\n**Shortcode:** `{short_code}` • **❤️ Upvotes:** `{upvotes}` • **👀 Views:** `{views}`",
+            color=color
+        )
+
+        item_lines = []
+        for idx, it in enumerate(all_items[:40], 1):
+            item_name = it.get("name", "Unknown Item")
+            qty = it.get("quantity", 1)
+            var_label = it.get("variantLabel") or ""
+            var_text = f" ({var_label})" if var_label else ""
+            item_lines.append(f"`{idx:02d}.` **{item_name}{var_text}** ×{qty}")
+
+        if item_lines:
+            chunk_size = 14
+            for i in range(0, len(item_lines), chunk_size):
+                chunk = item_lines[i:i + chunk_size]
+                col_num = (i // chunk_size) + 1
+                embed.add_field(
+                    name=f"📦 Items (Part {col_num})",
+                    value="\n".join(chunk),
+                    inline=True
+                )
+
+        embed.add_field(
+            name="📊 Capacity",
+            value=f"**Slots:** `{total_slots}/40`\n**Total Items:** `{total_qty}` pcs",
+            inline=False
+        )
+
+        web_url = f"https://chopaeng.com/command-builder?code={short_code}"
+        embed.set_footer(text=f"Short Code: {short_code} • Load 1-click on Chopaeng")
+
+        view = None
+        try:
+            view = discord.ui.View()
+            button = discord.ui.Button(
+                label="Open in Command Builder",
+                url=web_url,
+                style=discord.ButtonStyle.link,
+                emoji="🌐"
+            )
+            view.add_item(button)
+        except Exception:
+            view = None
+
+        return embed, view
+
+    

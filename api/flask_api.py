@@ -2802,6 +2802,300 @@ def drop_sub_island():
     })
 
 
+
+
+# ============================================================================
+# COMMUNITY LOADOUTS & CLOUD SYNC API
+# ============================================================================
+
+@app.route("/api/loadouts", methods=["GET"])
+def get_community_loadouts():
+    """List public community and official loadouts."""
+    auth_user = _current_auth_user()
+    category = request.args.get("category")
+    tag = request.args.get("tag")
+    author = request.args.get("author")
+    search = request.args.get("q", "").strip().lower()
+
+    conn = get_db()
+    try:
+        sql = "SELECT * FROM community_loadouts WHERE 1=1"
+        params = []
+        if category and category != "All":
+            sql += " AND category = ?"
+            params.append(category)
+        if author:
+            sql += " AND created_by = ?"
+            params.append(author)
+        
+        sql += " ORDER BY is_official DESC, upvotes DESC, created_at DESC LIMIT 100"
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        
+        auth_user = _current_auth_user()
+        user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+        if not user_id:
+            client_header = request.headers.get("x-client-id") or ""
+            ip = request.remote_addr or "127.0.0.1"
+            user_id = f"anon_{client_header}_{ip}"[:64]
+
+        upvoted_rows = conn.execute(
+            "SELECT loadout_id FROM community_loadout_upvotes WHERE user_id = ?",
+            (user_id,)
+        ).fetchall()
+        user_upvoted_ids = {u["loadout_id"] for u in upvoted_rows}
+
+        loadouts = []
+        for r in rows:
+            name = r["name"] or ""
+            desc = r["description"] or ""
+            tags_list = json.loads(r["tags"] or "[]")
+            
+            if search:
+                if search not in name.lower() and search not in desc.lower() and not any(search in t.lower() for t in tags_list):
+                    continue
+                    
+            loadouts.append({
+                "id": r["id"],
+                "shortCode": r["short_code"],
+                "name": name,
+                "description": desc,
+                "category": r["category"] or "General",
+                "tags": tags_list,
+                "orderItems": json.loads(r["order_items"] or "[]"),
+                "dropItems": json.loads(r["drop_items"] or "[]"),
+                "author": r["created_by"] or "Community",
+                "userId": r["user_id"],
+                "upvotes": r["upvotes"] or 0,
+                "views": r["views"] or 0,
+                "isOfficial": bool(r["is_official"]),
+                "hasUpvoted": r["id"] in user_upvoted_ids,
+                "createdAt": r["created_at"],
+                "updatedAt": r["updated_at"]
+            })
+        return jsonify(loadouts)
+    except Exception as exc:
+        logger.warning("Error fetching community loadouts: %s", exc)
+        return jsonify([]), 200
+    finally:
+        conn.close()
+
+
+@app.route("/api/loadouts", methods=["POST"])
+def create_community_loadout():
+    """Create a new community loadout."""
+    auth_user = _current_auth_user()
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()[:60]
+    if not name:
+        return jsonify({"error": "Loadout name is required"}), 400
+    
+    order_items = data.get("orderItems") or []
+    drop_items = data.get("dropItems") or []
+    if not order_items and not drop_items:
+        return jsonify({"error": "Cannot publish an empty loadout"}), 400
+    
+    chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    random_code = "CHOP-" + "".join(_secrets.choice(chars) for _ in range(4))
+    short_code = (data.get("shortCode") or random_code).strip().upper()[:16]
+    
+    loadout_id = data.get("id") or f"loadout-{int(time.time()*1000)}-{_secrets.token_hex(3)}"
+    category = data.get("category") or "General"
+    description = (data.get("description") or "").strip()[:300]
+    tags = json.dumps(data.get("tags") or [])
+    user_id = str(auth_user.get("user_id", "")) if auth_user else None
+    created_by = (auth_user.get("username") or data.get("author") or "Community") if auth_user else (data.get("author") or "Community")
+    is_admin = bool(auth_user.get("is_admin")) if auth_user else False
+    is_official = 1 if (data.get("isOfficial") and is_admin) else 0
+    now_iso = datetime.utcnow().isoformat()
+
+    conn = get_db()
+    try:
+        conn.execute("""
+            INSERT INTO community_loadouts
+            (id, short_code, name, description, tags, category, order_items, drop_items, user_id, created_by, upvotes, views, is_official, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)
+        """, (
+            loadout_id, short_code, name, description, tags, category,
+            json.dumps(order_items), json.dumps(drop_items),
+            user_id, created_by, is_official, now_iso, now_iso
+        ))
+        conn.commit()
+
+        return jsonify({
+            "success": True,
+            "loadout": {
+                "id": loadout_id,
+                "shortCode": short_code,
+                "name": name,
+                "description": description,
+                "tags": json.loads(tags),
+                "category": category,
+                "orderItems": order_items,
+                "dropItems": drop_items,
+                "author": created_by,
+                "upvotes": 0,
+                "views": 1,
+                "isOfficial": bool(is_official),
+                "createdAt": now_iso,
+                "updatedAt": now_iso
+            }
+        }), 201
+    except Exception as exc:
+        logger.warning("Error saving community loadout: %s", exc)
+        return jsonify({"error": "Failed to save loadout to database"}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/loadouts/code/<short_code>", methods=["GET"])
+def get_loadout_by_code(short_code: str):
+    """Lookup loadout by shortcode or ID."""
+    code = short_code.strip().upper()
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM community_loadouts WHERE UPPER(short_code) = ? OR id = ?",
+            (code, short_code)
+        ).fetchone()
+        if not row:
+            shared_row = conn.execute(
+                "SELECT * FROM shared_pockets WHERE id = ?",
+                (short_code,)
+            ).fetchone()
+            if shared_row:
+                return jsonify({
+                    "id": shared_row["id"],
+                    "shortCode": shared_row["id"],
+                    "name": shared_row["name"],
+                    "description": "Shared pocket build",
+                    "category": "Custom Builds",
+                    "tags": ["shared"],
+                    "orderItems": json.loads(shared_row["order_items"] or "[]"),
+                    "dropItems": json.loads(shared_row["drop_items"] or "[]"),
+                    "author": shared_row["created_by"],
+                    "upvotes": 0,
+                    "views": shared_row["views"],
+                    "isOfficial": False,
+                    "createdAt": shared_row["created_at"],
+                    "updatedAt": shared_row["created_at"]
+                })
+            return jsonify({"error": "Loadout not found"}), 404
+
+        try:
+            conn.execute("UPDATE community_loadouts SET views = views + 1 WHERE id = ?", (row["id"],))
+            conn.commit()
+        except Exception:
+            pass
+
+        return jsonify({
+            "id": row["id"],
+            "shortCode": row["short_code"],
+            "name": row["name"],
+            "description": row["description"] or "",
+            "category": row["category"] or "General",
+            "tags": json.loads(row["tags"] or "[]"),
+            "orderItems": json.loads(row["order_items"] or "[]"),
+            "dropItems": json.loads(row["drop_items"] or "[]"),
+            "author": row["created_by"] or "Community",
+            "userId": row["user_id"],
+            "upvotes": row["upvotes"] or 0,
+            "views": (row["views"] or 0) + 1,
+            "isOfficial": bool(row["is_official"]),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"]
+        })
+    except Exception as exc:
+        logger.warning("Error fetching loadout %s: %s", short_code, exc)
+        return jsonify({"error": "Failed to retrieve loadout"}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/loadouts/<loadout_id>/upvote", methods=["POST"])
+def upvote_loadout(loadout_id: str):
+    """Toggle upvote for a loadout by user/session stored in database."""
+    auth_user = _current_auth_user()
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+    if not user_id:
+        # Fallback to client IP / anonymous token from header
+        client_header = request.headers.get("x-client-id") or ""
+        ip = request.remote_addr or "127.0.0.1"
+        user_id = f"anon_{client_header}_{ip}"[:64]
+
+    conn = get_db()
+    try:
+        # Check if already upvoted in database
+        existing = conn.execute(
+            "SELECT 1 FROM community_loadout_upvotes WHERE loadout_id = ? AND user_id = ?",
+            (loadout_id, user_id)
+        ).fetchone()
+
+        now_iso = datetime.utcnow().isoformat()
+        if existing:
+            # Remove upvote (toggle off)
+            conn.execute(
+                "DELETE FROM community_loadout_upvotes WHERE loadout_id = ? AND user_id = ?",
+                (loadout_id, user_id)
+            )
+            is_upvoted = False
+        else:
+            # Insert upvote in database
+            conn.execute(
+                "INSERT OR REPLACE INTO community_loadout_upvotes (loadout_id, user_id, created_at) VALUES (?, ?, ?)",
+                (loadout_id, user_id, now_iso)
+            )
+            is_upvoted = True
+
+        # Sync count in community_loadouts table
+        count_row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM community_loadout_upvotes WHERE loadout_id = ?",
+            (loadout_id,)
+        ).fetchone()
+        count = count_row["cnt"] if count_row else (1 if is_upvoted else 0)
+
+        conn.execute(
+            "UPDATE community_loadouts SET upvotes = ? WHERE id = ?",
+            (count, loadout_id)
+        )
+        conn.commit()
+
+        return jsonify({
+            "success": True,
+            "upvoted": is_upvoted,
+            "upvotes": count
+        })
+    except Exception as exc:
+        logger.warning("Error toggling upvote for loadout %s: %s", loadout_id, exc)
+        return jsonify({"error": "Failed to upvote"}), 500
+    finally:
+        conn.close()
+
+@app.route("/api/loadouts/<loadout_id>", methods=["DELETE"])
+def delete_loadout(loadout_id: str):
+    """Delete a loadout (owner or admin)."""
+    auth_user = _current_auth_user()
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM community_loadouts WHERE id = ?", (loadout_id,)).fetchone()
+        if not row:
+            return jsonify({"error": "Loadout not found"}), 404
+
+        is_admin = bool(auth_user.get("is_admin")) if auth_user else False
+        user_id = str(auth_user.get("user_id", "")) if auth_user else ""
+        if not is_admin and (not user_id or str(row["user_id"]) != user_id):
+            return jsonify({"error": "Permission denied"}), 403
+
+        conn.execute("DELETE FROM community_loadouts WHERE id = ?", (loadout_id,))
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as exc:
+        logger.warning("Error deleting loadout %s: %s", loadout_id, exc)
+        return jsonify({"error": "Failed to delete"}), 500
+    finally:
+        conn.close()
+
+
+
 def run_flask_app(host='0.0.0.0', port=8100):
     """Run Flask app with retry logic for port binding after OTA restart."""
     logger.info(f"[FLASK] Starting API server on {host}:{port}...")

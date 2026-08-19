@@ -531,6 +531,37 @@ def init_dashboard_db():
         except Exception as seed_err:
             logger.warning("Could not seed pocket bundles: %s", seed_err)
 
+        # Community Loadouts table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS community_loadouts (
+                id          TEXT PRIMARY KEY,
+                short_code  TEXT UNIQUE NOT NULL,
+                name        TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                tags        TEXT NOT NULL DEFAULT '[]',
+                category    TEXT NOT NULL DEFAULT 'General',
+                order_items TEXT NOT NULL DEFAULT '[]',
+                drop_items  TEXT NOT NULL DEFAULT '[]',
+                user_id     TEXT,
+                created_by  TEXT NOT NULL DEFAULT 'Community',
+                upvotes     INTEGER NOT NULL DEFAULT 0,
+                views       INTEGER NOT NULL DEFAULT 0,
+                is_official INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )
+        """)
+
+        # Upvotes Tracking table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS community_loadout_upvotes (
+                loadout_id  TEXT NOT NULL,
+                user_id     TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                PRIMARY KEY (loadout_id, user_id)
+            )
+        """)
+
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_pocket_bundles_cat ON pocket_bundles (category, is_official)")
         except Exception:
@@ -539,9 +570,18 @@ def init_dashboard_db():
             conn.execute("CREATE INDEX IF NOT EXISTS ix_order_bot_queue_user_status ON order_bot_queue (user_id, status, created_at)")
         except Exception:
             pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_community_loadouts_upvotes ON community_loadouts (upvotes, created_at)")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_loadout_upvotes_user ON community_loadout_upvotes (user_id)")
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
+
         logger.info("Dashboard DB initialised with pocket bundles and order queue")
     except Exception as exc:
         logger.warning("Could not initialise dashboard DB: %s", exc)
