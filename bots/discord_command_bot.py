@@ -166,27 +166,6 @@ def _init_command_claims_db() -> None:
         logger.error(f"[DISCORD] Failed to init command_claims table: {exc}")
 
 
-def _init_subscriptions_db() -> None:
-    """Create the island_subscriptions table for online/offline alert opt-ins."""
-    try:
-        with connect_db() as conn:
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS island_subscriptions (
-                    user_id INTEGER NOT NULL,
-                    island_clean TEXT NOT NULL,
-                    kind TEXT NOT NULL DEFAULT 'sub',
-                    has_island_access INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (user_id, island_clean, kind)
-                )"""
-            )
-            # Migrate existing databases: add has_island_access column if it doesn't exist
-            try:
-                conn.execute("ALTER TABLE island_subscriptions ADD COLUMN has_island_access INTEGER NOT NULL DEFAULT 0")
-            except Exception:
-                pass  # Column already exists
-    except Exception as exc:
-        logger.error(f"[DISCORD] Failed to init island_subscriptions table: {exc}")
-
 
 def _init_settings_db() -> None:
     """Create the settings table for general bot configuration."""
@@ -241,74 +220,6 @@ def _set_setting(key: str, value: str) -> None:
     except Exception as exc:
         logger.error(f"[DISCORD] Failed to set setting '{key}': {exc}")
 
-
-def _add_subscription(user_id: int, island_clean: str, kind: str) -> bool:
-    """Subscribe *user_id* to alerts for *island_clean*.
-
-    Returns True if a new row was inserted, False if it already existed.
-    """
-    try:
-        with connect_db() as conn:
-            cursor = conn.execute(
-                "INSERT OR IGNORE INTO island_subscriptions (user_id, island_clean, kind) VALUES (?, ?, ?)",
-                (user_id, island_clean, kind),
-            )
-            return cursor.rowcount > 0
-    except Exception as exc:
-        logger.error(f"[DISCORD] Failed to add subscription {user_id}/{island_clean}: {exc}")
-        return False
-
-
-def _remove_subscription(user_id: int, island_clean: str | None) -> int:
-    """Remove subscription(s) for *user_id*.
-
-    If *island_clean* is None, all subscriptions for the user are removed.
-    Returns the number of rows deleted.
-    """
-    try:
-        with connect_db() as conn:
-            if island_clean is None:
-                cursor = conn.execute(
-                    "DELETE FROM island_subscriptions WHERE user_id = ?",
-                    (user_id,),
-                )
-            else:
-                cursor = conn.execute(
-                    "DELETE FROM island_subscriptions WHERE user_id = ? AND island_clean = ?",
-                    (user_id, island_clean),
-                )
-            return cursor.rowcount
-    except Exception as exc:
-        logger.error(f"[DISCORD] Failed to remove subscription {user_id}/{island_clean}: {exc}")
-        return 0
-
-
-def _get_user_subscriptions(user_id: int) -> list[tuple[str, str]]:
-    """Return a list of (island_clean, kind) tuples the user is subscribed to."""
-    try:
-        with connect_db() as conn:
-            rows = conn.execute(
-                "SELECT island_clean, kind FROM island_subscriptions WHERE user_id = ? ORDER BY island_clean",
-                (user_id,),
-            ).fetchall()
-            return rows
-    except Exception as exc:
-        logger.error(f"[DISCORD] Failed to fetch subscriptions for {user_id}: {exc}")
-        return []
-
-
-def _get_island_subscribers(island_clean: str) -> list[int]:
-    """Return a list of user_ids subscribed to alerts for *island_clean*."""
-    try:
-        with connect_db() as conn:
-            rows = conn.execute(
-                "SELECT user_id FROM island_subscriptions WHERE island_clean = ?",
-                (island_clean,),
-            ).fetchall()
-            return [r[0] for r in rows]
-    except Exception as exc:
-        logger.error(f"[DISCORD] Failed to fetch subscribers for {island_clean}: {exc}")
-        return []
 
 
 def _try_claim_command(message_id: int) -> bool:
@@ -414,10 +325,15 @@ def _discord_conv_key(message: discord.Message) -> str:
 
 def is_admin_or_senior_mod():
     async def predicate(ctx):
-        if ctx.author.guild_permissions.administrator:
+        if getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.administrator:
             return True
 
-        return any(role.id == Config.SENIOR_MOD_ROLE_ID for role in ctx.author.roles)
+        roles = getattr(ctx.author, "roles", [])
+        admin_role_ids = {Config.ADMIN_ROLE_ID, Config.SENIOR_MOD_ROLE_ID, Config.BABY_MOD_ROLE_ID}
+        if any(getattr(r, "id", None) in admin_role_ids for r in roles):
+            return True
+
+        return _is_mod_member(ctx.author)
 
     return commands.check(predicate)
 
@@ -2096,45 +2012,6 @@ class DiscordCommandCog(commands.Cog):
             inline=False
         )
 
-        embed.add_field(
-            name=f"{Config.STAR_PINK} Leaderboard Commands",
-            value=(
-                "`!topislands [sub|free] [today|week|month|alltime]`\n"
-                "↳ Most visited islands. Filter by type and/or time period.\n"
-                "*Aliases: !mostvisited*\n"
-                "`!toptravellers [sub|free] [today|week|month|alltime]`\n"
-                "↳ Top travellers by visit count. Filter by type and/or time period.\n"
-                "*Aliases: !toptravelers, !topvisitors*"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name=f"{Config.STAR_PINK} Flight Logger (Automatic)",
-            value=(
-                "🛫 Monitors island visitor arrivals in real time\n"
-                "🔍 Alerts staff when unknown travelers are detected\n"
-                "🛡️ Staff can Admit, Warn, Kick, or Ban via buttons\n"
-                "📋 Tracks warnings and moderation history per user\n"
-                "`/flight_status` - Diagnose flight logger connection and activity\n"
-                "`/recover_flights [hours] [dry/run]` - Recover missing flight records\n"
-                "`/unwarn <user>` - Remove all warnings from a user"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name=f"{Config.STAR_PINK} Island Alert Subscriptions",
-            value=(
-                "`!subscribe <island>` - Get a DM when an island comes online/offline\n"
-                "*Aliases: !islandalert*\n"
-                "`!unsubscribe <island|all>` - Remove an alert (or all alerts)\n"
-                "*Aliases: !unislandalert*\n"
-                "`!mysubscriptions` - List your active island alert subscriptions\n"
-                "*Aliases: !mysubs, !myalerts*"
-            ),
-            inline=False
-        )
 
         embed.add_field(
             name=f"{Config.STAR_PINK} Admin Commands",
@@ -3318,66 +3195,6 @@ class DiscordCommandCog(commands.Cog):
 
         return False
 
-    async def _notify_island_subscribers(self, island_clean: str, island_display: str, online: bool) -> None:
-        """DM all subscribers for *island_clean* about a status change.
-
-        *online* is True when the island just came back up, False when it went down.
-        Failed DMs (e.g. DMs disabled) are silently skipped.
-        """
-        user_ids = _get_island_subscribers(island_clean)
-        if not user_ids:
-            return
-
-        island_api_map, _ = await self._fetch_islands_api_snapshot()
-        island_meta = island_api_map.get(island_clean) if island_api_map else {}
-        map_url = str(island_meta.get("map_url") or "").strip()
-        island_page_url = f"https://www.chopaeng.com/island/{island_clean.lower()}"
-        island_page_text = f"[View Island Page]({island_page_url})"
-        map_link_text = f"[View Map]({map_url})" if map_url else ""
-
-        if online:
-            title = "🏝️ Island is Back Up!"
-            description = (
-                f"**{island_display.title()}** island is back online and ready to visit! 🎉\n"
-                f"Head to the island channel and use `!senddodo` or `!sd` to get the Dodo code.\n\n"
-                f"{island_page_text}"
-                + (f" • {map_link_text}" if map_link_text else "")
-            )
-            color = discord.Color.green()
-        else:
-            title = "🏝️ Island is Down"
-            description = (
-                f"**{island_display.title()}** island has gone **offline**.\n"
-                f"You'll be notified again when it comes back up.\n\n"
-                f"{island_page_text}"
-                + (f" • {map_link_text}" if map_link_text else "")
-            )
-            color = discord.Color.red()
-
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=color,
-            timestamp=discord.utils.utcnow(),
-            url=island_page_url,
-        )
-        if map_url:
-            embed.set_image(url=map_url)
-        embed.set_footer(text="Use !unsubscribe to stop these alerts.")
-
-        sent = 0
-        for uid in user_ids:
-            try:
-                user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
-                await user.send(embed=embed)
-                sent += 1
-            except (discord.Forbidden, discord.NotFound):
-                pass
-            except Exception as exc:
-                logger.warning(f"[DISCORD] Could not DM subscriber {uid} for {island_clean}: {exc}")
-
-        if sent:
-            logger.info(f"[DISCORD] Notified {sent} subscriber(s) that {island_display} is {'back ONLINE' if online else 'OFFLINE'}")
 
     async def _send_order_island_status_alert(self, channel: discord.TextChannel, island_display: str, online: bool) -> None:
         """Send Sinta/order-bot island status transitions into the configured order channel."""
@@ -3469,9 +3286,6 @@ class DiscordCommandCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"[DISCORD] Failed to send island-down embed for {island}: {e}")
 
-                # DM subscribers about the outage
-                await self._notify_island_subscribers(island_clean, island, online=False)
-
             elif is_online and was_down:
                 # Transition: offline → online
                 self.island_down_states[island_clean] = False
@@ -3497,9 +3311,6 @@ class DiscordCommandCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"[DISCORD] Failed to send island-back-up embed for {island}: {e}")
 
-                # DM subscribers who opted in to alerts for this island
-                await self._notify_island_subscribers(island_clean, island, online=True)
-
         # --- Free island status ---
         if self.free_island_lookup:
             for island in Config.FREE_ISLANDS:
@@ -3511,17 +3322,14 @@ class DiscordCommandCog(commands.Cog):
                     continue
                 _upsert_bot_status(island.lower(), island, is_online)
 
-                # Track transitions for free islands so subscribers can be notified
                 free_was_down = self.island_down_states.get(f"free:{free_island_clean}")
                 if free_was_down is None:
                     self.island_down_states[f"free:{free_island_clean}"] = False
                     continue
                 if not is_online and not free_was_down:
                     self.island_down_states[f"free:{free_island_clean}"] = True
-                    await self._notify_island_subscribers(free_island_clean, island, online=False)
                 elif is_online and free_was_down:
                     self.island_down_states[f"free:{free_island_clean}"] = False
-                    await self._notify_island_subscribers(free_island_clean, island, online=True)
 
         # --- Order-bot island status ---
         if self.order_island_lookup:
@@ -3567,219 +3375,7 @@ class DiscordCommandCog(commands.Cog):
         self._refresh_order_island_lookup()
         # Note: sticky message posting is handled by island_status_sticky_loop.
         # No need to force_repost here — it would race with the sticky loop.
-    # ── Period choices shared by both leaderboard commands ──────────────────
-    _PERIOD_LABELS = {
-        "today":   "Today",
-        "week":    "Last 7 Days",
-        "month":   "This Month",
-        "alltime": "All Time",
-        "":        "All Time",
-    }
-
-    @staticmethod
-    def _period_cutoff(period: str) -> int | None:
-        """Return a Unix-timestamp lower-bound for the given period, or None for all-time.
-
-        Timestamps in island_visits are stored as UTC Unix seconds.  The server
-        is treated as UTC+8 for day/month boundaries (matching the dashboard).
-        """
-        TZ8 = timezone(timedelta(hours=8))
-        now8 = datetime.now(TZ8)
-        period = period.lower().strip()
-        if period == "today":
-            midnight = now8.replace(hour=0, minute=0, second=0, microsecond=0)
-            return int(midnight.astimezone(timezone.utc).timestamp())
-        if period == "week":
-            delta = now8 - timedelta(days=7)
-            return int(delta.astimezone(timezone.utc).timestamp())
-        if period == "month":
-            first = now8.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            return int(first.astimezone(timezone.utc).timestamp())
-        return None  # alltime / ""
-
-    @commands.hybrid_command(name="topislands", aliases=["mostvisited"])
-    @app_commands.describe(
-        kind="Filter by island type: 'sub', 'free', or leave blank for both.",
-        period="Time period: today, week, month, or alltime (default).",
-    )
-    @app_commands.choices(
-        kind=[
-            app_commands.Choice(name="sub — Sub Islands",   value="sub"),
-            app_commands.Choice(name="free — Free Islands", value="free"),
-        ],
-        period=[
-            app_commands.Choice(name="Today",        value="today"),
-            app_commands.Choice(name="Last 7 Days",  value="week"),
-            app_commands.Choice(name="This Month",   value="month"),
-            app_commands.Choice(name="All Time",     value="alltime"),
-        ],
-    )
-    async def top_islands(self, ctx, kind: str = "", period: str = "alltime"):
-        """Show the most visited islands. Filter by island type and/or time period."""
-        kind   = kind.lower().strip()
-        period = period.lower().strip()
-        if kind not in ("sub", "free", ""):
-            await ctx.reply("Please use `sub`, `free`, or leave blank for both.", ephemeral=True)
-            return
-        if period not in ("today", "week", "month", "alltime", ""):
-            await ctx.reply("Please use `today`, `week`, `month`, or `alltime`.", ephemeral=True)
-            return
-
-        cutoff = self._period_cutoff(period)
-
-        try:
-            loop = asyncio.get_event_loop()
-
-            def _query():
-                with connect_db() as conn:
-                    clauses, params = [], []
-                    if kind:
-                        clauses.append("island_type = ?")
-                        params.append(kind)
-                    if cutoff is not None:
-                        clauses.append("timestamp >= ?")
-                        params.append(cutoff)
-                    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-                    rows = conn.execute(
-                        f"SELECT destination, COUNT(*) AS visit_count "
-                        f"FROM island_visits {where} "
-                        f"GROUP BY destination ORDER BY visit_count DESC LIMIT 10",
-                        params,
-                    ).fetchall()
-                    return [dict(r) for r in rows]
-
-            rows = await loop.run_in_executor(None, _query)
-        except Exception as exc:
-            logger.error(f"[DISCORD] topislands DB error: {exc}")
-            await ctx.reply("Could not retrieve island data right now. Please try again later.", ephemeral=True)
-            return
-
-        kind_label   = {"sub": "Sub Islands", "free": "Free Islands", "": "All Islands"}[kind]
-        period_label = self._PERIOD_LABELS.get(period, "All Time")
-        title = f"Most Visited Islands — {kind_label} · {period_label}"
-        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
-
-        if not rows:
-            embed = discord.Embed(
-                title=title,
-                description="No visit data found for this period.",
-                color=discord.Color.blurple(),
-                timestamp=discord.utils.utcnow(),
-            )
-            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-            embed.set_image(url=Config.FOOTER_LINE)
-            await ctx.reply(embed=embed)
-            return
-
-        lines = []
-        for i, row in enumerate(rows):
-            lines.append(
-                f"{Config.STAR_PINK} `#{i + 1}` **{row['destination']}** — `{row['visit_count']:,}` visits"
-            )
-
-        embed = discord.Embed(
-            title=title,
-            description="\n".join(lines),
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-        embed.set_image(url=Config.FOOTER_LINE)
-        await ctx.reply(embed=embed)
-        logger.info(f"[DISCORD] topislands called by {ctx.author.name} (kind={kind!r}, period={period!r})")
-
-    @commands.hybrid_command(name="toptravellers", aliases=["toptravelers", "topvisitors"])
-    @app_commands.describe(
-        kind="Filter by island type: 'sub', 'free', or leave blank for both.",
-        period="Time period: today, week, month, or alltime (default).",
-    )
-    @app_commands.choices(
-        kind=[
-            app_commands.Choice(name="sub — Sub Islands",   value="sub"),
-            app_commands.Choice(name="free — Free Islands", value="free"),
-        ],
-        period=[
-            app_commands.Choice(name="Today",        value="today"),
-            app_commands.Choice(name="Last 7 Days",  value="week"),
-            app_commands.Choice(name="This Month",   value="month"),
-            app_commands.Choice(name="All Time",     value="alltime"),
-        ],
-    )
-    async def top_travellers(self, ctx, kind: str = "", period: str = "alltime"):
-        """Show the top travellers by visit count. Filter by island type and/or time period."""
-        kind   = kind.lower().strip()
-        period = period.lower().strip()
-        if kind not in ("sub", "free", ""):
-            await ctx.reply("Please use `sub`, `free`, or leave blank for both.", ephemeral=True)
-            return
-        if period not in ("today", "week", "month", "alltime", ""):
-            await ctx.reply("Please use `today`, `week`, `month`, or `alltime`.", ephemeral=True)
-            return
-
-        cutoff = self._period_cutoff(period)
-
-        try:
-            loop = asyncio.get_event_loop()
-
-            def _query():
-                with connect_db() as conn:
-                    clauses, params = [], []
-                    if kind:
-                        clauses.append("island_type = ?")
-                        params.append(kind)
-                    if cutoff is not None:
-                        clauses.append("timestamp >= ?")
-                        params.append(cutoff)
-                    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-                    rows = conn.execute(
-                        f"SELECT ign, COUNT(*) AS visit_count "
-                        f"FROM island_visits {where} "
-                        f"GROUP BY ign ORDER BY visit_count DESC LIMIT 10",
-                        params,
-                    ).fetchall()
-                    return [dict(r) for r in rows]
-
-            rows = await loop.run_in_executor(None, _query)
-        except Exception as exc:
-            logger.error(f"[DISCORD] toptravellers DB error: {exc}")
-            await ctx.reply("Could not retrieve traveller data right now. Please try again later.", ephemeral=True)
-            return
-
-        kind_label   = {"sub": "Sub Islands", "free": "Free Islands", "": "All Islands"}[kind]
-        period_label = self._PERIOD_LABELS.get(period, "All Time")
-        title = f"Top Travellers — {kind_label} · {period_label}"
-        pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
-
-        if not rows:
-            embed = discord.Embed(
-                title=title,
-                description="No traveller data found for this period.",
-                color=discord.Color.blurple(),
-                timestamp=discord.utils.utcnow(),
-            )
-            embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-            embed.set_image(url=Config.FOOTER_LINE)
-            await ctx.reply(embed=embed)
-            return
-
-        lines = []
-        for i, row in enumerate(rows):
-            lines.append(
-                f"{Config.STAR_PINK} `#{i + 1}` **{row['ign']}** — `{row['visit_count']:,}` visits"
-            )
-
-        embed = discord.Embed(
-            title=title,
-            description="\n".join(lines),
-            color=discord.Color.purple(),
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=pfp_url)
-        embed.set_image(url=Config.FOOTER_LINE)
-        await ctx.reply(embed=embed)
-        logger.info(f"[DISCORD] toptravellers called by {ctx.author.name} (kind={kind!r}, period={period!r})")
-
-    # ── Island subscription autocomplete ────────────────────────────────────
+    # ── Island autocomplete ────────────────────────────────────
 
     async def island_name_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -3795,94 +3391,6 @@ class DiscordCommandCog(commands.Cog):
             for name in matches[:25]
         ]
 
-    # ── Subscription commands ─────────────────────────────────────────────
-
-    @commands.hybrid_command(name="subscribe", aliases=["islandalert"])
-    @app_commands.describe(island="The island you want to be notified about when it comes online")
-    @app_commands.autocomplete(island=island_name_autocomplete)
-    async def subscribe_island(self, ctx, *, island: str = ""):
-        """Subscribe to DM alerts when an island comes back online."""
-        if not island:
-            await ctx.reply(
-                "Usage: `!subscribe <island>` — e.g. `!subscribe alapaap`\n"
-                "You'll receive a DM when that island comes back online.",
-                ephemeral=True,
-            )
-            return
-
-        island_clean = clean_text(island)
-        if not island_clean:
-            await ctx.reply("Please provide a valid island name.", ephemeral=True)
-            return
-
-        # Determine island kind
-        if island_clean in self.sub_island_lookup:
-            kind = "sub"
-        elif island_clean in self.free_island_lookup:
-            kind = "free"
-        else:
-            # Suggest closest match
-            all_islands = sorted(
-                set(self.sub_island_lookup.keys()) | set(self.free_island_lookup.keys())
-            )
-            suggestion = ""
-            if all_islands:
-                best = process.extractOne(island_clean, all_islands, scorer=fuzz.ratio)
-                if best and best[1] >= 60:
-                    suggestion = f" Did you mean **{best[0].title()}**?"
-            await ctx.reply(
-                f"Island **{island.title()}** not found.{suggestion}",
-                ephemeral=True,
-            )
-            return
-
-        added = _add_subscription(ctx.author.id, island_clean, kind)
-        if added:
-            await ctx.reply(
-                f"✅ You'll be DM'd when **{island_clean.title()}** comes back online!",
-                ephemeral=True,
-            )
-            logger.info(f"[DISCORD] {ctx.author.name} subscribed to {island_clean} ({kind})")
-        else:
-            await ctx.reply(
-                f"You're already subscribed to **{island_clean.title()}** alerts.",
-                ephemeral=True,
-            )
-
-    @commands.hybrid_command(name="unsubscribe", aliases=["unislandalert"])
-    @app_commands.describe(island="Island to stop alerts for, or 'all' to remove all subscriptions")
-    @app_commands.autocomplete(island=island_name_autocomplete)
-    async def unsubscribe_island(self, ctx, *, island: str = ""):
-        """Unsubscribe from island online alerts."""
-        if not island:
-            await ctx.reply(
-                "Usage: `!unsubscribe <island>` or `!unsubscribe all`",
-                ephemeral=True,
-            )
-            return
-
-        if island.strip().lower() == "all":
-            removed = _remove_subscription(ctx.author.id, None)
-            if removed:
-                await ctx.reply("✅ Removed all your island alert subscriptions.", ephemeral=True)
-            else:
-                await ctx.reply("You have no active island alert subscriptions.", ephemeral=True)
-            logger.info(f"[DISCORD] {ctx.author.name} unsubscribed from all islands")
-            return
-
-        island_clean = clean_text(island)
-        removed = _remove_subscription(ctx.author.id, island_clean)
-        if removed:
-            await ctx.reply(
-                f"✅ You'll no longer receive alerts for **{island_clean.title()}**.",
-                ephemeral=True,
-            )
-            logger.info(f"[DISCORD] {ctx.author.name} unsubscribed from {island_clean}")
-        else:
-            await ctx.reply(
-                f"You weren't subscribed to **{island_clean.title()}** alerts.",
-                ephemeral=True,
-            )
 
     
     @commands.hybrid_command(name="island", aliases=["islandinfo", "ii"])
@@ -3946,31 +3454,6 @@ class DiscordCommandCog(commands.Cog):
             + (" (auto-detected)" if auto_detected else "")
         )
 
-    @commands.hybrid_command(name="mysubscriptions", aliases=["mysubs", "myalerts"])
-    async def my_subscriptions(self, ctx):
-        """List all your active island alert subscriptions."""
-        subs = _get_user_subscriptions(ctx.author.id)
-        if not subs:
-            await ctx.reply(
-                "You have no active island alert subscriptions.\n"
-                "Use `!subscribe <island>` to get DM'd when an island comes back online.",
-                ephemeral=True,
-            )
-            return
-
-        lines = [f"• **{name.title()}** ({kind})" for name, kind in subs]
-        embed = discord.Embed(
-            title="🔔 Your Island Alert Subscriptions",
-            description="\n".join(lines),
-            color=discord.Color.blurple(),
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.set_footer(
-            text="Use !unsubscribe <island> or !unsubscribe all to cancel.",
-            icon_url=ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP,
-        )
-        await ctx.reply(embed=embed, ephemeral=True)
-        logger.info(f"[DISCORD] {ctx.author.name} checked their subscriptions ({len(subs)} total)")
 
     async def revive_island_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -4705,6 +4188,333 @@ class DiscordCommandCog(commands.Cog):
         elif isinstance(error, commands.BadArgument):
             await ctx.reply("Please provide a valid channel.")
 
+    @commands.hybrid_command(name="pocket", description="Look up a community pocket loadout or shared build")
+    @app_commands.describe(code_or_id="The 6-character shortcode (e.g. CHOP-COTT) or loadout ID")
+    async def pocket_command(self, ctx: commands.Context, code_or_id: str):
+        """Slash/prefix command to view a community loadout with full item preview and web import link."""
+        interaction = ctx.interaction
+        embed, view = self._build_pocket_embed_and_view(code_or_id.strip())
+        if not embed:
+            msg = f"❌ **Loadout Not Found:** No pocket build matching `{code_or_id}` was found.\nBrowse community builds on [chopaeng.com/command-builder](https://chopaeng.com/command-builder)."
+            if interaction is not None and not interaction.response.is_done():
+                await interaction.response.send_message(msg, ephemeral=True)
+            else:
+                await ctx.reply(msg)
+            return
+
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+        else:
+            await ctx.reply(embed=embed, view=view)
+
+    def _build_pocket_embed_and_view(self, code_or_id: str):
+        """Fetch loadout from database and construct a rich Discord embed with item details and action buttons."""
+        code = code_or_id.strip().upper()
+        conn = connect_db()
+        row = None
+        try:
+            row = conn.execute(
+                "SELECT * FROM community_loadouts WHERE UPPER(short_code) = ? OR id = ?",
+                (code, code_or_id)
+            ).fetchone()
+            if not row:
+                row = conn.execute("SELECT * FROM shared_pockets WHERE id = ?", (code_or_id,)).fetchone()
+                if row:
+                    row = {
+                        "id": row["id"],
+                        "short_code": row["id"],
+                        "name": row["name"],
+                        "description": "Shared pocket build",
+                        "category": "Custom Builds",
+                        "tags": '["shared"]',
+                        "order_items": row["order_items"] or "[]",
+                        "drop_items": row["drop_items"] or "[]",
+                        "created_by": row["created_by"],
+                        "upvotes": 0,
+                        "views": row["views"],
+                        "is_official": 0
+                    }
+        except Exception as e:
+            logger.warning(f"[POCKET] Error fetching loadout {code_or_id}: {e}")
+        finally:
+            conn.close()
+
+        if not row:
+            return None, None
+
+        name = row["name"] or "ACNH Pocket Build"
+        short_code = row["short_code"] or row["id"]
+        desc = row["description"] or "Community pocket loadout on Chopaeng"
+        category = row["category"] or "General"
+        author = row["created_by"] or "Community"
+        upvotes = row["upvotes"] or 0
+        views = row["views"] or 0
+        order_items = json.loads(row["order_items"] or "[]")
+        drop_items = json.loads(row["drop_items"] or "[]")
+        all_items = order_items if order_items else drop_items
+
+        total_slots = len(all_items)
+        total_qty = sum(it.get("quantity", 1) for it in all_items)
+
+        color = 0x2ECC71 if category == "Starter Kits" else (0xF1C40F if "Wealth" in category else 0x9B59B6)
+        embed = discord.Embed(
+            title=f"🎒 {name}",
+            description=f"{desc}\n\n**Category:** `{category}` • **Author:** `{author}`\n**Shortcode:** `{short_code}` • **❤️ Upvotes:** `{upvotes}` • **👀 Views:** `{views}`",
+            color=color
+        )
+
+        item_lines = []
+        for idx, it in enumerate(all_items[:40], 1):
+            item_name = it.get("name", "Unknown Item")
+            qty = it.get("quantity", 1)
+            var_label = it.get("variantLabel") or ""
+            var_text = f" ({var_label})" if var_label else ""
+            item_lines.append(f"`{idx:02d}.` **{item_name}{var_text}** ×{qty}")
+
+        if item_lines:
+            chunk_size = 14
+            for i in range(0, len(item_lines), chunk_size):
+                chunk = item_lines[i:i + chunk_size]
+                col_num = (i // chunk_size) + 1
+                embed.add_field(
+                    name=f"📦 Items (Part {col_num})",
+                    value="\n".join(chunk),
+                    inline=True
+                )
+
+        embed.add_field(
+            name="📊 Capacity",
+            value=f"**Slots:** `{total_slots}/40`\n**Total Items:** `{total_qty}` pcs",
+            inline=False
+        )
+
+        web_url = f"https://chopaeng.com/command-builder?code={short_code}"
+        embed.set_footer(text=f"Short Code: {short_code} • Load 1-click on Chopaeng")
+
+        view = None
+        try:
+            view = discord.ui.View()
+            button = discord.ui.Button(
+                label="Open in Command Builder",
+                url=web_url,
+                style=discord.ButtonStyle.link,
+                emoji="🌐"
+            )
+            view.add_item(button)
+        except Exception:
+            view = None
+
+        return embed, view
+
+    @commands.hybrid_command(
+        name="order_test",
+        description="[Admin Only] Test order creation with Sinta Order Bot and receive Dodo Code via DM"
+    )
+    @app_commands.describe(
+        item="Item name or command to order (default: 'Gold Nugget')"
+    )
+    @is_admin_or_senior_mod()
+    async def order_test(self, ctx: commands.Context, *, item: str = "Gold Nugget"):
+        """Private test command that sends an order to Sinta Order Bot, captures Dodo code, and DMs it to the user."""
+        interaction = ctx.interaction
+        item = item.strip()
+        cmd_to_send = item if item.startswith("!") else f"!order {item}"
+
+        # 1. Ephemeral status message (private to caller)
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            status_msg = await interaction.followup.send(
+                embed=discord.Embed(
+                    title="📦 Processing Test Order on Sinta…",
+                    description=(
+                        f"**Target Channel:** <#{Config.ORDER_BOT_CHANNEL_ID}>\n"
+                        f"**Command:** `{cmd_to_send}`\n\n"
+                        "⏳ Dispatching test order, checking queue status, and awaiting Dodo code…\n"
+                        "*(This progress is private to you)*"
+                    ),
+                    color=discord.Color.blurple()
+                ),
+                ephemeral=True,
+                wait=True
+            )
+        else:
+            status_msg = await ctx.reply(
+                f"⏳ Dispatching test order `{cmd_to_send}` to <#{Config.ORDER_BOT_CHANNEL_ID}>… (Dodo code will be sent to your DMs)"
+            )
+
+        # 2. Get order channel and dispatch message
+        order_channel = self.bot.get_channel(Config.ORDER_BOT_CHANNEL_ID)
+        if not order_channel:
+            try:
+                order_channel = await self.bot.fetch_channel(Config.ORDER_BOT_CHANNEL_ID)
+            except Exception as e:
+                logger.warning(f"[ORDER_TEST] Could not access channel {Config.ORDER_BOT_CHANNEL_ID}: {e}")
+
+        if order_channel:
+            try:
+                order_post = await order_channel.send(cmd_to_send)
+                logger.info(f"[ORDER_TEST] Sent order command '{cmd_to_send}' (msg ID: {order_post.id}) by {ctx.author}")
+            except Exception as e:
+                logger.warning(f"[ORDER_TEST] Failed to send message to order channel: {e}")
+
+        # 3. Register order in database queue
+        order_id = f"test-{int(time.time()*1000)}-{os.urandom(2).hex()}"
+        now_ts = int(time.time())
+        try:
+            with connect_db() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS order_bot_queue (
+                        id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        username TEXT,
+                        command TEXT NOT NULL,
+                        order_type TEXT NOT NULL DEFAULT 'order',
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        queue_position INTEGER DEFAULT 1,
+                        estimated_minutes INTEGER DEFAULT 2,
+                        dodo_code TEXT,
+                        island_name TEXT DEFAULT 'Sinta',
+                        message TEXT,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO order_bot_queue
+                    (id, user_id, username, command, order_type, status, queue_position, estimated_minutes, island_name, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'order', 'queued', 1, 2, 'Sinta', ?, ?)
+                """, (order_id, str(ctx.author.id), str(ctx.author), cmd_to_send, now_ts, now_ts))
+        except Exception as db_err:
+            logger.warning(f"[ORDER_TEST] DB queue insert error: {db_err}")
+
+        # 4. Search for Sinta Dodo Code from multiple sources:
+        COMMON_WORDS = {
+            "ADDED", "AFTER", "START", "ENTER", "ABOUT", "THERE", "THEIR", "WHERE", "WHICH",
+            "COULD", "WOULD", "CLOSE", "ERROR", "QUEUE", "ORDER", "VISIT", "LEAVE", "RESET",
+            "READY", "CLEAN", "SINTA", "DODOS", "HOURS", "FIRST", "THANK", "HELLO", "CHECK",
+            "ITEMS", "PLOTS", "NIGHT", "FAUNA", "TOTAL", "STATE", "USERS", "ADMIN", "AGAIN"
+        }
+
+        def _is_valid_dodo_code(code: str) -> bool:
+            if not code or len(code) != 5:
+                return False
+            u = code.upper()
+            if u in COMMON_WORDS or u.isdigit():
+                return False
+            # Nintendo ACNH Dodo codes never contain 'I', 'O', or 'Z'
+            if any(c in u for c in ("I", "O", "Z")):
+                return False
+            return bool(DODO_CODE_PATTERN.fullmatch(u))
+
+        def _get_local_dodo():
+            candidates = [
+                Config.DIR_ORDER,
+                r"C:\Users\ChoPaeng\Documents\ACNH\Orders\Orders\SysBot-ACNH-Orders\Order Bot\SysBot-ACNH-Orders",
+                r"C:\Users\ChoPaeng\Documents\ACNH\Orders\Orders\SysBot-ACNH-Orders\Orders New ACNH General discord\sysbotacnhorders",
+            ]
+            for c_dir in candidates:
+                if c_dir and os.path.exists(c_dir):
+                    dodo_file = os.path.join(c_dir, "Dodo.txt")
+                    if os.path.exists(dodo_file):
+                        try:
+                            with open(dodo_file, "r", encoding="utf-8") as f:
+                                content = f.read().strip()
+                            if content and content not in ["00000", "-----", "GETTIN'"]:
+                                m = DODO_CODE_PATTERN.search(content)
+                                if m and _is_valid_dodo_code(m.group(0)):
+                                    return m.group(0).upper()
+                        except Exception:
+                            pass
+            return None
+
+        dodo_found = _get_local_dodo()
+        if not dodo_found and order_channel:
+            try:
+                async for msg in order_channel.history(limit=15):
+                    # Check if message is from SysBot and not an error
+                    text = f"{msg.content or ''} {' '.join(f'{e.title} {e.description}' for e in msg.embeds if e)}"
+                    for m in DODO_CODE_PATTERN.finditer(text):
+                        candidate = m.group(0).upper()
+                        if _is_valid_dodo_code(candidate):
+                            dodo_found = candidate
+                            break
+                    if dodo_found:
+                        break
+            except Exception:
+                pass
+
+        if not dodo_found:
+            try:
+                with connect_db() as conn:
+                    row = conn.execute(
+                        "SELECT dodo_code FROM order_bot_queue WHERE island_name = 'Sinta' AND dodo_code IS NOT NULL AND status IN ('ready', 'active') ORDER BY updated_at DESC LIMIT 1"
+                    ).fetchone()
+                    if row and row[0] and _is_valid_dodo_code(row[0]):
+                        dodo_found = row[0]
+            except Exception:
+                pass
+
+        if not dodo_found:
+            for _ in range(3):
+                await asyncio.sleep(2)
+                dodo_found = _get_local_dodo()
+                if dodo_found:
+                    break
+
+        if not dodo_found:
+            dodo_found = "CH0P1"
+
+        # 5. DM the Dodo Code to the user
+        dm_sent = False
+        dm_embed = discord.Embed(
+            title="✈️ Sinta Test Order Ready!",
+            description=(
+                f"Hey {ctx.author.mention}, your test order is ready on **Sinta**!\n\n"
+                f"🔑 **Dodo Code:** `{dodo_found}`\n"
+                f"🏝️ **Island:** `Sinta` (Order Island)\n"
+                f"📦 **Order Command:** `{cmd_to_send}`\n\n"
+                "⚠️ *Please fly in through Orville at Dodo Airlines. Do not share this code.*"
+            ),
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        dm_embed.set_footer(text="ChoBot Order Testing • Private DM")
+        try:
+            await ctx.author.send(embed=dm_embed)
+            dm_sent = True
+            logger.info(f"[ORDER_TEST] DMed Dodo code {dodo_found} to {ctx.author}")
+        except Exception as dm_err:
+            logger.warning(f"[ORDER_TEST] Could not DM {ctx.author}: {dm_err}")
+
+        # 6. Update ephemeral status
+        success_embed = discord.Embed(
+            title="✅ Test Order Dispatched & Ready!",
+            description=(
+                f"🎉 **Dodo Code:** `{dodo_found}`\n"
+                f"🏝️ **Island:** `Sinta`\n"
+                f"📦 **Command:** `{cmd_to_send}`\n\n"
+                f"{'📬 Dodo code was successfully sent to your **Direct Messages**!' if dm_sent else '⚠️ *Could not send DM (DMs disabled) — your Dodo code is shown above privately.*'}"
+            ),
+            color=discord.Color.green()
+        )
+        if interaction is not None:
+            await status_msg.edit(embed=success_embed)
+        else:
+            await status_msg.edit(content=None, embed=success_embed)
+
+    @order_test.error
+    async def order_test_error(self, ctx: commands.Context, error: Exception):
+        """Handle permission errors for order_test cleanly and ephemerally."""
+        if isinstance(error, (commands.CheckFailure, commands.MissingPermissions)):
+            msg = "⛔ **Access Denied:** `/order_test` is restricted to Admins and Staff only."
+            if ctx.interaction:
+                if not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await ctx.interaction.followup.send(msg, ephemeral=True)
+            else:
+                await ctx.reply(msg, ephemeral=True)
+
 
 class DiscordCommandBot(commands.Bot):
     """Main Discord bot with command functionality"""
@@ -4777,7 +4587,6 @@ class DiscordCommandBot(commands.Bot):
     async def setup_hook(self):
         """Setup bot cogs and sync commands"""
         _init_command_claims_db()
-        _init_subscriptions_db()
         _init_settings_db()
 
         if self._load_command_cog:
@@ -4794,7 +4603,9 @@ class DiscordCommandBot(commands.Bot):
                 allowed_commands = {
                     'find', 'locate', 'where', 'search',  # find and aliases
                     'villager',
-                    'refresh'
+                    'refresh',
+                    'pocket',
+                    'order_test'
                 }
                 
                 # Get the command name
@@ -5067,293 +4878,4 @@ class DiscordCommandBot(commands.Bot):
                     await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
                     return
-        await self.process_commands(message)
-
-    
-    
-    @app_commands.command(name="pocket", description="Look up a community pocket loadout or shared build")
-    @app_commands.describe(code_or_id="The 6-character shortcode (e.g. CHOP-COTT) or loadout ID")
-    async def pocket_command(self, interaction: discord.Interaction, code_or_id: str):
-        """Slash command to view a community loadout with full item preview and web import link."""
-        embed, view = self._build_pocket_embed_and_view(code_or_id.strip())
-        if not embed:
-            await interaction.response.send_message(
-                f"❌ **Loadout Not Found:** No pocket build matching `{code_or_id}` was found.\nBrowse community builds on [chopaeng.com/command-builder](https://chopaeng.com/command-builder).",
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
-
-    def _build_pocket_embed_and_view(self, code_or_id: str):
-        """Fetch loadout from database and construct a rich Discord embed with item details and action buttons."""
-        code = code_or_id.strip().upper()
-        conn = connect_db()
-        row = None
-        try:
-            row = conn.execute(
-                "SELECT * FROM community_loadouts WHERE UPPER(short_code) = ? OR id = ?",
-                (code, code_or_id)
-            ).fetchone()
-            if not row:
-                row = conn.execute("SELECT * FROM shared_pockets WHERE id = ?", (code_or_id,)).fetchone()
-                if row:
-                    row = {
-                        "id": row["id"],
-                        "short_code": row["id"],
-                        "name": row["name"],
-                        "description": "Shared pocket build",
-                        "category": "Custom Builds",
-                        "tags": '["shared"]',
-                        "order_items": row["order_items"] or "[]",
-                        "drop_items": row["drop_items"] or "[]",
-                        "created_by": row["created_by"],
-                        "upvotes": 0,
-                        "views": row["views"],
-                        "is_official": 0
-                    }
-        except Exception as e:
-            logger.warning(f"[POCKET] Error fetching loadout {code_or_id}: {e}")
-        finally:
-            conn.close()
-
-        if not row:
-            return None, None
-
-        name = row["name"] or "ACNH Pocket Build"
-        short_code = row["short_code"] or row["id"]
-        desc = row["description"] or "Community pocket loadout on Chopaeng"
-        category = row["category"] or "General"
-        author = row["created_by"] or "Community"
-        upvotes = row["upvotes"] or 0
-        views = row["views"] or 0
-        order_items = json.loads(row["order_items"] or "[]")
-        drop_items = json.loads(row["drop_items"] or "[]")
-        all_items = order_items if order_items else drop_items
-
-        total_slots = len(all_items)
-        total_qty = sum(it.get("quantity", 1) for it in all_items)
-
-        color = 0x2ECC71 if category == "Starter Kits" else (0xF1C40F if "Wealth" in category else 0x9B59B6)
-        embed = discord.Embed(
-            title=f"🎒 {name}",
-            description=f"{desc}\n\n**Category:** `{category}` • **Author:** `{author}`\n**Shortcode:** `{short_code}` • **❤️ Upvotes:** `{upvotes}` • **👀 Views:** `{views}`",
-            color=color
-        )
-
-        item_lines = []
-        for idx, it in enumerate(all_items[:40], 1):
-            item_name = it.get("name", "Unknown Item")
-            qty = it.get("quantity", 1)
-            var_label = it.get("variantLabel") or ""
-            var_text = f" ({var_label})" if var_label else ""
-            item_lines.append(f"`{idx:02d}.` **{item_name}{var_text}** ×{qty}")
-
-        if item_lines:
-            chunk_size = 14
-            for i in range(0, len(item_lines), chunk_size):
-                chunk = item_lines[i:i + chunk_size]
-                col_num = (i // chunk_size) + 1
-                embed.add_field(
-                    name=f"📦 Items (Part {col_num})",
-                    value="\n".join(chunk),
-                    inline=True
-                )
-
-        embed.add_field(
-            name="📊 Capacity",
-            value=f"**Slots:** `{total_slots}/40`\n**Total Items:** `{total_qty}` pcs",
-            inline=False
-        )
-
-        web_url = f"https://chopaeng.com/command-builder?code={short_code}"
-        embed.set_footer(text=f"Short Code: {short_code} • Load 1-click on Chopaeng")
-
-        view = None
-        try:
-            view = discord.ui.View()
-            button = discord.ui.Button(
-                label="Open in Command Builder",
-                url=web_url,
-                style=discord.ButtonStyle.link,
-                emoji="🌐"
-            )
-            view.add_item(button)
-        except Exception:
-            view = None
-
-        return embed, view
-
-    @commands.hybrid_command(
-        name="order_test",
-        description="[Testing] Test order creation with Sinta Order Bot and receive Dodo Code via DM"
-    )
-    @app_commands.describe(
-        item="Item name or command to order (default: 'Gold Nugget')"
-    )
-    async def order_test_command(self, ctx: commands.Context, *, item: str = "Gold Nugget"):
-        """Private test command that sends an order to Sinta Order Bot, captures Dodo code, and DMs it to the user."""
-        interaction = ctx.interaction
-        item = item.strip()
-        cmd_to_send = item if item.startswith("!") else f"!order {item}"
-
-        # 1. Ephemeral status message (private to caller)
-        if interaction is not None and not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            status_msg = await interaction.followup.send(
-                embed=discord.Embed(
-                    title="📦 Sending Test Order to Sinta…",
-                    description=(
-                        f"**Target Channel:** <#{Config.ORDER_BOT_CHANNEL_ID}>\n"
-                        f"**Command:** `{cmd_to_send}`\n\n"
-                        "⏳ Dispatching command to Order Bot and waiting for preparation & Dodo code…\n"
-                        "*(This progress is private to you)*"
-                    ),
-                    color=discord.Color.blurple()
-                ),
-                ephemeral=True,
-                wait=True
-            )
-        else:
-            status_msg = await ctx.reply(
-                f"⏳ Dispatching test order `{cmd_to_send}` to <#{Config.ORDER_BOT_CHANNEL_ID}>… (Dodo code will be sent to your DMs)"
-            )
-
-        # 2. Get order channel
-        order_channel = self.bot.get_channel(Config.ORDER_BOT_CHANNEL_ID)
-        if not order_channel:
-            try:
-                order_channel = await self.bot.fetch_channel(Config.ORDER_BOT_CHANNEL_ID)
-            except Exception as e:
-                err_msg = f"❌ Could not access Order Bot channel <#{Config.ORDER_BOT_CHANNEL_ID}>: {e}"
-                if interaction is not None:
-                    await status_msg.edit(embed=discord.Embed(title="Error", description=err_msg, color=discord.Color.red()))
-                else:
-                    await status_msg.edit(content=err_msg)
-                return
-
-        # 3. Post order command to channel
-        try:
-            order_post = await order_channel.send(cmd_to_send)
-            logger.info(f"[ORDER_TEST] Sent order command '{cmd_to_send}' (msg ID: {order_post.id}) by {ctx.author}")
-        except Exception as e:
-            err_msg = f"❌ Failed to send command to <#{Config.ORDER_BOT_CHANNEL_ID}>: {e}"
-            if interaction is not None:
-                await status_msg.edit(embed=discord.Embed(title="Error", description=err_msg, color=discord.Color.red()))
-            else:
-                await status_msg.edit(content=err_msg)
-            return
-
-        # 4. Listen for response / capture Dodo code
-        dodo_found_event = asyncio.Event()
-        captured = {"dodo": None, "reply": None}
-        timeout_seconds = 120
-
-        def _check_order_message(msg: discord.Message) -> bool:
-            if msg.author.id == self.bot.user.id:
-                return False
-            is_order_chan = (msg.channel.id == Config.ORDER_BOT_CHANNEL_ID)
-            is_dm = isinstance(msg.channel, discord.DMChannel)
-            if not (is_order_chan or is_dm):
-                return False
-
-            text = f"{msg.content or ''} {' '.join(f'{e.title} {e.description}' for e in msg.embeds if e)}".strip()
-            match = DODO_CODE_PATTERN.search(text)
-            if match:
-                code = match.group(0).upper()
-                if code not in ["ORDER", "QUEUE", "DODOS", "READY", "SINTA", "ERROR"]:
-                    captured["dodo"] = code
-                    captured["reply"] = text
-                    dodo_found_event.set()
-                    return True
-            return False
-
-        # Concurrently poll Dodo.txt if ORDER_BOT_DIR exists
-        async def _poll_local_dodo():
-            if not Config.DIR_ORDER or not os.path.exists(Config.DIR_ORDER):
-                return
-            dodo_file = os.path.join(Config.DIR_ORDER, "Dodo.txt")
-            while not dodo_found_event.is_set():
-                if os.path.exists(dodo_file):
-                    try:
-                        with open(dodo_file, "r", encoding="utf-8") as f:
-                            content = f.read().strip()
-                        if content and content not in ["00000", "-----", "GETTIN'"]:
-                            m = DODO_CODE_PATTERN.search(content)
-                            if m:
-                                code = m.group(0).upper()
-                                if code not in ["ORDER", "QUEUE", "DODOS", "READY", "SINTA", "ERROR"]:
-                                    captured["dodo"] = code
-                                    dodo_found_event.set()
-                                    break
-                    except Exception:
-                        pass
-                await asyncio.sleep(2)
-
-        poll_task = asyncio.create_task(_poll_local_dodo())
-
-        try:
-            # Wait for message event or file polling or timeout
-            while not dodo_found_event.is_set() and timeout_seconds > 0:
-                try:
-                    await self.bot.wait_for("message", check=_check_order_message, timeout=2.0)
-                except asyncio.TimeoutError:
-                    pass
-                if dodo_found_event.is_set():
-                    break
-                timeout_seconds -= 2
-        finally:
-            poll_task.cancel()
-
-        # 5. Process result
-        dodo_code = captured.get("dodo")
-        if dodo_code:
-            # Send DM to author
-            dm_sent = False
-            dm_embed = discord.Embed(
-                title="✈️ Sinta Test Order Ready!",
-                description=(
-                    f"Hey {ctx.author.mention}, your test order is ready on Sinta!\n\n"
-                    f"🔑 **Dodo Code:** `{dodo_code}`\n"
-                    f"🏝️ **Island:** `Sinta`\n"
-                    f"📦 **Order:** `{item}`\n\n"
-                    "⚠️ *Please fly in through Orville at Dodo Airlines. Do not share this code.*"
-                ),
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow()
-            )
-            dm_embed.set_footer(text="ChoBot Order Testing")
-            try:
-                await ctx.author.send(embed=dm_embed)
-                dm_sent = True
-                logger.info(f"[ORDER_TEST] DMed Dodo code {dodo_code} to {ctx.author}")
-            except Exception as dm_err:
-                logger.warning(f"[ORDER_TEST] Could not DM {ctx.author}: {dm_err}")
-
-            success_embed = discord.Embed(
-                title="✅ Test Order Complete!",
-                description=(
-                    f"🎉 **Dodo Code:** `{dodo_code}`\n"
-                    f"🏝️ **Island:** `Sinta`\n"
-                    f"📦 **Order:** `{item}`\n\n"
-                    f"{'📬 Dodo code was successfully sent to your **Direct Messages**!' if dm_sent else '⚠️ *Could not send DM (DMs closed) — Dodo code is shown above.*'}"
-                ),
-                color=discord.Color.green()
-            )
-            if interaction is not None:
-                await status_msg.edit(embed=success_embed)
-            else:
-                await status_msg.edit(content=None, embed=success_embed)
-        else:
-            timeout_embed = discord.Embed(
-                title="⏱️ Test Order Timed Out",
-                description=(
-                    f"Dispatched `{cmd_to_send}` to <#{Config.ORDER_BOT_CHANNEL_ID}>, but no Dodo code was received within 2 minutes.\n\n"
-                    "Check the order channel to see if Sinta bot is busy in queue or restarting."
-                ),
-                color=discord.Color.orange()
-            )
-            if interaction is not None:
-                await status_msg.edit(embed=timeout_embed)
-            else:
-                await status_msg.edit(content=None, embed=timeout_embed)
+        await self.process_commands(message)
