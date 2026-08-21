@@ -5184,4 +5184,176 @@ class DiscordCommandBot(commands.Bot):
 
         return embed, view
 
-    
+    @commands.hybrid_command(
+        name="order_test",
+        description="[Testing] Test order creation with Sinta Order Bot and receive Dodo Code via DM"
+    )
+    @app_commands.describe(
+        item="Item name or command to order (default: 'Gold Nugget')"
+    )
+    async def order_test_command(self, ctx: commands.Context, *, item: str = "Gold Nugget"):
+        """Private test command that sends an order to Sinta Order Bot, captures Dodo code, and DMs it to the user."""
+        interaction = ctx.interaction
+        item = item.strip()
+        cmd_to_send = item if item.startswith("!") else f"!order {item}"
+
+        # 1. Ephemeral status message (private to caller)
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            status_msg = await interaction.followup.send(
+                embed=discord.Embed(
+                    title="📦 Sending Test Order to Sinta…",
+                    description=(
+                        f"**Target Channel:** <#{Config.ORDER_BOT_CHANNEL_ID}>\n"
+                        f"**Command:** `{cmd_to_send}`\n\n"
+                        "⏳ Dispatching command to Order Bot and waiting for preparation & Dodo code…\n"
+                        "*(This progress is private to you)*"
+                    ),
+                    color=discord.Color.blurple()
+                ),
+                ephemeral=True,
+                wait=True
+            )
+        else:
+            status_msg = await ctx.reply(
+                f"⏳ Dispatching test order `{cmd_to_send}` to <#{Config.ORDER_BOT_CHANNEL_ID}>… (Dodo code will be sent to your DMs)"
+            )
+
+        # 2. Get order channel
+        order_channel = self.bot.get_channel(Config.ORDER_BOT_CHANNEL_ID)
+        if not order_channel:
+            try:
+                order_channel = await self.bot.fetch_channel(Config.ORDER_BOT_CHANNEL_ID)
+            except Exception as e:
+                err_msg = f"❌ Could not access Order Bot channel <#{Config.ORDER_BOT_CHANNEL_ID}>: {e}"
+                if interaction is not None:
+                    await status_msg.edit(embed=discord.Embed(title="Error", description=err_msg, color=discord.Color.red()))
+                else:
+                    await status_msg.edit(content=err_msg)
+                return
+
+        # 3. Post order command to channel
+        try:
+            order_post = await order_channel.send(cmd_to_send)
+            logger.info(f"[ORDER_TEST] Sent order command '{cmd_to_send}' (msg ID: {order_post.id}) by {ctx.author}")
+        except Exception as e:
+            err_msg = f"❌ Failed to send command to <#{Config.ORDER_BOT_CHANNEL_ID}>: {e}"
+            if interaction is not None:
+                await status_msg.edit(embed=discord.Embed(title="Error", description=err_msg, color=discord.Color.red()))
+            else:
+                await status_msg.edit(content=err_msg)
+            return
+
+        # 4. Listen for response / capture Dodo code
+        dodo_found_event = asyncio.Event()
+        captured = {"dodo": None, "reply": None}
+        timeout_seconds = 120
+
+        def _check_order_message(msg: discord.Message) -> bool:
+            if msg.author.id == self.bot.user.id:
+                return False
+            is_order_chan = (msg.channel.id == Config.ORDER_BOT_CHANNEL_ID)
+            is_dm = isinstance(msg.channel, discord.DMChannel)
+            if not (is_order_chan or is_dm):
+                return False
+
+            text = f"{msg.content or ''} {' '.join(f'{e.title} {e.description}' for e in msg.embeds if e)}".strip()
+            match = DODO_CODE_PATTERN.search(text)
+            if match:
+                code = match.group(0).upper()
+                if code not in ["ORDER", "QUEUE", "DODOS", "READY", "SINTA", "ERROR"]:
+                    captured["dodo"] = code
+                    captured["reply"] = text
+                    dodo_found_event.set()
+                    return True
+            return False
+
+        # Concurrently poll Dodo.txt if ORDER_BOT_DIR exists
+        async def _poll_local_dodo():
+            if not Config.DIR_ORDER or not os.path.exists(Config.DIR_ORDER):
+                return
+            dodo_file = os.path.join(Config.DIR_ORDER, "Dodo.txt")
+            while not dodo_found_event.is_set():
+                if os.path.exists(dodo_file):
+                    try:
+                        with open(dodo_file, "r", encoding="utf-8") as f:
+                            content = f.read().strip()
+                        if content and content not in ["00000", "-----", "GETTIN'"]:
+                            m = DODO_CODE_PATTERN.search(content)
+                            if m:
+                                code = m.group(0).upper()
+                                if code not in ["ORDER", "QUEUE", "DODOS", "READY", "SINTA", "ERROR"]:
+                                    captured["dodo"] = code
+                                    dodo_found_event.set()
+                                    break
+                    except Exception:
+                        pass
+                await asyncio.sleep(2)
+
+        poll_task = asyncio.create_task(_poll_local_dodo())
+
+        try:
+            # Wait for message event or file polling or timeout
+            while not dodo_found_event.is_set() and timeout_seconds > 0:
+                try:
+                    await self.bot.wait_for("message", check=_check_order_message, timeout=2.0)
+                except asyncio.TimeoutError:
+                    pass
+                if dodo_found_event.is_set():
+                    break
+                timeout_seconds -= 2
+        finally:
+            poll_task.cancel()
+
+        # 5. Process result
+        dodo_code = captured.get("dodo")
+        if dodo_code:
+            # Send DM to author
+            dm_sent = False
+            dm_embed = discord.Embed(
+                title="✈️ Sinta Test Order Ready!",
+                description=(
+                    f"Hey {ctx.author.mention}, your test order is ready on Sinta!\n\n"
+                    f"🔑 **Dodo Code:** `{dodo_code}`\n"
+                    f"🏝️ **Island:** `Sinta`\n"
+                    f"📦 **Order:** `{item}`\n\n"
+                    "⚠️ *Please fly in through Orville at Dodo Airlines. Do not share this code.*"
+                ),
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            dm_embed.set_footer(text="ChoBot Order Testing")
+            try:
+                await ctx.author.send(embed=dm_embed)
+                dm_sent = True
+                logger.info(f"[ORDER_TEST] DMed Dodo code {dodo_code} to {ctx.author}")
+            except Exception as dm_err:
+                logger.warning(f"[ORDER_TEST] Could not DM {ctx.author}: {dm_err}")
+
+            success_embed = discord.Embed(
+                title="✅ Test Order Complete!",
+                description=(
+                    f"🎉 **Dodo Code:** `{dodo_code}`\n"
+                    f"🏝️ **Island:** `Sinta`\n"
+                    f"📦 **Order:** `{item}`\n\n"
+                    f"{'📬 Dodo code was successfully sent to your **Direct Messages**!' if dm_sent else '⚠️ *Could not send DM (DMs closed) — Dodo code is shown above.*'}"
+                ),
+                color=discord.Color.green()
+            )
+            if interaction is not None:
+                await status_msg.edit(embed=success_embed)
+            else:
+                await status_msg.edit(content=None, embed=success_embed)
+        else:
+            timeout_embed = discord.Embed(
+                title="⏱️ Test Order Timed Out",
+                description=(
+                    f"Dispatched `{cmd_to_send}` to <#{Config.ORDER_BOT_CHANNEL_ID}>, but no Dodo code was received within 2 minutes.\n\n"
+                    "Check the order channel to see if Sinta bot is busy in queue or restarting."
+                ),
+                color=discord.Color.orange()
+            )
+            if interaction is not None:
+                await status_msg.edit(embed=timeout_embed)
+            else:
+                await status_msg.edit(content=None, embed=timeout_embed)
