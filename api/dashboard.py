@@ -562,6 +562,16 @@ def init_dashboard_db():
             )
         """)
 
+        # User Favorite Islands table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_favorite_islands (
+                user_id     TEXT NOT NULL,
+                island_id   TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                PRIMARY KEY (user_id, island_id)
+            )
+        """)
+
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_pocket_bundles_cat ON pocket_bundles (category, is_official)")
         except Exception:
@@ -578,11 +588,15 @@ def init_dashboard_db():
             conn.execute("CREATE INDEX IF NOT EXISTS ix_loadout_upvotes_user ON community_loadout_upvotes (user_id)")
         except Exception:
             pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_user_fav_islands ON user_favorite_islands (user_id)")
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
 
-        logger.info("Dashboard DB initialised with pocket bundles and order queue")
+        logger.info("Dashboard DB initialised with pocket bundles, order queue, and favorite islands")
     except Exception as exc:
         logger.warning("Could not initialise dashboard DB: %s", exc)
 
