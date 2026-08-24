@@ -15,6 +15,21 @@ VILLAGERS_JSON_PATH = os.path.join(
     "villagers.json"
 )
 
+ACNH_JSON_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "acnh.json"
+)
+
+ITEMS_DETAIL_JSON_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "items_detail.json"
+)
+
+NOOKIPEDIA_ITEMS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "items_nookipedia.json"
+)
+
 ZODIAC = [
     (1, 20, "Capricorn"), (2, 19, "Aquarius"), (3, 21, "Pisces"), (4, 20, "Aries"),
     (5, 21, "Taurus"), (6, 21, "Gemini"), (7, 23, "Cancer"), (8, 23, "Leo"),
@@ -51,11 +66,16 @@ def _get_sign_and_bday(bday_str: str) -> tuple[str, str, str]:
 
 class NookipediaClient:
     BASE_URL = "https://api.nookipedia.com/villagers"
+    ITEMS_BASE_URL = "https://api.nookipedia.com/nh/items"
     FALLBACK_DATASET_URL = "https://raw.githubusercontent.com/Norviah/animal-crossing/master/json/data/Villagers.json"
 
     # In-memory dictionary of all villager data loaded from villagers.json
     _cache: Dict[str, Dict[str, Any]] = {}
     _is_loaded: bool = False
+
+    # In-memory dictionary of all item data loaded from acnh.json or Nookipedia
+    _item_cache: Dict[str, Dict[str, Any]] = {}
+    _items_loaded: bool = False
 
     @staticmethod
     def _normalize_name(name: str) -> str:
@@ -246,6 +266,159 @@ class NookipediaClient:
 
         return None
 
+    @classmethod
+    def _index_item(cls, key: str, item: Dict[str, Any]) -> None:
+        """Index an item under multiple normalized variations."""
+        raw = key.strip().lower()
+        if raw:
+            cls._item_cache[raw] = item
+        norm = cls._normalize_name(key)
+        if norm:
+            cls._item_cache[norm] = item
+        compact = re.sub(r"[^\w]", "", key.lower())
+        if compact:
+            cls._item_cache[compact] = item
+
+    @classmethod
+    def _ensure_items_loaded(cls) -> None:
+        """Load items_detail.json (and acnh.json) item catalogs into memory if exists."""
+        if cls._items_loaded and cls._item_cache:
+            return
+
+        cls._item_cache = {}
+
+        # 0. Load official Nookipedia API item dataset if generated
+        if os.path.exists(NOOKIPEDIA_ITEMS_PATH):
+            try:
+                with open(NOOKIPEDIA_ITEMS_PATH, "r", encoding="utf-8") as f:
+                    nook_data = json.load(f)
+                if isinstance(nook_data, dict):
+                    for k, v in nook_data.items():
+                        cls._index_item(k, v)
+                logger.info(f"[NOOKIPEDIA] Loaded {len(cls._item_cache)} items from official Nookipedia cache {NOOKIPEDIA_ITEMS_PATH}")
+            except Exception as e:
+                logger.error(f"[NOOKIPEDIA] Failed to read {NOOKIPEDIA_ITEMS_PATH}: {e}")
+
+        # 1. Load rich item details from items_detail.json if available
+        if os.path.exists(ITEMS_DETAIL_JSON_PATH):
+            try:
+                with open(ITEMS_DETAIL_JSON_PATH, "r", encoding="utf-8") as f:
+                    explorer_data = json.load(f)
+
+                item_list = explorer_data if isinstance(explorer_data, list) else explorer_data.get("items", [])
+                for raw_item in item_list:
+                    name = raw_item.get("Name", "").strip()
+                    if not name:
+                        continue
+
+                    vars_list = raw_item.get("Variations") or []
+                    primary_img = ""
+                    if vars_list and isinstance(vars_list, list):
+                        primary_img = vars_list[0].get("imageUrl") or vars_list[0].get("image_url") or ""
+
+                    item_entry = {
+                        "name": name,
+                        "internal_id": raw_item.get("Internal ID") or "",
+                        "category": raw_item.get("Category") or "Items",
+                        "buy": raw_item.get("Buy") or "NFS",
+                        "sell": raw_item.get("Sell") or "NA",
+                        "source": raw_item.get("Source") or "",
+                        "exchange_price": raw_item.get("ExchangePrice") or "",
+                        "exchange_currency": raw_item.get("ExchangeCurrency") or "",
+                        "stack_size": raw_item.get("StackSize") or "",
+                        "diy": raw_item.get("DIY") or "No",
+                        "season_event": raw_item.get("SeasonEvent") or "",
+                        "description": raw_item.get("Description") or "",
+                        "colours": raw_item.get("Colours") or [],
+                        "variations": vars_list,
+                        "image_url": primary_img
+                    }
+                    cls._index_item(name, item_entry)
+                logger.info(f"[NOOKIPEDIA] Loaded {len(cls._item_cache)} rich item records from {ITEMS_DETAIL_JSON_PATH}")
+            except Exception as exc:
+                logger.error(f"[NOOKIPEDIA] Failed to read {ITEMS_DETAIL_JSON_PATH}: {exc}")
+
+        # 2. Enrich with acnh.json categories
+        if os.path.exists(ACNH_JSON_PATH):
+            try:
+                with open(ACNH_JSON_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                categories = [
+                    "items", "recipes", "clothing", "art", "fossils",
+                    "photos", "tools", "interior", "fish", "bugs", "sea_creatures"
+                ]
+
+                for cat in categories:
+                    cat_data = data.get(cat, {})
+                    if isinstance(cat_data, dict):
+                        images = cat_data.get("images", [])
+                        for img_entry in images:
+                            name = img_entry.get("name")
+                            if name:
+                                norm_n = cls._normalize_name(name)
+                                raw_n = name.strip().lower()
+                                existing = cls._item_cache.get(norm_n) or cls._item_cache.get(raw_n)
+                                if existing:
+                                    if not existing.get("image_url") and img_entry.get("url"):
+                                        existing["image_url"] = img_entry.get("url")
+                                else:
+                                    item_entry = {
+                                        "name": name,
+                                        "category": cat,
+                                        "image_url": img_entry.get("url"),
+                                        "variant": img_entry.get("variant")
+                                    }
+                                    cls._index_item(name, item_entry)
+
+                logger.info(f"[NOOKIPEDIA] Total item cache keys after ACNH enrichment: {len(cls._item_cache)}")
+            except Exception as e:
+                logger.error(f"[NOOKIPEDIA] Failed to read {ACNH_JSON_PATH}: {e}")
+
+        cls._items_loaded = True
+
+    @classmethod
+    async def get_item_info(cls, name: str) -> Optional[Dict[str, Any]]:
+        """Fetch item data asynchronously."""
+        return cls.get_item_info_sync(name)
+
+    @classmethod
+    def get_item_info_sync(cls, name: str) -> Optional[Dict[str, Any]]:
+        """Fetch item data synchronously from local cache with Nookipedia API fallback."""
+        if not name:
+            return None
+
+        cls._ensure_items_loaded()
+
+        raw_key = name.strip().lower()
+        if raw_key in cls._item_cache:
+            return cls._item_cache[raw_key]
+
+        norm_key = cls._normalize_name(name)
+        if norm_key in cls._item_cache:
+            return cls._item_cache[norm_key]
+
+        # Live Nookipedia API fallback if key is configured
+        if Config.NOOKIPEDIA_KEY:
+            try:
+                headers = {
+                    "X-API-KEY": Config.NOOKIPEDIA_KEY,
+                    "Accept-Version": "1.0.0"
+                }
+                params = {"item": name}
+                resp = requests.get(cls.ITEMS_BASE_URL, headers=headers, params=params, timeout=5)
+                if resp.status_code == 200:
+                    item_data = resp.json()
+                    if item_data:
+                        cls._index_item(name, item_data)
+                        return item_data
+            except Exception as exc:
+                logger.debug(f"[NOOKIPEDIA] Live item lookup failed for '{name}': {exc}")
+
+        return None
+
 
 # Eagerly load the local villagers.json cache on module load
 NookipediaClient._ensure_loaded()
+NookipediaClient._ensure_items_loaded()
+

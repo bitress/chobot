@@ -152,6 +152,18 @@ class Config:
     ORDER_BOT_DISCORD_ID = _get_int('ORDER_BOT_DISCORD_ID', 1175671093445537802)
     ORDER_BOT_TWITCH_CHANNEL = os.getenv('ORDER_BOT_TWITCH_CHANNEL') or TWITCH_CHANNEL
 
+    # SysBot.ACNHOrders HTTP REST API
+    # Set SYSBOT_API_URL to the address where SysBot is running, e.g. http://localhost:5202
+    # Leave blank to disable live SysBot API integration.
+    SYSBOT_API_URL = (os.getenv('SYSBOT_API_URL') or '').rstrip('/')
+    # Optional: matches the ApiKey set in SysBot's server.json. Leave blank if no key is configured.
+    SYSBOT_API_KEY = os.getenv('SYSBOT_API_KEY', '')
+
+    @classmethod
+    def is_sysbot_configured(cls) -> bool:
+        """Return True if SYSBOT_API_URL is set."""
+        return bool(cls.SYSBOT_API_URL)
+
     DIR_FREE = TWITCH_VILLAGERS_DIR
     DIR_VIP = VILLAGERS_DIR
     DIR_ORDER = ORDER_BOT_DIR
@@ -177,7 +189,7 @@ class Config:
 
     ISLAND_BOT_ROLE_ID = _get_int('ISLAND_BOT_ROLE_ID')
 
-    # Mod roles — members with these bypass all island access restrictions.
+    # Mod roles â€” members with these bypass all island access restrictions.
     SENIOR_MOD_ROLE_ID = _get_int("SENIOR_MOD_ROLE_ID")
     BABY_MOD_ROLE_ID   = _get_int("BABY_MOD_ROLE_ID")
 

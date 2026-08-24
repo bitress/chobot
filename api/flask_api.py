@@ -415,7 +415,7 @@ def _get_villager_map(villager_dirs) -> tuple[dict, str]:
         return scanned, "disk_scan"
 
 # ---------------------------------------------------------------------------
-# Auth — short-lived opaque tokens for Discord OAuth (website subscribers)
+# Auth â€” short-lived opaque tokens for Discord OAuth (website subscribers)
 # Works cross-domain: frontend stores the token in localStorage and sends it
 # as "Authorization: Bearer <token>" on every authenticated request.
 # ---------------------------------------------------------------------------
@@ -742,7 +742,7 @@ def _fire_dodo_webhook(
     island_link = f"https://www.chopaeng.com/island/{island_url_name.lower()}"
 
     embed = {
-        "title": f"✈️ Dodo Code Revealed",
+        "title": f"âœˆï¸ Dodo Code Revealed",
         "color": 0x2ecc71,  # Emerald Green
         "description": f"<@{user_id}> has revealed the Dodo code for island <#{channel_id}>",
         "fields": [
@@ -762,7 +762,7 @@ def _fire_dodo_webhook(
             "url": "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
         },
         "footer": {
-            "text": "Chopaeng Camp™ • Dodo Log",
+            "text": "Chopaeng Campâ„¢ â€¢ Dodo Log",
             "icon_url": "https://www.chopaeng.com/assets/logo-C5oO0bbj.webp"
         },
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -1334,7 +1334,7 @@ def auth_logout():
 
 
 # ============================================================================
-# DODO REVEAL — authenticated, fires webhook
+# DODO REVEAL â€” authenticated, fires webhook
 # ============================================================================
 
 @app.route("/api/islands/<name>/dodo", methods=["POST"])
@@ -1429,7 +1429,7 @@ def reveal_dodo(name):
                 {"reason": "missing_global_island_access_role", "channel_id": channel_id},
             )
             return jsonify({
-                "error": "You need the Discord island access role to reveal this Dodo code. Please accept the rules in the sub-rules channel first: https://discord.com/channels/729590421478703135/783677194576330792.",
+                "error": "You need the Discord island access role to reveal this Dodo code. Please accept the rules in the sub-rules channel first: <a href=\"https://discord.com/channels/729590421478703135/783677194576330792\" target=\"_blank\">#sub-rules</a>.",
                 "code": "missing_global_island_access_role",
             }), 403
 
@@ -2234,7 +2234,7 @@ def get_single_post(post_id):
 def status():
     """Get bot status"""
     if data_manager is None:
-        return "Service unavailable — data manager not initialised.", 503
+        return "Service unavailable â€” data manager not initialised.", 503
     with data_manager.lock:
         count = len(data_manager.cache)
         last_up = data_manager.last_update.strftime("%H:%M:%S") if data_manager.last_update else "Loading..."
@@ -2271,7 +2271,7 @@ def api_refresh():
         }), 503
 
     if data_manager is None:
-        return jsonify({"error": "Service unavailable — data manager not initialised"}), 503
+        return jsonify({"error": "Service unavailable â€” data manager not initialised"}), 503
 
     if not _refresh_lock.acquire(blocking=False):
         return jsonify({"status": "refresh already in progress"}), 429
@@ -2321,7 +2321,7 @@ def guild_human_members():
     guild_payload = _discord_api_json(f"/guilds/{guild_id}")
 
     if guild_payload is None:
-        # Network / token error – treat as service unavailable.
+        # Network / token error â€“ treat as service unavailable.
         return jsonify({"success": False, "error": "Could not reach Discord API. Please try again later."}), 503
 
     if isinstance(guild_payload, dict):
@@ -2679,102 +2679,380 @@ def get_shared_pocket(pocket_id: str):
 
 
 # ============================================================================
-# ORDER BOT & SUB ISLAND DROP SILENT PROXY API
+# ORDER BOT — SysBot.ACNHOrders REST API PROXY
+# All /api/order/* routes proxy directly to the SysBot HTTP API.
+# Configure via SYSBOT_API_URL (+ optional SYSBOT_API_KEY) in .env
 # ============================================================================
+
+def _sysbot_headers() -> dict:
+    """Build request headers for the SysBot API, including optional API key."""
+    h = {"Accept": "application/json", "Content-Type": "application/json"}
+    key = getattr(Config, "SYSBOT_API_KEY", "") or ""
+    if key:
+        h["X-API-Key"] = key
+    return h
+
+
+def _sysbot_get(path: str, **params) -> tuple:
+    """Forward a GET to the SysBot API. Returns (dict, http_status)."""
+    base = getattr(Config, "SYSBOT_API_URL", "") or ""
+    if not base:
+        return {"success": False, "error": "SysBot API is not configured (set SYSBOT_API_URL in .env)."}, 503
+    try:
+        resp = requests.get(
+            f"{base.rstrip('/')}{path}",
+            headers=_sysbot_headers(),
+            params={k: v for k, v in params.items() if v is not None},
+            timeout=8,
+        )
+        return resp.json(), resp.status_code
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "SysBot API is unreachable."}, 503
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": "SysBot API request timed out."}, 504
+    except Exception as exc:
+        logger.warning("[SysBot] GET %s failed: %s", path, exc)
+        return {"success": False, "error": str(exc)}, 500
+
+
+def _sysbot_post(path: str, body: dict | None = None) -> tuple:
+    """Forward a POST to the SysBot API. Returns (dict, http_status)."""
+    base = getattr(Config, "SYSBOT_API_URL", "") or ""
+    if not base:
+        return {"success": False, "error": "SysBot API is not configured (set SYSBOT_API_URL in .env)."}, 503
+    try:
+        resp = requests.post(
+            f"{base.rstrip('/')}{path}",
+            headers=_sysbot_headers(),
+            json=body or {},
+            timeout=8,
+        )
+        return resp.json(), resp.status_code
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "SysBot API is unreachable."}, 503
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": "SysBot API request timed out."}, 504
+    except Exception as exc:
+        logger.warning("[SysBot] POST %s failed: %s", path, exc)
+        return {"success": False, "error": str(exc)}, 500
+
+
+@app.route("/api/order/bot-status", methods=["GET"])
+def get_order_bot_status():
+    """
+    Proxy GET /api/status from SysBot.ACNHOrders.
+    Returns live bot state: mode (DropMode/OrderMode), island_name, dodo_code,
+    queue_count, accepting_commands, visitor_list, battery_charge, server_time.
+    Use is_drop_mode / is_order_mode to decide which UI to render.
+    """
+    data, code = _sysbot_get("/api/status")
+    return jsonify(data), code
+
 
 @app.route("/api/order/submit", methods=["POST"])
 def submit_order_to_bot():
-    """Submit an order command silently to the Order Bot queue."""
+    """
+    Proxy POST /api/order to SysBot.ACNHOrders and persist to SQLite DB.
+
+    Accepted body formats:
+      { "order": "Gold nugget 30, Iron nugget 10", "villager": "Raymond", "username": "...", "order_id": "..." }
+      { "preset": "materials", "username": "..." }
+      { "items": ["Gold nugget 30", "Iron nugget 10"], "username": "..." }
+
+    Returns: success, order_id, queue_position, eta, estimated_seconds, item_count, message.
+    Save the returned order_id and poll /api/order/status to get the Dodo code when ready.
+    """
     auth_user = _current_auth_user()
     data = request.get_json() or {}
-    command = (data.get("command") or "").strip()
-    if not command:
-        return jsonify({"error": "No order command provided"}), 400
 
-    order_id = f"order-{int(time.time()*1000)}-{_secrets.token_hex(2)}"
-    user_id = str(auth_user.get("user_id", "guest")) if auth_user else "guest"
-    username = auth_user.get("username", "Guest") if auth_user else "Guest"
+    order_text = (data.get("order") or data.get("command") or "").strip()
+    items_list  = data.get("items")
+    preset      = (data.get("preset") or "").strip()
 
-    conn = get_db()
-    try:
-        now_ts = int(time.time())
-        count_res = conn.execute("SELECT COUNT(*) FROM order_bot_queue WHERE status = 'queued'").fetchone()
-        q_count = (count_res[0] if count_res else 0) + 1
+    if not order_text and not items_list and not preset:
+        return jsonify({"success": False, "error": "Provide 'order', 'items', or 'preset' in the request body."}), 400
 
-        conn.execute("""
-            INSERT INTO order_bot_queue
-            (id, user_id, username, command, order_type, status, queue_position, estimated_minutes, island_name, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 'Sinta', ?, ?)
-        """, (order_id, user_id, username, command, data.get("type", "order"), q_count, q_count * 2, now_ts, now_ts))
-        conn.commit()
+    username = (
+        (auth_user.get("nickname") or auth_user.get("username") or "WebUser")
+        if auth_user else (data.get("username") or "WebUser")
+    )
+    user_id = str(auth_user.get("user_id") or auth_user.get("id") or "") if auth_user else ""
 
-        return jsonify({
-            "success": True,
-            "order_id": order_id,
-            "queue_position": q_count,
-            "estimated_minutes": q_count * 2,
-            "status": "queued",
-            "island_name": "Sinta",
-            "message": "Order submitted silently to queue! Sinta bot will prepare your items."
-        })
-    except Exception as exc:
-        logger.warning("Order submit error: %s", exc)
-        return jsonify({
-            "success": True,
-            "order_id": order_id,
-            "queue_position": 1,
-            "estimated_minutes": 2,
-            "status": "queued",
-            "island_name": "Sinta",
-            "message": "Order submitted successfully!"
-        })
-    finally:
-        conn.close()
+    payload: dict = {"username": username}
+    if order_text:
+        payload["order"] = order_text
+    elif items_list:
+        payload["items"] = items_list
+    else:
+        payload["preset"] = preset
+
+    if data.get("villager"):
+        payload["villager"] = data["villager"]
+    if data.get("order_id"):
+        payload["order_id"] = data["order_id"]
+    if user_id:
+        payload["user_id"] = user_id
+
+    result, code = _sysbot_post("/api/order", payload)
+
+    # Persist order to database
+    if isinstance(result, dict) and (result.get("success") or code in (200, 201)):
+        order_id = str(result.get("order_id") or result.get("id") or data.get("order_id") or "")
+        if order_id:
+            now_ts = int(time.time())
+            command_str = order_text or (json.dumps(items_list) if items_list else preset)
+            db = get_db()
+            try:
+                db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS order_bot_queue (
+                        id                TEXT PRIMARY KEY,
+                        user_id           TEXT NOT NULL,
+                        username          TEXT,
+                        command           TEXT NOT NULL,
+                        order_type        TEXT NOT NULL DEFAULT 'order',
+                        status            TEXT NOT NULL DEFAULT 'queued',
+                        queue_position    INTEGER DEFAULT 1,
+                        estimated_minutes INTEGER DEFAULT 2,
+                        dodo_code         TEXT,
+                        island_name       TEXT DEFAULT 'Sinta',
+                        message           TEXT,
+                        created_at        INTEGER NOT NULL,
+                        updated_at        INTEGER NOT NULL
+                    )
+                    """
+                )
+                db.execute(
+                    """INSERT OR REPLACE INTO order_bot_queue
+                           (id, user_id, username, command, order_type, status,
+                            queue_position, estimated_minutes, dodo_code, island_name,
+                            message, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        order_id,
+                        user_id or "anonymous",
+                        username,
+                        command_str,
+                        "order",
+                        "queued",
+                        int(result.get("queue_position") or 1),
+                        int(result.get("estimated_minutes") or 2),
+                        result.get("dodo_code"),
+                        result.get("island_name") or "Sinta",
+                        result.get("message") or "Order placed",
+                        now_ts,
+                        now_ts,
+                    )
+                )
+                db.commit()
+            except Exception as exc:
+                logger.warning("[OrderBot] Failed to persist order %s: %s", order_id, exc)
+            finally:
+                db.close()
+
+    return jsonify(result), code
 
 
 @app.route("/api/order/status", methods=["GET"])
 def get_order_status():
-    """Poll status of an active order."""
-    order_id = request.args.get("id") or request.args.get("order_id", "")
-    conn = get_db()
+    """
+    Proxy GET /api/order/status?id={order_id} from SysBot.
+    Poll this after submitting an order to track queue position, ETA, and Dodo code.
+
+    status values: queued | preparing | ready | completed | cancelled | error
+    dodo_code is non-null once status == "ready".
+    """
+    order_id = request.args.get("id") or request.args.get("order_id") or ""
+    if not order_id:
+        return jsonify({"success": False, "error": "order_id is required."}), 400
+    data, code = _sysbot_get("/api/order/status", id=order_id)
+
+    # Sync status to SQLite database
+    if isinstance(data, dict) and data.get("status"):
+        now_ts = int(time.time())
+        db = get_db()
+        try:
+            db.execute(
+                """UPDATE order_bot_queue
+                   SET status = ?,
+                       queue_position = COALESCE(?, queue_position),
+                       estimated_minutes = COALESCE(?, estimated_minutes),
+                       dodo_code = COALESCE(?, dodo_code),
+                       island_name = COALESCE(?, island_name),
+                       message = COALESCE(?, message),
+                       updated_at = ?
+                   WHERE id = ?""",
+                (
+                    data.get("status"),
+                    data.get("queue_position"),
+                    data.get("estimated_minutes"),
+                    data.get("dodo_code"),
+                    data.get("island_name"),
+                    data.get("message"),
+                    now_ts,
+                    order_id,
+                )
+            )
+            db.commit()
+        except Exception as exc:
+            logger.warning("[OrderBot] Failed to update DB status for %s: %s", order_id, exc)
+        finally:
+            db.close()
+
+    return jsonify(data), code
+
+
+@app.route("/api/order/cancel", methods=["POST"])
+def cancel_order():
+    """
+    Proxy POST /api/order/cancel to SysBot.
+    Body: { "id": "order_id" }
+    """
+    body = request.get_json() or {}
+    order_id = (body.get("id") or body.get("order_id") or "").strip()
+    if not order_id:
+        return jsonify({"success": False, "error": "order_id is required."}), 400
+    result, code = _sysbot_post("/api/order/cancel", {"id": order_id})
+
+    # Mark as cancelled in DB
+    db = get_db()
     try:
-        row = conn.execute("SELECT * FROM order_bot_queue WHERE id = ?", (order_id,)).fetchone()
-        if row:
-            created_at = row["created_at"]
-            elapsed = int(time.time()) - created_at
-
-            if elapsed > 60 and row["status"] == "queued":
-                status = "ready"
-                dodo = row["dodo_code"] or "CH0P1"
-            elif elapsed > 20 and row["status"] == "queued":
-                status = "preparing"
-                dodo = None
-            else:
-                status = row["status"]
-                dodo = row["dodo_code"]
-
-            return jsonify({
-                "order_id": order_id,
-                "status": status,
-                "queue_position": max(1, (row["queue_position"] or 1) - (elapsed // 30)),
-                "estimated_minutes": max(1, (row["estimated_minutes"] or 2) - (elapsed // 60)),
-                "dodo_code": dodo,
-                "island_name": row["island_name"] or "Sinta",
-                "message": "Your order is ready! Fly in now." if status == "ready" else "Order is in progress."
-            })
-        return jsonify({
-            "order_id": order_id,
-            "status": "queued",
-            "queue_position": 1,
-            "estimated_minutes": 1,
-            "island_name": "Sinta",
-            "message": "Order is being processed."
-        })
+        db.execute(
+            "UPDATE order_bot_queue SET status = 'cancelled', updated_at = ? WHERE id = ?",
+            (int(time.time()), order_id)
+        )
+        db.commit()
     except Exception as exc:
-        logger.warning("Order status query error: %s", exc)
-        return jsonify({"status": "queued", "queue_position": 1, "estimated_minutes": 1})
+        logger.warning("[OrderBot] Failed to mark order %s as cancelled: %s", order_id, exc)
     finally:
-        conn.close()
+        db.close()
+
+    return jsonify(result), code
+
+
+@app.route("/api/order/user-history", methods=["GET"])
+def get_user_order_history():
+    """
+    Returns the authenticated user's order history from SQLite order_bot_queue.
+    """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required", "orders": []}), 401
+
+    user_id = str(auth_user.get("user_id") or auth_user.get("id") or "")
+    if not user_id:
+        return jsonify({"success": True, "orders": []})
+
+    limit = min(int(request.args.get("limit", 50)), 100)
+    db = get_db()
+    try:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_bot_queue (
+                id                TEXT PRIMARY KEY,
+                user_id           TEXT NOT NULL,
+                username          TEXT,
+                command           TEXT NOT NULL,
+                order_type        TEXT NOT NULL DEFAULT 'order',
+                status            TEXT NOT NULL DEFAULT 'queued',
+                queue_position    INTEGER DEFAULT 1,
+                estimated_minutes INTEGER DEFAULT 2,
+                dodo_code         TEXT,
+                island_name       TEXT DEFAULT 'Sinta',
+                message           TEXT,
+                created_at        INTEGER NOT NULL,
+                updated_at        INTEGER NOT NULL
+            )
+            """
+        )
+        rows = db.execute(
+            """SELECT id, user_id, username, command, order_type, status,
+                      queue_position, estimated_minutes, dodo_code, island_name,
+                      message, created_at, updated_at
+               FROM order_bot_queue
+               WHERE user_id = ?
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (user_id, limit),
+        ).fetchall()
+
+        orders = []
+        for r in rows:
+            orders.append({
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "username": r["username"] or "",
+                "command": r["command"] or "",
+                "order_type": r["order_type"] or "order",
+                "status": r["status"] or "queued",
+                "queue_position": r["queue_position"],
+                "estimated_minutes": r["estimated_minutes"],
+                "dodo_code": r["dodo_code"],
+                "island_name": r["island_name"] or "Sinta",
+                "message": r["message"] or "",
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            })
+
+        return jsonify({"success": True, "orders": orders})
+    except Exception as exc:
+        logger.warning("[OrderBot] Failed to query user order history: %s", exc)
+        return jsonify({"success": False, "error": str(exc), "orders": []}), 500
+    finally:
+        db.close()
+
+
+@app.route("/api/order/queue", methods=["GET"])
+def get_order_queue():
+    """
+    Proxy GET /api/queue from SysBot.
+    Returns the full list of pending orders with queue position, ETA, and username.
+    """
+    data, code = _sysbot_get("/api/queue")
+    return jsonify(data), code
+
+
+
+@app.route("/api/order/dodo", methods=["GET"])
+def get_order_dodo():
+    """
+    Proxy GET /api/dodo from SysBot.
+    Drop Mode  -> returns dodo_code immediately (no params needed).
+    Order Mode -> pass ?order_id=... to get the code once the order is ready.
+    """
+    order_id = request.args.get("order_id") or request.args.get("id")
+    user_id  = request.args.get("user_id")
+    data, code = _sysbot_get("/api/dodo", order_id=order_id, user_id=user_id)
+    return jsonify(data), code
+
+
+@app.route("/api/order/drop", methods=["POST"])
+def order_drop():
+    """
+    Proxy POST /api/drop to SysBot.
+    Body: { "items": "Gold nugget 30", "type": "items"|"diy", "username": "..." }
+    """
+    auth_user = _current_auth_user()
+    body = request.get_json() or {}
+    username = (
+        (auth_user.get("nickname") or auth_user.get("username") or "WebUser")
+        if auth_user else (body.get("username") or "WebUser")
+    )
+    items = body.get("items") or body.get("item") or ""
+    if not items:
+        return jsonify({"success": False, "error": "items is required."}), 400
+    payload = {"items": items, "type": body.get("type") or "items", "username": username}
+    if body.get("count"):
+        payload["count"] = body["count"]
+    result, code = _sysbot_post("/api/drop", payload)
+    return jsonify(result), code
+
+
+@app.route("/api/order/presets", methods=["GET"])
+def get_order_presets():
+    """Proxy GET /api/presets — list all configured SysBot preset names."""
+    data, code = _sysbot_get("/api/presets")
+    return jsonify(data), code
 
 
 @app.route("/api/order/drop-sub", methods=["POST"])
@@ -2782,14 +3060,13 @@ def drop_sub_island():
     """Proxy a drop or villager inject command to a specific Sub Island."""
     auth_user = _current_auth_user()
     data = request.get_json() or {}
-    island_id = data.get("island_id")
+    island_id   = data.get("island_id")
     island_name = data.get("island_name") or island_id or "Sub Island"
-    command = data.get("command") or ""
-    plot_num = data.get("plot_number")
+    command     = data.get("command") or ""
+    plot_num    = data.get("plot_number")
 
     if not island_id or not command:
         return jsonify({"error": "Island and command are required"}), 400
-
     if not auth_user:
         return jsonify({"error": "Unauthorized. Please log in with Discord to access Sub Islands."}), 401
 
@@ -2800,9 +3077,6 @@ def drop_sub_island():
         "plot_number": plot_num,
         "message": f"Drop command dispatched silently to {island_name}! Items ready on island."
     })
-
-
-
 
 # ============================================================================
 # COMMUNITY LOADOUTS & CLOUD SYNC API
