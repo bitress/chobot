@@ -1122,12 +1122,51 @@ _FAQ_REGEX_ENTRIES: list[tuple[re.Pattern, str]] = [
         "Go to <#783677194576330792>, read the subscriber rules carefully, and accept each one until you see the palm tree confirmation. Then check the sticky message at the bottom of each island channel and use the command shown there to get the code by DM.",
     ),
     (
-        re.compile(r"\b(?:sanrio\s+villager|amiibo\s+villager|sanrio\s+character|amiibo\s+character|in-boxes\s+villager)\b", re.I),
-        "For Sanrio/Amiibo villagers, first inject any standard placeholder villager into the first plot before flying. After you arrive on that island, inject the Sanrio/Amiibo character and wait for **VILLAGER INJECTED**. Then enter the first plot, talk to the placeholder-looking villager, and invite them. If you inject the Amiibo/Sanrio character before flying, they will not move in.",
+        re.compile(r"\b(?:sanrio\s+villagers?|amiibo\s+villagers?|sanrio\s+characters?|amiibo\s+characters?|in-boxes\s+villagers?|how\s+(?:to|do\s+i)\s+(?:get|inject)\s+(?:a\s+)?(?:sanrio|amiibo))\b", re.I),
+        "**How to get a Sanrio / Amiibo Villager:**\n\n"
+        "1. **Inject a placeholder FIRST:** Before flying anywhere, make sure there is a villager in the first plot of land (house 0 / plot 1) — it has to be any character (I recommend injecting a villager you might want in case this doesn't work).\n"
+        "2. **Fly to the island:** Fly to the island where you injected the placeholder villager.\n"
+        "3. **Inject while ON the island:** Once on the island, inject your target Sanrio or Amiibo character.\n"
+        "4. **Wait for bot confirmation:** Make sure the bot says **\"VILLAGER INJECTED\"**. If you miss this step, they won't come with you!\n"
+        "5. **Talk to the villager in plot 1:** Go into the first plot of land and talk to the villager you injected before. They will NOT look like the Amiibo character visually, but ask them to move in.\n\n"
+        "⚠️ **CRITICAL:** If you inject ANY Amiibo/Sanrio character *before* flying, THEY WILL NOT move to your island! You must do the placeholder step first.",
     ),
     (
-        re.compile(r"\b(?:how\s+(?:to|do\s+i|can\s+i)\s+(?:order|request|inject)\s+villagers?|order\s+villager|ordering\s+villagers?|request\s+villagers?)\b", re.I),
-        "**Free members:** Create an order using the **[Command Builder](https://www.chopaeng.com/command-builder)** and paste it in <#1175672083183829075> (`chorder-bot`). You'll need an empty plot ready. ⚠️ Avoid ordering between 10 PM–8 AM BST (villager may be sleeping).\n\n**Subscribers:** Use the **[Command Builder](https://www.chopaeng.com/command-builder)** to generate a `!injectvillager` or `!mvi` command and paste it in a sub island channel. DO NOT be on the island when injecting — fly in AFTER confirmation!",
+        re.compile(r"\b(?:how\s+(?:to|do\s+i|can\s+i)\s+(?:order|request|inject|get)\s+villagers?|how\s+(?:to|do\s+i|can\s+i)\s+get\s+(?:a\s+)?villager|order\s+villager|ordering\s+villagers?|request\s+villagers?|get\s+(?:a\s+)?villager)\b", re.I),
+        "Here is how to get a villager:\n\n"
+        "⭐ **For Subscribers:**\n"
+        "• Use the **[Command Builder](https://www.chopaeng.com/command-builder)** to generate a `!injectvillager <house#> <name>` or `!mvi <name1> <name2>` command.\n"
+        "• Paste it in your sub island channel. ⚠️ **DO NOT be on the island when injecting** — fly in AFTER bot confirmation!\n"
+        "• 📖 Please read <#782872507551055892> for subscriber guidelines and inject support.\n\n"
+        "🌴 **For Free Members:**\n"
+        "• Have an open, unsold plot ready on your island.\n"
+        "• Find the villager's 5-char ID using `ac!lookup villager <name>` in <#943118146259284008> (or use the **[Command Builder](https://www.chopaeng.com/command-builder)**).\n"
+        "• In <#1175672083183829075> (`#chorder-bot`), type `!order villager:<id>` (e.g. `!order villager:tig06`). ⚠️ Avoid ordering between 10 PM–8 AM BST when villagers are asleep.\n"
+        "• 📖 Please read <#1516752902591615046> for free member ordering instructions and rules.",
+    ),
+    (
+        re.compile(r"\b(?:animal\s+crossing\s+discussion|ac\s+discussion|acnh\s+discussion|animal\s+crossing\s+tab|animal\s+crossing\s+forum|ac\s+forum|where\s+(?:to|can\s+i)\s+talk\s+about\s+animal\s+crossing)\b", re.I),
+        "Try going to the Animal Crossing tab! First go to <#943118146259284008> (`#get-roles`) and under **Games you play**, choose **Animal Crossing**. There we have a dedicated forum where you can talk about Animal Crossing, look at pictures, post your own designs, and chat with the community! 💬",
+    ),
+    (
+        re.compile(r"\b(?:multiple\s+drop\s+items|multiple\s+items\s+drop|how\s+to\s+drop\s+multiple|drop\s+multiple\s+items|how\s+to\s+order\s+multiple|format\s+(?:for\s+)?multiple\s+items)\b", re.I),
+        "If you're using hex codes, just separate the numbers with a space. If you're using item names, use a comma and a space. The limit is a maximum of 9 items at a time (found in <#782872507551055892>).\n\nExample: `!order Antique Bed, ACNH Nintendo Switch, Cherry Blossom Branches`",
+    ),
+    (
+        re.compile(r"\b(?:villagers?\s+after\s+restart(?:ing)?|starter\s+villagers|7th\s+villager|when\s+can\s+i\s+(?:invite|get)\s+villagers?\s+(?:from\s+islands?|from\s+treasure\s+islands?)|new\s+island\s+villager\s+order)\b", re.I),
+        "You can only start inviting villagers from treasure islands starting from your **7th Villager onwards**!\n\nThe villager progression after starting/restarting an island:\n• **1 – 2:** Autofill starter villagers\n• **3 – 5:** Autofill or Mystery Islands via Nook Tickets only\n• **6:** First Campsite villager only (mandatory)\n• **7 – 10:** Can be invited from anywhere (including Treasure Islands / Injects / OrderBot) as long as you have an unsold plot ready! 🏡",
+    ),
+    (
+        re.compile(r"\b(?:where\s+are\s+(?:the\s+)?pin(?:ned)?\s+messages|how\s+to\s+(?:find|see)\s+pin(?:ned)?\s+messages|locate\s+pin(?:ned)?\s+messages|find\s+pins|how\s+to\s+see\s+pins)\b", re.I),
+        "Here is how to find pinned messages in chat:\n• **On Phone / Mobile:** Tap the name of the chat at the top of your screen, then tap **Pins**.\n• **On PC / Desktop:** Click the pin icon at the top right of the channel (right next to the bell icon). 📌",
+    ),
+    (
+        re.compile(r"\b(?:warning\s+for\s+sub\s+rule\s+1|broke\s+sub\s+rule\s+1|rule\s+1\s+warning|sub\s+rule\s+1\s+break)\b", re.I),
+        "You have **24 hours** to contact ChoPaeng or any Moderator regarding your warning. If you fail to do so within 24 hours, you will be permanently banned.",
+    ),
+    (
+        re.compile(r"\b(?:free\s+order\s*bot\s+not\s+working|free\s+orderbot\s+down|free\s+bot\s+not\s+working)\b", re.I),
+        "Keep trying to see if it works! Since it's a free community service, queue times can vary. But you can try other options:\n• **Twitch Live Stream Orders:** Try ordering from our live stream on Twitch (`twitch.tv/chopaeng`) — the Twitch orderbot is fast and easy to use!\n• **Free Islands:** Try your luck visiting our 27 free islands on the Dodo Board (<#1500493205672825056>).\n• **Sub Islands:** Consider subscribing to access the 20 private sub islands, where each island has its own dedicated drop bot! 🌴",
     ),
     (
         re.compile(r"\b(?:server\s+booster|nitro\s+boost|booster\s+perks|boost\s+the\s+server)\b", re.I),
@@ -1732,7 +1771,8 @@ _AI_SYSTEM_PROMPT = (
     "6. ALWAYS prefix website links with `https://` so they are clickable in Discord.\n"
     "7. Distinguish between 'order' (free members using OrderBot in <#1175672083183829075>) and 'drop' (subscribers spawning items on sub islands). If a user specifically asks how to 'order', explain the OrderBot flow, NOT the drop flow.\n"
     "8. Free islands do NOT support !drop, !senddodo, !injectvillager, or !mvi. On free islands, Dodo codes come from the Dodo Board channel (no bot command) and item requests go through Chorder Bot (!order). These four commands are sub-island-only.\n"
-    "9. `!find` (and `!locate`) is strictly for searching Sub Islands and is only for Sub Island members / Subscribers. Free members do not use `!find`."
+    "9. `!find` (and `!locate`) is strictly for searching Sub Islands and is only for Sub Island members / Subscribers. Free members do not use `!find`.\n"
+    "10. When asked how to get a villager: For subscribers, explain !injectvillager/!mvi and refer them to <#782872507551055892>. For free members, explain Chorder Bot in <#1175672083183829075> and refer them to read <#1516752902591615046>."
 )
 
 

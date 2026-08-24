@@ -279,7 +279,7 @@ You can order villagers whether you're a **free member** or a **subscriber** —
 
 ### For Free Members: Using Chorder Bot
 
-Free members can order specific villagers using the Chorder Bot in <#1175672083183829075>.
+Free members can order specific villagers using the Chorder Bot in <#1175672083183829075>. Please read <#1516752902591615046> for free member ordering instructions and rules.
 
 **Step-by-step:**
 1. Find the villager's 5-character ID using `ac!lookup villager <name>` in <#943118146259284008> (e.g., `Raymond` = `tig06`)
@@ -291,7 +291,7 @@ Free members can order specific villagers using the Chorder Bot in <#11756720831
 
 ### For Subscribers: Using !injectvillager or !mvi
 
-Subscribers can request villagers on sub islands using inject commands.
+Subscribers can request villagers on sub islands using inject commands. Please read <#782872507551055892> for subscriber guidelines and inject support.
 
 **Single villager:**
 1. While NOT on the island, type in the sub island channel: `!injectvillager 0 Raymond` (house 0 = first plot, house 1 = second, etc.)
@@ -312,7 +312,7 @@ Subscribers can request villagers on sub islands using inject commands.
 6. They will appear as the placeholder visually but will move in as your target character
 7. Invite them to your island
 
-Need help? Check <#782872507551055892>  for subscriber support.
+Need help? Check <#782872507551055892> for subscriber support.
 
 ### Fast Evict Your Villager
 Watch this video tutorial to learn how to evict your villagers fast:
@@ -355,6 +355,42 @@ You can also order ONLY a villager: `!order villager:tig06`
 1. Use the pipe near the entrance of the island to reach the villager's house.
 2. Have an empty and unsold plot available beforehand.
 
+### Inviting Villagers After Restarting
+You can only start inviting villagers from the treasure islands starting from your **7th Villager onwards**!
+The villager progression after starting/restarting an island is as follows:
+- **1 – 2:** Autofill starter villagers
+- **3 – 5:** Autofill or Mystery Islands via Nook Miles Tickets only
+- **6:** First Campsite villager only (mandatory move-in)
+- **7 – 10:** Can be invited from anywhere (including Treasure Islands / Injects / OrderBot) as long as you have an unsold, open plot ready!
+
+### Multiple Drop Items Format
+- If you're using **hex codes**, separate the numbers with a space.
+- If you're using **item names**, use a comma and a space.
+- The limit is a maximum of **9 items at a time** for drop bot (found in `<#782872507551055892>`).
+- Example: `!order Antique Bed, ACNH Nintendo Switch, Cherry Blossom Branches`
+
+### Animal Crossing Discussion Forum
+To access the Animal Crossing discussion area:
+1. Go to the `get-roles` channel.
+2. Under *Games you play*, choose **Animal Crossing**.
+3. This unlocks the dedicated Animal Crossing forum where you can chat, share pictures, look at community islands, post designs, etc.!
+
+### Locating Pinned Messages in Chat
+- **On phone / mobile:** Tap the name of the channel at the top of your screen, then tap **Pins** to view all pinned messages.
+- **On PC / desktop:** Click the top icon that looks like a pin (right next to the bell notification icon).
+
+### Warning for Sub Rule 1 Break
+If you received a warning for breaking Subscriber Rule 1 (e.g. sharing Dodo codes or unauthorized access):
+- You have **24 hours** to contact ChoPaeng or any Moderator regarding your warning.
+- If you fail to do so within 24 hours, you will be permanently banned.
+
+### Free Order Bot Troubleshooting & Alternatives
+If the free order bot is slow, busy, or not working:
+- Keep trying! Since it is a free community service, queue times can vary.
+- **Twitch Stream Orders:** Try ordering from our live streams on Twitch (`twitch.tv/chopaeng`) — the Twitch order bot is fast, reliable, and easy to use!
+- **Free Islands:** Browse our 27 free public islands via the Dodo Board (<#1500493205672825056>).
+- **Sub Islands:** Consider subscribing to access the 20 private sub islands, where each island has its own dedicated drop bot.
+
 ### Chorder Bot Rules
 
 **Rule 1:** You MUST change your server nickname to `Your ACNH Character Name | Your ACNH Island Name` before using the orderbot. Change your nickname in the <#1081147108612124742> channel.
@@ -387,29 +423,26 @@ Click "Done!" in the rules channel after understanding to gain orderbot access.
 
 For multiple villagers: `!mvi Judy Marshal Raymond`.
 
-### Getting a Sanrio / In-Boxes Villager
+### Getting a Sanrio / Amiibo / In-Boxes Villager
 
-1. **Inject a Placeholder**
-   Before flying anywhere, use the bot to inject any standard villager into the first plot of land on the target island. Choose a villager you would still be okay with getting in case the workaround does not succeed.
-   *Warning: Do not inject your desired Amiibo/Sanrio character at this stage. If you inject an Amiibo or Sanrio character before flying in, they will not move to your island.*
+1. **Inject a Placeholder First**
+   First make sure there is a villager in the first plot of land (house 0 / plot 1) — it has to be any character. I recommend injecting a villager you might want in case this doesn't work.
+   *⚠️ Warning: If you inject ANY Amiibo or Sanrio character before flying, THEY WILL NOT move to your island! You must do this placeholder step first.*
 
 2. **Fly to the Target Island**
-   Travel to the island where you just injected the placeholder villager.
+   Fly to the island where you injected the placeholder villager.
 
-3. **Inject the Target Character**
-   Once you are physically on the island, inject your desired Amiibo or Sanrio character.
+3. **Inject While ON the Island**
+   Once on the island, inject your target character, either a Sanrio or an Amiibo one.
 
 4. **Wait for Bot Confirmation**
-   Watch the bot logs. You must wait for it to explicitly say **VILLAGER INJECTED**. If you miss this step and proceed anyway, the villager will not come with you.
+   Make sure the bot says **"VILLAGER INJECTED"**. If you miss this step, they will not come with you.
 
-5. **Visit the First Plot**
-   Go into the house on the first plot of land.
+5. **Talk to the Villager in Plot 1**
+   Go in the first plot of land, talk to the villager you injected before (it won't look like the Amiibo villager visually).
 
-6. **Talk to the Decoy**
-   Speak to the villager inside. They will visually look like the placeholder you injected in Step 1, not the Amiibo character. This is normal.
-
-7. **Ask Them to Move In**
-   Invite them to live on your island. Assuming the bot worked and you followed the sequence, your new Amiibo/Sanrio character will be the one actually moving in.
+6. **Ask Them to Move In**
+   Ask them to move in, and if you did everything correct and the bot works, you have your new character!
 
 
 ## Max Bells (Bell Glitch)
