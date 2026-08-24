@@ -4218,6 +4218,27 @@ class DiscordCommandCog(commands.Cog):
                 (code, code_or_id)
             ).fetchone()
             if not row:
+                clean_bundle_id = code.replace("STAFF-", "").replace("BDL-", "").replace("CHOP-", "").lower()
+                b_row = conn.execute(
+                    "SELECT * FROM pocket_bundles WHERE UPPER(id) = ? OR UPPER(name) = ? OR LOWER(id) = ? OR id = ?",
+                    (code, code, clean_bundle_id, code_or_id)
+                ).fetchone()
+                if b_row:
+                    row = {
+                        "id": b_row["id"],
+                        "short_code": f"STAFF-{b_row['id'][:6].upper()}",
+                        "name": b_row["name"],
+                        "description": b_row["description"] or "Official Chopaeng Staff Curated Pocket Build",
+                        "category": b_row["category"] or "Starter Kits",
+                        "tags": '["official", "staff"]',
+                        "order_items": b_row["order_items"] or "[]",
+                        "drop_items": b_row["drop_items"] or "[]",
+                        "created_by": b_row["created_by"] or "Chopaeng Staff",
+                        "upvotes": 0,
+                        "views": 1,
+                        "is_official": 1
+                    }
+            if not row:
                 row = conn.execute("SELECT * FROM shared_pockets WHERE id = ?", (code_or_id,)).fetchone()
                 if row:
                     row = {

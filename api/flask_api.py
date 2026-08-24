@@ -3223,14 +3223,45 @@ def create_community_loadout():
 
 @app.route("/api/loadouts/code/<short_code>", methods=["GET"])
 def get_loadout_by_code(short_code: str):
-    """Lookup loadout by shortcode or ID."""
+    """Lookup loadout by shortcode or ID (supports community loadouts, staff curated bundles, and shared pockets)."""
     code = short_code.strip().upper()
     conn = get_db()
     try:
+        # 1. Community Loadouts
         row = conn.execute(
             "SELECT * FROM community_loadouts WHERE UPPER(short_code) = ? OR id = ?",
             (code, short_code)
         ).fetchone()
+
+        # 2. Staff Curated Pocket Bundles
+        if not row:
+            clean_bundle_id = code.replace("STAFF-", "").replace("BDL-", "").replace("CHOP-", "").lower()
+            bundle_row = conn.execute(
+                "SELECT * FROM pocket_bundles WHERE UPPER(id) = ? OR UPPER(name) = ? OR LOWER(id) = ? OR id = ?",
+                (code, code, clean_bundle_id, short_code)
+            ).fetchone()
+            if bundle_row:
+                order_items = json.loads(bundle_row["order_items"] or "[]")
+                drop_items = json.loads(bundle_row["drop_items"] or "[]")
+                return jsonify({
+                    "id": f"bundle-{bundle_row['id']}",
+                    "shortCode": f"STAFF-{bundle_row['id'][:6].upper()}",
+                    "name": bundle_row["name"],
+                    "description": bundle_row["description"] or "Official Staff Curated Pocket Build",
+                    "category": bundle_row["category"] or "Starter Kits",
+                    "tags": ["official", "staff", bundle_row["category"] or "bundle"],
+                    "orderItems": order_items,
+                    "dropItems": drop_items,
+                    "author": bundle_row["created_by"] or "Chopaeng Staff",
+                    "userId": None,
+                    "upvotes": 0,
+                    "views": 1,
+                    "isOfficial": True,
+                    "createdAt": bundle_row["created_at"],
+                    "updatedAt": bundle_row["updated_at"]
+                })
+
+        # 3. Shared Pockets
         if not row:
             shared_row = conn.execute(
                 "SELECT * FROM shared_pockets WHERE id = ?",
@@ -3287,7 +3318,7 @@ def get_loadout_by_code(short_code: str):
 
 @app.route("/api/loadouts/<loadout_id>/upvote", methods=["POST"])
 def upvote_loadout(loadout_id: str):
-    """Toggle upvote for a loadout by user/session stored in database."""
+    """Toggle upvote for a loadout or staff bundle by user/session stored in database."""
     auth_user = _current_auth_user()
     user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
     if not user_id:
@@ -3298,10 +3329,23 @@ def upvote_loadout(loadout_id: str):
 
     conn = get_db()
     try:
+        # Auto-ensure upvotes table exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS community_loadout_upvotes (
+                loadout_id  TEXT NOT NULL,
+                user_id     TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                PRIMARY KEY (loadout_id, user_id)
+            )
+        """)
+
+        # Clean loadout_id
+        target_id = loadout_id.strip()
+
         # Check if already upvoted in database
         existing = conn.execute(
             "SELECT 1 FROM community_loadout_upvotes WHERE loadout_id = ? AND user_id = ?",
-            (loadout_id, user_id)
+            (target_id, user_id)
         ).fetchone()
 
         now_iso = datetime.utcnow().isoformat()
@@ -3309,27 +3353,29 @@ def upvote_loadout(loadout_id: str):
             # Remove upvote (toggle off)
             conn.execute(
                 "DELETE FROM community_loadout_upvotes WHERE loadout_id = ? AND user_id = ?",
-                (loadout_id, user_id)
+                (target_id, user_id)
             )
             is_upvoted = False
         else:
             # Insert upvote in database
             conn.execute(
                 "INSERT OR REPLACE INTO community_loadout_upvotes (loadout_id, user_id, created_at) VALUES (?, ?, ?)",
-                (loadout_id, user_id, now_iso)
+                (target_id, user_id, now_iso)
             )
             is_upvoted = True
 
-        # Sync count in community_loadouts table
+        # Sync count in community_loadouts table if it exists
         count_row = conn.execute(
             "SELECT COUNT(*) as cnt FROM community_loadout_upvotes WHERE loadout_id = ?",
-            (loadout_id,)
+            (target_id,)
         ).fetchone()
         count = count_row["cnt"] if count_row else (1 if is_upvoted else 0)
 
+        # Also update raw ID without bundle- prefix if applicable
+        raw_id = target_id.replace("bundle-", "")
         conn.execute(
-            "UPDATE community_loadouts SET upvotes = ? WHERE id = ?",
-            (count, loadout_id)
+            "UPDATE community_loadouts SET upvotes = ? WHERE id = ? OR id = ?",
+            (count, target_id, raw_id)
         )
         conn.commit()
 
