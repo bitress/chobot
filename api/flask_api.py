@@ -742,7 +742,7 @@ def _fire_dodo_webhook(
     island_link = f"https://www.chopaeng.com/island/{island_url_name.lower()}"
 
     embed = {
-        "title": f"âœˆï¸ Dodo Code Revealed",
+        "title": f"Dodo Code Revealed",
         "color": 0x2ecc71,  # Emerald Green
         "description": f"<@{user_id}> has revealed the Dodo code for island <#{channel_id}>",
         "fields": [
