@@ -3415,6 +3415,152 @@ def delete_loadout(loadout_id: str):
         conn.close()
 
 
+# ─── User Custom Presets (Vault Sync) ─────────────────────────────────────────
+
+@app.route("/api/user/presets", methods=["GET"])
+def get_user_presets():
+    """Fetch user's private custom presets synced across devices."""
+    auth_user = _current_auth_user()
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+    if not user_id:
+        client_header = request.headers.get("x-client-id") or ""
+        ip = request.remote_addr or "127.0.0.1"
+        user_id = f"client_{client_header}_{ip}"[:64]
+
+    conn = get_db()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_custom_presets (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                description TEXT,
+                category    TEXT,
+                tags        TEXT,
+                order_items TEXT,
+                drop_items  TEXT,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )
+        """)
+        rows = conn.execute(
+            "SELECT * FROM user_custom_presets WHERE user_id = ? ORDER BY updated_at DESC",
+            (user_id,)
+        ).fetchall()
+
+        presets = []
+        for r in rows:
+            presets.append({
+                "id": r["id"],
+                "title": r["title"],
+                "description": r["description"] or "",
+                "category": r["category"] or "Custom Builds",
+                "tags": json.loads(r["tags"] or "[]"),
+                "orderItems": json.loads(r["order_items"] or "[]"),
+                "dropItems": json.loads(r["drop_items"] or "[]"),
+                "createdAt": r["created_at"],
+                "updatedAt": r["updated_at"],
+            })
+        return jsonify(presets)
+    except Exception as exc:
+        logger.warning("Error fetching user presets: %s", exc)
+        return jsonify([])
+    finally:
+        conn.close()
+
+
+@app.route("/api/user/presets", methods=["POST"])
+def save_user_preset():
+    """Create or update a user's private custom preset."""
+    auth_user = _current_auth_user()
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+    if not user_id:
+        client_header = request.headers.get("x-client-id") or ""
+        ip = request.remote_addr or "127.0.0.1"
+        user_id = f"client_{client_header}_{ip}"[:64]
+
+    data = request.get_json() or {}
+    preset_id = (data.get("id") or f"local-preset-{int(time.time()*1000)}").strip()
+    title = (data.get("title") or data.get("name") or "Untitled Preset").strip()[:80]
+    description = (data.get("description") or "").strip()[:300]
+    category = data.get("category") or "Custom Builds"
+    tags = json.dumps(data.get("tags") or [])
+    order_items = json.dumps(data.get("orderItems") or [])
+    drop_items = json.dumps(data.get("dropItems") or [])
+    now_iso = datetime.utcnow().isoformat()
+
+    conn = get_db()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_custom_presets (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                description TEXT,
+                category    TEXT,
+                tags        TEXT,
+                order_items TEXT,
+                drop_items  TEXT,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            INSERT OR REPLACE INTO user_custom_presets
+            (id, user_id, title, description, category, tags, order_items, drop_items, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            preset_id, user_id, title, description, category, tags,
+            order_items, drop_items, data.get("createdAt") or now_iso, now_iso
+        ))
+        conn.commit()
+
+        return jsonify({
+            "success": True,
+            "preset": {
+                "id": preset_id,
+                "title": title,
+                "description": description,
+                "category": category,
+                "tags": json.loads(tags),
+                "orderItems": json.loads(order_items),
+                "dropItems": json.loads(drop_items),
+                "createdAt": data.get("createdAt") or now_iso,
+                "updatedAt": now_iso
+            }
+        }), 201
+    except Exception as exc:
+        logger.warning("Error saving user preset: %s", exc)
+        return jsonify({"error": "Failed to save preset to database"}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/user/presets/<preset_id>", methods=["DELETE"])
+def delete_user_preset(preset_id: str):
+    """Delete a user's private custom preset."""
+    auth_user = _current_auth_user()
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+    if not user_id:
+        client_header = request.headers.get("x-client-id") or ""
+        ip = request.remote_addr or "127.0.0.1"
+        user_id = f"client_{client_header}_{ip}"[:64]
+
+    conn = get_db()
+    try:
+        conn.execute(
+            "DELETE FROM user_custom_presets WHERE id = ? AND (user_id = ? OR ? = '1')",
+            (preset_id, user_id, "1" if auth_user and auth_user.get("is_admin") else "0")
+        )
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as exc:
+        logger.warning("Error deleting user preset %s: %s", preset_id, exc)
+        return jsonify({"error": "Failed to delete"}), 500
+    finally:
+        conn.close()
+
+
 
 def run_flask_app(host='0.0.0.0', port=8100):
     """Run Flask app with retry logic for port binding after OTA restart."""

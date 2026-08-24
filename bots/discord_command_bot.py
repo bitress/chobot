@@ -4188,6 +4188,88 @@ class DiscordCommandCog(commands.Cog):
         elif isinstance(error, commands.BadArgument):
             await ctx.reply("Please provide a valid channel.")
 
+    @commands.hybrid_command(name="preset", description="Get ready-to-copy Order Bot command for a preset, staff bundle, or shortcode")
+    @app_commands.describe(name="Preset name (nmt, crowns, bells, gold, tools) or shortcode (e.g. STAFF-WEAL, CHOP-XXXX)")
+    async def preset_command(self, ctx: commands.Context, name: str):
+        """Slash/prefix command to quickly output ready-to-copy in-game Order bot commands."""
+        query = name.strip().lower()
+        
+        # 1. Quick Built-in Presets
+        if query in ["nmt", "tickets", "ticket", "nmts"]:
+            cmd = "!order " + " ".join(["16DB"] * 40)
+            title = "🎫 40× Nook Miles Tickets"
+        elif query in ["crown", "crowns", "royal", "royalcrowns"]:
+            cmd = "!order " + " ".join(["0A76"] * 40)
+            title = "👑 40× Royal Crowns"
+        elif query in ["bell", "bells", "99k", "maxbells", "wealth"]:
+            cmd = "!order " + " ".join(["114A"] * 40)
+            title = "💰 40× 99k Bells (Max Bells)"
+        elif query in ["gold", "golds", "goldnugget", "nuggets"]:
+            cmd = "!order " + " ".join(["0CE1"] * 40)
+            title = "🪙 40× Gold Nuggets"
+        elif query in ["goldentools", "goldtools", "tools"]:
+            cmd = "!order 1462 1463 1464 1465 1466 1467"
+            title = "🛠️ Golden Tools Set"
+        else:
+            # 2. Database Lookup (staff curated bundles & community loadouts)
+            conn = connect_db()
+            row = None
+            try:
+                code = name.strip().upper()
+                row = conn.execute(
+                    "SELECT * FROM community_loadouts WHERE UPPER(short_code) = ? OR UPPER(name) LIKE ? OR id = ?",
+                    (code, f"%{code}%", name.strip())
+                ).fetchone()
+                if not row:
+                    clean_id = code.replace("STAFF-", "").replace("BDL-", "").replace("CHOP-", "").lower()
+                    b_row = conn.execute(
+                        "SELECT * FROM pocket_bundles WHERE UPPER(id) = ? OR UPPER(name) LIKE ? OR LOWER(id) = ? OR id = ?",
+                        (code, f"%{code}%", clean_id, name.strip())
+                    ).fetchone()
+                    if b_row:
+                        row = {
+                            "name": b_row["name"],
+                            "order_items": b_row["order_items"] or "[]",
+                            "drop_items": b_row["drop_items"] or "[]"
+                        }
+            except Exception as e:
+                logger.warning(f"[PRESET] Error fetching preset {name}: {e}")
+            finally:
+                conn.close()
+
+            if not row:
+                msg = f"❌ **Preset Not Found:** `{name}`\n💡 Try standard presets: `nmt`, `crowns`, `bells`, `gold`, `tools` or enter a valid short code (e.g. `STAFF-WEAL`)."
+                if ctx.interaction and not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await ctx.reply(msg)
+                return
+
+            title = f"🎒 {row['name']}"
+            order_items = json.loads(row["order_items"] or "[]")
+            drop_items = json.loads(row["drop_items"] or "[]")
+            items = order_items if order_items else drop_items
+
+            tokens = []
+            for it in items[:40]:
+                raw_id = it.get("itemId") or it.get("id") or ""
+                qty = it.get("quantity", 1)
+                clean_hex = str(raw_id).strip()
+                if clean_hex:
+                    for _ in range(min(qty, 40)):
+                        tokens.append(clean_hex)
+
+            if not tokens:
+                tokens = [it.get("name", "Item") for it in items[:40]]
+
+            cmd = "!order " + " ".join(tokens[:40])
+
+        response_text = f"**{title}**\nCopy and send this command in the order channel:\n```{cmd}```"
+        if ctx.interaction and not ctx.interaction.response.is_done():
+            await ctx.interaction.response.send_message(response_text, ephemeral=False)
+        else:
+            await ctx.reply(response_text)
+
     @commands.hybrid_command(name="pocket", description="Look up a community pocket loadout or shared build")
     @app_commands.describe(code_or_id="The 6-character shortcode (e.g. CHOP-COTT) or loadout ID")
     async def pocket_command(self, ctx: commands.Context, code_or_id: str):
