@@ -999,9 +999,9 @@ def _build_island_response(
     elif raw_dodo is None:
         status = "OFFLINE"
         dodo_code = None
-    elif raw_dodo in ["00000", "-----", "", "GETTIN'"]:
+    elif (raw_dodo or "").strip().upper() in ["00000", "-----", "", "GETTIN'"]:
         status = "REFRESHING"
-        dodo_code = None
+        dodo_code = "GETTIN'" if (raw_dodo or "").strip().upper() == "GETTIN'" else None
     else:
         status = "ONLINE"
         dodo_code = raw_dodo
@@ -1010,8 +1010,8 @@ def _build_island_response(
     if _is_member_island(island_cat, island_type) or island_type == "Order" or island_cat == "order":
         dodo_code = None
 
-    # When the Discord bot is not confirmed online, hide live data to avoid stale values
-    if not discord_bot_online:
+    # When the Discord bot is not confirmed online, hide live data to avoid stale values (unless refreshing)
+    if not discord_bot_online and status != "REFRESHING":
         visitors = 0
         visitor_list = []
         dodo_code = None
