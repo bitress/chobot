@@ -2766,6 +2766,9 @@ def submit_order_to_bot():
     data = request.get_json() or {}
 
     order_text = (data.get("order") or data.get("command") or "").strip()
+    # Strip leading bot-command prefix (e.g. "!order ") so SysBot only sees raw item codes.
+    import re as _re
+    order_text = _re.sub(r"^!order\s*", "", order_text, flags=_re.IGNORECASE).strip()
     items_list  = data.get("items")
     preset      = (data.get("preset") or "").strip()
 
