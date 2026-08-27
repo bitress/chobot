@@ -2684,6 +2684,36 @@ def get_shared_pocket(pocket_id: str):
 # Configure via SYSBOT_API_URL (+ optional SYSBOT_API_KEY) in .env
 # ============================================================================
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Module-level connection-pooled session with automatic retry on transient
+# Cloudflare / network errors (502, 503, 504).  Created lazily on first use.
+_sysbot_session: requests.Session | None = None
+
+
+def _get_sysbot_session() -> requests.Session:
+    """Return (or lazily create) a pooled requests.Session for the SysBot API."""
+    global _sysbot_session
+    if _sysbot_session is None:
+        _sysbot_session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.5,           # 0s → 0.5s → 1s between retries
+            status_forcelist=[502, 503, 504],
+            allowed_methods=["GET", "POST", "DELETE"],
+            raise_on_status=False,        # let us read the response body even on errors
+        )
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=2,
+            pool_maxsize=5,
+        )
+        _sysbot_session.mount("https://", adapter)
+        _sysbot_session.mount("http://", adapter)
+    return _sysbot_session
+
+
 def _sysbot_headers() -> dict:
     """Build request headers for the SysBot API, including optional API key."""
     h = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -2693,22 +2723,48 @@ def _sysbot_headers() -> dict:
     return h
 
 
+def _sysbot_parse_response(resp: requests.Response, method: str, path: str) -> tuple:
+    """
+    Safely parse a SysBot response.  Handles Cloudflare HTML error pages
+    and non-JSON bodies gracefully.  Returns (dict, http_status).
+    """
+    try:
+        return resp.json(), resp.status_code
+    except (ValueError, requests.exceptions.JSONDecodeError):
+        # Cloudflare sometimes returns HTML error pages (502/503/504)
+        body_preview = resp.text[:200] if resp.text else "(empty)"
+        logger.warning(
+            "[SysBot] %s %s returned non-JSON (HTTP %d): %s",
+            method, path, resp.status_code, body_preview,
+        )
+        return {
+            "success": False,
+            "error": f"SysBot returned HTTP {resp.status_code} (non-JSON response).",
+        }, resp.status_code
+
+
 def _sysbot_get(path: str, **params) -> tuple:
-    """Forward a GET to the SysBot API. Returns (dict, http_status)."""
+    """Forward a GET to the SysBot API.  Returns (dict, http_status)."""
     base = getattr(Config, "SYSBOT_API_URL", "") or ""
     if not base:
         return {"success": False, "error": "SysBot API is not configured (set SYSBOT_API_URL in .env)."}, 503
+    url = f"{base}{path}"
+    t0 = time.monotonic()
     try:
-        resp = requests.get(
-            f"{base.rstrip('/')}{path}",
+        resp = _get_sysbot_session().get(
+            url,
             headers=_sysbot_headers(),
             params={k: v for k, v in params.items() if v is not None},
-            timeout=8,
+            timeout=(5, 15),
         )
-        return resp.json(), resp.status_code
+        elapsed = round((time.monotonic() - t0) * 1000)
+        logger.debug("[SysBot] GET %s → %d (%dms)", path, resp.status_code, elapsed)
+        return _sysbot_parse_response(resp, "GET", path)
     except requests.exceptions.ConnectionError:
+        logger.warning("[SysBot] GET %s — connection refused / unreachable", path)
         return {"success": False, "error": "SysBot API is unreachable."}, 503
     except requests.exceptions.Timeout:
+        logger.warning("[SysBot] GET %s — timed out after %.1fs", path, time.monotonic() - t0)
         return {"success": False, "error": "SysBot API request timed out."}, 504
     except Exception as exc:
         logger.warning("[SysBot] GET %s failed: %s", path, exc)
@@ -2716,38 +2772,170 @@ def _sysbot_get(path: str, **params) -> tuple:
 
 
 def _sysbot_post(path: str, body: dict | None = None) -> tuple:
-    """Forward a POST to the SysBot API. Returns (dict, http_status)."""
+    """Forward a POST to the SysBot API.  Returns (dict, http_status)."""
     base = getattr(Config, "SYSBOT_API_URL", "") or ""
     if not base:
         return {"success": False, "error": "SysBot API is not configured (set SYSBOT_API_URL in .env)."}, 503
+    url = f"{base}{path}"
+    t0 = time.monotonic()
     try:
-        resp = requests.post(
-            f"{base.rstrip('/')}{path}",
+        resp = _get_sysbot_session().post(
+            url,
             headers=_sysbot_headers(),
             json=body or {},
-            timeout=8,
+            timeout=(5, 15),
         )
-        return resp.json(), resp.status_code
+        elapsed = round((time.monotonic() - t0) * 1000)
+        logger.debug("[SysBot] POST %s → %d (%dms)", path, resp.status_code, elapsed)
+        return _sysbot_parse_response(resp, "POST", path)
     except requests.exceptions.ConnectionError:
+        logger.warning("[SysBot] POST %s — connection refused / unreachable", path)
         return {"success": False, "error": "SysBot API is unreachable."}, 503
     except requests.exceptions.Timeout:
+        logger.warning("[SysBot] POST %s — timed out after %.1fs", path, time.monotonic() - t0)
         return {"success": False, "error": "SysBot API request timed out."}, 504
     except Exception as exc:
         logger.warning("[SysBot] POST %s failed: %s", path, exc)
         return {"success": False, "error": str(exc)}, 500
 
 
+def _sysbot_delete(path: str, **params) -> tuple:
+    """Forward a DELETE to the SysBot API.  Returns (dict, http_status)."""
+    base = getattr(Config, "SYSBOT_API_URL", "") or ""
+    if not base:
+        return {"success": False, "error": "SysBot API is not configured (set SYSBOT_API_URL in .env)."}, 503
+    url = f"{base}{path}"
+    t0 = time.monotonic()
+    try:
+        resp = _get_sysbot_session().delete(
+            url,
+            headers=_sysbot_headers(),
+            params={k: v for k, v in params.items() if v is not None},
+            timeout=(5, 15),
+        )
+        elapsed = round((time.monotonic() - t0) * 1000)
+        logger.debug("[SysBot] DELETE %s → %d (%dms)", path, resp.status_code, elapsed)
+        return _sysbot_parse_response(resp, "DELETE", path)
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "SysBot API is unreachable."}, 503
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": "SysBot API request timed out."}, 504
+    except Exception as exc:
+        logger.warning("[SysBot] DELETE %s failed: %s", path, exc)
+        return {"success": False, "error": str(exc)}, 500
+
+
+# ── Normalization helpers ────────────────────────────────────────────────────
+
+# Map SysBot status values → frontend-friendly status values
+_SYSBOT_STATUS_MAP = {
+    "queued": "queued",
+    "next": "preparing",         # first in queue, being prepared
+    "ready": "ready",            # dodo code available
+    "completed": "completed",
+    "cancelled": "cancelled",
+    "not_found": "error",        # order expired or unknown
+    "error": "error",
+    # Pass-through values used by the existing backend
+    "active": "preparing",
+    "in_progress": "preparing",
+    "preparing": "preparing",
+}
+
+_INVALID_DODO_CODES = frozenset({"00000", "-----", "null", "None", ""})
+
+
+def _parse_eta_minutes(data: dict) -> int | None:
+    """Extract estimated minutes from estimated_seconds or eta string."""
+    if data.get("estimated_seconds") is not None:
+        try:
+            return max(1, int(round(float(data["estimated_seconds"]) / 60.0)))
+        except (ValueError, TypeError):
+            pass
+    if data.get("eta"):
+        m = re.search(r"(\d+)m", str(data["eta"]))
+        if m:
+            return max(1, int(m.group(1)))
+    return None
+
+
+def _normalize_order_response(data: dict) -> dict:
+    """
+    Normalize a SysBot order/status response for the frontend:
+    - Map status values (next → preparing)
+    - Parse eta → estimated_minutes
+    - Validate dodo_code
+    - Clamp queue_position
+    """
+    if not isinstance(data, dict):
+        return data
+
+    # Dodo code validation
+    dodo = data.get("dodo_code")
+    has_dodo = bool(dodo and str(dodo).strip() not in _INVALID_DODO_CODES)
+    if not has_dodo:
+        data["dodo_code"] = None
+
+    # Status normalization
+    raw_status = str(data.get("status") or "queued").lower()
+    if has_dodo and raw_status not in ("completed", "cancelled", "error"):
+        data["status"] = "ready"
+    else:
+        data["status"] = _SYSBOT_STATUS_MAP.get(raw_status, raw_status)
+
+    # Queue position — allow 0 for ready/preparing (it's valid from Sinta)
+    raw_pos = data.get("queue_position")
+    if raw_pos is not None:
+        try:
+            pos_int = int(raw_pos)
+            if pos_int <= 0 and data["status"] not in ("ready", "preparing"):
+                pos_int = 1
+            data["queue_position"] = max(0, pos_int)
+        except (ValueError, TypeError):
+            data["queue_position"] = 1
+
+    # Estimated minutes
+    if "estimated_minutes" not in data or data.get("estimated_minutes") is None:
+        parsed = _parse_eta_minutes(data)
+        data["estimated_minutes"] = parsed if parsed is not None else (0 if data["status"] == "ready" else 2)
+
+    return data
+
+
+# ── Bot Status ───────────────────────────────────────────────────────────────
+
 @app.route("/api/order/bot-status", methods=["GET"])
 def get_order_bot_status():
     """
     Proxy GET /api/status from SysBot.ACNHOrders.
-    Returns live bot state: mode (DropMode/OrderMode), island_name, dodo_code,
-    queue_count, accepting_commands, visitor_list, battery_charge, server_time.
-    Use is_drop_mode / is_order_mode to decide which UI to render.
+
+    Returns the full bot state including:
+    - mode (DropMode / OrderMode), is_drop_mode, is_order_mode
+    - is_running, accepting_commands
+    - island_name, dodo_code (in Drop Mode), layer
+    - visitors_count, visitor_list
+    - queue_count, battery_charge
+    - last_dodo_fetch, server_time, is_dirty
     """
     data, code = _sysbot_get("/api/status")
+
+    # Forward all fields as-is from Sinta — the frontend will pick what it needs.
+    # Only enrich with defaults for critical fields the frontend relies on.
+    if isinstance(data, dict) and data.get("success"):
+        data.setdefault("island_name", getattr(Config, "ORDER_BOT_ISLAND", "Sinta"))
+        data.setdefault("accepting_commands", True)
+        data.setdefault("queue_count", 0)
+        # Ensure visitor_list is always an array
+        if "visitors" in data and "visitor_list" not in data:
+            visitors_str = data.get("visitors") or ""
+            data["visitor_list"] = [v.strip() for v in visitors_str.split("\n") if v.strip()] if visitors_str else []
+        data.setdefault("visitor_list", [])
+        data.setdefault("visitors_count", len(data["visitor_list"]))
+
     return jsonify(data), code
 
+
+# ── Submit Order ─────────────────────────────────────────────────────────────
 
 @app.route("/api/order/submit", methods=["POST"])
 def submit_order_to_bot():
@@ -2767,10 +2955,9 @@ def submit_order_to_bot():
 
     order_text = (data.get("order") or data.get("command") or "").strip()
     # Strip leading bot-command prefix (e.g. "!order ") so SysBot only sees raw item codes.
-    import re as _re
-    order_text = _re.sub(r"^!order\s*", "", order_text, flags=_re.IGNORECASE).strip()
-    items_list  = data.get("items")
-    preset      = (data.get("preset") or "").strip()
+    order_text = re.sub(r"^!order\s*", "", order_text, flags=re.IGNORECASE).strip()
+    items_list = data.get("items")
+    preset = (data.get("preset") or "").strip()
 
     if not order_text and not items_list and not preset:
         return jsonify({"success": False, "error": "Provide 'order', 'items', or 'preset' in the request body."}), 400
@@ -2797,6 +2984,9 @@ def submit_order_to_bot():
         payload["user_id"] = user_id
 
     result, code = _sysbot_post("/api/order", payload)
+
+    # Normalize result fields for frontend and DB
+    result = _normalize_order_response(result)
 
     # Persist order to database
     if isinstance(result, dict) and (result.get("success") or code in (200, 201)):
@@ -2826,7 +3016,7 @@ def submit_order_to_bot():
                     """
                 )
                 db.execute(
-                    """INSERT OR REPLACE INTO order_bot_queue
+                    """REPLACE INTO order_bot_queue
                            (id, user_id, username, command, order_type, status,
                             queue_position, estimated_minutes, dodo_code, island_name,
                             message, created_at, updated_at)
@@ -2837,7 +3027,7 @@ def submit_order_to_bot():
                         username,
                         command_str,
                         "order",
-                        "queued",
+                        result.get("status") or "queued",
                         int(result.get("queue_position") or 1),
                         int(result.get("estimated_minutes") or 2),
                         result.get("dodo_code"),
@@ -2845,7 +3035,7 @@ def submit_order_to_bot():
                         result.get("message") or "Order placed",
                         now_ts,
                         now_ts,
-                    )
+                    ),
                 )
                 db.commit()
             except Exception as exc:
@@ -2855,6 +3045,8 @@ def submit_order_to_bot():
 
     return jsonify(result), code
 
+
+# ── Poll Order Status ────────────────────────────────────────────────────────
 
 @app.route("/api/order/status", methods=["GET"])
 def get_order_status():
@@ -2869,6 +3061,9 @@ def get_order_status():
     if not order_id:
         return jsonify({"success": False, "error": "order_id is required."}), 400
     data, code = _sysbot_get("/api/order/status", id=order_id)
+
+    # Normalize response fields from SysBot
+    data = _normalize_order_response(data)
 
     # Sync status to SQLite database
     if isinstance(data, dict) and data.get("status"):
@@ -2894,7 +3089,7 @@ def get_order_status():
                     data.get("message"),
                     now_ts,
                     order_id,
-                )
+                ),
             )
             db.commit()
         except Exception as exc:
@@ -2905,16 +3100,23 @@ def get_order_status():
     return jsonify(data), code
 
 
-@app.route("/api/order/cancel", methods=["POST"])
+# ── Cancel Order ─────────────────────────────────────────────────────────────
+
+@app.route("/api/order/cancel", methods=["POST", "DELETE"])
 def cancel_order():
     """
     Proxy POST /api/order/cancel to SysBot.
     Body: { "id": "order_id" }
+    Also accepts DELETE /api/order/cancel?id=...
     """
-    body = request.get_json() or {}
-    order_id = (body.get("id") or body.get("order_id") or "").strip()
+    if request.method == "DELETE":
+        order_id = (request.args.get("id") or request.args.get("order_id") or "").strip()
+    else:
+        body = request.get_json() or {}
+        order_id = (body.get("id") or body.get("order_id") or "").strip()
     if not order_id:
         return jsonify({"success": False, "error": "order_id is required."}), 400
+
     result, code = _sysbot_post("/api/order/cancel", {"id": order_id})
 
     # Mark as cancelled in DB
@@ -2922,7 +3124,7 @@ def cancel_order():
     try:
         db.execute(
             "UPDATE order_bot_queue SET status = 'cancelled', updated_at = ? WHERE id = ?",
-            (int(time.time()), order_id)
+            (int(time.time()), order_id),
         )
         db.commit()
     except Exception as exc:
@@ -2932,6 +3134,8 @@ def cancel_order():
 
     return jsonify(result), code
 
+
+# ── User Order History ───────────────────────────────────────────────────────
 
 @app.route("/api/order/user-history", methods=["GET"])
 def get_user_order_history():
@@ -3005,16 +3209,39 @@ def get_user_order_history():
         db.close()
 
 
+# ── Queue ────────────────────────────────────────────────────────────────────
+
 @app.route("/api/order/queue", methods=["GET"])
 def get_order_queue():
     """
     Proxy GET /api/queue from SysBot.
     Returns the full list of pending orders with queue position, ETA, and username.
+    Normalizes the response so the frontend gets consistent field names.
     """
     data, code = _sysbot_get("/api/queue")
+
+    # Normalize each order entry for the frontend
+    if isinstance(data, dict) and isinstance(data.get("orders"), list):
+        for entry in data["orders"]:
+            # Sinta uses "position", frontend expects "queue_position"
+            if "position" in entry and "queue_position" not in entry:
+                entry["queue_position"] = entry["position"]
+            # Normalize status (next → preparing)
+            raw_st = str(entry.get("status") or "queued").lower()
+            entry["status"] = _SYSBOT_STATUS_MAP.get(raw_st, raw_st)
+            # Parse eta → estimated_minutes
+            if "estimated_minutes" not in entry:
+                parsed = _parse_eta_minutes(entry)
+                if parsed is not None:
+                    entry["estimated_minutes"] = parsed
+
+        # Also populate the legacy "queue" key for backward compat with frontend
+        data["queue"] = data["orders"]
+
     return jsonify(data), code
 
 
+# ── Dodo Code ────────────────────────────────────────────────────────────────
 
 @app.route("/api/order/dodo", methods=["GET"])
 def get_order_dodo():
@@ -3024,10 +3251,12 @@ def get_order_dodo():
     Order Mode -> pass ?order_id=... to get the code once the order is ready.
     """
     order_id = request.args.get("order_id") or request.args.get("id")
-    user_id  = request.args.get("user_id")
+    user_id = request.args.get("user_id")
     data, code = _sysbot_get("/api/dodo", order_id=order_id, user_id=user_id)
     return jsonify(data), code
 
+
+# ── Item Drop ────────────────────────────────────────────────────────────────
 
 @app.route("/api/order/drop", methods=["POST"])
 def order_drop():
@@ -3051,6 +3280,8 @@ def order_drop():
     return jsonify(result), code
 
 
+# ── Presets ──────────────────────────────────────────────────────────────────
+
 @app.route("/api/order/presets", methods=["GET"])
 def get_order_presets():
     """Proxy GET /api/presets — list all configured SysBot preset names."""
@@ -3058,15 +3289,86 @@ def get_order_presets():
     return jsonify(data), code
 
 
+# ── Speak (In-Game Chat) ─────────────────────────────────────────────────────
+
+@app.route("/api/order/speak", methods=["POST"])
+def order_speak():
+    """
+    Proxy POST /api/speak to SysBot.
+    Sends a message to the in-game Switch chat.
+    Body: { "message": "Welcome to Sinta!" }
+    """
+    body = request.get_json() or {}
+    message = (body.get("message") or "").strip()
+    if not message:
+        return jsonify({"success": False, "error": "message is required."}), 400
+    result, code = _sysbot_post("/api/speak", {"message": message})
+    return jsonify(result), code
+
+
+# ── Turnips (Stalk Market) ───────────────────────────────────────────────────
+
+@app.route("/api/order/turnips", methods=["POST"])
+def order_set_turnips():
+    """
+    Proxy POST /api/turnips to SysBot.
+    Sets the island's turnip (stalk market) price.
+    Body: { "value": 999999999 }
+    """
+    body = request.get_json() or {}
+    value = body.get("value")
+    if value is None:
+        return jsonify({"success": False, "error": "value is required."}), 400
+    try:
+        value = int(value)
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "value must be an integer."}), 400
+    result, code = _sysbot_post("/api/turnips", {"value": value})
+    return jsonify(result), code
+
+
+@app.route("/api/order/turnips/max", methods=["GET"])
+def order_set_turnips_max():
+    """Proxy GET /api/turnips/max — set the maximum turnip price directly."""
+    data, code = _sysbot_get("/api/turnips/max")
+    return jsonify(data), code
+
+
+# ── Clean (Pick Up Items) ────────────────────────────────────────────────────
+
+@app.route("/api/order/clean", methods=["POST"])
+def order_clean():
+    """
+    Proxy POST /api/clean to SysBot.
+    Triggers the bot to pick up (clean) all dropped items on the ground.
+    """
+    result, code = _sysbot_post("/api/clean")
+    return jsonify(result), code
+
+
+# ── Villagers ────────────────────────────────────────────────────────────────
+
+@app.route("/api/order/villagers", methods=["GET"])
+def order_villagers():
+    """
+    Proxy GET /api/villagers from SysBot.
+    Returns the list of villagers currently on the island.
+    """
+    data, code = _sysbot_get("/api/villagers")
+    return jsonify(data), code
+
+
+# ── Sub Island Drop ──────────────────────────────────────────────────────────
+
 @app.route("/api/order/drop-sub", methods=["POST"])
 def drop_sub_island():
     """Proxy a drop or villager inject command to a specific Sub Island."""
     auth_user = _current_auth_user()
     data = request.get_json() or {}
-    island_id   = data.get("island_id")
+    island_id = data.get("island_id")
     island_name = data.get("island_name") or island_id or "Sub Island"
-    command     = data.get("command") or ""
-    plot_num    = data.get("plot_number")
+    command = data.get("command") or ""
+    plot_num = data.get("plot_number")
 
     if not island_id or not command:
         return jsonify({"error": "Island and command are required"}), 400
@@ -3078,7 +3380,7 @@ def drop_sub_island():
         "island_id": island_id,
         "island_name": island_name,
         "plot_number": plot_num,
-        "message": f"Drop command dispatched silently to {island_name}! Items ready on island."
+        "message": f"Drop command dispatched silently to {island_name}! Items ready on island.",
     })
 
 # ============================================================================
@@ -3362,7 +3664,7 @@ def upvote_loadout(loadout_id: str):
         else:
             # Insert upvote in database
             conn.execute(
-                "INSERT OR REPLACE INTO community_loadout_upvotes (loadout_id, user_id, created_at) VALUES (?, ?, ?)",
+                "REPLACE INTO community_loadout_upvotes (loadout_id, user_id, created_at) VALUES (?, ?, ?)",
                 (target_id, user_id, now_iso)
             )
             is_upvoted = True
@@ -3509,7 +3811,7 @@ def save_user_preset():
             )
         """)
         conn.execute("""
-            INSERT OR REPLACE INTO user_custom_presets
+            REPLACE INTO user_custom_presets
             (id, user_id, title, description, category, tags, order_items, drop_items, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (

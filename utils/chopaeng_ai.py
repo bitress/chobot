@@ -1187,6 +1187,25 @@ _FAQ_REGEX_ENTRIES: list[tuple[re.Pattern, str]] = [
     (
         re.compile(
             r"\b(?:"
+            r"how\s+(?:to|do\s+i|can\s+i)\s+(?:order|use\s+(?:the\s+)?order\s*bot)(?:\s+items?)?\??$|"
+            r"how\s+(?:does\s+)?(?:the\s+)?ordering\s+work|"
+            r"how\s+to\s+place\s+(?:an\s+)?order|"
+            r"how\s+ordering\s+works|"
+            r"steps?\s+to\s+order"
+            r")\b",
+            re.I,
+        ),
+        "**How Ordering Works:**\n\n"
+        "🌐 **Web Order Bot ([chopaeng.com/order](https://www.chopaeng.com/order)):**\n"
+        "1. **Build Pockets:** Pick up to 40 items in Command Builder or load presets.\n"
+        "2. **Send Order:** Click **Send Order** to join the live bot dispatch queue.\n"
+        "3. **Track Radar:** Watch your queue position & estimated wait time.\n"
+        "4. **Fly In:** Enter your personal Dodo code at Dodo Airlines to collect on island *Sinta*! ✈️\n\n"
+        "💬 **Discord Alternative:** In <#1175672083183829075> (`#chorder-bot`), paste `!order <codes>` from **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**.",
+    ),
+    (
+        re.compile(
+            r"\b(?:"
             r"how\s+(?:to|do\s+i|can\s+i)\s+get\s+(?:a\s+)?dodo(?:\s+code)?|"
             r"where\s+(?:to|do\s+i|can\s+i)\s+(?:get|find)\s+(?:a\s+)?dodo(?:\s+code)?|"
             r"how\s+(?:do\s+i|to)\s+visit\s+(?:free\s+)?islands?|"
@@ -1769,7 +1788,7 @@ _AI_SYSTEM_PROMPT = (
     "4. If Live Data says it's stale or degraded, mention it to the user.\n"
     "5. For rules/access issues, direct them to the appropriate channel mentioned in the context.\n"
     "6. ALWAYS prefix website links with `https://` so they are clickable in Discord.\n"
-    "7. Distinguish between 'order' (free members using OrderBot in <#1175672083183829075>) and 'drop' (subscribers spawning items on sub islands). If a user specifically asks how to 'order', explain the OrderBot flow, NOT the drop flow.\n"
+    "7. Distinguish between 'order' (free members using Web Order Bot at https://www.chopaeng.com/order or OrderBot in <#1175672083183829075>) and 'drop' (subscribers spawning items on sub islands). If a user specifically asks how to 'order' or how ordering works, explain the 4-step OrderBot flow (1. Build Pockets up to 40 items in Command Builder or presets, 2. Send Order to join the dispatch queue, 3. Track Radar for queue position & ETA, 4. Fly In with personal Dodo code to island Sinta), NOT the drop flow.\n"
     "8. Free islands do NOT support !drop, !senddodo, !injectvillager, or !mvi. On free islands, Dodo codes come from the Dodo Board channel (no bot command) and item requests go through Chorder Bot (!order). These four commands are sub-island-only.\n"
     "9. `!find` (and `!locate`) is strictly for searching Sub Islands and is only for Sub Island members / Subscribers. Free members do not use `!find`.\n"
     "10. When asked how to get a villager: For subscribers, explain !injectvillager/!mvi and refer them to <#782872507551055892>. For free members, explain Chorder Bot in <#1175672083183829075> and refer them to read <#1516752902591615046>."

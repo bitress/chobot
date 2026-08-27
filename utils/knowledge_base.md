@@ -18,6 +18,8 @@ villagers, and visit other players' islands. The community includes Filipino and
 | TikTok | [tiktok.com/@chopaengtv](https://www.tiktok.com/@chopaengtv) |
 | Discord | [discord.gg/chopaeng](https://discord.gg/chopaeng) |
 | Patreon | [patreon.com/chopaeng](https://www.patreon.com/cw/chopaeng/membership) |
+| Order Bot | [chopaeng.com/order](https://www.chopaeng.com/order) |
+| Command Builder | [chopaeng.com/command-builder](https://www.chopaeng.com/command-builder) |
 
 ## Chobot
 Chobot is the community's custom-built assistant, operating seamlessly across both Discord and Twitch to provide a unified experience. It ensures that item and villager locations remain synchronized and up-to-date across all 47 treasure islands.
@@ -32,6 +34,8 @@ The official website for Chopaeng serves as a central hub for viewers and member
 
 **Core Functionality:**
 - **Treasure Island Management:** Provides real-time information about available treasure islands, including maps, item lists, and current status.
+- **Web Order Bot ([chopaeng.com/order](https://www.chopaeng.com/order)):** Direct interactive 40-slot order dispatch to order island *Sinta* with live radar queue tracking and instant Dodo codes.
+- **Command Builder ([chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)):** Build `!order`, `!drop`, and `!injectvillager` commands visually.
 - **Item Search:** A "Find Items" feature that allows users to search for specific items across different islands.
 - **Membership & Auth:** Integrates with Discord for user authentication. Access to certain islands or features is gated by Discord roles (e.g., for subscribers or "ChoTato Club" members).
 - **Community Resources:** Includes game guides, a blog section, and island maps to help players navigate the treasure islands efficiently.
@@ -64,27 +68,32 @@ A Dodo code is a 5-character code used in ACNH to visit a Chopaeng island via Do
 
 - **For Free Islands (27 free islands):** Free islands do **NOT** use `!senddodo` or `!sd` commands. Instead, go directly to the **Dodo Board** channel (<#1500493205672825056>). The Dodo Board displays the live Dodo codes and statuses for all 27 free islands.
 - **For Sub Islands (20 sub islands):** Go to that specific sub island's channel in Discord and type `!senddodo` or `!sd`. The bot will DM the code directly to you. Keep the code private — do not share it with anyone, including friends or family. If an island is offline, `!senddodo` will tell you instead of sending a code.
+- **For Order Bot (Sinta Island):** Orders placed via [chopaeng.com/order](https://www.chopaeng.com/order) or <#1175672083183829075> generate a private, temporary Dodo code when your order is ready in the queue.
 
-## Using the command builder for orders, drops, and villager injects
+## How Ordering Works (Order Bot)
 
-For Sub
+Community members can place custom item orders using either the **Web Order Bot** or **Discord Order Bot**.
 
-Create your ChoBot command at **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Use the **Drop** button for items or DIYs, and use the **Inject** button for villagers. Copy the generated command from the **Drop Bot** or **Inject Bot** section and paste it into the appropriate sub island channel.
+### Web Order Bot ([chopaeng.com/order](https://www.chopaeng.com/order))
+1. **1. Build Pockets:** Pick up to 40 items in Command Builder or load presets (40× NMTs, 40× Royal Crowns, 40× Bells).
+2. **2. Send Order:** Click **Send Order** to join the live bot dispatch queue on island *Sinta*.
+3. **3. Track Radar:** Watch your queue position & estimated wait time in real-time.
+4. **4. Fly In:** Enter your personal Dodo code at Dodo Airlines (DAL) when ready to collect your items.
 
-For Free
-
-To place an order, visit **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Browse items or DIYs, click the **Order** button to add them to your request, then copy the command from the **Order Bot** section and paste it in <#1175672083183829075> (chorder-bot).
-
-The order bot will inform you of your position in the queue. To check your queue status, enter `!position` in the order channel. Avoid excessive use of this command; check every few minutes if necessary.
-
-Once your turn arrives, the bot will notify you to clear your inventory and proceed to the airport. Act promptly when your Dodo code is ready, as the bot won't wait indefinitely. Upon receiving the "Your order is starting" message, interact with Orville until he prompts you to enter a Dodo code. Remain there until the bot provides your Dodo code, and enter it immediately. **Avoid sending a substitute (e.g., a friend) to the island, as this may trigger the alt detector and lead to an automatic ban.**
-
-Upon receiving your Dodo code, enter it and depart for the order island, named "*Sinta*" where the player "*ChoPaeng*" resides.
-
-Collect your items directly in front of the airport and depart. You're done! Use the `-` button on your Joy-Con for the quickest exit method.
+### Discord Order Bot (for Free Members)
+1. Visit **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Browse items or DIYs, click the **Order** button to add them to your request.
+2. Copy the generated command from the **Order Bot** section and paste it in <#1175672083183829075> (`#chorder-bot`).
+3. The order bot will inform you of your position in the queue. To check your queue status, enter `!position` in the order channel. Avoid excessive use of this command; check every few minutes if necessary.
+4. Once your turn arrives, the bot will notify you to clear your inventory and proceed to the airport. Act promptly when your Dodo code is ready, as the bot won't wait indefinitely. Upon receiving the "Your order is starting" message, interact with Orville until he prompts you to enter a Dodo code. Remain there until the bot provides your Dodo code, and enter it immediately. **Avoid sending a substitute (e.g., a friend) to the island, as this may trigger the alt detector and lead to an automatic ban.**
+5. Upon receiving your Dodo code, enter it and depart for the order island, named "*Sinta*" where the player "*ChoPaeng*" resides.
+6. Collect your items directly in front of the airport and depart. You're done! Use the `-` button on your Joy-Con for the quickest exit method.
 
 Free island questions should not be sent to the Chorder Bot help channel. The
 Chorder Bot help tab/channel is only for the free orderbot and ordering flow.
+
+## Using the command builder for drops and villager injects (Subscribers)
+For Subscribers:
+Create your ChoBot command at **[chopaeng.com/command-builder](https://www.chopaeng.com/command-builder)**. Use the **Drop** button for items or DIYs (up to 9 items), and use the **Inject** button for villagers. Copy the generated command from the **Drop Bot** or **Inject Bot** section and paste it into the appropriate sub island channel.
 
 ## Islands Overview
 There are 47 islands total: 20 sub islands and 27 free islands.
