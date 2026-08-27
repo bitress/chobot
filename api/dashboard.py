@@ -474,6 +474,48 @@ def init_dashboard_db():
             )
         """)
 
+        # User Saved In-Game Characters table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_saved_characters (
+                user_id     TEXT NOT NULL,
+                id          TEXT NOT NULL,
+                ign         TEXT NOT NULL,
+                island_name TEXT NOT NULL,
+                title       TEXT,
+                icon        TEXT,
+                is_default  INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                PRIMARY KEY (user_id, id)
+            )
+        """)
+
+        # User Public Passport & Profile Customizer table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_public_passports (
+                user_id                   TEXT PRIMARY KEY,
+                username                  TEXT NOT NULL,
+                is_public                 INTEGER NOT NULL DEFAULT 0,
+                show_character_and_island INTEGER NOT NULL DEFAULT 1,
+                pronouns                  TEXT,
+                birth_day                 TEXT,
+                birth_month               TEXT,
+                native_fruit              TEXT,
+                favourite_colour          TEXT,
+                favourite_song            TEXT,
+                country                   TEXT,
+                language                  TEXT,
+                personality               TEXT,
+                hobbies                   TEXT,
+                favourite_shows_films     TEXT,
+                about_you                 TEXT,
+                favourite_villagers       TEXT,
+                primary_ign               TEXT,
+                primary_island            TEXT,
+                updated_at                TEXT NOT NULL
+            )
+        """)
+
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_pocket_bundles_cat ON pocket_bundles (category, is_official)")
         except Exception:
@@ -492,6 +534,14 @@ def init_dashboard_db():
             pass
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_user_fav_islands ON user_favorite_islands (user_id)")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_user_saved_characters ON user_saved_characters (user_id)")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_user_public_passports_username ON user_public_passports (username COLLATE NOCASE)")
         except Exception:
             pass
 

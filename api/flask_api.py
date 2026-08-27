@@ -3866,6 +3866,296 @@ def delete_user_preset(preset_id: str):
         conn.close()
 
 
+# ============================================================================
+# USER SAVED CHARACTERS & PUBLIC PASSPORT ENDPOINTS
+# ============================================================================
+
+@app.route("/api/user/characters", methods=["GET", "POST"])
+@app.route("/api/profile/characters", methods=["GET", "POST"])
+def api_user_characters():
+    """Get or save authenticated user in-game characters."""
+    auth_user = _current_auth_user()
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+    if not user_id:
+        client_header = request.headers.get("x-client-id") or ""
+        ip = request.remote_addr or "127.0.0.1"
+        user_id = f"client_{client_header}_{ip}"[:64]
+
+    conn = get_db()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_saved_characters (
+                user_id     TEXT NOT NULL,
+                id          TEXT NOT NULL,
+                ign         TEXT NOT NULL,
+                island_name TEXT NOT NULL,
+                title       TEXT,
+                icon        TEXT,
+                is_default  INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                PRIMARY KEY (user_id, id)
+            )
+        """)
+
+        if request.method == "GET":
+            rows = conn.execute(
+                "SELECT * FROM user_saved_characters WHERE user_id = ? ORDER BY is_default DESC, updated_at DESC",
+                (user_id,)
+            ).fetchall()
+            characters = []
+            for r in rows:
+                characters.append({
+                    "id": r["id"],
+                    "ign": r["ign"],
+                    "islandName": r["island_name"],
+                    "title": r["title"] or "Island Resident",
+                    "icon": r["icon"] or "fa-leaf",
+                    "isDefault": bool(r["is_default"]),
+                    "createdAt": r["created_at"],
+                    "updatedAt": r["updated_at"],
+                })
+            return jsonify({"ok": True, "characters": characters})
+
+        # POST: Save character list
+        data = request.get_json(silent=True) or {}
+        char_list = data.get("characters") if isinstance(data, dict) else data
+        if not isinstance(char_list, list):
+            char_list = [data] if isinstance(data, dict) and data.get("ign") else []
+
+        now_iso = datetime.utcnow().isoformat()
+        # Clear existing and replace with new state
+        conn.execute("DELETE FROM user_saved_characters WHERE user_id = ?", (user_id,))
+        for idx, item in enumerate(char_list[:10]):
+            c_id = str(item.get("id") or f"char_{int(time.time()*1000)}_{idx}")
+            ign = str(item.get("ign") or "").strip()[:32]
+            island = str(item.get("islandName") or item.get("island_name") or "").strip()[:32]
+            if not ign:
+                continue
+            title = str(item.get("title") or "Island Resident").strip()[:40]
+            icon = str(item.get("icon") or "fa-leaf").strip()[:32]
+            is_def = 1 if bool(item.get("isDefault") or item.get("is_default") or (idx == 0 and len(char_list) == 1)) else 0
+            created_at = str(item.get("createdAt") or item.get("created_at") or now_iso)
+
+            conn.execute("""
+                INSERT OR REPLACE INTO user_saved_characters
+                (user_id, id, ign, island_name, title, icon, is_default, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, c_id, ign, island, title, icon, is_def, created_at, now_iso))
+
+        conn.commit()
+        return jsonify({"ok": True, "success": True, "count": len(char_list)})
+    except Exception as exc:
+        logger.warning("Error in user_characters API: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/user/passport", methods=["GET", "POST"])
+@app.route("/api/profile/passport", methods=["GET", "POST"])
+def api_user_passport():
+    """Get or save authenticated user public passport and profile customizer data."""
+    auth_user = _current_auth_user()
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+    username = str(auth_user.get("discord_name") or auth_user.get("username") or "") if auth_user else ""
+    if not user_id:
+        client_header = request.headers.get("x-client-id") or ""
+        ip = request.remote_addr or "127.0.0.1"
+        user_id = f"client_{client_header}_{ip}"[:64]
+        if not username:
+            username = user_id
+
+    conn = get_db()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_public_passports (
+                user_id                   TEXT PRIMARY KEY,
+                username                  TEXT NOT NULL,
+                is_public                 INTEGER NOT NULL DEFAULT 0,
+                show_character_and_island INTEGER NOT NULL DEFAULT 1,
+                pronouns                  TEXT,
+                birth_day                 TEXT,
+                birth_month               TEXT,
+                native_fruit              TEXT,
+                favourite_colour          TEXT,
+                favourite_song            TEXT,
+                country                   TEXT,
+                language                  TEXT,
+                personality               TEXT,
+                hobbies                   TEXT,
+                favourite_shows_films     TEXT,
+                about_you                 TEXT,
+                favourite_villagers       TEXT,
+                primary_ign               TEXT,
+                primary_island            TEXT,
+                updated_at                TEXT NOT NULL
+            )
+        """)
+
+        if request.method == "GET":
+            row = conn.execute(
+                "SELECT * FROM user_public_passports WHERE user_id = ?",
+                (user_id,)
+            ).fetchone()
+            if not row and username:
+                row = conn.execute(
+                    "SELECT * FROM user_public_passports WHERE LOWER(username) = LOWER(?)",
+                    (username,)
+                ).fetchone()
+
+            if not row:
+                return jsonify({"ok": True, "passport": None})
+
+            passport = {
+                "username": row["username"],
+                "isPublic": bool(row["is_public"]),
+                "showCharacterAndIsland": bool(row["show_character_and_island"]),
+                "pronouns": row["pronouns"] or "",
+                "birthDay": row["birth_day"] or "1",
+                "birthMonth": row["birth_month"] or "January",
+                "nativeFruit": row["native_fruit"] or "Apple",
+                "favouriteColour": row["favourite_colour"] or "#37b06d",
+                "favouriteSong": row["favourite_song"] or "K.K. Cruisin'",
+                "country": row["country"] or "Island Paradise",
+                "language": row["language"] or "English",
+                "personality": row["personality"] or "Normal",
+                "hobbies": row["hobbies"] or "",
+                "favouriteShowsFilms": row["favourite_shows_films"] or "",
+                "aboutYou": row["about_you"] or "",
+                "favouriteVillagers": json.loads(row["favourite_villagers"] or "[]"),
+                "primaryIgn": row["primary_ign"] or "",
+                "primaryIsland": row["primary_island"] or "",
+                "updatedAt": row["updated_at"],
+            }
+            return jsonify({"ok": True, "passport": passport})
+
+        # POST: Save passport
+        data = request.get_json(silent=True) or {}
+        p = data.get("passport") or data.get("public_passport") or data
+        uname = str(p.get("username") or username or "Resident").strip()[:50]
+        is_pub = 1 if bool(p.get("isPublic") or p.get("is_public")) else 0
+        show_char = 1 if bool(p.get("showCharacterAndIsland", p.get("show_character_and_island", True))) else 0
+        pronouns = str(p.get("pronouns") or "")[:40]
+        b_day = str(p.get("birthDay") or p.get("birth_day") or "1")[:5]
+        b_month = str(p.get("birthMonth") or p.get("birth_month") or "January")[:20]
+        fruit = str(p.get("nativeFruit") or p.get("native_fruit") or "Apple")[:20]
+        colour = str(p.get("favouriteColour") or p.get("favourite_colour") or "#37b06d")[:20]
+        song = str(p.get("favouriteSong") or p.get("favourite_song") or "K.K. Cruisin'")[:60]
+        country = str(p.get("country") or "Island Paradise")[:60]
+        lang = str(p.get("language") or "English")[:40]
+        personality = str(p.get("personality") or "Normal")[:30]
+        hobbies = str(p.get("hobbies") or "")[:120]
+        shows = str(p.get("favouriteShowsFilms") or p.get("favourite_shows_films") or "")[:120]
+        about = str(p.get("aboutYou") or p.get("about_you") or "")[:200]
+        villagers = json.dumps(p.get("favouriteVillagers") or p.get("favourite_villagers") or [])
+        p_ign = str(p.get("primaryIgn") or p.get("primary_ign") or "")[:32]
+        p_island = str(p.get("primaryIsland") or p.get("primary_island") or "")[:32]
+        now_iso = datetime.utcnow().isoformat()
+
+        conn.execute("""
+            INSERT OR REPLACE INTO user_public_passports (
+                user_id, username, is_public, show_character_and_island, pronouns,
+                birth_day, birth_month, native_fruit, favourite_colour, favourite_song,
+                country, language, personality, hobbies, favourite_shows_films,
+                about_you, favourite_villagers, primary_ign, primary_island, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id, uname, is_pub, show_char, pronouns,
+            b_day, b_month, fruit, colour, song,
+            country, lang, personality, hobbies, shows,
+            about, villagers, p_ign, p_island, now_iso
+        ))
+        conn.commit()
+
+        return jsonify({
+            "ok": True,
+            "success": True,
+            "passport": {
+                "username": uname,
+                "isPublic": bool(is_pub),
+                "showCharacterAndIsland": bool(show_char),
+                "pronouns": pronouns,
+                "birthDay": b_day,
+                "birthMonth": b_month,
+                "nativeFruit": fruit,
+                "favouriteColour": colour,
+                "favouriteSong": song,
+                "country": country,
+                "language": lang,
+                "personality": personality,
+                "hobbies": hobbies,
+                "favouriteShowsFilms": shows,
+                "aboutYou": about,
+                "favouriteVillagers": json.loads(villagers),
+                "primaryIgn": p_ign,
+                "primaryIsland": p_island,
+                "updatedAt": now_iso,
+            }
+        })
+    except Exception as exc:
+        logger.warning("Error saving user passport: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/public/passport/<username>", methods=["GET"])
+@app.route("/api/user/passport/<username>", methods=["GET"])
+def api_public_passport_get(username: str):
+    """Retrieve public passport data for any user by Discord username or account ID."""
+    clean_uname = urllib.parse.unquote(username).strip()
+    if not clean_uname:
+        return jsonify({"error": "Username is required"}), 400
+
+    auth_user = _current_auth_user()
+    current_uid = str(auth_user.get("user_id") or "") if auth_user else ""
+    current_uname = str(auth_user.get("discord_name") or auth_user.get("username") or "").lower() if auth_user else ""
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT * FROM user_public_passports 
+               WHERE LOWER(username) = LOWER(?) OR user_id = ?""",
+            (clean_uname, clean_uname)
+        ).fetchone()
+
+        if not row:
+            return jsonify({"error": "Passport not found", "passport": None}), 404
+
+        is_owner = (current_uid and row["user_id"] == current_uid) or (current_uname and row["username"].lower() == current_uname)
+        if not bool(row["is_public"]) and not is_owner:
+            return jsonify({"error": "This profile is private", "isPrivate": True}), 403
+
+        passport = {
+            "username": row["username"],
+            "isPublic": bool(row["is_public"]),
+            "showCharacterAndIsland": bool(row["show_character_and_island"]),
+            "pronouns": row["pronouns"] or "",
+            "birthDay": row["birth_day"] or "1",
+            "birthMonth": row["birth_month"] or "January",
+            "nativeFruit": row["native_fruit"] or "Apple",
+            "favouriteColour": row["favourite_colour"] or "#37b06d",
+            "favouriteSong": row["favourite_song"] or "K.K. Cruisin'",
+            "country": row["country"] or "Island Paradise",
+            "language": row["language"] or "English",
+            "personality": row["personality"] or "Normal",
+            "hobbies": row["hobbies"] or "",
+            "favouriteShowsFilms": row["favourite_shows_films"] or "",
+            "aboutYou": row["about_you"] or "",
+            "favouriteVillagers": json.loads(row["favourite_villagers"] or "[]"),
+            "primaryIgn": row["primary_ign"] if bool(row["show_character_and_island"]) or is_owner else "",
+            "primaryIsland": row["primary_island"] if bool(row["show_character_and_island"]) or is_owner else "",
+            "updatedAt": row["updated_at"],
+        }
+        return jsonify({"ok": True, "passport": passport})
+    except Exception as exc:
+        logger.warning("Error fetching public passport for %s: %s", clean_uname, exc)
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        conn.close()
+
+
 
 def run_flask_app(host='0.0.0.0', port=8100):
     """Run Flask app with retry logic for port binding after OTA restart."""
