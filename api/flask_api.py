@@ -1247,6 +1247,19 @@ def api_profile():
     subscriptions = _load_profile_subscriptions(user)
     visits = _load_profile_visit_stats(user.get("user_id", ""))
 
+    conn = get_db()
+    favorite_islands = []
+    try:
+        fav_rows = conn.execute(
+            "SELECT island_id FROM user_favorite_islands WHERE user_id = ? ORDER BY created_at DESC",
+            (user.get("user_id", ""),)
+        ).fetchall()
+        favorite_islands = [r["island_id"] for r in fav_rows if r["island_id"]]
+    except Exception:
+        favorite_islands = []
+    finally:
+        conn.close()
+
     return jsonify({
         "user": {
             "id": user.get("user_id", ""),
@@ -1263,6 +1276,7 @@ def api_profile():
         },
         "subscriptions": subscriptions,
         "visits": visits,
+        "favorite_islands": favorite_islands,
     })
 
 
@@ -3865,6 +3879,100 @@ def delete_user_preset(preset_id: str):
     finally:
         conn.close()
 
+
+
+# ============================================================================
+# USER FAVORITE ISLANDS ENDPOINTS
+# ============================================================================
+
+@app.route("/api/user/favorites", methods=["GET", "POST"])
+@app.route("/api/profile/favorites", methods=["GET", "POST"])
+@app.route("/api/user/favorite-islands", methods=["GET", "POST"])
+def api_user_favorite_islands():
+    """Get or toggle authenticated user favorite islands."""
+    auth_user = _current_auth_user()
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+    if not user_id:
+        client_header = request.headers.get("x-client-id") or ""
+        ip = request.remote_addr or "127.0.0.1"
+        user_id = f"client_{client_header}_{ip}"[:64]
+
+    conn = get_db()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_favorite_islands (
+                user_id    VARCHAR(64) NOT NULL,
+                island_id  VARCHAR(64) NOT NULL,
+                created_at VARCHAR(64) NOT NULL,
+                PRIMARY KEY (user_id, island_id)
+            )
+        """)
+
+        if request.method == "GET":
+            rows = conn.execute(
+                "SELECT island_id FROM user_favorite_islands WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,)
+            ).fetchall()
+            favorite_islands = [r["island_id"] for r in rows if r["island_id"]]
+            return jsonify({
+                "ok": True,
+                "success": True,
+                "favorite_islands": favorite_islands,
+                "count": len(favorite_islands)
+            })
+
+        # POST: Save or toggle single favorite or save batch
+        data = request.get_json(silent=True) or {}
+        now_iso = datetime.utcnow().isoformat()
+
+        # Case A: Batch list of favorite islands
+        if "favorites" in data or "favorite_islands" in data or isinstance(data, list):
+            fav_list = data.get("favorites") or data.get("favorite_islands") or data
+            if isinstance(fav_list, list):
+                conn.execute("DELETE FROM user_favorite_islands WHERE user_id = ?", (user_id,))
+                for i_id in fav_list:
+                    clean_id = str(i_id).strip().lower()[:64]
+                    if clean_id:
+                        conn.execute("""
+                            REPLACE INTO user_favorite_islands (user_id, island_id, created_at)
+                            VALUES (?, ?, ?)
+                        """, (user_id, clean_id, now_iso))
+                conn.commit()
+                return jsonify({"ok": True, "success": True, "count": len(fav_list)})
+
+        # Case B: Single island toggle / set
+        island_id = str(data.get("island_id") or data.get("id") or "").strip().lower()[:64]
+        if not island_id:
+            return jsonify({"ok": False, "error": "island_id is required"}), 400
+
+        is_fav = data.get("is_favorite")
+        if is_fav is None:
+            is_fav = data.get("isFavorite", True)
+        is_fav = bool(is_fav)
+
+        if is_fav:
+            conn.execute("""
+                REPLACE INTO user_favorite_islands (user_id, island_id, created_at)
+                VALUES (?, ?, ?)
+            """, (user_id, island_id, now_iso))
+        else:
+            conn.execute(
+                "DELETE FROM user_favorite_islands WHERE user_id = ? AND island_id = ?",
+                (user_id, island_id)
+            )
+
+        conn.commit()
+        return jsonify({
+            "ok": True,
+            "success": True,
+            "island_id": island_id,
+            "is_favorite": is_fav
+        })
+    except Exception as exc:
+        logger.warning("Error in user favorite islands API: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        conn.close()
 
 # ============================================================================
 # USER SAVED CHARACTERS & PUBLIC PASSPORT ENDPOINTS
