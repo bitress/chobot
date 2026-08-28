@@ -3970,26 +3970,27 @@ def api_user_passport():
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_public_passports (
-                user_id                   TEXT PRIMARY KEY,
-                username                  TEXT NOT NULL,
+                user_id                   VARCHAR(64) PRIMARY KEY,
+                username                  VARCHAR(255) NOT NULL,
                 is_public                 INTEGER NOT NULL DEFAULT 0,
                 show_character_and_island INTEGER NOT NULL DEFAULT 1,
-                pronouns                  TEXT,
-                birth_day                 TEXT,
-                birth_month               TEXT,
-                native_fruit              TEXT,
-                favourite_colour          TEXT,
-                favourite_song            TEXT,
-                country                   TEXT,
-                language                  TEXT,
-                personality               TEXT,
-                hobbies                   TEXT,
-                favourite_shows_films     TEXT,
+                pronouns                  VARCHAR(64),
+                birth_day                 VARCHAR(16),
+                birth_month               VARCHAR(32),
+                native_fruit              VARCHAR(32),
+                favourite_colour          VARCHAR(32),
+                favourite_song            VARCHAR(128),
+                country                   VARCHAR(128),
+                language                  VARCHAR(64),
+                personality               VARCHAR(64),
+                hobbies                   VARCHAR(255),
+                favourite_shows_films     VARCHAR(255),
                 about_you                 TEXT,
                 favourite_villagers       TEXT,
-                primary_ign               TEXT,
-                primary_island            TEXT,
-                updated_at                TEXT NOT NULL
+                primary_ign               VARCHAR(64),
+                primary_island            VARCHAR(64),
+                avatar_url                TEXT,
+                updated_at                VARCHAR(64) NOT NULL
             )
         """)
 
@@ -4026,6 +4027,7 @@ def api_user_passport():
                 "favouriteVillagers": json.loads(row["favourite_villagers"] or "[]"),
                 "primaryIgn": row["primary_ign"] or "",
                 "primaryIsland": row["primary_island"] or "",
+                "avatarUrl": row.get("avatar_url") or "",
                 "updatedAt": row["updated_at"],
             }
             return jsonify({"ok": True, "passport": passport})
@@ -4051,6 +4053,7 @@ def api_user_passport():
         villagers = json.dumps(p.get("favouriteVillagers") or p.get("favourite_villagers") or [])
         p_ign = str(p.get("primaryIgn") or p.get("primary_ign") or "")[:32]
         p_island = str(p.get("primaryIsland") or p.get("primary_island") or "")[:32]
+        avatar_url = str(p.get("avatarUrl") or p.get("avatar_url") or "")[:500]
         now_iso = datetime.utcnow().isoformat()
 
         conn.execute("""
@@ -4058,13 +4061,13 @@ def api_user_passport():
                 user_id, username, is_public, show_character_and_island, pronouns,
                 birth_day, birth_month, native_fruit, favourite_colour, favourite_song,
                 country, language, personality, hobbies, favourite_shows_films,
-                about_you, favourite_villagers, primary_ign, primary_island, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                about_you, favourite_villagers, primary_ign, primary_island, avatar_url, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             user_id, uname, is_pub, show_char, pronouns,
             b_day, b_month, fruit, colour, song,
             country, lang, personality, hobbies, shows,
-            about, villagers, p_ign, p_island, now_iso
+            about, villagers, p_ign, p_island, avatar_url, now_iso
         ))
         conn.commit()
 

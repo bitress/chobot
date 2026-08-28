@@ -493,26 +493,27 @@ def init_dashboard_db():
         # User Public Passport & Profile Customizer table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_public_passports (
-                user_id                   TEXT PRIMARY KEY,
-                username                  TEXT NOT NULL,
+                user_id                   VARCHAR(64) PRIMARY KEY,
+                username                  VARCHAR(255) NOT NULL,
                 is_public                 INTEGER NOT NULL DEFAULT 0,
                 show_character_and_island INTEGER NOT NULL DEFAULT 1,
-                pronouns                  TEXT,
-                birth_day                 TEXT,
-                birth_month               TEXT,
-                native_fruit              TEXT,
-                favourite_colour          TEXT,
-                favourite_song            TEXT,
-                country                   TEXT,
-                language                  TEXT,
-                personality               TEXT,
-                hobbies                   TEXT,
-                favourite_shows_films     TEXT,
+                pronouns                  VARCHAR(64),
+                birth_day                 VARCHAR(16),
+                birth_month               VARCHAR(32),
+                native_fruit              VARCHAR(32),
+                favourite_colour          VARCHAR(32),
+                favourite_song            VARCHAR(128),
+                country                   VARCHAR(128),
+                language                  VARCHAR(64),
+                personality               VARCHAR(64),
+                hobbies                   VARCHAR(255),
+                favourite_shows_films     VARCHAR(255),
                 about_you                 TEXT,
                 favourite_villagers       TEXT,
-                primary_ign               TEXT,
-                primary_island            TEXT,
-                updated_at                TEXT NOT NULL
+                primary_ign               VARCHAR(64),
+                primary_island            VARCHAR(64),
+                avatar_url                TEXT,
+                updated_at                VARCHAR(64) NOT NULL
             )
         """)
 

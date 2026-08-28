@@ -250,3 +250,63 @@ class CommunityLoadoutUpvote(Base):
     __table_args__ = (
         Index("ix_loadout_upvotes_user", "user_id"),
     )
+
+
+class UserSavedCharacter(Base):
+    __tablename__ = "user_saved_characters"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ign: Mapped[str] = mapped_column(String(255), nullable=False)
+    island_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255))
+    icon: Mapped[str | None] = mapped_column(String(64))
+    is_default: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        Index("ix_user_saved_characters_user_id", "user_id"),
+    )
+
+
+class UserFavoriteIsland(Base):
+    __tablename__ = "user_favorite_islands"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    island_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        Index("ix_user_fav_islands_user_id", "user_id"),
+    )
+
+
+class UserPublicPassport(Base):
+    __tablename__ = "user_public_passports"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_public: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    show_character_and_island: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    pronouns: Mapped[str | None] = mapped_column(String(64))
+    birth_day: Mapped[str | None] = mapped_column(String(16))
+    birth_month: Mapped[str | None] = mapped_column(String(32))
+    native_fruit: Mapped[str | None] = mapped_column(String(32))
+    favourite_colour: Mapped[str | None] = mapped_column(String(32))
+    favourite_song: Mapped[str | None] = mapped_column(String(128))
+    country: Mapped[str | None] = mapped_column(String(128))
+    language: Mapped[str | None] = mapped_column(String(64))
+    personality: Mapped[str | None] = mapped_column(String(64))
+    hobbies: Mapped[str | None] = mapped_column(String(255))
+    favourite_shows_films: Mapped[str | None] = mapped_column(String(255))
+    about_you: Mapped[str | None] = mapped_column(Text)
+    favourite_villagers: Mapped[str | None] = mapped_column(Text)
+    primary_ign: Mapped[str | None] = mapped_column(String(64))
+    primary_island: Mapped[str | None] = mapped_column(String(64))
+    avatar_url: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        Index("ix_user_public_passports_username", "username"),
+    )

@@ -304,6 +304,7 @@ def _adapt_sql(sql: str, params: Iterable[Any], dialect: str):
     adapted = _adapt_mysql_datetime_functions(adapted)
     adapted = _adapt_mysql_upsert(adapted)
     adapted = adapted.replace("INSERT OR IGNORE INTO", "INSERT IGNORE INTO")
+    adapted = adapted.replace("INSERT OR REPLACE INTO", "REPLACE INTO")
     adapted = re.sub(r"\browid\b", "id", adapted, flags=re.I)
     adapted = re.sub(r'"([A-Za-z_][A-Za-z0-9_]*)"', r"`\1`", adapted)
     adapted = _quote_settings_key(adapted)
@@ -331,12 +332,21 @@ def _replace_qmarks(sql: str) -> str:
 
 def _adapt_mysql_ddl(sql: str) -> str:
     if not re.search(r"CREATE\s+TABLE", sql, re.I):
+        if re.search(r"CREATE\s+INDEX", sql, re.I):
+            sql = re.sub(r"\s+COLLATE\s+NOCASE", "", sql, flags=re.I)
         return sql
 
     replacements = [
         (r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "BIGINT PRIMARY KEY AUTO_INCREMENT"),
         (r"\bINTEGER\s+PRIMARY\s+KEY\b", "BIGINT PRIMARY KEY"),
+        (r"\buser_id\s+TEXT\s+PRIMARY\s+KEY\b", "user_id VARCHAR(64) PRIMARY KEY"),
+        (r"\buser_id\s+TEXT\s+NOT\s+NULL\b", "user_id VARCHAR(64) NOT NULL"),
+        (r"\buser_id\s+TEXT\b", "user_id VARCHAR(64)"),
         (r"\bid\s+TEXT\s+PRIMARY\s+KEY\b", "id VARCHAR(255) PRIMARY KEY"),
+        (r"\bid\s+TEXT\s+NOT\s+NULL\b", "id VARCHAR(255) NOT NULL"),
+        (r"\busername\s+TEXT\s+NOT\s+NULL\b", "username VARCHAR(255) NOT NULL"),
+        (r"\busername\s+TEXT\b", "username VARCHAR(255)"),
+        (r"\bisland_id\s+TEXT\s+NOT\s+NULL\b", "island_id VARCHAR(64) NOT NULL"),
         (r"\bname\s+TEXT\s+PRIMARY\s+KEY\b", "name VARCHAR(255) PRIMARY KEY"),
         (r"\bkey\s+TEXT\s+PRIMARY\s+KEY\b", "`key` VARCHAR(255) PRIMARY KEY"),
         (r"\bisland_id\s+TEXT\s+PRIMARY\s+KEY\b", "island_id VARCHAR(255) PRIMARY KEY"),
