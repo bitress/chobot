@@ -2931,6 +2931,10 @@ def get_order_bot_status():
     - queue_count, battery_charge
     - last_dodo_fetch, server_time, is_dirty
     """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     data, code = _sysbot_get("/api/status")
 
     # Forward all fields as-is from Sinta — the frontend will pick what it needs.
@@ -2965,6 +2969,9 @@ def submit_order_to_bot():
     Save the returned order_id and poll /api/order/status to get the Dodo code when ready.
     """
     auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     data = request.get_json() or {}
 
     order_text = (data.get("order") or data.get("command") or "").strip()
@@ -2977,10 +2984,12 @@ def submit_order_to_bot():
         return jsonify({"success": False, "error": "Provide 'order', 'items', or 'preset' in the request body."}), 400
 
     username = (
-        (auth_user.get("nickname") or auth_user.get("username") or "WebUser")
-        if auth_user else (data.get("username") or "WebUser")
+        data.get("username")
+        or auth_user.get("nickname")
+        or auth_user.get("username")
+        or "WebUser"
     )
-    user_id = str(auth_user.get("user_id") or auth_user.get("id") or "") if auth_user else ""
+    user_id = str(auth_user.get("user_id") or auth_user.get("id") or "")
 
     payload: dict = {"username": username}
     if order_text:
@@ -3071,6 +3080,10 @@ def get_order_status():
     status values: queued | preparing | ready | completed | cancelled | error
     dodo_code is non-null once status == "ready".
     """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     order_id = request.args.get("id") or request.args.get("order_id") or ""
     if not order_id:
         return jsonify({"success": False, "error": "order_id is required."}), 400
@@ -3123,6 +3136,10 @@ def cancel_order():
     Body: { "id": "order_id" }
     Also accepts DELETE /api/order/cancel?id=...
     """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     if request.method == "DELETE":
         order_id = (request.args.get("id") or request.args.get("order_id") or "").strip()
     else:
@@ -3232,6 +3249,10 @@ def get_order_queue():
     Returns the full list of pending orders with queue position, ETA, and username.
     Normalizes the response so the frontend gets consistent field names.
     """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     data, code = _sysbot_get("/api/queue")
 
     # Normalize each order entry for the frontend
@@ -3264,8 +3285,12 @@ def get_order_dodo():
     Drop Mode  -> returns dodo_code immediately (no params needed).
     Order Mode -> pass ?order_id=... to get the code once the order is ready.
     """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     order_id = request.args.get("order_id") or request.args.get("id")
-    user_id = request.args.get("user_id")
+    user_id = request.args.get("user_id") or str(auth_user.get("user_id") or auth_user.get("id") or "")
     data, code = _sysbot_get("/api/dodo", order_id=order_id, user_id=user_id)
     return jsonify(data), code
 
@@ -3279,10 +3304,14 @@ def order_drop():
     Body: { "items": "Gold nugget 30", "type": "items"|"diy", "username": "..." }
     """
     auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     body = request.get_json() or {}
     username = (
-        (auth_user.get("nickname") or auth_user.get("username") or "WebUser")
-        if auth_user else (body.get("username") or "WebUser")
+        data.get("username")
+        if (data := body) and data.get("username")
+        else (auth_user.get("nickname") or auth_user.get("username") or "WebUser")
     )
     items = body.get("items") or body.get("item") or ""
     if not items:
@@ -3299,6 +3328,10 @@ def order_drop():
 @app.route("/api/order/presets", methods=["GET"])
 def get_order_presets():
     """Proxy GET /api/presets — list all configured SysBot preset names."""
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     data, code = _sysbot_get("/api/presets")
     return jsonify(data), code
 
@@ -3312,6 +3345,10 @@ def order_speak():
     Sends a message to the in-game Switch chat.
     Body: { "message": "Welcome to Sinta!" }
     """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     body = request.get_json() or {}
     message = (body.get("message") or "").strip()
     if not message:
@@ -3329,6 +3366,10 @@ def order_set_turnips():
     Sets the island's turnip (stalk market) price.
     Body: { "value": 999999999 }
     """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     body = request.get_json() or {}
     value = body.get("value")
     if value is None:
@@ -3344,6 +3385,10 @@ def order_set_turnips():
 @app.route("/api/order/turnips/max", methods=["GET"])
 def order_set_turnips_max():
     """Proxy GET /api/turnips/max — set the maximum turnip price directly."""
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     data, code = _sysbot_get("/api/turnips/max")
     return jsonify(data), code
 
@@ -3356,6 +3401,10 @@ def order_clean():
     Proxy POST /api/clean to SysBot.
     Triggers the bot to pick up (clean) all dropped items on the ground.
     """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     result, code = _sysbot_post("/api/clean")
     return jsonify(result), code
 
@@ -3368,6 +3417,10 @@ def order_villagers():
     Proxy GET /api/villagers from SysBot.
     Returns the list of villagers currently on the island.
     """
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
     data, code = _sysbot_get("/api/villagers")
     return jsonify(data), code
 
