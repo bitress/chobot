@@ -2,13 +2,15 @@
 Chorder - Standalone SysBot Order Bot & Interactive Order Panel
 Author: ChoPaeng
 Features:
-- /orderpanel: Deployable interactive Order Station in any channel.
+- /orderpanel: Deployable interactive Order Station in any channel with Web Builder link.
 - Add to Cart & Cart Builder with 40-pocket slot limit.
 - 16-Character Hex & Variant Encoding for SysBot order accuracy.
+- Multi-page Catalog Search with interactive pagination (Prev/Next) & multi-select.
 - My Orders: Synced with website database (order_bot_queue), live ETA, Dodo code, cancel button.
+- Multi-stage DM Notification Engine (Ready, Completed, Cancelled) with restart deduplication.
 - Live Queues: Real-time SysBot queue viewer with refresh.
 - Presets: Official and curated bundles with 1-click loading and instant order.
-- Search Catalog: Interactive GUI with item/villager images and multi-select support.
+- Quick Order: Direct support for both item names and raw space-separated hex strings.
 """
 
 import asyncio
@@ -293,11 +295,12 @@ def build_panel_embed(island_name: str = "Sinta", is_online: bool = True) -> dis
         name="🛒 Quick Guide",
         value=(
             "• **Add to Cart / My Cart:** Manage your 40 inventory pocket slots.\n"
-            "• **Search Catalog:** Search items & villagers with multi-select and images.\n"
+            "• **Search Catalog:** Search items & villagers with multi-page navigation and images.\n"
             "• **Presets / Bundles:** Load curated item sets in 1 click or instant order.\n"
             "• **My Orders:** View real-time queue position, ETA, and your Dodo Code.\n"
             "• **Live Queue:** Check current SysBot island activity.\n"
-            "• **Quick Order:** Paste direct order codes or item lists."
+            "• **Quick Order:** Paste item lists or direct hex codes.\n"
+            "• **Open Web Builder:** Visual drag-and-drop pocket grid on the web."
         ),
         inline=False,
     )
@@ -373,9 +376,9 @@ def build_cart_embed(cart: UserCart, user: discord.User | discord.Member) -> dis
 
 class QuickOrderModal(discord.ui.Modal, title="⚡ Quick SysBot Order"):
     order_input = discord.ui.TextInput(
-        label="Items & Villager",
+        label="Items, Hex Codes, or Villager",
         style=discord.TextStyle.paragraph,
-        placeholder="e.g. Gold nugget 30, Iron nugget 30, villager:Raymond",
+        placeholder="e.g. Gold nugget 30, Royal crown 10, villager:Raymond\nor 14BB 16DB 0000002000003604 villager:cat23",
         required=True,
         max_length=1000,
     )
@@ -384,13 +387,26 @@ class QuickOrderModal(discord.ui.Modal, title="⚡ Quick SysBot Order"):
         await interaction.response.defer(ephemeral=True)
         raw_text = self.order_input.value.strip()
         if not raw_text:
-            await interaction.followup.send("❌ Please enter valid items or a villager to order.", ephemeral=True)
+            await interaction.followup.send("❌ Please enter valid items, hex codes, or a villager to order.", ephemeral=True)
             return
 
         parsed_order, parsed_villager = parse_order_input(raw_text)
         if not parsed_order and not parsed_villager:
-            await interaction.followup.send("❌ Please enter valid items or a villager to order.", ephemeral=True)
+            await interaction.followup.send("❌ Please enter valid items, hex codes, or a villager to order.", ephemeral=True)
             return
+
+        # Check if input is a sequence of pure hex tokens
+        tokens = parsed_order.split()
+        is_raw_hex = all(
+            bool(re.match(r"^[0-9A-Fa-f]{4}$|^[0-9A-Fa-f]{16}$", tok)) for tok in tokens
+        ) if tokens else False
+
+        if is_raw_hex:
+            final_order_text = parsed_order
+            if parsed_villager:
+                final_order_text += f" villager:{parsed_villager}"
+        else:
+            final_order_text = raw_text
 
         user_id_int = interaction.user.id
         if user_id_int in _submitting_users:
@@ -404,7 +420,7 @@ class QuickOrderModal(discord.ui.Modal, title="⚡ Quick SysBot Order"):
 
             result = await sysbot.submit_order(
                 username=username,
-                order_text=raw_text,
+                order_text=final_order_text,
                 user_id=user_id,
             )
 
@@ -422,8 +438,8 @@ class QuickOrderModal(discord.ui.Modal, title="⚡ Quick SysBot Order"):
                         f"**Queue Position:** `#{pos}`\n"
                         f"**Estimated Time:** `~{eta} min`\n"
                         f"**Island:** 🏝️ `{island}`\n\n"
-                        f"**Order Payload:**\n```{raw_text[:900]}```\n"
-                        f"You will receive your **Dodo Code** when the bot is ready. "
+                        f"**Order Payload:**\n```{final_order_text[:900]}```\n"
+                        f"You will receive a **direct message** with your **Dodo Code** when the bot is ready. "
                         f"Track this anytime via the **My Orders** button!"
                     ),
                     color=EMBED_COLOR_DEFAULT,
@@ -525,7 +541,6 @@ class SetVillagerModal(discord.ui.Modal, title="🏡 Set Villager for Move-in Pl
         villager = catalog.get_villager(query)
 
         if not villager:
-            # Suggest close matches rather than inserting an invalid token
             matches = catalog.search_villagers(query, limit=3)
             if matches:
                 suggestions = ", ".join([f"**{m.name}** (`{m.villager_id}`)" for m in matches])
@@ -563,19 +578,19 @@ class CatalogSearchModal(discord.ui.Modal, title="🔍 Search ACNH Catalog"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         query = self.search_query.value.strip()
-        items = catalog.search_items(query, limit=15)
-        villagers = catalog.search_villagers(query, limit=5)
+        items = catalog.search_items(query, limit=100)
+        villagers = catalog.search_villagers(query, limit=10)
 
-        view = CatalogSearchView(self.cart, query=query, items=items, villagers=villagers)
+        view = CatalogSearchView(self.cart, query=query, items=items, villagers=villagers, page=0)
         embed = view.build_search_embed()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-# ── Catalog Search View (with Multi-Select & Images) ──────────────────────────
+# ── Catalog Search View (with Multi-Page Pagination & Multi-Select) ────────────
 
 
 class CatalogSearchView(discord.ui.View):
-    """Catalog search results view with interactive multi-select and images."""
+    """Catalog search results view with interactive pagination, multi-select, and images."""
 
     def __init__(
         self,
@@ -584,23 +599,37 @@ class CatalogSearchView(discord.ui.View):
         category: Optional[str] = None,
         items: Optional[List[CatalogItem]] = None,
         villagers: Optional[List[CatalogVillager]] = None,
+        page: int = 0,
     ):
         super().__init__(timeout=300)
         self.cart = cart
         self.query = query
         self.category = category
-        self.items = items if items is not None else catalog.search_items(query, limit=15, category=category)
-        self.villagers = villagers if villagers is not None else catalog.search_villagers(query, limit=5)
+        self.items = items if items is not None else catalog.search_items(query, limit=100, category=category)
+        self.villagers = villagers if villagers is not None else catalog.search_villagers(query, limit=10)
+        self.page = page
+        self.page_size = 15
         self.message: Optional[discord.Message] = None
         self._build_components()
 
+    @property
+    def total_pages(self) -> int:
+        if not self.items:
+            return 1
+        return max(1, (len(self.items) + self.page_size - 1) // self.page_size)
+
+    def get_current_page_items(self) -> List[CatalogItem]:
+        start = self.page * self.page_size
+        return self.items[start : start + self.page_size]
+
     def _build_components(self):
         self.clear_items()
+        current_items = self.get_current_page_items()
 
-        # Multi-select dropdown for items (if available)
-        if self.items:
+        # Multi-select dropdown for items on the current page
+        if current_items:
             options = []
-            for idx, it in enumerate(self.items[:15]):
+            for idx, it in enumerate(current_items):
                 desc = f"[{it.category}]"
                 if it.variation:
                     desc += f" Var: {it.variation}"
@@ -615,7 +644,7 @@ class CatalogSearchView(discord.ui.View):
 
             max_opts = min(len(options), 10)
             item_select = discord.ui.Select(
-                placeholder=f"Select items to add to cart (multi-select up to {max_opts})...",
+                placeholder=f"Select items (Page {self.page+1}/{self.total_pages}, multi-select up to {max_opts})...",
                 min_values=1,
                 max_values=max_opts,
                 options=options,
@@ -625,8 +654,8 @@ class CatalogSearchView(discord.ui.View):
             item_select.callback = self.on_item_select
             self.add_item(item_select)
 
-        # Dropdown for villagers (if available)
-        if self.villagers:
+        # Dropdown for villagers (shown on first page if matches exist)
+        if self.villagers and self.page == 0:
             v_options = []
             for idx, v in enumerate(self.villagers[:10]):
                 v_options.append(
@@ -649,8 +678,28 @@ class CatalogSearchView(discord.ui.View):
             villager_select.callback = self.on_villager_select
             self.add_item(villager_select)
 
-        # Action buttons
-        btn_search = discord.ui.Button(label="New Search", style=discord.ButtonStyle.primary, emoji="🔍", row=2)
+        # Action and Navigation buttons
+        nav_row = 1 if not (self.villagers and self.page == 0) else 2
+
+        btn_prev = discord.ui.Button(
+            label="◀ Prev",
+            style=discord.ButtonStyle.secondary,
+            disabled=(self.page <= 0),
+            row=nav_row,
+        )
+        btn_prev.callback = self.on_prev_page
+        self.add_item(btn_prev)
+
+        btn_next = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.secondary,
+            disabled=(self.page >= self.total_pages - 1),
+            row=nav_row,
+        )
+        btn_next.callback = self.on_next_page
+        self.add_item(btn_next)
+
+        btn_search = discord.ui.Button(label="New Search", style=discord.ButtonStyle.primary, emoji="🔍", row=nav_row)
         btn_search.callback = self.on_search_button
         self.add_item(btn_search)
 
@@ -658,10 +707,24 @@ class CatalogSearchView(discord.ui.View):
             label=f"View Cart ({self.cart.get_pocket_count()}/40)",
             style=discord.ButtonStyle.secondary,
             emoji="🛒",
-            row=2,
+            row=nav_row,
         )
         btn_cart.callback = self.on_view_cart
         self.add_item(btn_cart)
+
+    async def on_prev_page(self, interaction: discord.Interaction):
+        if self.page > 0:
+            self.page -= 1
+            self._build_components()
+            embed = self.build_search_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_next_page(self, interaction: discord.Interaction):
+        if self.page < self.total_pages - 1:
+            self.page += 1
+            self._build_components()
+            embed = self.build_search_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_timeout(self):
         for child in self.children:
@@ -674,10 +737,12 @@ class CatalogSearchView(discord.ui.View):
                 pass
 
     def build_search_embed(self) -> discord.Embed:
+        current_items = self.get_current_page_items()
         embed = discord.Embed(
             title=f"🔍 Catalog Search: '{self.query or 'All'}'",
             description=(
                 f"Found **{len(self.items)}** items and **{len(self.villagers)}** villagers.\n"
+                f"**Page:** `{self.page + 1} / {self.total_pages}`\n"
                 f"Use the **dropdowns below** to multi-select items into your cart!\n"
             ),
             color=EMBED_COLOR_DEFAULT,
@@ -685,17 +750,18 @@ class CatalogSearchView(discord.ui.View):
 
         if self.villagers and self.villagers[0].photo_url:
             embed.set_thumbnail(url=self.villagers[0].photo_url)
-        elif self.items and self.items[0].image_url:
-            embed.set_thumbnail(url=self.items[0].image_url)
+        elif current_items and current_items[0].image_url:
+            embed.set_thumbnail(url=current_items[0].image_url)
 
-        if self.items:
+        if current_items:
             lines = []
-            for i, it in enumerate(self.items[:15], 1):
+            start_num = self.page * self.page_size + 1
+            for i, it in enumerate(current_items, start_num):
                 diy_badge = " *(DIY)*" if it.diy else ""
                 lines.append(f"`{i:02d}.` **{it.display_name}**{diy_badge} — `{it.category}`")
-            add_chunked_fields(embed, "📦 Matching Items", lines, max_chars=950)
+            add_chunked_fields(embed, f"📦 Matching Items (Page {self.page + 1}/{self.total_pages})", lines, max_chars=950)
 
-        if self.villagers:
+        if self.villagers and self.page == 0:
             v_lines = []
             for v in self.villagers[:5]:
                 v_lines.append(f"• **{v.name}** (`ID: {v.villager_id}`) — *{v.species} / {v.personality}*")
@@ -704,16 +770,17 @@ class CatalogSearchView(discord.ui.View):
         if not self.items and not self.villagers:
             embed.description = "❌ No items or villagers found matching that query. Try another keyword!"
 
-        embed.set_footer(text="Multi-select items to add them in a single click!")
+        embed.set_footer(text=f"Page {self.page + 1}/{self.total_pages} • Total: {len(self.items)} items • Cart: {self.cart.get_pocket_count()}/40")
         return embed
 
     async def on_item_select(self, interaction: discord.Interaction):
         selected_values = interaction.data.get("values", [])
+        current_items = self.get_current_page_items()
         added_names = []
         for val in selected_values:
             idx = int(val.replace("item_", ""))
-            if idx < len(self.items):
-                it = self.items[idx]
+            if idx < len(current_items):
+                it = current_items[idx]
                 if self.cart.add_item(
                     name=it.name,
                     quantity=1,
@@ -867,7 +934,7 @@ class BundlesView(discord.ui.View):
 
             add_chunked_fields(embed, "Item Breakdown", lines, max_chars=950)
 
-        embed.set_footer(text="Click 'Load Bundle to Cart' or 'Instant Order Bundle'")
+        embed.set_footer(text=f"Click 'Load Bundle to Cart' or 'Instant Order Bundle' • Cart: {self.cart.get_pocket_count()}/40")
         return embed
 
     async def on_bundle_select(self, interaction: discord.Interaction):
@@ -1147,7 +1214,8 @@ class CartView(discord.ui.View):
                         f"**Estimated Arrival:** `~{eta} min`\n"
                         f"**Island:** 🏝️ `{island}`\n\n"
                         f"**Order Breakdown:**\n```{order_cmd[:900]}```\n"
-                        f"When your order is ready, your **Dodo Code** will appear under **My Orders**."
+                        f"You will receive a **direct message** with your **Dodo Code** when the bot is ready. "
+                        f"Track this anytime under **My Orders**."
                     ),
                     color=EMBED_COLOR_DEFAULT,
                 )
@@ -1417,6 +1485,15 @@ class OrderPanelView(discord.ui.View):
 
     def __init__(self):
         super().__init__(timeout=None)  # Persistent view
+        self.add_item(
+            discord.ui.Button(
+                label="Open Web Builder",
+                style=discord.ButtonStyle.link,
+                url="https://console.chopaeng.com/orderbot",
+                emoji="🌐",
+                row=2,
+            )
+        )
 
     @discord.ui.button(
         label="Add to Cart / My Cart",
@@ -1542,14 +1619,17 @@ class ChorderCog(commands.Cog, name="Chorder"):
     @tasks.loop(seconds=12)
     async def order_dm_notifier_task(self):
         """
-        Background task to notify users via Discord DM when their order has a Dodo Code ready.
+        Background task to notify users via Discord DM when:
+        1. An order is ready with a Dodo code ('ready')
+        2. An order is successfully finished ('completed')
+        3. An order is cancelled or encounters an error ('cancelled' / 'error')
         Uses the persistent SQLite 'order_notifications' table to guarantee
-        that an order is ONLY notified once, preventing duplicate DMs across bot restarts.
+        that each notification event is only dispatched ONCE across bot restarts.
         """
         try:
-            # Query recent orders that are ready/active and have a valid Dodo code
             with connect_db() as conn:
-                rows = conn.execute(
+                # 1. Ready orders with valid Dodo Code
+                ready_rows = conn.execute(
                     """
                     SELECT id, user_id, username, command, island_name, dodo_code, updated_at
                     FROM order_bot_queue
@@ -1560,66 +1640,132 @@ class ChorderCog(commands.Cog, name="Chorder"):
                           SELECT order_id FROM order_notifications WHERE notification_type = 'ready'
                       )
                     ORDER BY updated_at DESC
-                    LIMIT 20
+                    LIMIT 15
                     """
                 ).fetchall()
 
-            for r in rows:
-                order_id = r["id"]
-                user_id_str = str(r["user_id"] or "").strip()
-                dodo = str(r["dodo_code"] or "").strip().upper()
-                island = r["island_name"] or "Sinta"
-                command = r["command"] or ""
+                # 2. Completed orders (that were previously ready)
+                completed_rows = conn.execute(
+                    """
+                    SELECT id, user_id, username, command, island_name, dodo_code, updated_at
+                    FROM order_bot_queue
+                    WHERE status = 'completed'
+                      AND id IN (
+                          SELECT order_id FROM order_notifications WHERE notification_type = 'ready'
+                      )
+                      AND id NOT IN (
+                          SELECT order_id FROM order_notifications WHERE notification_type = 'completed'
+                      )
+                    ORDER BY updated_at DESC
+                    LIMIT 15
+                    """
+                ).fetchall()
 
-                if not user_id_str or not user_id_str.isdigit():
-                    # Record so we don't query invalid user ID again
-                    self._record_notification(order_id, user_id_str, "ready", dodo)
-                    continue
+                # 3. Cancelled/Error orders
+                error_rows = conn.execute(
+                    """
+                    SELECT id, user_id, username, command, island_name, message, updated_at
+                    FROM order_bot_queue
+                    WHERE status IN ('cancelled', 'error')
+                      AND id NOT IN (
+                          SELECT order_id FROM order_notifications WHERE notification_type IN ('cancelled', 'error', 'completed')
+                      )
+                    ORDER BY updated_at DESC
+                    LIMIT 15
+                    """
+                ).fetchall()
 
-                uid_int = int(user_id_str)
-                user = self.bot.get_user(uid_int)
-                if not user:
-                    try:
-                        user = await self.bot.fetch_user(uid_int)
-                    except Exception:
-                        user = None
+            for r in ready_rows:
+                await self._dispatch_dm(r["id"], r["user_id"], "ready", r["island_name"], r["dodo_code"], r["command"])
 
-                if user:
-                    embed = discord.Embed(
-                        title="✈️ Pack Your Bags! Your ACNH Order is Ready!",
-                        description=(
-                            f"Hello {user.mention}! Your order has been prepared and is ready for pickup on **{island}**.\n\n"
-                            f"🔑 **DODO CODE:**\n```yaml\n{dodo}\n```\n"
-                            f"**Island:** 🏝️ `{island}`\n"
-                            f"**Order ID:** `{order_id}`\n\n"
-                            f"**Pickup Instructions:**\n"
-                            f"1. Head to **Dodo Airlines** on your Nintendo Switch.\n"
-                            f"2. Select **'I want to fly!'** ➔ **'Via online play'** ➔ **'Via Dodo Code™'**.\n"
-                            f"3. Enter the code `{dodo}` above.\n"
-                            f"4. Pick up your items near the airport gates and return home safely!\n"
-                        ),
-                        color=EMBED_COLOR_DEFAULT,
-                    )
-                    if command:
-                        display_cmd = command if len(command) <= 250 else f"{command[:250]}..."
-                        embed.add_field(name="📦 Order Contents", value=f"`{display_cmd}`", inline=False)
+            for r in completed_rows:
+                await self._dispatch_dm(r["id"], r["user_id"], "completed", r["island_name"], r["dodo_code"], r["command"])
 
-                    embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
-                    embed.set_footer(text="ChoPaeng SysBot Delivery • Fly safely!", icon_url="https://nh-cdn.catalogue.ac/NpcIcon/cat23.png")
-
-                    try:
-                        await user.send(embed=embed)
-                        logger.info(f"[ChorderNotifier] Sent Dodo Code DM to {user} ({uid_int}) for order {order_id}.")
-                    except discord.Forbidden:
-                        logger.warning(f"[ChorderNotifier] Could not DM user {uid_int} (DMs closed/disabled).")
-                    except Exception as exc:
-                        logger.warning(f"[ChorderNotifier] Failed to DM user {uid_int}: {exc}")
-
-                # Mark as notified in persistent DB to prevent resending on restarts
-                self._record_notification(order_id, user_id_str, "ready", dodo)
+            for r in error_rows:
+                await self._dispatch_dm(r["id"], r["user_id"], "cancelled", r["island_name"], "", r.get("message") or "Order cancelled.")
 
         except Exception as exc:
             logger.debug(f"[ChorderNotifier] Order DM notifier loop encountered: {exc}")
+
+    async def _dispatch_dm(
+        self,
+        order_id: str,
+        user_id_str: str,
+        notif_type: str,
+        island: str = "Sinta",
+        dodo_code: str = "",
+        extra_text: str = "",
+    ):
+        user_id_str = str(user_id_str or "").strip()
+        if not user_id_str or not user_id_str.isdigit():
+            self._record_notification(order_id, user_id_str, notif_type, dodo_code)
+            return
+
+        uid_int = int(user_id_str)
+        user = self.bot.get_user(uid_int)
+        if not user:
+            try:
+                user = await self.bot.fetch_user(uid_int)
+            except Exception:
+                user = None
+
+        if user:
+            if notif_type == "ready":
+                embed = discord.Embed(
+                    title="✈️ Pack Your Bags! Your ACNH Order is Ready!",
+                    description=(
+                        f"Hello {user.mention}! Your order has been prepared and is waiting on **{island}**.\n\n"
+                        f"🔑 **DODO CODE:**\n```yaml\n{dodo_code}\n```\n"
+                        f"**Island:** 🏝️ `{island}`\n"
+                        f"**Order ID:** `{order_id}`\n\n"
+                        f"**Pickup Instructions:**\n"
+                        f"1. Head to **Dodo Airlines** on your Nintendo Switch.\n"
+                        f"2. Select **'I want to fly!'** ➔ **'Via online play'** ➔ **'Via Dodo Code™'**.\n"
+                        f"3. Enter the code `{dodo_code}` above.\n"
+                        f"4. Pick up your items near the airport and return home safely!\n"
+                    ),
+                    color=EMBED_COLOR_DEFAULT,
+                )
+                if extra_text:
+                    display_cmd = extra_text if len(extra_text) <= 250 else f"{extra_text[:250]}..."
+                    embed.add_field(name="📦 Order Contents", value=f"`{display_cmd}`", inline=False)
+                embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
+                embed.set_footer(text="ChoPaeng SysBot Delivery • Fly safely!", icon_url="https://nh-cdn.catalogue.ac/NpcIcon/cat23.png")
+
+            elif notif_type == "completed":
+                embed = discord.Embed(
+                    title="🎉 Order Complete! Thanks for Visiting!",
+                    description=(
+                        f"Hello {user.mention}! Your order `{order_id}` on **{island}** has been marked **Completed**.\n\n"
+                        f"Enjoy your new items! Need more supplies? Use `/orderpanel` or visit [chopaeng.com](https://console.chopaeng.com/orderbot) anytime."
+                    ),
+                    color=EMBED_COLOR_DEFAULT,
+                )
+                embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/cat23.png")
+                embed.set_footer(text="ChoPaeng Orders • Have a wonderful day!")
+
+            else:  # cancelled / error
+                embed = discord.Embed(
+                    title="⚠️ Order Cancelled / Closed",
+                    description=(
+                        f"Hello {user.mention}! Your order `{order_id}` was cancelled or closed.\n\n"
+                        f"**Reason / Message:** `{extra_text or 'Order cancelled or expired.'}`\n\n"
+                        f"You can place a new order anytime using the **/orderpanel**."
+                    ),
+                    color=EMBED_COLOR_WARN,
+                )
+                embed.set_footer(text="ChoPaeng Orders")
+
+            try:
+                await user.send(embed=embed)
+                logger.info(f"[ChorderNotifier] Sent {notif_type} DM to {user} ({uid_int}) for order {order_id}.")
+            except discord.Forbidden:
+                logger.warning(f"[ChorderNotifier] Could not DM user {uid_int} (DMs closed/disabled).")
+            except Exception as exc:
+                logger.warning(f"[ChorderNotifier] Failed to DM user {uid_int}: {exc}")
+
+        # Mark as notified in persistent DB to prevent resending on restarts
+        self._record_notification(order_id, user_id_str, notif_type, dodo_code)
 
     def _record_notification(self, order_id: str, user_id: str, notification_type: str, dodo_code: str):
         """Persist notification record so duplicate DMs are never sent across bot restarts."""
@@ -1652,7 +1798,6 @@ class ChorderCog(commands.Cog, name="Chorder"):
         interaction: discord.Interaction,
         channel: Optional[discord.TextChannel] = None,
     ):
-        # Permission check
         perms = interaction.user.guild_permissions if hasattr(interaction.user, "guild_permissions") else None
         if perms and not (perms.manage_channels or perms.administrator):
             await interaction.response.send_message(

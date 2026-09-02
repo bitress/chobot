@@ -97,11 +97,11 @@ def parse_order_input(raw_input: str) -> Tuple[str, Optional[str]]:
     """
     Parse a raw order string into (items_string, villager_name_or_id).
     Supports:
-      !order Raymond, Gold nugget 30
-      !order Gold nugget 30, Iron nugget 30, villager:brd09
-      !order villager:Raymond, Royal crown 40
+      - Name lists: "Gold nugget 30, Iron nugget 30, villager:Raymond"
+      - Pure hex sequences: "14BB 16DB 0000002000003604 villager:Raymond"
+      - Villager prefix/suffix: "villager:Raymond, Royal crown 40"
     """
-    cleaned = re.sub(r"^!order\s*", "", raw_input, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"^!(order|drop)\s*", "", raw_input.strip(), flags=re.IGNORECASE).strip()
     if not cleaned:
         return "", None
 
@@ -111,9 +111,10 @@ def parse_order_input(raw_input: str) -> Tuple[str, Optional[str]]:
     if v_match:
         villager = v_match.group(1).strip()
         # Remove the villager:xxx portion from items
-        cleaned = re.sub(r"\bvillager:[a-zA-Z0-9_\-]+\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bvillager:[a-zA-Z0-9_\-]+\b", "", cleaned, flags=re.IGNORECASE).strip()
         cleaned = re.sub(r",\s*,", ",", cleaned).strip(" ,")
 
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,")
     return cleaned, villager
 
 
