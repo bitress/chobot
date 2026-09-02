@@ -245,6 +245,14 @@ EMBED_COLOR_WARN = 0xE67E22     # Orange
 EMBED_COLOR_ERROR = 0xE74C3C    # Red
 
 
+def apply_chopaeng_footer(embed: discord.Embed, guild_icon: Optional[str] = None):
+    """Apply the signature ChoPaeng Camp footer and animated line divider."""
+    if getattr(Config, "FOOTER_LINE", None):
+        embed.set_image(url=Config.FOOTER_LINE)
+    icon = guild_icon or "https://nh-cdn.catalogue.ac/NpcIcon/cat23.png"
+    embed.set_footer(text="Chopaeng Camp™", icon_url=icon)
+
+
 def add_chunked_fields(
     embed: discord.Embed,
     field_title: str,
@@ -275,13 +283,13 @@ def add_chunked_fields(
         embed.add_field(name=title, value=chunk, inline=inline)
 
 
-def build_panel_embed(island_name: str = "Sinta", is_online: bool = True) -> discord.Embed:
+def build_panel_embed(island_name: str = "Sinta", is_online: bool = True, guild_icon: Optional[str] = None) -> discord.Embed:
     """Build the main Order Station dashboard embed."""
     status_emoji = "🟢" if is_online else "🔴"
     status_text = "Online & Accepting Orders" if is_online else "Offline / Maintenance"
 
     embed = discord.Embed(
-        title="🍃 ChoPaeng ACNH Order Station",
+        title="🍃 ChOrder Station",
         description=(
             f"Welcome to the **ChOrder Bot Order Terminal**! Build custom inventory pockets, "
             f"order dream villagers, and enjoy automated fast delivery directly to your island.\n\n"
@@ -305,14 +313,15 @@ def build_panel_embed(island_name: str = "Sinta", is_online: bool = True) -> dis
         inline=False,
     )
     embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
-    embed.set_footer(text="ChoPaeng Orders • Synced with chopaeng.com", icon_url="https://nh-cdn.catalogue.ac/NpcIcon/cat23.png")
+    apply_chopaeng_footer(embed, guild_icon)
     return embed
 
 
-def build_cart_embed(cart: UserCart, user: discord.User | discord.Member) -> discord.Embed:
+def build_cart_embed(cart: UserCart, user: Any, guild_icon: Optional[str] = None) -> discord.Embed:
     """Build the interactive Cart viewer embed."""
     slots_used = cart.get_pocket_count()
     slots_left = MAX_POCKET_SLOTS - slots_used
+    uname = getattr(user, "display_name", getattr(user, "name", "Your"))
 
     # Visual pocket bar
     bar_filled = int((slots_used / MAX_POCKET_SLOTS) * 12)
@@ -320,7 +329,7 @@ def build_cart_embed(cart: UserCart, user: discord.User | discord.Member) -> dis
     bar_str = "█" * bar_filled + "░" * bar_empty
 
     embed = discord.Embed(
-        title=f"🎒 {user.display_name}'s Cart & Pocket Builder",
+        title=f"🎒 {uname}'s Cart & Pocket Builder",
         description=(
             f"**Pocket Capacity:** `[{bar_str}]` **{slots_used} / {MAX_POCKET_SLOTS} slots** "
             f"({slots_left} remaining)\n"
@@ -365,13 +374,31 @@ def build_cart_embed(cart: UserCart, user: discord.User | discord.Member) -> dis
             inline=False,
         )
 
-    embed.set_footer(text="🛒 Temporary session • Click 'Submit Order' when ready to fly!")
+    apply_chopaeng_footer(embed, guild_icon)
     return embed
 
 
 # ============================================================================
 # DISCORD UI MODALS & VIEWS
 # ============================================================================
+
+
+class SingleActionCloseView(discord.ui.View):
+    """Simple view with a single 'Close' button to dismiss confirmation embeds."""
+
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer()
+            await interaction.delete_original_response()
+        except Exception:
+            try:
+                await interaction.message.delete()
+            except Exception:
+                pass
 
 
 class QuickOrderModal(discord.ui.Modal, title="⚡ Quick ChOrder Bot Order"):
@@ -429,6 +456,7 @@ class QuickOrderModal(discord.ui.Modal, title="⚡ Quick ChOrder Bot Order"):
                 pos = result.get("queue_position", 1)
                 eta = result.get("estimated_minutes", 2)
                 island = result.get("island_name", "Sinta")
+                guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
 
                 embed = discord.Embed(
                     title="✅ Order Submitted to ChOrder Bot!",
@@ -444,7 +472,8 @@ class QuickOrderModal(discord.ui.Modal, title="⚡ Quick ChOrder Bot Order"):
                     ),
                     color=EMBED_COLOR_DEFAULT,
                 )
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                apply_chopaeng_footer(embed, guild_icon)
+                await interaction.followup.send(embed=embed, view=SingleActionCloseView(), ephemeral=True)
             else:
                 err_msg = result.get("error") or "ChOrder Bot could not process this order."
                 await interaction.followup.send(f"❌ **Failed to submit order:** {err_msg}", ephemeral=True)
@@ -470,9 +499,10 @@ class AddItemModal(discord.ui.Modal, title="➕ Add Item to Cart"):
         max_length=3,
     )
 
-    def __init__(self, cart: UserCart):
+    def __init__(self, cart: UserCart, guild_icon: Optional[str] = None):
         super().__init__()
         self.cart = cart
+        self.guild_icon = guild_icon
 
     async def on_submit(self, interaction: discord.Interaction):
         name_str = self.item_name.value.strip()
@@ -485,7 +515,6 @@ class AddItemModal(discord.ui.Modal, title="➕ Add Item to Cart"):
         # Check catalog for image/details
         item_data = catalog.get_item(name_str)
         if not item_data:
-            # Check close search matches to prevent unencoded broken tokens
             matches = catalog.search_items(name_str, limit=3)
             if matches:
                 suggestions = ", ".join([f"**{m.name}**" for m in matches])
@@ -519,8 +548,8 @@ class AddItemModal(discord.ui.Modal, title="➕ Add Item to Cart"):
             )
             return
 
-        embed = build_cart_embed(self.cart, interaction.user)
-        view = CartView(self.cart)
+        embed = build_cart_embed(self.cart, interaction.user, self.guild_icon)
+        view = CartView(self.cart, self.guild_icon)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
@@ -532,9 +561,10 @@ class SetVillagerModal(discord.ui.Modal, title="🏡 Set Villager for Move-in Pl
         max_length=50,
     )
 
-    def __init__(self, cart: UserCart):
+    def __init__(self, cart: UserCart, guild_icon: Optional[str] = None):
         super().__init__()
         self.cart = cart
+        self.guild_icon = guild_icon
 
     async def on_submit(self, interaction: discord.Interaction):
         query = self.villager_query.value.strip()
@@ -558,8 +588,8 @@ class SetVillagerModal(discord.ui.Modal, title="🏡 Set Villager for Move-in Pl
                 return
 
         self.cart.set_villager(villager)
-        embed = build_cart_embed(self.cart, interaction.user)
-        view = CartView(self.cart)
+        embed = build_cart_embed(self.cart, interaction.user, self.guild_icon)
+        view = CartView(self.cart, self.guild_icon)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
@@ -571,19 +601,24 @@ class CatalogSearchModal(discord.ui.Modal, title="🔍 Search ACNH Catalog"):
         max_length=60,
     )
 
-    def __init__(self, cart: UserCart):
+    def __init__(self, cart: UserCart, guild_icon: Optional[str] = None):
         super().__init__()
         self.cart = cart
+        self.guild_icon = guild_icon
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
         query = self.search_query.value.strip()
         items = catalog.search_items(query, limit=100)
         villagers = catalog.search_villagers(query, limit=10)
 
-        view = CatalogSearchView(self.cart, query=query, items=items, villagers=villagers, page=0)
+        view = CatalogSearchView(self.cart, query=query, items=items, villagers=villagers, page=0, guild_icon=self.guild_icon)
         embed = view.build_search_embed()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        # If modal is invoked on an existing ephemeral message, edit in place
+        if interaction.message:
+            await interaction.response.edit_message(embed=embed, view=view)
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 # ── Catalog Search View (with Multi-Page Pagination & Multi-Select) ────────────
@@ -600,6 +635,7 @@ class CatalogSearchView(discord.ui.View):
         items: Optional[List[CatalogItem]] = None,
         villagers: Optional[List[CatalogVillager]] = None,
         page: int = 0,
+        guild_icon: Optional[str] = None,
     ):
         super().__init__(timeout=300)
         self.cart = cart
@@ -609,6 +645,7 @@ class CatalogSearchView(discord.ui.View):
         self.villagers = villagers if villagers is not None else catalog.search_villagers(query, limit=10)
         self.page = page
         self.page_size = 15
+        self.guild_icon = guild_icon
         self.message: Optional[discord.Message] = None
         self._build_components()
 
@@ -712,6 +749,10 @@ class CatalogSearchView(discord.ui.View):
         btn_cart.callback = self.on_view_cart
         self.add_item(btn_cart)
 
+        btn_close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, emoji="❌", row=nav_row)
+        btn_close.callback = self.on_close
+        self.add_item(btn_close)
+
     async def on_prev_page(self, interaction: discord.Interaction):
         if self.page > 0:
             self.page -= 1
@@ -725,6 +766,16 @@ class CatalogSearchView(discord.ui.View):
             self._build_components()
             embed = self.build_search_embed()
             await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_close(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+            await interaction.delete_original_response()
+        except Exception:
+            try:
+                await interaction.message.delete()
+            except Exception:
+                pass
 
     async def on_timeout(self):
         for child in self.children:
@@ -770,7 +821,7 @@ class CatalogSearchView(discord.ui.View):
         if not self.items and not self.villagers:
             embed.description = "❌ No items or villagers found matching that query. Try another keyword!"
 
-        embed.set_footer(text=f"Page {self.page + 1}/{self.total_pages} • Total: {len(self.items)} items • Cart: {self.cart.get_pocket_count()}/40")
+        apply_chopaeng_footer(embed, self.guild_icon)
         return embed
 
     async def on_item_select(self, interaction: discord.Interaction):
@@ -795,7 +846,6 @@ class CatalogSearchView(discord.ui.View):
 
         self._build_components()
         embed = self.build_search_embed()
-        embed.set_footer(text=f"✅ Added {len(added_names)} item(s) to your cart! Total: {self.cart.get_pocket_count()}/40")
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_villager_select(self, interaction: discord.Interaction):
@@ -807,15 +857,14 @@ class CatalogSearchView(discord.ui.View):
 
             self._build_components()
             embed = self.build_search_embed()
-            embed.set_footer(text=f"✅ Selected villager {v.name} for move-in plot!")
             await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_search_button(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(CatalogSearchModal(self.cart))
+        await interaction.response.send_modal(CatalogSearchModal(self.cart, self.guild_icon))
 
     async def on_view_cart(self, interaction: discord.Interaction):
-        embed = build_cart_embed(self.cart, interaction.user)
-        view = CartView(self.cart)
+        embed = build_cart_embed(self.cart, interaction.user, self.guild_icon)
+        view = CartView(self.cart, self.guild_icon)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
@@ -825,11 +874,12 @@ class CatalogSearchView(discord.ui.View):
 class BundlesView(discord.ui.View):
     """Presets and bundles browser with full multi-field support and safe embed chunking."""
 
-    def __init__(self, cart: UserCart, bundles: List[Dict[str, Any]]):
+    def __init__(self, cart: UserCart, bundles: List[Dict[str, Any]], guild_icon: Optional[str] = None):
         super().__init__(timeout=300)
         self.cart = cart
         self.bundles = bundles
-        self.selected_bundle: Optional[Dict[str, Any]] = bundles[0] if bundles else None
+        self.guild_icon = guild_icon
+        self.selected_bundle: Optional[Dict[str, Any]] = None
         self.message: Optional[discord.Message] = None
         self._build_components()
 
@@ -843,17 +893,19 @@ class BundlesView(discord.ui.View):
                 category = b.get("category", "General")
                 items_list = b.get("orderItems") or b.get("items") or []
                 items_cnt = len(items_list)
+                is_selected = (self.selected_bundle == b)
                 options.append(
                     discord.SelectOption(
                         label=name[:100],
                         description=f"[{category}] {items_cnt} items"[:100],
                         value=f"bundle_{idx}",
+                        default=is_selected,
                         emoji="📦",
                     )
                 )
 
             select = discord.ui.Select(
-                placeholder="Choose a preset bundle...",
+                placeholder="Choose a preset bundle from the list...",
                 options=options,
                 custom_id="bundle_select",
                 row=0,
@@ -861,10 +913,13 @@ class BundlesView(discord.ui.View):
             select.callback = self.on_bundle_select
             self.add_item(select)
 
-        # Buttons
+        # Buttons (Disabled until a bundle is selected)
+        has_selection = self.selected_bundle is not None
+
         btn_load = discord.ui.Button(
             label="Load Bundle to Cart",
             style=discord.ButtonStyle.primary,
+            disabled=not has_selection,
             emoji="🛒",
             row=1,
         )
@@ -874,6 +929,7 @@ class BundlesView(discord.ui.View):
         btn_order = discord.ui.Button(
             label="Instant Order Bundle",
             style=discord.ButtonStyle.success,
+            disabled=not has_selection,
             emoji="🚀",
             row=1,
         )
@@ -889,6 +945,20 @@ class BundlesView(discord.ui.View):
         btn_cart.callback = self.on_view_cart
         self.add_item(btn_cart)
 
+        btn_close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, emoji="❌", row=1)
+        btn_close.callback = self.on_close
+        self.add_item(btn_close)
+
+    async def on_close(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+            await interaction.delete_original_response()
+        except Exception:
+            try:
+                await interaction.message.delete()
+            except Exception:
+                pass
+
     async def on_timeout(self):
         for child in self.children:
             if hasattr(child, "disabled"):
@@ -901,11 +971,27 @@ class BundlesView(discord.ui.View):
 
     def build_bundle_embed(self) -> discord.Embed:
         if not self.selected_bundle:
-            return discord.Embed(
-                title="📦 Preset Bundles",
-                description="No preset bundles available at the moment.",
-                color=EMBED_COLOR_WARN,
+            embed = discord.Embed(
+                title="📦 Preset Bundles & Curated Sets",
+                description=(
+                    "Browse official and popular pre-configured item sets!\n\n"
+                    "👉 **Please choose a preset bundle from the dropdown menu below** to preview its included items, "
+                    "load them into your cart, or place an instant order."
+                ),
+                color=EMBED_COLOR_ORDER,
             )
+            if self.bundles:
+                lines = []
+                for i, b in enumerate(self.bundles[:10], 1):
+                    name = b.get("name") or b.get("title") or f"Bundle {i}"
+                    cat = b.get("category") or "General"
+                    cnt = len(b.get("orderItems") or b.get("items") or [])
+                    lines.append(f"`{i:02d}.` **{name}** — *[{cat}] ({cnt} items)*")
+                add_chunked_fields(embed, "Available Presets", lines, max_chars=950)
+
+            embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
+            apply_chopaeng_footer(embed, self.guild_icon)
+            return embed
 
         b = self.selected_bundle
         name = b.get("name") or b.get("title") or "Preset Bundle"
@@ -934,7 +1020,7 @@ class BundlesView(discord.ui.View):
 
             add_chunked_fields(embed, "Item Breakdown", lines, max_chars=950)
 
-        embed.set_footer(text=f"Click 'Load Bundle to Cart' or 'Instant Order Bundle' • Cart: {self.cart.get_pocket_count()}/40")
+        apply_chopaeng_footer(embed, self.guild_icon)
         return embed
 
     async def on_bundle_select(self, interaction: discord.Interaction):
@@ -942,6 +1028,7 @@ class BundlesView(discord.ui.View):
         idx = int(val.replace("bundle_", ""))
         if idx < len(self.bundles):
             self.selected_bundle = self.bundles[idx]
+            self._build_components()
             embed = self.build_bundle_embed()
             await interaction.response.edit_message(embed=embed, view=self)
 
@@ -973,7 +1060,6 @@ class BundlesView(discord.ui.View):
 
         self._build_components()
         embed = self.build_bundle_embed()
-        embed.set_footer(text=f"✅ Loaded {added_count} items into your cart! Total: {self.cart.get_pocket_count()}/40")
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_instant_order(self, interaction: discord.Interaction):
@@ -1032,7 +1118,8 @@ class BundlesView(discord.ui.View):
                     ),
                     color=EMBED_COLOR_DEFAULT,
                 )
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                apply_chopaeng_footer(embed, self.guild_icon)
+                await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=SingleActionCloseView())
             else:
                 err = result.get("error") or "Order could not be submitted."
                 await interaction.followup.send(f"❌ **Failed to order bundle:** {err}", ephemeral=True)
@@ -1043,8 +1130,8 @@ class BundlesView(discord.ui.View):
             _submitting_users.discard(user_id_int)
 
     async def on_view_cart(self, interaction: discord.Interaction):
-        embed = build_cart_embed(self.cart, interaction.user)
-        view = CartView(self.cart)
+        embed = build_cart_embed(self.cart, interaction.user, self.guild_icon)
+        view = CartView(self.cart, self.guild_icon)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
@@ -1054,9 +1141,10 @@ class BundlesView(discord.ui.View):
 class ClearCartConfirmView(discord.ui.View):
     """Confirmation view to avoid accidental cart wipes."""
 
-    def __init__(self, cart: UserCart):
+    def __init__(self, cart: UserCart, guild_icon: Optional[str] = None):
         super().__init__(timeout=60)
         self.cart = cart
+        self.guild_icon = guild_icon
         self.message: Optional[discord.Message] = None
 
     async def on_timeout(self):
@@ -1072,23 +1160,24 @@ class ClearCartConfirmView(discord.ui.View):
     @discord.ui.button(label="Yes, Clear Everything", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def btn_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.cart.clear()
-        embed = build_cart_embed(self.cart, interaction.user)
-        view = CartView(self.cart)
+        embed = build_cart_embed(self.cart, interaction.user, self.guild_icon)
+        view = CartView(self.cart, self.guild_icon)
         await interaction.response.edit_message(embed=embed, view=view)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="↩️")
     async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_cart_embed(self.cart, interaction.user)
-        view = CartView(self.cart)
+        embed = build_cart_embed(self.cart, interaction.user, self.guild_icon)
+        view = CartView(self.cart, self.guild_icon)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
 class CartView(discord.ui.View):
     """Interactive Cart Management View."""
 
-    def __init__(self, cart: UserCart):
+    def __init__(self, cart: UserCart, guild_icon: Optional[str] = None):
         super().__init__(timeout=300)
         self.cart = cart
+        self.guild_icon = guild_icon
         self.message: Optional[discord.Message] = None
         self._build_components()
 
@@ -1163,6 +1252,25 @@ class CartView(discord.ui.View):
         btn_clear.callback = self.on_clear_cart
         self.add_item(btn_clear)
 
+        btn_close = discord.ui.Button(
+            label="Close",
+            style=discord.ButtonStyle.secondary,
+            emoji="❌",
+            row=2,
+        )
+        btn_close.callback = self.on_close
+        self.add_item(btn_close)
+
+    async def on_close(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+            await interaction.delete_original_response()
+        except Exception:
+            try:
+                await interaction.message.delete()
+            except Exception:
+                pass
+
     async def on_timeout(self):
         for child in self.children:
             if hasattr(child, "disabled"):
@@ -1219,7 +1327,8 @@ class CartView(discord.ui.View):
                     ),
                     color=EMBED_COLOR_DEFAULT,
                 )
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                apply_chopaeng_footer(embed, self.guild_icon)
+                await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=SingleActionCloseView())
             else:
                 err = result.get("error") or "Order could not be submitted."
                 await interaction.followup.send(f"❌ **Submission Failed:** {err}", ephemeral=True)
@@ -1230,17 +1339,17 @@ class CartView(discord.ui.View):
             _submitting_users.discard(user_id_int)
 
     async def on_add_item(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(AddItemModal(self.cart))
+        await interaction.response.send_modal(AddItemModal(self.cart, self.guild_icon))
 
     async def on_set_villager(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(SetVillagerModal(self.cart))
+        await interaction.response.send_modal(SetVillagerModal(self.cart, self.guild_icon))
 
     async def on_remove_item(self, interaction: discord.Interaction):
         val = interaction.data.get("values", [""])[0]
         idx = int(val.replace("rem_", ""))
         self.cart.remove_item(idx)
         self._build_components()
-        embed = build_cart_embed(self.cart, interaction.user)
+        embed = build_cart_embed(self.cart, interaction.user, self.guild_icon)
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_clear_cart(self, interaction: discord.Interaction):
@@ -1253,31 +1362,53 @@ class CartView(discord.ui.View):
             description=f"Are you sure you want to clear all **{self.cart.get_pocket_count()}** item(s) from your cart?",
             color=EMBED_COLOR_WARN,
         )
-        confirm_view = ClearCartConfirmView(self.cart)
+        apply_chopaeng_footer(confirm_embed, self.guild_icon)
+        confirm_view = ClearCartConfirmView(self.cart, self.guild_icon)
         await interaction.response.edit_message(embed=confirm_embed, view=confirm_view)
 
     async def on_browse_catalog(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(CatalogSearchModal(self.cart))
+        await interaction.response.send_modal(CatalogSearchModal(self.cart, self.guild_icon))
 
 
 # ── My Orders View (Synced with Website) ─────────────────────────────────────
 
 
 class MyOrdersView(discord.ui.View):
-    """View and track user orders (synced with website SQLite DB)."""
+    """View and track user orders with pagination for past order history (synced with website SQLite DB)."""
 
-    def __init__(self, user_id: str, username: str, orders: List[Dict[str, Any]]):
+    def __init__(self, user_id: str, username: str, orders: List[Dict[str, Any]], page: int = 0, guild_icon: Optional[str] = None):
         super().__init__(timeout=300)
         self.user_id = user_id
         self.username = username
         self.orders = orders
+        self.page = page
+        self.page_size = 5
+        self.guild_icon = guild_icon
         self.message: Optional[discord.Message] = None
         self._build_components()
+
+    @property
+    def past_orders(self) -> List[Dict[str, Any]]:
+        active = self.get_active_order()
+        return [o for o in self.orders if o != active]
+
+    @property
+    def total_pages(self) -> int:
+        past = self.past_orders
+        if not past:
+            return 1
+        return max(1, (len(past) + self.page_size - 1) // self.page_size)
+
+    def get_current_page_orders(self) -> List[Dict[str, Any]]:
+        past = self.past_orders
+        start = self.page * self.page_size
+        return past[start : start + self.page_size]
 
     def _build_components(self):
         self.clear_items()
 
-        btn_refresh = discord.ui.Button(label="Refresh Status", style=discord.ButtonStyle.primary, emoji="🔄")
+        # Row 0: Action buttons
+        btn_refresh = discord.ui.Button(label="Refresh Status", style=discord.ButtonStyle.primary, emoji="🔄", row=0)
         btn_refresh.callback = self.on_refresh
         self.add_item(btn_refresh)
 
@@ -1288,9 +1419,58 @@ class MyOrdersView(discord.ui.View):
                 label=f"Cancel Order ({active_order.get('id', '')[:8]})",
                 style=discord.ButtonStyle.danger,
                 emoji="❌",
+                row=0,
             )
             btn_cancel.callback = self.on_cancel_order
             self.add_item(btn_cancel)
+
+        btn_close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, emoji="❌", row=0)
+        btn_close.callback = self.on_close
+        self.add_item(btn_close)
+
+        # Row 1: Pagination buttons (if multiple history pages exist)
+        if self.total_pages > 1:
+            btn_prev = discord.ui.Button(
+                label="◀ Prev",
+                style=discord.ButtonStyle.secondary,
+                disabled=(self.page <= 0),
+                row=1,
+            )
+            btn_prev.callback = self.on_prev_page
+            self.add_item(btn_prev)
+
+            btn_next = discord.ui.Button(
+                label="Next ▶",
+                style=discord.ButtonStyle.secondary,
+                disabled=(self.page >= self.total_pages - 1),
+                row=1,
+            )
+            btn_next.callback = self.on_next_page
+            self.add_item(btn_next)
+
+    async def on_prev_page(self, interaction: discord.Interaction):
+        if self.page > 0:
+            self.page -= 1
+            self._build_components()
+            embed = self.build_orders_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_next_page(self, interaction: discord.Interaction):
+        if self.page < self.total_pages - 1:
+            self.page += 1
+            self._build_components()
+            embed = self.build_orders_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_close(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+            await interaction.delete_original_response()
+        except Exception:
+            try:
+                await interaction.message.delete()
+            except Exception:
+                pass
 
     async def on_timeout(self):
         for child in self.children:
@@ -1350,29 +1530,38 @@ class MyOrdersView(discord.ui.View):
                 inline=False,
             )
 
-        # Past orders history
-        past = [o for o in self.orders if o != active][:10]
+        # Past orders history with pagination
+        past = self.get_current_page_orders()
         if past:
             lines = []
             for o in past:
                 st = str(o.get("status") or "").upper()
+                st_badge = "✅" if st == "COMPLETED" else ("❌" if st in ("CANCELLED", "ERROR") else "📦")
                 ts = o.get("created_at")
                 time_str = f"<t:{ts}:R>" if ts else ""
-                lines.append(f"• `{o.get('id')[:10]}` — `{st}` {time_str}")
-            add_chunked_fields(embed, "📜 Recent Order History", lines, max_chars=950)
+                cmd_snip = o.get("command", "")
+                if cmd_snip:
+                    cmd_snip = f" — *`{cmd_snip[:30] + ('...' if len(cmd_snip) > 30 else '')}`*"
+                lines.append(f"{st_badge} `{o.get('id')[:10]}` — `{st}` {time_str}{cmd_snip}")
 
-        embed.set_footer(text=f"Auto-synced • {time.strftime('%H:%M:%S UTC', time.gmtime())}")
+            history_title = f"📜 Order History (Page {self.page + 1}/{self.total_pages})" if self.total_pages > 1 else "📜 Recent Order History"
+            add_chunked_fields(embed, history_title, lines, max_chars=950)
+
+        apply_chopaeng_footer(embed, self.guild_icon)
         return embed
 
     async def on_refresh(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            self.orders = await sysbot.get_user_order_history(self.user_id, limit=10)
+            self.orders = await sysbot.get_user_order_history(self.user_id, limit=50)
             active = self.get_active_order()
             if active and active.get("id"):
                 fresh = await sysbot.get_order_status(active["id"])
                 if fresh.get("status"):
                     active.update(fresh)
+
+            if self.page >= self.total_pages:
+                self.page = max(0, self.total_pages - 1)
 
             self._build_components()
             embed = self.build_orders_embed()
@@ -1390,7 +1579,9 @@ class MyOrdersView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             res = await sysbot.cancel_order(active["id"])
-            self.orders = await sysbot.get_user_order_history(self.user_id, limit=10)
+            self.orders = await sysbot.get_user_order_history(self.user_id, limit=50)
+            if self.page >= self.total_pages:
+                self.page = max(0, self.total_pages - 1)
             self._build_components()
             embed = self.build_orders_embed()
             await interaction.followup.send("✅ Order has been cancelled.", ephemeral=True)
@@ -1406,18 +1597,33 @@ class MyOrdersView(discord.ui.View):
 class LiveQueueView(discord.ui.View):
     """View current ChOrder Bot orders queue."""
 
-    def __init__(self, queue_data: dict, bot_status: dict):
+    def __init__(self, queue_data: dict, bot_status: dict, guild_icon: Optional[str] = None):
         super().__init__(timeout=180)
         self.queue_data = queue_data
         self.bot_status = bot_status
+        self.guild_icon = guild_icon
         self.message: Optional[discord.Message] = None
         self._build_components()
 
     def _build_components(self):
         self.clear_items()
-        btn_refresh = discord.ui.Button(label="Refresh Queue", style=discord.ButtonStyle.primary, emoji="🔄")
+        btn_refresh = discord.ui.Button(label="Refresh Queue", style=discord.ButtonStyle.primary, emoji="🔄", row=0)
         btn_refresh.callback = self.on_refresh
         self.add_item(btn_refresh)
+
+        btn_close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, emoji="❌", row=0)
+        btn_close.callback = self.on_close
+        self.add_item(btn_close)
+
+    async def on_close(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+            await interaction.delete_original_response()
+        except Exception:
+            try:
+                await interaction.message.delete()
+            except Exception:
+                pass
 
     async def on_timeout(self):
         for child in self.children:
@@ -1461,7 +1667,7 @@ class LiveQueueView(discord.ui.View):
                 inline=False,
             )
 
-        embed.set_footer(text=f"Last updated: {time.strftime('%H:%M:%S UTC', time.gmtime())}")
+        apply_chopaeng_footer(embed, self.guild_icon)
         return embed
 
     async def on_refresh(self, interaction: discord.Interaction):
@@ -1503,9 +1709,10 @@ class OrderPanelView(discord.ui.View):
         row=0,
     )
     async def btn_cart(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
         cart = cart_manager.get_cart(interaction.user.id)
-        embed = build_cart_embed(cart, interaction.user)
-        view = CartView(cart)
+        embed = build_cart_embed(cart, interaction.user, guild_icon)
+        view = CartView(cart, guild_icon)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(
@@ -1516,8 +1723,9 @@ class OrderPanelView(discord.ui.View):
         row=0,
     )
     async def btn_search(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
         cart = cart_manager.get_cart(interaction.user.id)
-        await interaction.response.send_modal(CatalogSearchModal(cart))
+        await interaction.response.send_modal(CatalogSearchModal(cart, guild_icon))
 
     @discord.ui.button(
         label="Presets / Bundles",
@@ -1529,9 +1737,10 @@ class OrderPanelView(discord.ui.View):
     async def btn_presets(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
+            guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
             cart = cart_manager.get_cart(interaction.user.id)
             bundles = await sysbot.get_bundles()
-            view = BundlesView(cart, bundles)
+            view = BundlesView(cart, bundles, guild_icon)
             embed = view.build_bundle_embed()
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         except Exception as exc:
@@ -1548,9 +1757,10 @@ class OrderPanelView(discord.ui.View):
     async def btn_orders(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
+            guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
             user_id = str(interaction.user.id)
-            orders = await sysbot.get_user_order_history(user_id, limit=10)
-            view = MyOrdersView(user_id, interaction.user.display_name, orders)
+            orders = await sysbot.get_user_order_history(user_id, limit=50)
+            view = MyOrdersView(user_id, interaction.user.display_name, orders, guild_icon=guild_icon)
             embed = view.build_orders_embed()
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         except Exception as exc:
@@ -1567,9 +1777,10 @@ class OrderPanelView(discord.ui.View):
     async def btn_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
+            guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
             q_data = await sysbot.get_queue()
             status_data = await sysbot.get_bot_status()
-            view = LiveQueueView(q_data, status_data)
+            view = LiveQueueView(q_data, status_data, guild_icon)
             embed = view.build_queue_embed()
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         except Exception as exc:
@@ -1730,7 +1941,7 @@ class ChorderCog(commands.Cog, name="Chorder"):
                     display_cmd = extra_text if len(extra_text) <= 250 else f"{extra_text[:250]}..."
                     embed.add_field(name="📦 Order Contents", value=f"`{display_cmd}`", inline=False)
                 embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
-                embed.set_footer(text="ChoPaeng ChOrder Bot Delivery • Fly safely!", icon_url="https://nh-cdn.catalogue.ac/NpcIcon/cat23.png")
+                apply_chopaeng_footer(embed)
 
             elif notif_type == "completed":
                 embed = discord.Embed(
@@ -1741,8 +1952,8 @@ class ChorderCog(commands.Cog, name="Chorder"):
                     ),
                     color=EMBED_COLOR_DEFAULT,
                 )
-                embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/cat23.png")
-                embed.set_footer(text="ChoPaeng Orders • Have a wonderful day!")
+                embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
+                apply_chopaeng_footer(embed)
 
             else:  # cancelled / error
                 embed = discord.Embed(
@@ -1753,7 +1964,7 @@ class ChorderCog(commands.Cog, name="Chorder"):
                     ),
                     color=EMBED_COLOR_WARN,
                 )
-                embed.set_footer(text="ChoPaeng Orders")
+                apply_chopaeng_footer(embed)
 
             try:
                 await user.send(embed=embed)
@@ -1815,8 +2026,9 @@ class ChorderCog(commands.Cog, name="Chorder"):
             bot_status = await sysbot.get_bot_status()
             island_name = bot_status.get("island_name", getattr(Config, "ORDER_BOT_ISLAND", "Sinta"))
             is_online = bot_status.get("is_running", True)
+            guild_icon = target_channel.guild.icon.url if (target_channel.guild and target_channel.guild.icon) else None
 
-            embed = build_panel_embed(island_name, is_online)
+            embed = build_panel_embed(island_name, is_online, guild_icon=guild_icon)
             view = OrderPanelView()
 
             await target_channel.send(embed=embed, view=view)
