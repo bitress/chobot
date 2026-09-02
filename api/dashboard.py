@@ -517,6 +517,27 @@ def init_dashboard_db():
             )
         """)
 
+        # User Custom Presets table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_custom_presets (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                description TEXT,
+                category    TEXT,
+                tags        TEXT,
+                order_items TEXT,
+                drop_items  TEXT,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )
+        """)
+
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_user_custom_presets_user ON user_custom_presets (user_id, updated_at)")
+        except Exception:
+            pass
+
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_pocket_bundles_cat ON pocket_bundles (category, is_official)")
         except Exception:

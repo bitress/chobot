@@ -152,12 +152,20 @@ class Config:
     ORDER_BOT_DISCORD_ID = _get_int('ORDER_BOT_DISCORD_ID', 1175671093445537802)
     ORDER_BOT_TWITCH_CHANNEL = os.getenv('ORDER_BOT_TWITCH_CHANNEL') or TWITCH_CHANNEL
 
+    # ChoPaeng Console Order API (https://console.chopaeng.com/api/order)
+    ORDER_API_URL = (os.getenv('ORDER_API_URL') or '').rstrip('/') or f"{API_BASE_URL}/api/order"
+
     # SysBot.ACNHOrders HTTP REST API
     # Set SYSBOT_API_URL to the address where SysBot is running, e.g. http://localhost:5202
     # Leave blank to disable live SysBot API integration.
     SYSBOT_API_URL = (os.getenv('SYSBOT_API_URL') or '').rstrip('/')
     # Optional: matches the ApiKey set in SysBot's server.json. Leave blank if no key is configured.
     SYSBOT_API_KEY = os.getenv('SYSBOT_API_KEY', '')
+
+    @classmethod
+    def is_order_api_configured(cls) -> bool:
+        """Return True if ORDER_API_URL is configured."""
+        return bool(cls.ORDER_API_URL)
 
     @classmethod
     def is_sysbot_configured(cls) -> bool:

@@ -5,7 +5,37 @@ Common functions used across bots and APIs
 
 import re
 import unicodedata
-from thefuzz import process, fuzz
+try:
+    from thefuzz import process, fuzz
+except ImportError:
+    import difflib
+
+    class _FuzzFallback:
+        @staticmethod
+        def ratio(s1, s2):
+            return int(difflib.SequenceMatcher(None, str(s1), str(s2)).ratio() * 100)
+
+        @staticmethod
+        def partial_ratio(s1, s2):
+            s1, s2 = str(s1), str(s2)
+            if not s1 or not s2:
+                return 0
+            if s1 in s2 or s2 in s1:
+                return 100
+            return int(difflib.SequenceMatcher(None, s1, s2).ratio() * 100)
+
+    class _ProcessFallback:
+        @staticmethod
+        def extract(query, choices, limit=5):
+            results = []
+            for c in choices:
+                score = int(difflib.SequenceMatcher(None, str(query).lower(), str(c).lower()).ratio() * 100)
+                results.append((c, score))
+            results.sort(key=lambda x: x[1], reverse=True)
+            return results[:limit]
+
+    fuzz = _FuzzFallback()
+    process = _ProcessFallback()
 
 from utils import Config
 

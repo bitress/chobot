@@ -310,3 +310,104 @@ class UserPublicPassport(Base):
     __table_args__ = (
         Index("ix_user_public_passports_username", "username"),
     )
+
+
+class OrderBotQueue(Base):
+    __tablename__ = "order_bot_queue"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    username: Mapped[str | None] = mapped_column(String(255))
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    order_type: Mapped[str] = mapped_column(String(64), nullable=False, default="order")
+    status: Mapped[str] = mapped_column(String(64), nullable=False, default="queued", index=True)
+    queue_position: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    estimated_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    dodo_code: Mapped[str | None] = mapped_column(String(32))
+    island_name: Mapped[str | None] = mapped_column(String(255), default="Sinta")
+    message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_order_bot_queue_user_status", "user_id", "status"),
+    )
+
+
+class UserCustomPreset(Base):
+    __tablename__ = "user_custom_presets"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(String(64))
+    tags: Mapped[str | None] = mapped_column(Text)
+    order_items: Mapped[str | None] = mapped_column(Text)
+    drop_items: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class SharedPocket(Base):
+    __tablename__ = "shared_pockets"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    username: Mapped[str | None] = mapped_column(String(255))
+    items_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    villager: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    expires_at: Mapped[int | None] = mapped_column(BigInteger, index=True)
+
+
+class PocketBundle(Base):
+    __tablename__ = "pocket_bundles"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(64), nullable=False, default="General")
+    items_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    villager: Mapped[str | None] = mapped_column(String(255))
+    created_by: Mapped[str | None] = mapped_column(String(255), default="Admin")
+    is_official: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_pocket_bundles_cat", "category", "is_official"),
+    )
+
+
+class IncidentWorkflow(Base):
+    __tablename__ = "incident_workflow"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    incident_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    island_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(64), nullable=False, default="open", index=True)
+    assigned_to: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    resolved_at: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class WebsiteLoginEvent(Base):
+    __tablename__ = "website_login_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    username: Mapped[str | None] = mapped_column(String(255))
+    nickname: Mapped[str | None] = mapped_column(String(255))
+    avatar: Mapped[str | None] = mapped_column(Text)
+    roles: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    highest_role: Mapped[str | None] = mapped_column(String(255))
+    highest_role_color: Mapped[int | None] = mapped_column(Integer)
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(Text)
+    logged_in_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128))
+
+    __table_args__ = (
+        Index("ix_website_login_user_ts", "user_id", "logged_in_at"),
+    )

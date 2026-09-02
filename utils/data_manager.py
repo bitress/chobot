@@ -11,7 +11,10 @@ import threading
 import re
 import json
 from datetime import datetime
-import gspread
+try:
+    import gspread
+except ImportError:
+    gspread = None
 
 logger = logging.getLogger("DataManager")
 CACHE_FILE = "cache_dump.json"

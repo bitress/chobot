@@ -119,20 +119,6 @@ def _persist_dodo_reveal_message(
         try:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS dodo_reveal_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    island_clean TEXT NOT NULL,
-                    channel_id TEXT,
-                    message_url TEXT NOT NULL,
-                    username TEXT,
-                    nickname TEXT,
-                    created_at INTEGER NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
                 INSERT INTO dodo_reveal_messages
                 (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -173,18 +159,6 @@ def _record_api_audit_event(action: str, target: str | None = None, details: dic
     try:
         db = get_db()
         try:
-            db.execute(
-                """CREATE TABLE IF NOT EXISTS dashboard_audit_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    actor_user_id TEXT,
-                    actor_name TEXT,
-                    action TEXT NOT NULL,
-                    target TEXT,
-                    details TEXT NOT NULL,
-                    ip_address TEXT,
-                    created_at INTEGER NOT NULL
-                )"""
-            )
             db.execute(
                 """INSERT INTO dashboard_audit_events
                    (actor_user_id, actor_name, action, target, details, ip_address, created_at)
@@ -235,20 +209,6 @@ def _log_command_search(
     try:
         db = get_db()
         try:
-            db.execute(
-                """CREATE TABLE IF NOT EXISTS command_search_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    command TEXT NOT NULL,
-                    query TEXT NOT NULL,
-                    normalized_query TEXT NOT NULL,
-                    source TEXT,
-                    user_id TEXT,
-                    channel_id TEXT,
-                    found INTEGER NOT NULL DEFAULT 0,
-                    result_count INTEGER NOT NULL DEFAULT 0,
-                    created_at INTEGER NOT NULL
-                )"""
-            )
             user = _current_auth_user()
             db.execute(
                 """INSERT INTO command_search_events
@@ -430,30 +390,53 @@ _CHANNEL_OVERWRITE_CACHE_TTL = 300
 _GUILD_CHANNELS_CACHE_TTL = 300
 
 def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
-    """Extract Bearer token from request and return user dict, or None."""
+    """Extract Bearer token or API key from request and return user dict, or None."""
     auth = request.headers.get("Authorization", "")
+    api_key_hdr = request.headers.get("X-API-Key", "")
+    token = ""
     if auth.startswith("Bearer "):
-        token = auth[len("Bearer "):]
-        user = get_auth_user(token)
-        if not user:
-            return None
-        if not force_refresh and not should_refresh(user):
-            return user
-        try:
-            refreshed = refresh_user_payload(user)
-            update_auth_user(token, refreshed)
-            return refreshed
-        except DiscordNotGuildMember:
-            logger.info("Revoking auth token for user_id=%s: no longer in guild", user.get("user_id"))
+        token = auth[len("Bearer "):].strip()
+    elif api_key_hdr:
+        token = api_key_hdr.strip()
+
+    if token:
+        dash_secret = getattr(Config, "DASHBOARD_SECRET", "") or ""
+        sys_key = getattr(Config, "SYSBOT_API_KEY", "") or ""
+        if (dash_secret and _secrets.compare_digest(token, dash_secret)) or (sys_key and _secrets.compare_digest(token, sys_key)):
+            uid = request.headers.get("X-User-ID") or "bot_system"
+            uname = request.headers.get("X-Username") or "ChorderBot"
+            return {
+                "user_id": uid,
+                "id": uid,
+                "username": uname,
+                "nickname": uname,
+                "roles": ["admin"],
+                "is_admin": True,
+            }
+
+    if not auth.startswith("Bearer "):
+        return None
+
+    token = auth[len("Bearer "):]
+    user = get_auth_user(token)
+    if not user:
+        return None
+    if not force_refresh and not should_refresh(user):
+        return user
+    try:
+        refreshed = refresh_user_payload(user)
+        update_auth_user(token, refreshed)
+        return refreshed
+    except DiscordNotGuildMember:
+        logger.info("Revoking auth token for user_id=%s: no longer in guild", user.get("user_id"))
+        revoke_auth_token(token)
+        return None
+    except DiscordMembershipUnavailable as exc:
+        logger.warning("Could not refresh Discord auth user %s: %s", user.get("user_id"), exc)
+        if is_beyond_stale_grace(user):
             revoke_auth_token(token)
             return None
-        except DiscordMembershipUnavailable as exc:
-            logger.warning("Could not refresh Discord auth user %s: %s", user.get("user_id"), exc)
-            if is_beyond_stale_grace(user):
-                revoke_auth_token(token)
-                return None
-            return user
-    return None
+        return user
 
 
 # Keep legacy helper names stable while sharing the access engine with dashboard APIs.
@@ -1290,15 +1273,6 @@ def api_subscriptions():
     user_id = str(user.get("user_id") or "")
     db = get_db()
     try:
-        db.execute(
-            """CREATE TABLE IF NOT EXISTS island_subscriptions (
-                user_id INTEGER NOT NULL,
-                island_clean TEXT NOT NULL,
-                kind TEXT NOT NULL DEFAULT 'sub',
-                has_island_access INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (user_id, island_clean, kind)
-            )"""
-        )
         if request.method == "GET":
             rows = db.execute(
                 "SELECT island_clean, kind, has_island_access FROM island_subscriptions WHERE user_id = ? ORDER BY kind, island_clean",
@@ -1532,19 +1506,6 @@ def join_dodo_queue(name):
     now = int(time.time())
     db = get_db()
     try:
-        db.execute(
-            """CREATE TABLE IF NOT EXISTS dodo_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                island_clean TEXT NOT NULL,
-                island_name TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                username TEXT,
-                status TEXT NOT NULL DEFAULT 'waiting',
-                note TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            )"""
-        )
         existing = db.execute(
             "SELECT id, status FROM dodo_queue WHERE island_clean = ? AND user_id = ? AND status IN ('waiting', 'called', 'investigating')",
             (island_clean, str(user.get("user_id") or "")),
@@ -3020,25 +2981,6 @@ def submit_order_to_bot():
             db = get_db()
             try:
                 db.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS order_bot_queue (
-                        id                TEXT PRIMARY KEY,
-                        user_id           TEXT NOT NULL,
-                        username          TEXT,
-                        command           TEXT NOT NULL,
-                        order_type        TEXT NOT NULL DEFAULT 'order',
-                        status            TEXT NOT NULL DEFAULT 'queued',
-                        queue_position    INTEGER DEFAULT 1,
-                        estimated_minutes INTEGER DEFAULT 2,
-                        dodo_code         TEXT,
-                        island_name       TEXT DEFAULT 'Sinta',
-                        message           TEXT,
-                        created_at        INTEGER NOT NULL,
-                        updated_at        INTEGER NOT NULL
-                    )
-                    """
-                )
-                db.execute(
                     """REPLACE INTO order_bot_queue
                            (id, user_id, username, command, order_type, status,
                             queue_position, estimated_minutes, dodo_code, island_name,
@@ -3177,32 +3119,13 @@ def get_user_order_history():
     if not auth_user:
         return jsonify({"success": False, "error": "Authentication required", "orders": []}), 401
 
-    user_id = str(auth_user.get("user_id") or auth_user.get("id") or "")
+    user_id = str(request.args.get("user_id") or auth_user.get("user_id") or auth_user.get("id") or "")
     if not user_id:
         return jsonify({"success": True, "orders": []})
 
     limit = min(int(request.args.get("limit", 50)), 100)
     db = get_db()
     try:
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS order_bot_queue (
-                id                TEXT PRIMARY KEY,
-                user_id           TEXT NOT NULL,
-                username          TEXT,
-                command           TEXT NOT NULL,
-                order_type        TEXT NOT NULL DEFAULT 'order',
-                status            TEXT NOT NULL DEFAULT 'queued',
-                queue_position    INTEGER DEFAULT 1,
-                estimated_minutes INTEGER DEFAULT 2,
-                dodo_code         TEXT,
-                island_name       TEXT DEFAULT 'Sinta',
-                message           TEXT,
-                created_at        INTEGER NOT NULL,
-                updated_at        INTEGER NOT NULL
-            )
-            """
-        )
         rows = db.execute(
             """SELECT id, user_id, username, command, order_type, status,
                       queue_position, estimated_minutes, dodo_code, island_name,
@@ -3701,16 +3624,6 @@ def upvote_loadout(loadout_id: str):
 
     conn = get_db()
     try:
-        # Auto-ensure upvotes table exists
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS community_loadout_upvotes (
-                loadout_id  TEXT NOT NULL,
-                user_id     TEXT NOT NULL,
-                created_at  TEXT NOT NULL,
-                PRIMARY KEY (loadout_id, user_id)
-            )
-        """)
-
         # Clean loadout_id
         target_id = loadout_id.strip()
 
@@ -3801,20 +3714,6 @@ def get_user_presets():
 
     conn = get_db()
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_custom_presets (
-                id          TEXT PRIMARY KEY,
-                user_id     TEXT NOT NULL,
-                title       TEXT NOT NULL,
-                description TEXT,
-                category    TEXT,
-                tags        TEXT,
-                order_items TEXT,
-                drop_items  TEXT,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
-            )
-        """)
         rows = conn.execute(
             "SELECT * FROM user_custom_presets WHERE user_id = ? ORDER BY updated_at DESC",
             (user_id,)
@@ -3863,20 +3762,6 @@ def save_user_preset():
 
     conn = get_db()
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_custom_presets (
-                id          TEXT PRIMARY KEY,
-                user_id     TEXT NOT NULL,
-                title       TEXT NOT NULL,
-                description TEXT,
-                category    TEXT,
-                tags        TEXT,
-                order_items TEXT,
-                drop_items  TEXT,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
-            )
-        """)
         conn.execute("""
             REPLACE INTO user_custom_presets
             (id, user_id, title, description, category, tags, order_items, drop_items, created_at, updated_at)
@@ -3952,15 +3837,6 @@ def api_user_favorite_islands():
 
     conn = get_db()
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_favorite_islands (
-                user_id    VARCHAR(64) NOT NULL,
-                island_id  VARCHAR(64) NOT NULL,
-                created_at VARCHAR(64) NOT NULL,
-                PRIMARY KEY (user_id, island_id)
-            )
-        """)
-
         if request.method == "GET":
             rows = conn.execute(
                 "SELECT island_id FROM user_favorite_islands WHERE user_id = ? ORDER BY created_at DESC",
@@ -4044,21 +3920,6 @@ def api_user_characters():
 
     conn = get_db()
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_saved_characters (
-                user_id     TEXT NOT NULL,
-                id          TEXT NOT NULL,
-                ign         TEXT NOT NULL,
-                island_name TEXT NOT NULL,
-                title       TEXT,
-                icon        TEXT,
-                is_default  INTEGER NOT NULL DEFAULT 0,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL,
-                PRIMARY KEY (user_id, id)
-            )
-        """)
-
         if request.method == "GET":
             rows = conn.execute(
                 "SELECT * FROM user_saved_characters WHERE user_id = ? ORDER BY is_default DESC, updated_at DESC",
@@ -4113,6 +3974,112 @@ def api_user_characters():
         conn.close()
 
 
+@app.route("/api/user/nickname", methods=["POST"])
+@app.route("/api/profile/nickname", methods=["POST"])
+@app.route("/api/user/update-nickname", methods=["POST"])
+@app.route("/api/profile/update-nickname", methods=["POST"])
+def api_update_discord_nickname():
+    """Update the authenticated user's Discord server nickname via Discord Bot API."""
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"ok": False, "success": False, "error": "Authentication required"}), 401
+
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "").strip()
+    if not user_id:
+        return jsonify({"ok": False, "success": False, "error": "Discord User ID not found"}), 401
+
+    data = request.get_json(silent=True) or {}
+    new_nickname = str(data.get("nickname") or data.get("nick") or "").strip()
+
+    if not new_nickname:
+        return jsonify({"ok": False, "success": False, "error": "Nickname cannot be empty."}), 400
+
+    if len(new_nickname) > 32:
+        return jsonify({"ok": False, "success": False, "error": "Discord nicknames cannot exceed 32 characters."}), 400
+
+    bot_auth = _discord_bot_auth_value()
+    guild_id = str(Config.GUILD_ID or "").strip()
+    if not bot_auth or not guild_id:
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "error": "Discord bot or server ID is not configured on this backend.",
+        }), 503
+
+    discord_url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}"
+    req_body = json.dumps({"nick": new_nickname}).encode("utf-8")
+
+    try:
+        resp = discord_request(
+            discord_url,
+            method="PATCH",
+            headers={
+                "Authorization": bot_auth,
+                "Content-Type": "application/json",
+            },
+            data=req_body,
+            timeout=10,
+        )
+        logger.info("Successfully updated Discord nickname for user_id=%s to '%s'", user_id, new_nickname)
+    except urllib.error.HTTPError as exc:
+        body_text = ""
+        try:
+            body_text = exc.read().decode(errors="replace")
+        except Exception:
+            body_text = str(exc)
+        logger.warning("Discord API nickname update failed (status=%s) for user_id=%s: %s", exc.code, user_id, body_text)
+
+        if exc.code == 403:
+            return jsonify({
+                "ok": False,
+                "success": False,
+                "error": "Discord permission denied: The bot cannot change nicknames for the server owner or roles higher than the bot.",
+            }), 403
+        elif exc.code == 404:
+            return jsonify({
+                "ok": False,
+                "success": False,
+                "error": "You are not currently a member of the ChoPaeng Discord server.",
+            }), 404
+        elif exc.code == 400:
+            return jsonify({
+                "ok": False,
+                "success": False,
+                "error": "Discord rejected this nickname format or characters.",
+            }), 400
+        else:
+            return jsonify({
+                "ok": False,
+                "success": False,
+                "error": f"Discord API returned status {exc.code}.",
+            }), exc.code
+    except Exception as exc:
+        logger.error("Unexpected error updating Discord nickname for user_id=%s: %s", user_id, exc)
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "error": f"Failed to update Discord nickname: {str(exc)}",
+        }), 500
+
+    # Update in-memory auth token cache so subsequent profile calls return the new nickname immediately
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[len("Bearer "):]
+        auth_user["nickname"] = new_nickname
+        try:
+            update_auth_user(token, auth_user)
+        except Exception:
+            pass
+
+    return jsonify({
+        "ok": True,
+        "success": True,
+        "nickname": new_nickname,
+        "nick": new_nickname,
+        "message": f"Successfully updated your Discord server nickname to '{new_nickname}'!",
+    })
+
+
 @app.route("/api/user/passport", methods=["GET", "POST"])
 @app.route("/api/profile/passport", methods=["GET", "POST"])
 def api_user_passport():
@@ -4129,32 +4096,6 @@ def api_user_passport():
 
     conn = get_db()
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_public_passports (
-                user_id                   VARCHAR(64) PRIMARY KEY,
-                username                  VARCHAR(255) NOT NULL,
-                is_public                 INTEGER NOT NULL DEFAULT 0,
-                show_character_and_island INTEGER NOT NULL DEFAULT 1,
-                pronouns                  VARCHAR(64),
-                birth_day                 VARCHAR(16),
-                birth_month               VARCHAR(32),
-                native_fruit              VARCHAR(32),
-                favourite_colour          VARCHAR(32),
-                favourite_song            VARCHAR(128),
-                country                   VARCHAR(128),
-                language                  VARCHAR(64),
-                personality               VARCHAR(64),
-                hobbies                   VARCHAR(255),
-                favourite_shows_films     VARCHAR(255),
-                about_you                 TEXT,
-                favourite_villagers       TEXT,
-                primary_ign               VARCHAR(64),
-                primary_island            VARCHAR(64),
-                avatar_url                TEXT,
-                updated_at                VARCHAR(64) NOT NULL
-            )
-        """)
-
         if request.method == "GET":
             row = conn.execute(
                 "SELECT * FROM user_public_passports WHERE user_id = ?",

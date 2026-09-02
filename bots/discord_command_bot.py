@@ -29,6 +29,7 @@ from utils.nookipedia import NookipediaClient
 from utils.nickname_format import is_valid_acnh_nickname, nickname_warning_for, NICKNAME_FORMAT_EXAMPLE
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
 from utils.ops_status import create_sqlite_backup, get_maintenance_settings
+from chorder import ChorderCog, OrderPanelView
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -4466,23 +4467,6 @@ class DiscordCommandCog(commands.Cog):
         try:
             with connect_db() as conn:
                 conn.execute("""
-                    CREATE TABLE IF NOT EXISTS order_bot_queue (
-                        id TEXT PRIMARY KEY,
-                        user_id TEXT NOT NULL,
-                        username TEXT,
-                        command TEXT NOT NULL,
-                        order_type TEXT NOT NULL DEFAULT 'order',
-                        status TEXT NOT NULL DEFAULT 'queued',
-                        queue_position INTEGER DEFAULT 1,
-                        estimated_minutes INTEGER DEFAULT 2,
-                        dodo_code TEXT,
-                        island_name TEXT DEFAULT 'Sinta',
-                        message TEXT,
-                        created_at INTEGER NOT NULL,
-                        updated_at INTEGER NOT NULL
-                    )
-                """)
-                conn.execute("""
                     INSERT INTO order_bot_queue
                     (id, user_id, username, command, order_type, status, queue_position, estimated_minutes, island_name, created_at, updated_at)
                     VALUES (?, ?, ?, ?, 'order', 'queued', 1, 2, 'Sinta', ?, ?)
@@ -4694,6 +4678,8 @@ class DiscordCommandBot(commands.Bot):
 
         if self._load_command_cog:
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
+            await self.add_cog(ChorderCog(self))
+            self.add_view(OrderPanelView())
 
         # Add global interaction check for slash commands in FIND_BOT_CHANNEL
         async def check_find_channel_restriction(interaction: discord.Interaction) -> bool:
@@ -4708,7 +4694,13 @@ class DiscordCommandBot(commands.Bot):
                     'villager',
                     'refresh',
                     'pocket',
-                    'order_test'
+                    'order_test',
+                    'orderpanel',
+                    'order',
+                    'cart',
+                    'myorders',
+                    'queue',
+                    'presets'
                 }
                 
                 # Get the command name
