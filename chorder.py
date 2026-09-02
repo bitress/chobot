@@ -1,14 +1,14 @@
 """
-Chorder - Standalone SysBot Order Bot & Interactive Order Panel
+Chorder - Standalone ChOrder Bot Order Bot & Interactive Order Panel
 Author: ChoPaeng
 Features:
 - /orderpanel: Deployable interactive Order Station in any channel with Web Builder link.
 - Add to Cart & Cart Builder with 40-pocket slot limit.
-- 16-Character Hex & Variant Encoding for SysBot order accuracy.
+- 16-Character Hex & Variant Encoding for ChOrder Bot order accuracy.
 - Multi-page Catalog Search with interactive pagination (Prev/Next) & multi-select.
 - My Orders: Synced with website database (order_bot_queue), live ETA, Dodo code, cancel button.
 - Multi-stage DM Notification Engine (Ready, Completed, Cancelled) with restart deduplication.
-- Live Queues: Real-time SysBot queue viewer with refresh.
+- Live Queues: Real-time ChOrder Bot queue viewer with refresh.
 - Presets: Official and curated bundles with 1-click loading and instant order.
 - Quick Order: Direct support for both item names and raw space-separated hex strings.
 """
@@ -185,7 +185,7 @@ class UserCart:
         self.villager = None
 
     def to_order_string(self) -> str:
-        """Build SysBot order command string."""
+        """Build ChOrder Bot order command string."""
         item_tokens = []
         for item in self.items:
             tok = item.to_command_string()
@@ -283,7 +283,7 @@ def build_panel_embed(island_name: str = "Sinta", is_online: bool = True) -> dis
     embed = discord.Embed(
         title="🍃 ChoPaeng ACNH Order Station",
         description=(
-            f"Welcome to the **SysBot Order Terminal**! Build custom inventory pockets, "
+            f"Welcome to the **ChOrder Bot Order Terminal**! Build custom inventory pockets, "
             f"order dream villagers, and enjoy automated fast delivery directly to your island.\n\n"
             f"**Bot Status:** {status_emoji} `{status_text}`\n"
             f"**Active Island:** 🏝️ `{island_name}`\n"
@@ -298,7 +298,7 @@ def build_panel_embed(island_name: str = "Sinta", is_online: bool = True) -> dis
             "• **Search Catalog:** Search items & villagers with multi-page navigation and images.\n"
             "• **Presets / Bundles:** Load curated item sets in 1 click or instant order.\n"
             "• **My Orders:** View real-time queue position, ETA, and your Dodo Code.\n"
-            "• **Live Queue:** Check current SysBot island activity.\n"
+            "• **Live Queue:** Check current ChOrder Bot island activity.\n"
             "• **Quick Order:** Paste item lists or direct hex codes.\n"
             "• **Open Web Builder:** Visual drag-and-drop pocket grid on the web."
         ),
@@ -360,7 +360,7 @@ def build_cart_embed(cart: UserCart, user: discord.User | discord.Member) -> dis
     if order_cmd:
         display_cmd = order_cmd if len(order_cmd) <= 900 else f"{order_cmd[:900]}..."
         embed.add_field(
-            name="⚡ SysBot Command String",
+            name="⚡ ChOrder Bot Command String",
             value=f"```!order {display_cmd}```",
             inline=False,
         )
@@ -374,7 +374,7 @@ def build_cart_embed(cart: UserCart, user: discord.User | discord.Member) -> dis
 # ============================================================================
 
 
-class QuickOrderModal(discord.ui.Modal, title="⚡ Quick SysBot Order"):
+class QuickOrderModal(discord.ui.Modal, title="⚡ Quick ChOrder Bot Order"):
     order_input = discord.ui.TextInput(
         label="Items, Hex Codes, or Villager",
         style=discord.TextStyle.paragraph,
@@ -431,9 +431,9 @@ class QuickOrderModal(discord.ui.Modal, title="⚡ Quick SysBot Order"):
                 island = result.get("island_name", "Sinta")
 
                 embed = discord.Embed(
-                    title="✅ Order Submitted to SysBot!",
+                    title="✅ Order Submitted to ChOrder Bot!",
                     description=(
-                        f"Your order has been placed into the SysBot queue.\n\n"
+                        f"Your order has been placed into the ChOrder Bot queue.\n\n"
                         f"**Order ID:** `{order_id}`\n"
                         f"**Queue Position:** `#{pos}`\n"
                         f"**Estimated Time:** `~{eta} min`\n"
@@ -446,11 +446,11 @@ class QuickOrderModal(discord.ui.Modal, title="⚡ Quick SysBot Order"):
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
             else:
-                err_msg = result.get("error") or "SysBot could not process this order."
+                err_msg = result.get("error") or "ChOrder Bot could not process this order."
                 await interaction.followup.send(f"❌ **Failed to submit order:** {err_msg}", ephemeral=True)
         except Exception as exc:
             logger.exception(f"[QuickOrderModal] Error submitting order: {exc}")
-            await interaction.followup.send("❌ An unexpected error occurred while communicating with SysBot. Please try again.", ephemeral=True)
+            await interaction.followup.send("❌ An unexpected error occurred while communicating with ChOrder Bot. Please try again.", ephemeral=True)
         finally:
             _submitting_users.discard(user_id_int)
 
@@ -1118,7 +1118,7 @@ class CartView(discord.ui.View):
 
         # Row 1 Buttons
         btn_submit = discord.ui.Button(
-            label="Submit Order to SysBot",
+            label="Submit Order to ChOrder Bot",
             style=discord.ButtonStyle.success,
             emoji="🚀",
             row=1,
@@ -1208,7 +1208,7 @@ class CartView(discord.ui.View):
                 embed = discord.Embed(
                     title="✅ Order Successfully Placed!",
                     description=(
-                        f"Your pocket order has been submitted to **SysBot**!\n\n"
+                        f"Your pocket order has been submitted to **ChOrder Bot**!\n\n"
                         f"**Order ID:** `{order_id}`\n"
                         f"**Queue Position:** `#{pos}`\n"
                         f"**Estimated Arrival:** `~{eta} min`\n"
@@ -1404,7 +1404,7 @@ class MyOrdersView(discord.ui.View):
 
 
 class LiveQueueView(discord.ui.View):
-    """View current SysBot orders queue."""
+    """View current ChOrder Bot orders queue."""
 
     def __init__(self, queue_data: dict, bot_status: dict):
         super().__init__(timeout=180)
@@ -1593,7 +1593,7 @@ class OrderPanelView(discord.ui.View):
 
 
 class ChorderCog(commands.Cog, name="Chorder"):
-    """Cog providing the interactive ACNH SysBot Order Panel and DM Notification Engine."""
+    """Cog providing the interactive ACNH ChOrder Bot Order Panel and DM Notification Engine."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -1730,7 +1730,7 @@ class ChorderCog(commands.Cog, name="Chorder"):
                     display_cmd = extra_text if len(extra_text) <= 250 else f"{extra_text[:250]}..."
                     embed.add_field(name="📦 Order Contents", value=f"`{display_cmd}`", inline=False)
                 embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
-                embed.set_footer(text="ChoPaeng SysBot Delivery • Fly safely!", icon_url="https://nh-cdn.catalogue.ac/NpcIcon/cat23.png")
+                embed.set_footer(text="ChoPaeng ChOrder Bot Delivery • Fly safely!", icon_url="https://nh-cdn.catalogue.ac/NpcIcon/cat23.png")
 
             elif notif_type == "completed":
                 embed = discord.Embed(
@@ -1750,7 +1750,6 @@ class ChorderCog(commands.Cog, name="Chorder"):
                     description=(
                         f"Hello {user.mention}! Your order `{order_id}` was cancelled or closed.\n\n"
                         f"**Reason / Message:** `{extra_text or 'Order cancelled or expired.'}`\n\n"
-                        f"You can place a new order anytime using the **/orderpanel**."
                     ),
                     color=EMBED_COLOR_WARN,
                 )
@@ -1789,7 +1788,7 @@ class ChorderCog(commands.Cog, name="Chorder"):
 
     @app_commands.command(
         name="orderpanel",
-        description="Deploy the interactive ACNH SysBot Order Panel to a channel",
+        description="Deploy the interactive ACNH ChOrder Bot Order Panel to a channel",
     )
     @app_commands.describe(channel="The channel to deploy the order panel into (defaults to current)")
     @app_commands.default_permissions(manage_channels=True)
