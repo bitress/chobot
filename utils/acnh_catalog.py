@@ -41,6 +41,54 @@ ORDERABLE_SOURCE_SHEETS = {
     "Other", "Message Cards",
 }
 
+
+def generate_full_item_hex(
+    base_id: Optional[Any],
+    variant_string: Optional[Any] = None,
+    category: str = "",
+) -> str:
+    """
+    Builds the final 16-character order hex.
+    - If baseId or variantString is already a full 16-char hex, return it as-is.
+    - Otherwise pad the base id and encode variant info (primary/secondary) into the string.
+    - "Fencing" category uses a different byte layout than everything else.
+    """
+    if base_id is None or base_id == "":
+        return ""
+
+    base_str = str(base_id).strip().upper()
+    var_str = str(variant_string or "").strip().upper()
+
+    if len(base_str) == 16:
+        return base_str
+    if len(var_str) == 16:
+        return var_str
+
+    padded_base_id = base_str.zfill(4)
+
+    if not var_str or var_str in ("NA", "NONE", "", "DIY"):
+        return padded_base_id
+
+    primary = 0
+    secondary = 0
+    parts = var_str.split("_")
+    if len(parts) == 2:
+        try:
+            primary = int(parts[0])
+            secondary = int(parts[1])
+        except (ValueError, TypeError):
+            primary = 0
+            secondary = 0
+
+    if category.strip().lower() == "fencing":
+        primary_hex = f"{primary:X}"
+        return f"{primary_hex}00310000{padded_base_id}"
+
+    variant_int = primary + (secondary * 32)
+    variant_hex = f"{variant_int:04X}"
+    return f"0000{variant_hex}0000{padded_base_id}"
+
+
 class CatalogItem:
     """Represents an orderable item or DIY recipe."""
     def __init__(
@@ -71,12 +119,23 @@ class CatalogItem:
             return f"{self.name} ({self.variation})"
         return self.name
 
+    def to_hex(self) -> str:
+        """Generate the full 16-character / 4-character hex code for this item."""
+        if not self.internal_id:
+            return ""
+        return generate_full_item_hex(
+            base_id=self.internal_id,
+            variant_string=self.variant_id or self.variation,
+            category=self.category,
+        )
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "display_name": self.display_name,
             "category": self.category,
             "internal_id": self.internal_id,
+            "hex_code": self.to_hex(),
             "image_url": self.image_url,
             "variation": self.variation,
             "variant_id": self.variant_id,
@@ -186,10 +245,18 @@ class ACNHCatalog:
 
                 categories_set.add(source_sheet)
                 name = it.get("name") or "Unknown"
-                internal_id = str(it.get("internalId") or "")
+                raw_int_id = it.get("internalId")
+                if raw_int_id is not None:
+                    try:
+                        internal_id = f"{int(raw_int_id):04X}"
+                    except (ValueError, TypeError):
+                        internal_id = str(raw_int_id).strip().upper().zfill(4)
+                else:
+                    internal_id = ""
+
                 image_url = it.get("image") or ""
                 variation = it.get("variation") or ""
-                variant_id = str(it.get("variantId") or "")
+                variant_id = str(it.get("variantId") or "") if it.get("variantId") is not None else ""
                 diy = bool(it.get("diy"))
                 stack_size = int(it.get("stackSize") or 1)
 
@@ -216,7 +283,16 @@ class ACNHCatalog:
             categories_set.add("Recipes")
             for rec in raw_recipes:
                 name = rec.get("name") or "Unknown"
-                internal_id = str(rec.get("internalId") or "")
+                raw_int_id = rec.get("internalId")
+                if raw_int_id is not None:
+                    try:
+                        rec_hex = f"{int(raw_int_id):04X}"
+                        internal_id = f"0000{rec_hex}000016A2"
+                    except (ValueError, TypeError):
+                        internal_id = str(raw_int_id).strip().upper()
+                else:
+                    internal_id = ""
+
                 image_url = rec.get("image") or rec.get("imageSh") or ""
                 item_obj = CatalogItem(
                     name=f"{name} (DIY Recipe)",

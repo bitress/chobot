@@ -2,13 +2,13 @@
 Chorder - Standalone SysBot Order Bot & Interactive Order Panel
 Author: ChoPaeng
 Features:
-- /orderpanel & !orderpanel: Deployable interactive Order Station in any channel.
+- /orderpanel: Deployable interactive Order Station in any channel.
 - Add to Cart & Cart Builder with 40-pocket slot limit.
+- 16-Character Hex & Variant Encoding for SysBot order accuracy.
 - My Orders: Synced with website database (order_bot_queue), live ETA, Dodo code, cancel button.
 - Live Queues: Real-time SysBot queue viewer with refresh.
 - Presets: Live bundles from https://console.chopaeng.com/api/bundles.
 - Search Catalog: Interactive GUI with item/villager images and multi-select support.
-- Direct !order item villager:id syntax support.
 """
 
 import asyncio
@@ -27,7 +27,7 @@ from discord.ext import commands
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils.config import Config
-from utils.acnh_catalog import ACNHCatalog, CatalogItem, CatalogVillager
+from utils.acnh_catalog import ACNHCatalog, CatalogItem, CatalogVillager, generate_full_item_hex
 from utils.sysbot_api import SysBotClient, parse_order_input, _INVALID_DODO_CODES
 
 # ============================================================================
@@ -53,6 +53,7 @@ class CartItem:
         category: str = "Items",
         image_url: str = "",
         variation: str = "",
+        variant_id: str = "",
         internal_id: str = "",
         diy: bool = False,
     ):
@@ -61,6 +62,7 @@ class CartItem:
         self.category = category
         self.image_url = image_url
         self.variation = variation
+        self.variant_id = variant_id
         self.internal_id = internal_id
         self.diy = diy
 
@@ -70,7 +72,27 @@ class CartItem:
             return f"{self.name} ({self.variation})"
         return self.name
 
+    def to_hex_code(self) -> str:
+        """Get the full 16-character / 4-character item hex code."""
+        if self.internal_id:
+            return generate_full_item_hex(
+                base_id=self.internal_id,
+                variant_string=self.variant_id or self.variation,
+                category=self.category,
+            )
+        return ""
+
     def to_command_string(self) -> str:
+        """
+        Generate order string for this item.
+        If hex code is available, repeats hex code for quantity.
+        Otherwise falls back to display name.
+        """
+        hex_code = self.to_hex_code()
+        if hex_code:
+            if self.quantity > 1:
+                return " ".join([hex_code] * self.quantity)
+            return hex_code
         if self.quantity > 1:
             return f"{self.display_name} {self.quantity}"
         return self.display_name
@@ -85,7 +107,7 @@ class UserCart:
         self.last_activity: float = time.time()
 
     def get_pocket_count(self) -> int:
-        return len(self.items)
+        return sum(item.quantity for item in self.items)
 
     def is_full(self) -> bool:
         return self.get_pocket_count() >= MAX_POCKET_SLOTS
@@ -97,26 +119,37 @@ class UserCart:
         category: str = "Items",
         image_url: str = "",
         variation: str = "",
+        variant_id: str = "",
         internal_id: str = "",
         diy: bool = False,
     ) -> bool:
         self.last_activity = time.time()
-        if self.is_full():
+        current_count = self.get_pocket_count()
+        if current_count >= MAX_POCKET_SLOTS:
             return False
 
-        # If duplicate item exists, update quantity if stackable
+        qty_to_add = min(quantity, MAX_POCKET_SLOTS - current_count)
+        if qty_to_add <= 0:
+            return False
+
+        # If duplicate item exists, update quantity
         for existing in self.items:
-            if existing.name.lower() == name.lower() and existing.variation.lower() == variation.lower():
-                existing.quantity += quantity
+            if (
+                existing.name.lower() == name.lower()
+                and existing.variation.lower() == variation.lower()
+                and existing.internal_id == internal_id
+            ):
+                existing.quantity += qty_to_add
                 return True
 
         self.items.append(
             CartItem(
                 name=name,
-                quantity=quantity,
+                quantity=qty_to_add,
                 category=category,
                 image_url=image_url,
                 variation=variation,
+                variant_id=variant_id,
                 internal_id=internal_id,
                 diy=diy,
             )
@@ -144,10 +177,29 @@ class UserCart:
         self.villager = None
 
     def to_order_string(self) -> str:
-        parts = [item.to_command_string() for item in self.items]
-        if self.villager:
-            parts.append(f"villager:{self.villager.villager_id or self.villager.name}")
-        return ", ".join(parts)
+        """Build SysBot order command string."""
+        item_tokens = []
+        for item in self.items:
+            tok = item.to_command_string()
+            if tok:
+                item_tokens.append(tok)
+
+        villager_part = f"villager:{self.villager.villager_id or self.villager.name}" if self.villager else None
+
+        # Check if all tokens are pure hex codes and spaces
+        all_hex = all(
+            bool(re.match(r"^[0-9A-Fa-f\s]+$", tok)) for tok in item_tokens
+        ) if item_tokens else False
+
+        if all_hex:
+            items_str = " ".join(item_tokens)
+            if villager_part:
+                return f"{items_str} {villager_part}".strip()
+            return items_str
+        else:
+            if villager_part:
+                item_tokens.append(villager_part)
+            return ", ".join(item_tokens)
 
 
 class CartManager:
@@ -1211,7 +1263,7 @@ class OrderPanelView(discord.ui.View):
 
 
 class ChorderCog(commands.Cog, name="Chorder"):
-    """Cog providing SysBot order panel, cart, and search commands."""
+    """Cog providing the interactive ACNH SysBot Order Panel."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -1244,140 +1296,6 @@ class ChorderCog(commands.Cog, name="Chorder"):
         await interaction.response.send_message(
             f"✅ Order panel deployed to {target_channel.mention}!", ephemeral=True
         )
-
-    # ── Prefix Command: !orderpanel ─────────────────────────────────────────
-
-    @commands.command(name="orderpanel", aliases=["panel"])
-    async def prefix_orderpanel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        """Deploy the Order Panel using prefix command !orderpanel."""
-        target_channel = channel or ctx.channel
-        bot_status = await sysbot.get_bot_status()
-        island_name = bot_status.get("island_name", getattr(Config, "ORDER_BOT_ISLAND", "Sinta"))
-        is_online = bot_status.get("is_running", True)
-
-        embed = build_panel_embed(island_name, is_online)
-        view = OrderPanelView()
-        await target_channel.send(embed=embed, view=view)
-        if target_channel != ctx.channel:
-            await ctx.send(f"✅ Order panel deployed to {target_channel.mention}!")
-
-    # ── Slash Command: /order ───────────────────────────────────────────────
-
-    @app_commands.command(
-        name="order",
-        description="Submit an order directly to SysBot (items and optional villager)",
-    )
-    @app_commands.describe(
-        items="Item list (e.g. Gold nugget 30, Royal crown 10)",
-        villager="Villager name or ID (e.g. Raymond or cat23)",
-    )
-    async def slash_order(
-        self,
-        interaction: discord.Interaction,
-        items: str,
-        villager: Optional[str] = None,
-    ):
-        await interaction.response.defer(ephemeral=True)
-        res = await sysbot.submit_order(
-            username=interaction.user.display_name,
-            order_text=items,
-            villager=villager,
-            user_id=str(interaction.user.id),
-        )
-
-        if res.get("success") or res.get("order_id"):
-            embed = discord.Embed(
-                title="✅ Order Submitted!",
-                description=(
-                    f"**Order ID:** `{res.get('order_id')}`\n"
-                    f"**Queue Position:** `#{res.get('queue_position', 1)}`\n"
-                    f"**ETA:** `~{res.get('estimated_minutes', 2)} min`\n"
-                    f"**Island:** 🏝️ `{res.get('island_name', 'Sinta')}`\n"
-                    f"Track this via `/myorders` or the Order Panel."
-                ),
-                color=EMBED_COLOR_DEFAULT,
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Failed to submit order: {res.get('error')}", ephemeral=True)
-
-    # ── Prefix Command: !order ──────────────────────────────────────────────
-
-    @commands.command(name="order")
-    async def prefix_order(self, ctx: commands.Context, *, order_text: str):
-        """
-        Direct order command:
-        !order Gold nugget 30, Iron nugget 30, villager:Raymond
-        !order Raymond, Royal crown 40
-        """
-        res = await sysbot.submit_order(
-            username=ctx.author.display_name,
-            order_text=order_text,
-            user_id=str(ctx.author.id),
-        )
-
-        if res.get("success") or res.get("order_id"):
-            order_id = res.get("order_id")
-            pos = res.get("queue_position", 1)
-            eta = res.get("estimated_minutes", 2)
-            island = res.get("island_name", "Sinta")
-
-            embed = discord.Embed(
-                title="✅ Order Received by SysBot!",
-                description=(
-                    f"{ctx.author.mention}, your order is queued.\n\n"
-                    f"**Order ID:** `{order_id}`\n"
-                    f"**Queue Position:** `#{pos}` | **ETA:** `~{eta} min`\n"
-                    f"**Island:** 🏝️ `{island}`\n\n"
-                    f"Use `/myorders` or the Order Panel to see your Dodo Code when ready!"
-                ),
-                color=EMBED_COLOR_DEFAULT,
-            )
-            await ctx.send(embed=embed)
-        else:
-            await ctx.send(f"❌ {ctx.author.mention} Order failed: {res.get('error')}")
-
-    # ── Slash Command: /cart ────────────────────────────────────────────────
-
-    @app_commands.command(name="cart", description="Open your interactive cart and pocket builder")
-    async def slash_cart(self, interaction: discord.Interaction):
-        cart = cart_manager.get_cart(interaction.user.id)
-        embed = build_cart_embed(cart, interaction.user)
-        view = CartView(cart)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    # ── Slash Command: /myorders ────────────────────────────────────────────
-
-    @app_commands.command(name="myorders", description="Check your active orders and Dodo code")
-    async def slash_myorders(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        user_id = str(interaction.user.id)
-        orders = await sysbot.get_user_order_history(user_id, limit=10)
-        view = MyOrdersView(user_id, interaction.user.display_name, orders)
-        embed = view.build_orders_embed()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-    # ── Slash Command: /queue ───────────────────────────────────────────────
-
-    @app_commands.command(name="queue", description="View the live SysBot island queue")
-    async def slash_queue(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        q_data = await sysbot.get_queue()
-        status_data = await sysbot.get_bot_status()
-        view = LiveQueueView(q_data, status_data)
-        embed = view.build_queue_embed()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-    # ── Slash Command: /presets ─────────────────────────────────────────────
-
-    @app_commands.command(name="presets", description="Browse official item presets and bundles")
-    async def slash_presets(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        cart = cart_manager.get_cart(interaction.user.id)
-        bundles = await sysbot.get_bundles()
-        view = BundlesView(cart, bundles)
-        embed = view.build_bundle_embed()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 # ============================================================================
