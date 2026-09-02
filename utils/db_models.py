@@ -334,6 +334,21 @@ class OrderBotQueue(Base):
     )
 
 
+class OrderNotification(Base):
+    __tablename__ = "order_notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    notification_type: Mapped[str] = mapped_column(String(64), nullable=False, default="ready")
+    dodo_code: Mapped[str | None] = mapped_column(String(32))
+    sent_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        Index("ix_order_notifications_order_type", "order_id", "notification_type", unique=True),
+    )
+
+
 class UserCustomPreset(Base):
     __tablename__ = "user_custom_presets"
 

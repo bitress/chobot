@@ -7,7 +7,7 @@ Features:
 - 16-Character Hex & Variant Encoding for SysBot order accuracy.
 - My Orders: Synced with website database (order_bot_queue), live ETA, Dodo code, cancel button.
 - Live Queues: Real-time SysBot queue viewer with refresh.
-- Presets: Live bundles from https://console.chopaeng.com/api/bundles.
+- Presets: Official and curated bundles with 1-click loading and instant order.
 - Search Catalog: Interactive GUI with item/villager images and multi-select support.
 """
 
@@ -17,16 +17,17 @@ import os
 import re
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 # Add parent directory to path if run standalone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils.config import Config
+from utils.database import connect_db
 from utils.acnh_catalog import ACNHCatalog, CatalogItem, CatalogVillager, generate_full_item_hex
 from utils.sysbot_api import SysBotClient, parse_order_input, _INVALID_DODO_CODES
 
@@ -40,9 +41,14 @@ logging.basicConfig(
 logger = logging.getLogger("Chorder")
 
 # ============================================================================
-# CART DATA MODEL
+# CONSTANTS & DEBOUNCE LOCK
 # ============================================================================
 MAX_POCKET_SLOTS = 40
+_submitting_users: Set[int] = set()
+
+# ============================================================================
+# CART DATA MODEL
+# ============================================================================
 
 
 class CartItem:
@@ -203,14 +209,25 @@ class UserCart:
 
 
 class CartManager:
-    """Manages active user carts."""
+    """Manages active user carts and handles inactivity eviction."""
     def __init__(self):
         self._carts: Dict[int, UserCart] = {}
 
     def get_cart(self, user_id: int) -> UserCart:
         if user_id not in self._carts:
             self._carts[user_id] = UserCart(user_id)
+        self._carts[user_id].last_activity = time.time()
         return self._carts[user_id]
+
+    def cleanup_stale_carts(self, max_age_seconds: float = 7200) -> int:
+        """Evict carts inactive for more than max_age_seconds (default 2 hours)."""
+        now = time.time()
+        stale_keys = [uid for uid, c in self._carts.items() if (now - c.last_activity) > max_age_seconds]
+        for uid in stale_keys:
+            del self._carts[uid]
+        if stale_keys:
+            logger.info(f"[CartManager] Evicted {len(stale_keys)} inactive carts.")
+        return len(stale_keys)
 
 
 cart_manager = CartManager()
@@ -224,6 +241,36 @@ EMBED_COLOR_DEFAULT = 0x2ECC71  # ACNH Green
 EMBED_COLOR_ORDER = 0x3498DB    # Blue
 EMBED_COLOR_WARN = 0xE67E22     # Orange
 EMBED_COLOR_ERROR = 0xE74C3C    # Red
+
+
+def add_chunked_fields(
+    embed: discord.Embed,
+    field_title: str,
+    lines: List[str],
+    max_chars: int = 1000,
+    inline: bool = False,
+):
+    """Safely split long lists into embed fields avoiding Discord's 1024-character field limit."""
+    if not lines:
+        return
+    chunks = []
+    current_chunk: List[str] = []
+    current_len = 0
+    for line in lines:
+        line_len = len(line) + 1
+        if current_len + line_len > max_chars and current_chunk:
+            chunks.append("\n".join(current_chunk))
+            current_chunk = [line]
+            current_len = line_len
+        else:
+            current_chunk.append(line)
+            current_len += line_len
+    if current_chunk:
+        chunks.append("\n".join(current_chunk))
+
+    for idx, chunk in enumerate(chunks):
+        title = field_title if idx == 0 else f"{field_title} (Cont.)"
+        embed.add_field(name=title, value=chunk, inline=inline)
 
 
 def build_panel_embed(island_name: str = "Sinta", is_online: bool = True) -> discord.Embed:
@@ -245,12 +292,12 @@ def build_panel_embed(island_name: str = "Sinta", is_online: bool = True) -> dis
     embed.add_field(
         name="🛒 Quick Guide",
         value=(
-            "• **Add to Cart / View Cart:** Manage your 40 inventory pocket slots.\n"
+            "• **Add to Cart / My Cart:** Manage your 40 inventory pocket slots.\n"
             "• **Search Catalog:** Search items & villagers with multi-select and images.\n"
-            "• **Presets / Bundles:** Load pre-made item bundles in 1 click.\n"
+            "• **Presets / Bundles:** Load curated item sets in 1 click or instant order.\n"
             "• **My Orders:** View real-time queue position, ETA, and your Dodo Code.\n"
             "• **Live Queue:** Check current SysBot island activity.\n"
-            "• **Direct Command:** `!order <item> [villager:id]`"
+            "• **Quick Order:** Paste direct order codes or item lists."
         ),
         inline=False,
     )
@@ -292,7 +339,7 @@ def build_cart_embed(cart: UserCart, user: discord.User | discord.Member) -> dis
     if not cart.items and not cart.villager:
         embed.add_field(
             name="Cart is Empty",
-            value="Your cart is currently empty! Use **Search Catalog** or **Add Item** below to begin.",
+            value="Your cart is currently empty! Use **Browse Catalog** or **Add Item** below to begin.",
             inline=False,
         )
     else:
@@ -303,22 +350,19 @@ def build_cart_embed(cart: UserCart, user: discord.User | discord.Member) -> dis
             cat_badge = f"[{item.category}]"
             lines.append(f"`{i:02d}.` **{item.display_name}**{qty_str} *{cat_badge}*")
 
-        # Split into chunks if too long
-        chunk_text = "\n".join(lines[:20])
-        embed.add_field(name="📦 Pocket Items", value=chunk_text, inline=False)
-        if len(lines) > 20:
-            more_text = "\n".join(lines[20:40])
-            embed.add_field(name="📦 Pocket Items (Continued)", value=more_text, inline=False)
+        # Safely chunk fields under 1024 characters
+        add_chunked_fields(embed, "📦 Pocket Items", lines, max_chars=950)
 
     order_cmd = cart.to_order_string()
     if order_cmd:
+        display_cmd = order_cmd if len(order_cmd) <= 900 else f"{order_cmd[:900]}..."
         embed.add_field(
             name="⚡ SysBot Command String",
-            value=f"```!order {order_cmd[:900]}```",
+            value=f"```!order {display_cmd}```",
             inline=False,
         )
 
-    embed.set_footer(text="Click 'Submit Order' when your pockets are ready to fly!")
+    embed.set_footer(text="🛒 Temporary session • Click 'Submit Order' when ready to fly!")
     return embed
 
 
@@ -343,39 +387,56 @@ class QuickOrderModal(discord.ui.Modal, title="⚡ Quick SysBot Order"):
             await interaction.followup.send("❌ Please enter valid items or a villager to order.", ephemeral=True)
             return
 
-        username = interaction.user.display_name
-        user_id = str(interaction.user.id)
+        parsed_order, parsed_villager = parse_order_input(raw_text)
+        if not parsed_order and not parsed_villager:
+            await interaction.followup.send("❌ Please enter valid items or a villager to order.", ephemeral=True)
+            return
 
-        result = await sysbot.submit_order(
-            username=username,
-            order_text=raw_text,
-            user_id=user_id,
-        )
+        user_id_int = interaction.user.id
+        if user_id_int in _submitting_users:
+            await interaction.followup.send("⏳ An order submission is already in progress. Please wait a moment!", ephemeral=True)
+            return
 
-        if result.get("success") or result.get("order_id"):
-            order_id = result.get("order_id", "Unknown")
-            pos = result.get("queue_position", 1)
-            eta = result.get("estimated_minutes", 2)
-            island = result.get("island_name", "Sinta")
+        _submitting_users.add(user_id_int)
+        try:
+            username = interaction.user.display_name
+            user_id = str(user_id_int)
 
-            embed = discord.Embed(
-                title="✅ Order Submitted to SysBot!",
-                description=(
-                    f"Your order has been placed into the SysBot queue.\n\n"
-                    f"**Order ID:** `{order_id}`\n"
-                    f"**Queue Position:** `#{pos}`\n"
-                    f"**Estimated Time:** `~{eta} min`\n"
-                    f"**Island:** 🏝️ `{island}`\n\n"
-                    f"**Order Payload:**\n```{raw_text}```\n"
-                    f"You will receive your **Dodo Code** when the bot is ready. "
-                    f"Track this anytime via the **My Orders** button!"
-                ),
-                color=EMBED_COLOR_DEFAULT,
+            result = await sysbot.submit_order(
+                username=username,
+                order_text=raw_text,
+                user_id=user_id,
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            err_msg = result.get("error") or "SysBot could not process this order."
-            await interaction.followup.send(f"❌ **Failed to submit order:** {err_msg}", ephemeral=True)
+
+            if result.get("success") or result.get("order_id"):
+                order_id = result.get("order_id", "Unknown")
+                pos = result.get("queue_position", 1)
+                eta = result.get("estimated_minutes", 2)
+                island = result.get("island_name", "Sinta")
+
+                embed = discord.Embed(
+                    title="✅ Order Submitted to SysBot!",
+                    description=(
+                        f"Your order has been placed into the SysBot queue.\n\n"
+                        f"**Order ID:** `{order_id}`\n"
+                        f"**Queue Position:** `#{pos}`\n"
+                        f"**Estimated Time:** `~{eta} min`\n"
+                        f"**Island:** 🏝️ `{island}`\n\n"
+                        f"**Order Payload:**\n```{raw_text[:900]}```\n"
+                        f"You will receive your **Dodo Code** when the bot is ready. "
+                        f"Track this anytime via the **My Orders** button!"
+                    ),
+                    color=EMBED_COLOR_DEFAULT,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                err_msg = result.get("error") or "SysBot could not process this order."
+                await interaction.followup.send(f"❌ **Failed to submit order:** {err_msg}", ephemeral=True)
+        except Exception as exc:
+            logger.exception(f"[QuickOrderModal] Error submitting order: {exc}")
+            await interaction.followup.send("❌ An unexpected error occurred while communicating with SysBot. Please try again.", ephemeral=True)
+        finally:
+            _submitting_users.discard(user_id_int)
 
 
 class AddItemModal(discord.ui.Modal, title="➕ Add Item to Cart"):
@@ -407,18 +468,34 @@ class AddItemModal(discord.ui.Modal, title="➕ Add Item to Cart"):
 
         # Check catalog for image/details
         item_data = catalog.get_item(name_str)
-        if item_data:
-            added = self.cart.add_item(
-                name=item_data.name,
-                quantity=qty,
-                category=item_data.category,
-                image_url=item_data.image_url,
-                variation=item_data.variation,
-                internal_id=item_data.internal_id,
-                diy=item_data.diy,
-            )
-        else:
-            added = self.cart.add_item(name=name_str, quantity=qty)
+        if not item_data:
+            # Check close search matches to prevent unencoded broken tokens
+            matches = catalog.search_items(name_str, limit=3)
+            if matches:
+                suggestions = ", ".join([f"**{m.name}**" for m in matches])
+                await interaction.response.send_message(
+                    f"❌ Could not find exact item '{name_str}'. Did you mean: {suggestions}?\n"
+                    f"Please enter the exact name or use **Browse Catalog** to pick with guaranteed hex encoding.",
+                    ephemeral=True,
+                )
+                return
+            else:
+                await interaction.response.send_message(
+                    f"❌ Item '{name_str}' was not found in the ACNH catalog. Use **Browse Catalog** to search.",
+                    ephemeral=True,
+                )
+                return
+
+        added = self.cart.add_item(
+            name=item_data.name,
+            quantity=qty,
+            category=item_data.category,
+            image_url=item_data.image_url,
+            variation=item_data.variation,
+            variant_id=item_data.variant_id,
+            internal_id=item_data.internal_id,
+            diy=item_data.diy,
+        )
 
         if not added:
             await interaction.response.send_message(
@@ -448,8 +525,22 @@ class SetVillagerModal(discord.ui.Modal, title="🏡 Set Villager for Move-in Pl
         villager = catalog.get_villager(query)
 
         if not villager:
-            # Fallback custom villager
-            villager = CatalogVillager(name=query, villager_id=query)
+            # Suggest close matches rather than inserting an invalid token
+            matches = catalog.search_villagers(query, limit=3)
+            if matches:
+                suggestions = ", ".join([f"**{m.name}** (`{m.villager_id}`)" for m in matches])
+                await interaction.response.send_message(
+                    f"❌ No exact villager found for '{query}'. Did you mean: {suggestions}?\n"
+                    f"Please enter their exact name or ID.",
+                    ephemeral=True,
+                )
+                return
+            else:
+                await interaction.response.send_message(
+                    f"❌ No villager found matching '{query}'. Use **Search Catalog** to browse orderable villagers.",
+                    ephemeral=True,
+                )
+                return
 
         self.cart.set_villager(villager)
         embed = build_cart_embed(self.cart, interaction.user)
@@ -500,7 +591,7 @@ class CatalogSearchView(discord.ui.View):
         self.category = category
         self.items = items if items is not None else catalog.search_items(query, limit=15, category=category)
         self.villagers = villagers if villagers is not None else catalog.search_villagers(query, limit=5)
-
+        self.message: Optional[discord.Message] = None
         self._build_components()
 
     def _build_components(self):
@@ -572,6 +663,16 @@ class CatalogSearchView(discord.ui.View):
         btn_cart.callback = self.on_view_cart
         self.add_item(btn_cart)
 
+    async def on_timeout(self):
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
     def build_search_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title=f"🔍 Catalog Search: '{self.query or 'All'}'",
@@ -582,26 +683,23 @@ class CatalogSearchView(discord.ui.View):
             color=EMBED_COLOR_DEFAULT,
         )
 
-        # Show thumbnail from top match
         if self.villagers and self.villagers[0].photo_url:
             embed.set_thumbnail(url=self.villagers[0].photo_url)
         elif self.items and self.items[0].image_url:
             embed.set_thumbnail(url=self.items[0].image_url)
 
-        # Items listing
         if self.items:
             lines = []
-            for i, it in enumerate(self.items[:10], 1):
+            for i, it in enumerate(self.items[:15], 1):
                 diy_badge = " *(DIY)*" if it.diy else ""
-                lines.append(f"`{i}.` **{it.display_name}**{diy_badge} — `{it.category}`")
-            embed.add_field(name="📦 Matching Items", value="\n".join(lines), inline=False)
+                lines.append(f"`{i:02d}.` **{it.display_name}**{diy_badge} — `{it.category}`")
+            add_chunked_fields(embed, "📦 Matching Items", lines, max_chars=950)
 
-        # Villagers listing
         if self.villagers:
             v_lines = []
             for v in self.villagers[:5]:
                 v_lines.append(f"• **{v.name}** (`ID: {v.villager_id}`) — *{v.species} / {v.personality}*")
-            embed.add_field(name="🏡 Matching Villagers", value="\n".join(v_lines), inline=False)
+            add_chunked_fields(embed, "🏡 Matching Villagers", v_lines, max_chars=950)
 
         if not self.items and not self.villagers:
             embed.description = "❌ No items or villagers found matching that query. Try another keyword!"
@@ -622,6 +720,7 @@ class CatalogSearchView(discord.ui.View):
                     category=it.category,
                     image_url=it.image_url,
                     variation=it.variation,
+                    variant_id=it.variant_id,
                     internal_id=it.internal_id,
                     diy=it.diy,
                 ):
@@ -657,13 +756,14 @@ class CatalogSearchView(discord.ui.View):
 
 
 class BundlesView(discord.ui.View):
-    """Presets and bundles browser from https://console.chopaeng.com/api/bundles."""
+    """Presets and bundles browser with full multi-field support and safe embed chunking."""
 
     def __init__(self, cart: UserCart, bundles: List[Dict[str, Any]]):
         super().__init__(timeout=300)
         self.cart = cart
         self.bundles = bundles
         self.selected_bundle: Optional[Dict[str, Any]] = bundles[0] if bundles else None
+        self.message: Optional[discord.Message] = None
         self._build_components()
 
     def _build_components(self):
@@ -671,10 +771,11 @@ class BundlesView(discord.ui.View):
 
         if self.bundles:
             options = []
-            for idx, b in enumerate(self.bundles[:20]):
-                name = b.get("name", f"Bundle {idx+1}")
+            for idx, b in enumerate(self.bundles[:25]):
+                name = b.get("name") or b.get("title") or f"Bundle {idx+1}"
                 category = b.get("category", "General")
-                items_cnt = len(b.get("orderItems", []))
+                items_list = b.get("orderItems") or b.get("items") or []
+                items_cnt = len(items_list)
                 options.append(
                     discord.SelectOption(
                         label=name[:100],
@@ -721,6 +822,16 @@ class BundlesView(discord.ui.View):
         btn_cart.callback = self.on_view_cart
         self.add_item(btn_cart)
 
+    async def on_timeout(self):
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
     def build_bundle_embed(self) -> discord.Embed:
         if not self.selected_bundle:
             return discord.Embed(
@@ -730,10 +841,10 @@ class BundlesView(discord.ui.View):
             )
 
         b = self.selected_bundle
-        name = b.get("name", "Preset Bundle")
+        name = b.get("name") or b.get("title") or "Preset Bundle"
         desc = b.get("description") or "Official pre-configured ACNH item set."
         category = b.get("category", "Popular")
-        items = b.get("orderItems", [])
+        items = b.get("orderItems") or b.get("items") or []
 
         embed = discord.Embed(
             title=f"📦 Preset: {name}",
@@ -742,22 +853,19 @@ class BundlesView(discord.ui.View):
         )
 
         if items:
-            # Set thumbnail from first item
-            first_img = items[0].get("image")
+            first_img = items[0].get("image") or items[0].get("imageUrl")
             if first_img:
                 embed.set_thumbnail(url=first_img)
 
             lines = []
-            for i, it in enumerate(items[:20], 1):
-                it_name = it.get("name", "Unknown Item")
+            for i, it in enumerate(items, 1):
+                it_name = it.get("name") or "Unknown Item"
                 qty = it.get("quantity", 1)
                 qty_str = f" x{qty}" if qty > 1 else ""
-                lines.append(f"`{i:02d}.` **{it_name}**{qty_str}")
+                var_str = f" ({it.get('variantLabel') or it.get('variation')})" if (it.get('variantLabel') or it.get('variation')) else ""
+                lines.append(f"`{i:02d}.` **{it_name}**{var_str}{qty_str}")
 
-            embed.add_field(name="Item Breakdown", value="\n".join(lines), inline=False)
-            if len(items) > 20:
-                more_lines = [f"`{i:02d}.` **{it.get('name')}**" for i, it in enumerate(items[20:40], 21)]
-                embed.add_field(name="Item Breakdown (Cont.)", value="\n".join(more_lines), inline=False)
+            add_chunked_fields(embed, "Item Breakdown", lines, max_chars=950)
 
         embed.set_footer(text="Click 'Load Bundle to Cart' or 'Instant Order Bundle'")
         return embed
@@ -775,14 +883,25 @@ class BundlesView(discord.ui.View):
             await interaction.response.send_message("❌ No bundle selected.", ephemeral=True)
             return
 
-        items = self.selected_bundle.get("orderItems", [])
+        items = self.selected_bundle.get("orderItems") or self.selected_bundle.get("items") or []
         added_count = 0
         for it in items:
             name = it.get("name")
             qty = it.get("quantity", 1)
             cat = it.get("category", "Items")
-            img = it.get("image", "")
-            if name and self.cart.add_item(name=name, quantity=qty, category=cat, image_url=img):
+            img = it.get("image") or it.get("imageUrl") or ""
+            item_id = it.get("itemId") or it.get("id") or ""
+            variant_id = it.get("variantId") or ""
+            var_label = it.get("variantLabel") or it.get("variation") or ""
+            if name and self.cart.add_item(
+                name=name,
+                quantity=qty,
+                category=cat,
+                image_url=img,
+                variation=var_label,
+                variant_id=variant_id,
+                internal_id=item_id,
+            ):
                 added_count += 1
 
         self._build_components()
@@ -795,40 +914,66 @@ class BundlesView(discord.ui.View):
             await interaction.response.send_message("❌ No bundle selected.", ephemeral=True)
             return
 
+        user_id_int = interaction.user.id
+        if user_id_int in _submitting_users:
+            await interaction.response.send_message("⏳ An order submission is already in progress. Please wait a moment!", ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
-        items = self.selected_bundle.get("orderItems", [])
-        order_parts = []
-        for it in items:
-            name = it.get("name")
-            qty = it.get("quantity", 1)
-            if name:
-                order_parts.append(f"{name} {qty}" if qty > 1 else name)
+        _submitting_users.add(user_id_int)
+        try:
+            items = self.selected_bundle.get("orderItems") or self.selected_bundle.get("items") or []
+            order_parts = []
+            for it in items:
+                name = it.get("name")
+                qty = it.get("quantity", 1)
+                item_id = it.get("itemId") or it.get("id") or ""
+                variant_id = it.get("variantId") or ""
+                cat = it.get("category", "")
+                if item_id:
+                    hex_code = generate_full_item_hex(item_id, variant_id, cat)
+                    if hex_code:
+                        order_parts.extend([hex_code] * qty)
+                        continue
+                if name:
+                    order_parts.append(f"{name} {qty}" if qty > 1 else name)
 
-        raw_cmd = ", ".join(order_parts)
-        result = await sysbot.submit_order(
-            username=interaction.user.display_name,
-            order_text=raw_cmd,
-            user_id=str(interaction.user.id),
-        )
+            all_hex = all(bool(re.match(r"^[0-9A-Fa-f\s]+$", tok)) for tok in order_parts) if order_parts else False
+            raw_cmd = " ".join(order_parts) if all_hex else ", ".join(order_parts)
 
-        if result.get("success") or result.get("order_id"):
-            order_id = result.get("order_id", "Unknown")
-            pos = result.get("queue_position", 1)
-            eta = result.get("estimated_minutes", 2)
-            embed = discord.Embed(
-                title="✅ Bundle Ordered!",
-                description=(
-                    f"**Bundle:** `{self.selected_bundle.get('name')}`\n"
-                    f"**Order ID:** `{order_id}`\n"
-                    f"**Queue Position:** `#{pos}`\n"
-                    f"**Estimated Time:** `~{eta} min`\n\n"
-                    f"Track this order anytime under **My Orders**."
-                ),
-                color=EMBED_COLOR_DEFAULT,
+            result = await sysbot.submit_order(
+                username=interaction.user.display_name,
+                order_text=raw_cmd,
+                user_id=str(user_id_int),
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Failed to order bundle: {result.get('error')}", ephemeral=True)
+
+            if result.get("success") or result.get("order_id"):
+                bundle_name = self.selected_bundle.get("name") or self.selected_bundle.get("title") or "Bundle"
+                order_id = result.get("order_id", "Unknown")
+                pos = result.get("queue_position", 1)
+                eta = result.get("estimated_minutes", 2)
+                island = result.get("island_name", "Sinta")
+                embed = discord.Embed(
+                    title="✅ Bundle Ordered!",
+                    description=(
+                        f"**Bundle:** `{bundle_name}`\n"
+                        f"**Order ID:** `{order_id}`\n"
+                        f"**Queue Position:** `#{pos}`\n"
+                        f"**Estimated Arrival:** `~{eta} min`\n"
+                        f"**Island:** 🏝️ `{island}`\n\n"
+                        f"Track your order status and Dodo Code anytime under **My Orders**."
+                    ),
+                    color=EMBED_COLOR_DEFAULT,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                err = result.get("error") or "Order could not be submitted."
+                await interaction.followup.send(f"❌ **Failed to order bundle:** {err}", ephemeral=True)
+        except Exception as exc:
+            logger.exception(f"[BundlesView] Error instant ordering: {exc}")
+            await interaction.followup.send("❌ An unexpected error occurred while placing the order. Please try again.", ephemeral=True)
+        finally:
+            _submitting_users.discard(user_id_int)
 
     async def on_view_cart(self, interaction: discord.Interaction):
         embed = build_cart_embed(self.cart, interaction.user)
@@ -836,7 +981,39 @@ class BundlesView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=view)
 
 
-# ── Cart View ────────────────────────────────────────────────────────────────
+# ── Cart View & Clear Confirmation View ──────────────────────────────────────
+
+
+class ClearCartConfirmView(discord.ui.View):
+    """Confirmation view to avoid accidental cart wipes."""
+
+    def __init__(self, cart: UserCart):
+        super().__init__(timeout=60)
+        self.cart = cart
+        self.message: Optional[discord.Message] = None
+
+    async def on_timeout(self):
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    @discord.ui.button(label="Yes, Clear Everything", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def btn_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.cart.clear()
+        embed = build_cart_embed(self.cart, interaction.user)
+        view = CartView(self.cart)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="↩️")
+    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = build_cart_embed(self.cart, interaction.user)
+        view = CartView(self.cart)
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
 class CartView(discord.ui.View):
@@ -845,6 +1022,7 @@ class CartView(discord.ui.View):
     def __init__(self, cart: UserCart):
         super().__init__(timeout=300)
         self.cart = cart
+        self.message: Optional[discord.Message] = None
         self._build_components()
 
     def _build_components(self):
@@ -918,48 +1096,70 @@ class CartView(discord.ui.View):
         btn_clear.callback = self.on_clear_cart
         self.add_item(btn_clear)
 
+    async def on_timeout(self):
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
     async def on_submit_order(self, interaction: discord.Interaction):
         if not self.cart.items and not self.cart.villager:
             await interaction.response.send_message("❌ Cart is empty! Add items or a villager before submitting.", ephemeral=True)
             return
 
+        user_id_int = interaction.user.id
+        if user_id_int in _submitting_users:
+            await interaction.response.send_message("⏳ An order submission is already in progress. Please wait a moment!", ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
-        order_cmd = self.cart.to_order_string()
-        username = interaction.user.display_name
-        user_id = str(interaction.user.id)
+        _submitting_users.add(user_id_int)
+        try:
+            order_cmd = self.cart.to_order_string()
+            username = interaction.user.display_name
+            user_id = str(user_id_int)
 
-        result = await sysbot.submit_order(
-            username=username,
-            order_text=order_cmd,
-            user_id=user_id,
-        )
-
-        if result.get("success") or result.get("order_id"):
-            order_id = result.get("order_id", "Unknown")
-            pos = result.get("queue_position", 1)
-            eta = result.get("estimated_minutes", 2)
-            island = result.get("island_name", "Sinta")
-
-            # Clear cart on successful submission
-            self.cart.clear()
-
-            embed = discord.Embed(
-                title="✅ Order Successfully Placed!",
-                description=(
-                    f"Your pocket order has been submitted to **SysBot**!\n\n"
-                    f"**Order ID:** `{order_id}`\n"
-                    f"**Queue Position:** `#{pos}`\n"
-                    f"**Estimated Arrival:** `~{eta} min`\n"
-                    f"**Island:** 🏝️ `{island}`\n\n"
-                    f"**Order Breakdown:**\n```{order_cmd[:900]}```\n"
-                    f"When your order is ready, your **Dodo Code** will appear under **My Orders**."
-                ),
-                color=EMBED_COLOR_DEFAULT,
+            result = await sysbot.submit_order(
+                username=username,
+                order_text=order_cmd,
+                user_id=user_id,
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            err = result.get("error") or "Order could not be submitted."
-            await interaction.followup.send(f"❌ **Submission Failed:** {err}", ephemeral=True)
+
+            if result.get("success") or result.get("order_id"):
+                order_id = result.get("order_id", "Unknown")
+                pos = result.get("queue_position", 1)
+                eta = result.get("estimated_minutes", 2)
+                island = result.get("island_name", "Sinta")
+
+                # Clear cart on successful submission
+                self.cart.clear()
+
+                embed = discord.Embed(
+                    title="✅ Order Successfully Placed!",
+                    description=(
+                        f"Your pocket order has been submitted to **SysBot**!\n\n"
+                        f"**Order ID:** `{order_id}`\n"
+                        f"**Queue Position:** `#{pos}`\n"
+                        f"**Estimated Arrival:** `~{eta} min`\n"
+                        f"**Island:** 🏝️ `{island}`\n\n"
+                        f"**Order Breakdown:**\n```{order_cmd[:900]}```\n"
+                        f"When your order is ready, your **Dodo Code** will appear under **My Orders**."
+                    ),
+                    color=EMBED_COLOR_DEFAULT,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                err = result.get("error") or "Order could not be submitted."
+                await interaction.followup.send(f"❌ **Submission Failed:** {err}", ephemeral=True)
+        except Exception as exc:
+            logger.exception(f"[CartView] Error placing order: {exc}")
+            await interaction.followup.send("❌ An unexpected error occurred while submitting your order. Please try again.", ephemeral=True)
+        finally:
+            _submitting_users.discard(user_id_int)
 
     async def on_add_item(self, interaction: discord.Interaction):
         await interaction.response.send_modal(AddItemModal(self.cart))
@@ -976,10 +1176,17 @@ class CartView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_clear_cart(self, interaction: discord.Interaction):
-        self.cart.clear()
-        self._build_components()
-        embed = build_cart_embed(self.cart, interaction.user)
-        await interaction.response.edit_message(embed=embed, view=self)
+        if not self.cart.items and not self.cart.villager:
+            await interaction.response.send_message("❌ Your cart is already empty.", ephemeral=True)
+            return
+
+        confirm_embed = discord.Embed(
+            title="🧹 Clear Cart Confirmation",
+            description=f"Are you sure you want to clear all **{self.cart.get_pocket_count()}** item(s) from your cart?",
+            color=EMBED_COLOR_WARN,
+        )
+        confirm_view = ClearCartConfirmView(self.cart)
+        await interaction.response.edit_message(embed=confirm_embed, view=confirm_view)
 
     async def on_browse_catalog(self, interaction: discord.Interaction):
         await interaction.response.send_modal(CatalogSearchModal(self.cart))
@@ -996,6 +1203,7 @@ class MyOrdersView(discord.ui.View):
         self.user_id = user_id
         self.username = username
         self.orders = orders
+        self.message: Optional[discord.Message] = None
         self._build_components()
 
     def _build_components(self):
@@ -1015,6 +1223,16 @@ class MyOrdersView(discord.ui.View):
             )
             btn_cancel.callback = self.on_cancel_order
             self.add_item(btn_cancel)
+
+    async def on_timeout(self):
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     def get_active_order(self) -> Optional[Dict[str, Any]]:
         for o in self.orders:
@@ -1053,7 +1271,8 @@ class MyOrdersView(discord.ui.View):
                 val += "\n*Dodo code will appear here once ready.*"
 
             if cmd:
-                val += f"\n**Items:** `{cmd[:300]}`"
+                display_cmd = cmd[:300] + ("..." if len(cmd) > 300 else "")
+                val += f"\n**Items:** `{display_cmd}`"
 
             embed.add_field(name="⚡ Active Order", value=val, inline=False)
         else:
@@ -1064,7 +1283,7 @@ class MyOrdersView(discord.ui.View):
             )
 
         # Past orders history
-        past = [o for o in self.orders if o != active][:5]
+        past = [o for o in self.orders if o != active][:10]
         if past:
             lines = []
             for o in past:
@@ -1072,24 +1291,27 @@ class MyOrdersView(discord.ui.View):
                 ts = o.get("created_at")
                 time_str = f"<t:{ts}:R>" if ts else ""
                 lines.append(f"• `{o.get('id')[:10]}` — `{st}` {time_str}")
-            embed.add_field(name="📜 Recent Order History", value="\n".join(lines), inline=False)
+            add_chunked_fields(embed, "📜 Recent Order History", lines, max_chars=950)
 
-        embed.set_footer(text="Auto-refreshed from SysBot & database")
+        embed.set_footer(text=f"Auto-synced • {time.strftime('%H:%M:%S UTC', time.gmtime())}")
         return embed
 
     async def on_refresh(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        # Fetch latest from DB and check active order status on SysBot
-        self.orders = await sysbot.get_user_order_history(self.user_id, limit=10)
-        active = self.get_active_order()
-        if active and active.get("id"):
-            fresh = await sysbot.get_order_status(active["id"])
-            if fresh.get("status"):
-                active.update(fresh)
+        try:
+            self.orders = await sysbot.get_user_order_history(self.user_id, limit=10)
+            active = self.get_active_order()
+            if active and active.get("id"):
+                fresh = await sysbot.get_order_status(active["id"])
+                if fresh.get("status"):
+                    active.update(fresh)
 
-        self._build_components()
-        embed = self.build_orders_embed()
-        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+            self._build_components()
+            embed = self.build_orders_embed()
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+        except Exception as exc:
+            logger.exception(f"[MyOrdersView] Error refreshing status: {exc}")
+            await interaction.followup.send("❌ Error fetching latest order status.", ephemeral=True)
 
     async def on_cancel_order(self, interaction: discord.Interaction):
         active = self.get_active_order()
@@ -1098,12 +1320,16 @@ class MyOrdersView(discord.ui.View):
             return
 
         await interaction.response.defer(ephemeral=True)
-        res = await sysbot.cancel_order(active["id"])
-        self.orders = await sysbot.get_user_order_history(self.user_id, limit=10)
-        self._build_components()
-        embed = self.build_orders_embed()
-        await interaction.followup.send("✅ Order has been cancelled.", ephemeral=True)
-        await interaction.message.edit(embed=embed, view=self)
+        try:
+            res = await sysbot.cancel_order(active["id"])
+            self.orders = await sysbot.get_user_order_history(self.user_id, limit=10)
+            self._build_components()
+            embed = self.build_orders_embed()
+            await interaction.followup.send("✅ Order has been cancelled.", ephemeral=True)
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+        except Exception as exc:
+            logger.exception(f"[MyOrdersView] Error cancelling order: {exc}")
+            await interaction.followup.send("❌ Could not cancel order. It may have already finished or expired.", ephemeral=True)
 
 
 # ── Live Queue View ──────────────────────────────────────────────────────────
@@ -1116,6 +1342,7 @@ class LiveQueueView(discord.ui.View):
         super().__init__(timeout=180)
         self.queue_data = queue_data
         self.bot_status = bot_status
+        self.message: Optional[discord.Message] = None
         self._build_components()
 
     def _build_components(self):
@@ -1123,6 +1350,16 @@ class LiveQueueView(discord.ui.View):
         btn_refresh = discord.ui.Button(label="Refresh Queue", style=discord.ButtonStyle.primary, emoji="🔄")
         btn_refresh.callback = self.on_refresh
         self.add_item(btn_refresh)
+
+    async def on_timeout(self):
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     def build_queue_embed(self) -> discord.Embed:
         island = self.bot_status.get("island_name", "Sinta")
@@ -1140,15 +1377,15 @@ class LiveQueueView(discord.ui.View):
 
         if orders:
             lines = []
-            for idx, o in enumerate(orders[:10], 1):
+            for idx, o in enumerate(orders[:15], 1):
                 user = o.get("username") or o.get("user") or "Anonymous"
                 st = str(o.get("status") or "queued").upper()
                 eta = o.get("estimated_minutes") or o.get("eta") or 2
                 lines.append(f"`#{idx:02d}` **{user}** — `{st}` (~{eta}m)")
 
-            embed.add_field(name="Current Queue", value="\n".join(lines), inline=False)
-            if len(orders) > 10:
-                embed.add_field(name="Remaining", value=f"*+{len(orders)-10} more in line...*", inline=False)
+            add_chunked_fields(embed, "Current Queue", lines, max_chars=950)
+            if len(orders) > 15:
+                embed.add_field(name="Remaining", value=f"*+{len(orders)-15} more in line...*", inline=False)
         else:
             embed.add_field(
                 name="Queue Empty",
@@ -1156,16 +1393,20 @@ class LiveQueueView(discord.ui.View):
                 inline=False,
             )
 
-        embed.set_footer(text=f"Last updated: {time.strftime('%H:%M:%S UTC')}")
+        embed.set_footer(text=f"Last updated: {time.strftime('%H:%M:%S UTC', time.gmtime())}")
         return embed
 
     async def on_refresh(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        self.queue_data = await sysbot.get_queue()
-        self.bot_status = await sysbot.get_bot_status()
-        self._build_components()
-        embed = self.build_queue_embed()
-        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+        try:
+            self.queue_data = await sysbot.get_queue()
+            self.bot_status = await sysbot.get_bot_status()
+            self._build_components()
+            embed = self.build_queue_embed()
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+        except Exception as exc:
+            logger.exception(f"[LiveQueueView] Error refreshing queue: {exc}")
+            await interaction.followup.send("❌ Error fetching queue data.", ephemeral=True)
 
 
 # ── Main Order Panel View (Channel Deployable) ───────────────────────────────
@@ -1210,11 +1451,15 @@ class OrderPanelView(discord.ui.View):
     )
     async def btn_presets(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        cart = cart_manager.get_cart(interaction.user.id)
-        bundles = await sysbot.get_bundles()
-        view = BundlesView(cart, bundles)
-        embed = view.build_bundle_embed()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        try:
+            cart = cart_manager.get_cart(interaction.user.id)
+            bundles = await sysbot.get_bundles()
+            view = BundlesView(cart, bundles)
+            embed = view.build_bundle_embed()
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except Exception as exc:
+            logger.exception(f"[OrderPanelView] Error loading bundles: {exc}")
+            await interaction.followup.send("❌ Failed to load preset bundles. Please try again later.", ephemeral=True)
 
     @discord.ui.button(
         label="My Orders",
@@ -1225,11 +1470,15 @@ class OrderPanelView(discord.ui.View):
     )
     async def btn_orders(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        user_id = str(interaction.user.id)
-        orders = await sysbot.get_user_order_history(user_id, limit=10)
-        view = MyOrdersView(user_id, interaction.user.display_name, orders)
-        embed = view.build_orders_embed()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        try:
+            user_id = str(interaction.user.id)
+            orders = await sysbot.get_user_order_history(user_id, limit=10)
+            view = MyOrdersView(user_id, interaction.user.display_name, orders)
+            embed = view.build_orders_embed()
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except Exception as exc:
+            logger.exception(f"[OrderPanelView] Error loading orders: {exc}")
+            await interaction.followup.send("❌ Failed to fetch your orders.", ephemeral=True)
 
     @discord.ui.button(
         label="Live Queue",
@@ -1240,11 +1489,15 @@ class OrderPanelView(discord.ui.View):
     )
     async def btn_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        q_data = await sysbot.get_queue()
-        status_data = await sysbot.get_bot_status()
-        view = LiveQueueView(q_data, status_data)
-        embed = view.build_queue_embed()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        try:
+            q_data = await sysbot.get_queue()
+            status_data = await sysbot.get_bot_status()
+            view = LiveQueueView(q_data, status_data)
+            embed = view.build_queue_embed()
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except Exception as exc:
+            logger.exception(f"[OrderPanelView] Error loading queue: {exc}")
+            await interaction.followup.send("❌ Failed to fetch current queue status.", ephemeral=True)
 
     @discord.ui.button(
         label="Quick Order",
@@ -1263,10 +1516,128 @@ class OrderPanelView(discord.ui.View):
 
 
 class ChorderCog(commands.Cog, name="Chorder"):
-    """Cog providing the interactive ACNH SysBot Order Panel."""
+    """Cog providing the interactive ACNH SysBot Order Panel and DM Notification Engine."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.stale_cart_task.start()
+        self.order_dm_notifier_task.start()
+
+    def cog_unload(self):
+        self.stale_cart_task.cancel()
+        self.order_dm_notifier_task.cancel()
+
+    @tasks.loop(minutes=30)
+    async def stale_cart_task(self):
+        """Periodically clean up inactive carts to prevent memory leaks."""
+        try:
+            cart_manager.cleanup_stale_carts(max_age_seconds=7200)
+        except Exception as exc:
+            logger.warning(f"[ChorderCog] Stale cart cleanup encountered: {exc}")
+
+    @stale_cart_task.before_loop
+    async def before_stale_cart_task(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(seconds=12)
+    async def order_dm_notifier_task(self):
+        """
+        Background task to notify users via Discord DM when their order has a Dodo Code ready.
+        Uses the persistent SQLite 'order_notifications' table to guarantee
+        that an order is ONLY notified once, preventing duplicate DMs across bot restarts.
+        """
+        try:
+            # Query recent orders that are ready/active and have a valid Dodo code
+            with connect_db() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, user_id, username, command, island_name, dodo_code, updated_at
+                    FROM order_bot_queue
+                    WHERE status IN ('ready', 'active')
+                      AND dodo_code IS NOT NULL
+                      AND dodo_code NOT IN ('', '00000', '-----', 'null', 'None')
+                      AND id NOT IN (
+                          SELECT order_id FROM order_notifications WHERE notification_type = 'ready'
+                      )
+                    ORDER BY updated_at DESC
+                    LIMIT 20
+                    """
+                ).fetchall()
+
+            for r in rows:
+                order_id = r["id"]
+                user_id_str = str(r["user_id"] or "").strip()
+                dodo = str(r["dodo_code"] or "").strip().upper()
+                island = r["island_name"] or "Sinta"
+                command = r["command"] or ""
+
+                if not user_id_str or not user_id_str.isdigit():
+                    # Record so we don't query invalid user ID again
+                    self._record_notification(order_id, user_id_str, "ready", dodo)
+                    continue
+
+                uid_int = int(user_id_str)
+                user = self.bot.get_user(uid_int)
+                if not user:
+                    try:
+                        user = await self.bot.fetch_user(uid_int)
+                    except Exception:
+                        user = None
+
+                if user:
+                    embed = discord.Embed(
+                        title="✈️ Pack Your Bags! Your ACNH Order is Ready!",
+                        description=(
+                            f"Hello {user.mention}! Your order has been prepared and is ready for pickup on **{island}**.\n\n"
+                            f"🔑 **DODO CODE:**\n```yaml\n{dodo}\n```\n"
+                            f"**Island:** 🏝️ `{island}`\n"
+                            f"**Order ID:** `{order_id}`\n\n"
+                            f"**Pickup Instructions:**\n"
+                            f"1. Head to **Dodo Airlines** on your Nintendo Switch.\n"
+                            f"2. Select **'I want to fly!'** ➔ **'Via online play'** ➔ **'Via Dodo Code™'**.\n"
+                            f"3. Enter the code `{dodo}` above.\n"
+                            f"4. Pick up your items near the airport gates and return home safely!\n"
+                        ),
+                        color=EMBED_COLOR_DEFAULT,
+                    )
+                    if command:
+                        display_cmd = command if len(command) <= 250 else f"{command[:250]}..."
+                        embed.add_field(name="📦 Order Contents", value=f"`{display_cmd}`", inline=False)
+
+                    embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
+                    embed.set_footer(text="ChoPaeng SysBot Delivery • Fly safely!", icon_url="https://nh-cdn.catalogue.ac/NpcIcon/cat23.png")
+
+                    try:
+                        await user.send(embed=embed)
+                        logger.info(f"[ChorderNotifier] Sent Dodo Code DM to {user} ({uid_int}) for order {order_id}.")
+                    except discord.Forbidden:
+                        logger.warning(f"[ChorderNotifier] Could not DM user {uid_int} (DMs closed/disabled).")
+                    except Exception as exc:
+                        logger.warning(f"[ChorderNotifier] Failed to DM user {uid_int}: {exc}")
+
+                # Mark as notified in persistent DB to prevent resending on restarts
+                self._record_notification(order_id, user_id_str, "ready", dodo)
+
+        except Exception as exc:
+            logger.debug(f"[ChorderNotifier] Order DM notifier loop encountered: {exc}")
+
+    def _record_notification(self, order_id: str, user_id: str, notification_type: str, dodo_code: str):
+        """Persist notification record so duplicate DMs are never sent across bot restarts."""
+        try:
+            with connect_db() as conn:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO order_notifications (order_id, user_id, notification_type, dodo_code, sent_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (order_id, user_id, notification_type, dodo_code, int(time.time()))
+                )
+        except Exception as exc:
+            logger.warning(f"[ChorderNotifier] Failed to record notification in DB: {exc}")
+
+    @order_dm_notifier_task.before_loop
+    async def before_order_dm_notifier_task(self):
+        await self.bot.wait_until_ready()
 
     # ── Slash Command: /orderpanel ──────────────────────────────────────────
 
@@ -1275,27 +1646,42 @@ class ChorderCog(commands.Cog, name="Chorder"):
         description="Deploy the interactive ACNH SysBot Order Panel to a channel",
     )
     @app_commands.describe(channel="The channel to deploy the order panel into (defaults to current)")
+    @app_commands.default_permissions(manage_channels=True)
     async def slash_orderpanel(
         self,
         interaction: discord.Interaction,
         channel: Optional[discord.TextChannel] = None,
     ):
+        # Permission check
+        perms = interaction.user.guild_permissions if hasattr(interaction.user, "guild_permissions") else None
+        if perms and not (perms.manage_channels or perms.administrator):
+            await interaction.response.send_message(
+                "❌ You need 'Manage Channels' or Administrator permission to deploy the order panel.",
+                ephemeral=True,
+            )
+            return
+
         target_channel = channel or interaction.channel
         if not target_channel:
             await interaction.response.send_message("❌ Target channel not found.", ephemeral=True)
             return
 
-        bot_status = await sysbot.get_bot_status()
-        island_name = bot_status.get("island_name", getattr(Config, "ORDER_BOT_ISLAND", "Sinta"))
-        is_online = bot_status.get("is_running", True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            bot_status = await sysbot.get_bot_status()
+            island_name = bot_status.get("island_name", getattr(Config, "ORDER_BOT_ISLAND", "Sinta"))
+            is_online = bot_status.get("is_running", True)
 
-        embed = build_panel_embed(island_name, is_online)
-        view = OrderPanelView()
+            embed = build_panel_embed(island_name, is_online)
+            view = OrderPanelView()
 
-        await target_channel.send(embed=embed, view=view)
-        await interaction.response.send_message(
-            f"✅ Order panel deployed to {target_channel.mention}!", ephemeral=True
-        )
+            await target_channel.send(embed=embed, view=view)
+            await interaction.followup.send(
+                f"✅ Order panel deployed to {target_channel.mention}!", ephemeral=True
+            )
+        except Exception as exc:
+            logger.exception(f"[slash_orderpanel] Deployment error: {exc}")
+            await interaction.followup.send("❌ Failed to deploy order panel. Check bot permissions in that channel.", ephemeral=True)
 
 
 # ============================================================================
