@@ -245,11 +245,36 @@ EMBED_COLOR_WARN = 0xE67E22     # Orange
 EMBED_COLOR_ERROR = 0xE74C3C    # Red
 
 
+def resolve_guild_icon(target_or_interaction: Any, bot: Optional[Any] = None) -> Optional[str]:
+    """
+    Safely extract a static PNG guild icon URL that renders properly in Discord
+    embed footers and thumbnails, avoiding broken animated GIF footer rendering.
+    """
+    guild = None
+    if hasattr(target_or_interaction, "icon") and target_or_interaction.icon:
+        guild = target_or_interaction
+    elif hasattr(target_or_interaction, "guild") and target_or_interaction.guild:
+        guild = target_or_interaction.guild
+    elif hasattr(target_or_interaction, "channel") and hasattr(target_or_interaction.channel, "guild"):
+        guild = target_or_interaction.channel.guild
+
+    if not guild and bot and getattr(Config, "GUILD_ID", None):
+        guild = bot.get_guild(Config.GUILD_ID)
+
+    if guild and guild.icon:
+        try:
+            return guild.icon.with_format("png").url
+        except Exception:
+            return guild.icon.url
+
+    return getattr(Config, "DEFAULT_PFP", None)
+
+
 def apply_chopaeng_footer(embed: discord.Embed, guild_icon: Optional[str] = None):
     """Apply the signature ChoPaeng Camp footer and animated line divider."""
     if getattr(Config, "FOOTER_LINE", None):
         embed.set_image(url=Config.FOOTER_LINE)
-    icon = guild_icon or "https://nh-cdn.catalogue.ac/NpcIcon/cat23.png"
+    icon = guild_icon or getattr(Config, "DEFAULT_PFP", None) or "https://nh-cdn.catalogue.ac/NpcIcon/cat23.png"
     embed.set_footer(text="Chopaeng Camp™", icon_url=icon)
 
 
@@ -289,7 +314,7 @@ def build_panel_embed(island_name: str = "Sinta", is_online: bool = True, guild_
     status_text = "Online & Accepting Orders" if is_online else "Offline / Maintenance"
 
     embed = discord.Embed(
-        title="🍃 ChOrder Station",
+        title=f"{Config.EMOJI_SEARCH} ChOrder Station",
         description=(
             f"Welcome to the **ChOrder Bot Order Terminal**! Build custom inventory pockets, "
             f"order dream villagers, and enjoy automated fast delivery directly to your island.\n\n"
@@ -300,7 +325,7 @@ def build_panel_embed(island_name: str = "Sinta", is_online: bool = True, guild_
         color=EMBED_COLOR_DEFAULT if is_online else EMBED_COLOR_WARN,
     )
     embed.add_field(
-        name="🛒 Quick Guide",
+        name=f"{Config.STAR_PINK} Quick Guide",
         value=(
             "• **Add to Cart / My Cart:** Manage your 40 inventory pocket slots.\n"
             "• **Search Catalog:** Search items & villagers with multi-page navigation and images.\n"
@@ -312,7 +337,11 @@ def build_panel_embed(island_name: str = "Sinta", is_online: bool = True, guild_
         ),
         inline=False,
     )
-    embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
+    if guild_icon:
+        embed.set_author(name="ChoPaeng Camp", icon_url=guild_icon)
+        embed.set_thumbnail(url=guild_icon)
+    else:
+        embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
     apply_chopaeng_footer(embed, guild_icon)
     return embed
 
@@ -329,7 +358,7 @@ def build_cart_embed(cart: UserCart, user: Any, guild_icon: Optional[str] = None
     bar_str = "█" * bar_filled + "░" * bar_empty
 
     embed = discord.Embed(
-        title=f"🎒 {uname}'s Cart & Pocket Builder",
+        title=f"{Config.EMOJI_SEARCH} {uname}'s Cart & Pocket Builder",
         description=(
             f"**Pocket Capacity:** `[{bar_str}]` **{slots_used} / {MAX_POCKET_SLOTS} slots** "
             f"({slots_left} remaining)\n"
@@ -339,7 +368,7 @@ def build_cart_embed(cart: UserCart, user: Any, guild_icon: Optional[str] = None
 
     if cart.villager:
         embed.add_field(
-            name="🏡 Selected Villager (Move-in Plot)",
+            name=f"{Config.STAR_PINK} Selected Villager (Move-in Plot)",
             value=f"**{cart.villager.name}** (`ID: {cart.villager.villager_id}`) • *{cart.villager.species} / {cart.villager.personality}*",
             inline=False,
         )
@@ -350,7 +379,7 @@ def build_cart_embed(cart: UserCart, user: Any, guild_icon: Optional[str] = None
 
     if not cart.items and not cart.villager:
         embed.add_field(
-            name="Cart is Empty",
+            name=f"{Config.STAR_PINK} Cart is Empty",
             value="Your cart is currently empty! Use **Browse Catalog** or **Add Item** below to begin.",
             inline=False,
         )
@@ -363,13 +392,13 @@ def build_cart_embed(cart: UserCart, user: Any, guild_icon: Optional[str] = None
             lines.append(f"`{i:02d}.` **{item.display_name}**{qty_str} *{cat_badge}*")
 
         # Safely chunk fields under 1024 characters
-        add_chunked_fields(embed, "📦 Pocket Items", lines, max_chars=950)
+        add_chunked_fields(embed, f"{Config.STAR_PINK} Pocket Items", lines, max_chars=950)
 
     order_cmd = cart.to_order_string()
     if order_cmd:
         display_cmd = order_cmd if len(order_cmd) <= 900 else f"{order_cmd[:900]}..."
         embed.add_field(
-            name="⚡ ChOrder Bot Command String",
+            name=f"{Config.STAR_PINK} ChOrder Bot Command String",
             value=f"```!order {display_cmd}```",
             inline=False,
         )
@@ -790,7 +819,7 @@ class CatalogSearchView(discord.ui.View):
     def build_search_embed(self) -> discord.Embed:
         current_items = self.get_current_page_items()
         embed = discord.Embed(
-            title=f"🔍 Catalog Search: '{self.query or 'All'}'",
+            title=f"{Config.EMOJI_SEARCH} Catalog Search: '{self.query or 'All'}'",
             description=(
                 f"Found **{len(self.items)}** items and **{len(self.villagers)}** villagers.\n"
                 f"**Page:** `{self.page + 1} / {self.total_pages}`\n"
@@ -810,13 +839,13 @@ class CatalogSearchView(discord.ui.View):
             for i, it in enumerate(current_items, start_num):
                 diy_badge = " *(DIY)*" if it.diy else ""
                 lines.append(f"`{i:02d}.` **{it.display_name}**{diy_badge} — `{it.category}`")
-            add_chunked_fields(embed, f"📦 Matching Items (Page {self.page + 1}/{self.total_pages})", lines, max_chars=950)
+            add_chunked_fields(embed, f"{Config.STAR_PINK} Matching Items (Page {self.page + 1}/{self.total_pages})", lines, max_chars=950)
 
         if self.villagers and self.page == 0:
             v_lines = []
             for v in self.villagers[:5]:
                 v_lines.append(f"• **{v.name}** (`ID: {v.villager_id}`) — *{v.species} / {v.personality}*")
-            add_chunked_fields(embed, "🏡 Matching Villagers", v_lines, max_chars=950)
+            add_chunked_fields(embed, f"{Config.STAR_PINK} Matching Villagers (Move-in Plot)", v_lines, max_chars=950)
 
         if not self.items and not self.villagers:
             embed.description = "❌ No items or villagers found matching that query. Try another keyword!"
@@ -972,7 +1001,7 @@ class BundlesView(discord.ui.View):
     def build_bundle_embed(self) -> discord.Embed:
         if not self.selected_bundle:
             embed = discord.Embed(
-                title="📦 Preset Bundles & Curated Sets",
+                title=f"{Config.EMOJI_SEARCH} Preset Bundles & Curated Sets",
                 description=(
                     "Browse official and popular pre-configured item sets!\n\n"
                     "👉 **Please choose a preset bundle from the dropdown menu below** to preview its included items, "
@@ -987,9 +1016,13 @@ class BundlesView(discord.ui.View):
                     cat = b.get("category") or "General"
                     cnt = len(b.get("orderItems") or b.get("items") or [])
                     lines.append(f"`{i:02d}.` **{name}** — *[{cat}] ({cnt} items)*")
-                add_chunked_fields(embed, "Available Presets", lines, max_chars=950)
+                add_chunked_fields(embed, f"{Config.STAR_PINK} Available Presets", lines, max_chars=950)
 
-            embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
+            if self.guild_icon:
+                embed.set_author(name="ChoPaeng Camp", icon_url=self.guild_icon)
+                embed.set_thumbnail(url=self.guild_icon)
+            else:
+                embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
             apply_chopaeng_footer(embed, self.guild_icon)
             return embed
 
@@ -1000,7 +1033,7 @@ class BundlesView(discord.ui.View):
         items = b.get("orderItems") or b.get("items") or []
 
         embed = discord.Embed(
-            title=f"📦 Preset: {name}",
+            title=f"{Config.EMOJI_SEARCH} Preset: {name}",
             description=f"**Category:** `{category}`\n{desc}\n\n**Included Items ({len(items)}):**",
             color=EMBED_COLOR_DEFAULT,
         )
@@ -1018,7 +1051,7 @@ class BundlesView(discord.ui.View):
                 var_str = f" ({it.get('variantLabel') or it.get('variation')})" if (it.get('variantLabel') or it.get('variation')) else ""
                 lines.append(f"`{i:02d}.` **{it_name}**{var_str}{qty_str}")
 
-            add_chunked_fields(embed, "Item Breakdown", lines, max_chars=950)
+            add_chunked_fields(embed, f"{Config.STAR_PINK} Item Breakdown", lines, max_chars=950)
 
         apply_chopaeng_footer(embed, self.guild_icon)
         return embed
@@ -1491,7 +1524,7 @@ class MyOrdersView(discord.ui.View):
 
     def build_orders_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title=f"📋 My Orders — {self.username}",
+            title=f"{Config.EMOJI_SEARCH} My Orders — {self.username}",
             description="Synced with your account and website orders.",
             color=EMBED_COLOR_ORDER,
         )
@@ -1522,10 +1555,10 @@ class MyOrdersView(discord.ui.View):
                 display_cmd = cmd[:300] + ("..." if len(cmd) > 300 else "")
                 val += f"\n**Items:** `{display_cmd}`"
 
-            embed.add_field(name="⚡ Active Order", value=val, inline=False)
+            embed.add_field(name=f"{Config.STAR_PINK} Active Order", value=val, inline=False)
         else:
             embed.add_field(
-                name="No Active Orders",
+                name=f"{Config.STAR_PINK} No Active Orders",
                 value="You do not have any pending orders in the queue.",
                 inline=False,
             )
@@ -1544,7 +1577,7 @@ class MyOrdersView(discord.ui.View):
                     cmd_snip = f" — *`{cmd_snip[:30] + ('...' if len(cmd_snip) > 30 else '')}`*"
                 lines.append(f"{st_badge} `{o.get('id')[:10]}` — `{st}` {time_str}{cmd_snip}")
 
-            history_title = f"📜 Order History (Page {self.page + 1}/{self.total_pages})" if self.total_pages > 1 else "📜 Recent Order History"
+            history_title = f"{Config.STAR_PINK} Order History (Page {self.page + 1}/{self.total_pages})" if self.total_pages > 1 else f"{Config.STAR_PINK} Recent Order History"
             add_chunked_fields(embed, history_title, lines, max_chars=950)
 
         apply_chopaeng_footer(embed, self.guild_icon)
@@ -1641,7 +1674,7 @@ class LiveQueueView(discord.ui.View):
         orders = self.queue_data.get("orders") or self.queue_data.get("queue") or []
 
         embed = discord.Embed(
-            title=f"⏱️ Live Order Queue — {island}",
+            title=f"{Config.EMOJI_SEARCH} Live Order Queue — {island}",
             description=(
                 f"**Island Status:** {'🟢 Online' if is_online else '🔴 Offline'}\n"
                 f"**Orders in Queue:** `{len(orders)}`\n"
@@ -1657,12 +1690,12 @@ class LiveQueueView(discord.ui.View):
                 eta = o.get("estimated_minutes") or o.get("eta") or 2
                 lines.append(f"`#{idx:02d}` **{user}** — `{st}` (~{eta}m)")
 
-            add_chunked_fields(embed, "Current Queue", lines, max_chars=950)
+            add_chunked_fields(embed, f"{Config.STAR_PINK} Current Queue", lines, max_chars=950)
             if len(orders) > 15:
-                embed.add_field(name="Remaining", value=f"*+{len(orders)-15} more in line...*", inline=False)
+                embed.add_field(name=f"{Config.STAR_PINK} Remaining", value=f"*+{len(orders)-15} more in line...*", inline=False)
         else:
             embed.add_field(
-                name="Queue Empty",
+                name=f"{Config.STAR_PINK} Queue Empty",
                 value="No orders in queue! Place an order to be served immediately.",
                 inline=False,
             )
@@ -1695,7 +1728,7 @@ class OrderPanelView(discord.ui.View):
             discord.ui.Button(
                 label="Open Web Builder",
                 style=discord.ButtonStyle.link,
-                url="https://console.chopaeng.com/orderbot",
+                url="https://www.chopaeng.com/order",
                 emoji="🌐",
                 row=2,
             )
@@ -1709,7 +1742,7 @@ class OrderPanelView(discord.ui.View):
         row=0,
     )
     async def btn_cart(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
+        guild_icon = resolve_guild_icon(interaction)
         cart = cart_manager.get_cart(interaction.user.id)
         embed = build_cart_embed(cart, interaction.user, guild_icon)
         view = CartView(cart, guild_icon)
@@ -1723,7 +1756,7 @@ class OrderPanelView(discord.ui.View):
         row=0,
     )
     async def btn_search(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
+        guild_icon = resolve_guild_icon(interaction)
         cart = cart_manager.get_cart(interaction.user.id)
         await interaction.response.send_modal(CatalogSearchModal(cart, guild_icon))
 
@@ -1737,7 +1770,7 @@ class OrderPanelView(discord.ui.View):
     async def btn_presets(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
+            guild_icon = resolve_guild_icon(interaction)
             cart = cart_manager.get_cart(interaction.user.id)
             bundles = await sysbot.get_bundles()
             view = BundlesView(cart, bundles, guild_icon)
@@ -1757,7 +1790,7 @@ class OrderPanelView(discord.ui.View):
     async def btn_orders(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
+            guild_icon = resolve_guild_icon(interaction)
             user_id = str(interaction.user.id)
             orders = await sysbot.get_user_order_history(user_id, limit=50)
             view = MyOrdersView(user_id, interaction.user.display_name, orders, guild_icon=guild_icon)
@@ -1777,7 +1810,7 @@ class OrderPanelView(discord.ui.View):
     async def btn_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            guild_icon = interaction.guild.icon.url if (interaction.guild and interaction.guild.icon) else None
+            guild_icon = resolve_guild_icon(interaction)
             q_data = await sysbot.get_queue()
             status_data = await sysbot.get_bot_status()
             view = LiveQueueView(q_data, status_data, guild_icon)
@@ -1995,6 +2028,85 @@ class ChorderCog(commands.Cog, name="Chorder"):
     async def before_order_dm_notifier_task(self):
         await self.bot.wait_until_ready()
 
+    # ── Slash Command: /catalog ─────────────────────────────────────────────
+
+    async def catalog_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for the /catalog command backed by ACNHCatalog."""
+        if not current or len(current) < 2:
+            return []
+        try:
+            item_hits = catalog.search_items(current, limit=18)
+            villager_hits = catalog.search_villagers(current, limit=7)
+
+            choices: list[app_commands.Choice[str]] = []
+            seen: set[str] = set()
+
+            for item in item_hits:
+                label = item.display_name[:100]
+                if label not in seen:
+                    seen.add(label)
+                    choices.append(app_commands.Choice(name=f"📦 {label}"[:100], value=label))
+
+            for v in villager_hits:
+                label = v.display_name[:100]
+                if label not in seen:
+                    seen.add(label)
+                    choices.append(app_commands.Choice(name=f"🐱 {label}"[:100], value=label))
+
+            return choices[:25]
+        except Exception as exc:
+            logger.warning(f"[ChorderCog] catalog_autocomplete error: {exc}")
+            return []
+
+    @app_commands.command(
+        name="catalog",
+        description="Search the ACNH catalog — browse items, add to cart, or set a villager",
+    )
+    @app_commands.describe(query="Item or villager name to search for")
+    @app_commands.autocomplete(query=catalog_autocomplete)
+    async def slash_catalog(self, interaction: discord.Interaction, query: str = ""):
+        """Interactive ACNH catalog search with pagination and cart integration."""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            guild_icon = resolve_guild_icon(interaction, self.bot)
+            cart = cart_manager.get_cart(interaction.user.id)
+
+            search_query = query.strip()
+            items = catalog.search_items(search_query, limit=100) if search_query else []
+            villagers = catalog.search_villagers(search_query, limit=10) if search_query else []
+
+            if not search_query:
+                # No query given — prompt user to provide a keyword
+                await interaction.followup.send(
+                    "Use the **Search Catalog** button on the Order Panel, or type a keyword with `/catalog <item>`.",
+                    ephemeral=True,
+                )
+                return
+
+            view = CatalogSearchView(
+                cart=cart,
+                query=search_query,
+                items=items,
+                villagers=villagers,
+                page=0,
+                guild_icon=guild_icon,
+            )
+            embed = view.build_search_embed()
+            msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            view.message = msg
+            logger.info(
+                f"[ChorderCog] /catalog '{search_query}' by {interaction.user} → "
+                f"{len(items)} items, {len(villagers)} villagers"
+            )
+        except Exception as exc:
+            logger.exception(f"[ChorderCog] /catalog error: {exc}")
+            await interaction.followup.send(
+                "❌ Failed to search the catalog. Please try again later.", ephemeral=True
+            )
+
     # ── Slash Command: /orderpanel ──────────────────────────────────────────
 
     @app_commands.command(
@@ -2026,7 +2138,7 @@ class ChorderCog(commands.Cog, name="Chorder"):
             bot_status = await sysbot.get_bot_status()
             island_name = bot_status.get("island_name", getattr(Config, "ORDER_BOT_ISLAND", "Sinta"))
             is_online = bot_status.get("is_running", True)
-            guild_icon = target_channel.guild.icon.url if (target_channel.guild and target_channel.guild.icon) else None
+            guild_icon = resolve_guild_icon(target_channel or interaction, self.bot)
 
             embed = build_panel_embed(island_name, is_online, guild_icon=guild_icon)
             view = OrderPanelView()
