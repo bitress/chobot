@@ -4,6 +4,7 @@ Loads and validates all environment variables
 """
 
 import os
+import re
 import logging
 import secrets
 from dotenv import load_dotenv
@@ -177,6 +178,74 @@ class Config:
     # Optional: matches the ApiKey set in SysBot's server.json. Leave blank if no key is configured.
     SYSBOT_API_KEY = os.getenv('SYSBOT_API_KEY', '')
 
+    # Multi-SysBot Port & URL Routing
+    SYSBOT_BASE_PORT = _get_int("SYSBOT_BASE_PORT", 8201)
+    SYSBOT_URL_TEMPLATE = os.getenv("SYSBOT_URL_TEMPLATE", "").strip()
+    SYSBOT_ISLAND_URLS: dict[str, str] = {}
+
+    # Multi-Provider OAuth Settings (Twitch, Patreon, YouTube)
+    DISCORD_LOGIN_ENABLED = os.getenv("DISCORD_LOGIN_ENABLED", "false").lower() in ("true", "1", "yes")
+    TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "")
+    TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET", "")
+    TWITCH_BROADCASTER_ID = os.getenv("TWITCH_BROADCASTER_ID", "")
+    TWITCH_REDIRECT_URI = os.getenv("TWITCH_REDIRECT_URI", "")
+
+    PATREON_CLIENT_ID = os.getenv("PATREON_CLIENT_ID", "")
+    PATREON_CLIENT_SECRET = os.getenv("PATREON_CLIENT_SECRET", "")
+    PATREON_REDIRECT_URI = os.getenv("PATREON_REDIRECT_URI", "")
+
+    YOUTUBE_CLIENT_ID = os.getenv("YOUTUBE_CLIENT_ID", "")
+    YOUTUBE_CLIENT_SECRET = os.getenv("YOUTUBE_CLIENT_SECRET", "")
+    YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "")
+    YOUTUBE_REDIRECT_URI = os.getenv("YOUTUBE_REDIRECT_URI", "")
+
+    # Sequential Island Port Allocation Order (48 islands)
+    ALL_ISLAND_PORT_ORDER = [
+        # 20 Sub Islands (indices 0..19 -> ports 8201..8220)
+        "Hiraya", "Tagumpay", "Bahaghari", "Alapaap", "Bituin",
+        "Lakan", "Galak", "Aruga", "Likha", "Dalisay",
+        "Marahuyo", "Diwa", "Bonita", "Gabay", "Dakila",
+        "Kalangitan", "Malaya", "Pangarap", "Giliw", "Adhika",
+        # 27 Free Islands (indices 20..46 -> ports 8221..8247)
+        "Kakanggata", "Kalawakan", "Kundiman", "Kilig", "Bathala",
+        "Dalangin", "Gunita", "Kaulayaw", "Tala", "Sinagtala",
+        "Tadhana", "Maharlika", "Pagsamo", "Harana", "Pagsuyo",
+        "Matahom", "Paraluman", "Babaylan", "Amihan", "Silakbo",
+        "Dangal", "Kariktan", "Tinig", "Banaag", "Sinag",
+        "Marilag", "Giting",
+        # 1 Order Bot Island (index 47 -> port 8248)
+        "Sinta",
+    ]
+
+    @classmethod
+    def get_island_sysbot_url(cls, island_name: str) -> str:
+        """Resolve the SysBot API endpoint for a given island."""
+        cleaned = re.sub(r"^sub\s+island\s+", "", (island_name or "").strip(), flags=re.IGNORECASE).strip()
+        env_key = f"SYSBOT_API_{cleaned.upper()}"
+        env_val = os.getenv(env_key)
+        if env_val:
+            return env_val.rstrip("/")
+
+        for k, v in cls.SYSBOT_ISLAND_URLS.items():
+            if k.lower() == cleaned.lower():
+                return v.rstrip("/")
+
+        if cls.SYSBOT_URL_TEMPLATE:
+            return cls.SYSBOT_URL_TEMPLATE.format(island=cleaned.lower()).rstrip("/")
+
+        canonical_lower = {name.lower(): idx for idx, name in enumerate(cls.ALL_ISLAND_PORT_ORDER)}
+        idx = canonical_lower.get(cleaned.lower())
+        base_port = int(getattr(cls, "SYSBOT_BASE_PORT", 8201) or 8201)
+        if idx is not None:
+            return f"http://localhost:{base_port + idx}"
+
+        return (getattr(cls, "SYSBOT_API_URL", "http://localhost:5202") or "http://localhost:5202").rstrip("/")
+
+    @classmethod
+    def get_all_island_sysbot_urls(cls) -> dict[str, str]:
+        """Return a mapping of all island names to their SysBot API URLs."""
+        return {name: cls.get_island_sysbot_url(name) for name in cls.ALL_ISLAND_PORT_ORDER}
+
     @classmethod
     def is_order_api_configured(cls) -> bool:
         """Return True if ORDER_API_URL is configured."""
@@ -212,9 +281,18 @@ class Config:
 
     ISLAND_BOT_ROLE_ID = _get_int('ISLAND_BOT_ROLE_ID')
 
-    # Mod roles â€” members with these bypass all island access restrictions.
+    # Mod roles — members with these bypass all island access restrictions.
     SENIOR_MOD_ROLE_ID = _get_int("SENIOR_MOD_ROLE_ID")
     BABY_MOD_ROLE_ID   = _get_int("BABY_MOD_ROLE_ID")
+
+    # Subscription Tier Role IDs (Patreon, Twitch, YouTube)
+    ROLE_CHOSOUP        = _get_int("ROLE_CHOSOUP", 1031974843656192080)
+    ROLE_Y_CHOSOUP      = _get_int("ROLE_Y_CHOSOUP", 1048323845771247681)
+    ROLE_CHOTATO_CLUB   = _get_int("ROLE_CHOTATO_CLUB", 898373041799696454)
+    ROLE_Y_CHOTATO_CLUB = _get_int("ROLE_Y_CHOTATO_CLUB", 1048323845771247679)
+    ROLE_CHOCOLATE      = _get_int("ROLE_CHOCOLATE", 1039516557405081601)
+    ROLE_Y_CHOCOLATE    = _get_int("ROLE_Y_CHOCOLATE", 1048323845771247680)
+    ROLE_CHOFRIES       = _get_int("ROLE_CHOFRIES", 1031974954113179729)
 
 
     # Discord Embed Assets

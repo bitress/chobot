@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import time
+import threading
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
@@ -604,31 +605,67 @@ class SysBotClient:
 
         return await asyncio.to_thread(_query)
 
-    async def get_villagers(self) -> dict:
-        """
-        Fetch the list of villagers currently residing on the island from SysBot.
-        Calls GET /api/villagers.
-        """
-        data, code = await asyncio.to_thread(self._get, "/api/villagers")
+    def get_bot_status_sync(self) -> dict:
+        """Fetch SysBot island and order bot state synchronously."""
+        island_default = getattr(Config, "ORDER_BOT_ISLAND", "Sinta")
+        if not self.base_url or time.monotonic() < self._offline_until:
+            return {
+                "success": False,
+                "error": "SysBot API is not configured." if not self.base_url else "SysBot API is offline.",
+                "island_name": island_default,
+                "is_running": False,
+                "accepting_commands": False,
+                "is_connected": False,
+                "console_stage": "Offline",
+                "is_dodo_valid": False,
+                "is_refreshing_dodo": False,
+                "queue_count": 0,
+            }
+
+        data, code = self._get("/api/status")
+        if not isinstance(data, dict):
+            data = {"success": False, "error": "Invalid response"}
+
+        if code == 200 or data.get("success"):
+            data.setdefault("island_name", island_default)
+            data.setdefault("is_running", True)
+            data.setdefault("accepting_commands", True)
+            data.setdefault("is_connected", True)
+            data.setdefault("console_stage", "Running")
+            dodo = data.get("dodo_code")
+            is_valid_dodo = bool(dodo and str(dodo).strip() not in _INVALID_DODO_CODES)
+            data.setdefault("is_dodo_valid", is_valid_dodo)
+            data.setdefault("is_refreshing_dodo", not is_valid_dodo)
+            data.setdefault("queue_count", 0)
+        else:
+            data.setdefault("is_running", False)
+            data.setdefault("accepting_commands", False)
+            data.setdefault("is_connected", False)
+            data.setdefault("console_stage", "Stopped")
+            data.setdefault("is_dodo_valid", False)
+            data.setdefault("is_refreshing_dodo", False)
+            data.setdefault("island_name", island_default)
+            data.setdefault("queue_count", 0)
+
+        return data
+
+    def get_villagers_sync(self) -> dict:
+        """Fetch current island villagers from SysBot GET /api/villagers."""
+        data, code = self._get("/api/villagers")
         if not isinstance(data, dict):
             return {"success": False, "error": f"Invalid response from SysBot (HTTP {code}).", "villagers": []}
         return data
 
-    async def inject_villagers(
+    async def get_villagers(self) -> dict:
+        """Fetch the list of villagers currently residing on the island from SysBot."""
+        return await asyncio.to_thread(self.get_villagers_sync)
+
+    def inject_villagers_sync(
         self,
         villagers: Union[str, Dict[str, Any], List[Union[str, Dict[str, Any]]]],
         plot: Optional[int] = None,
     ) -> dict:
-        """
-        Inject one or more villagers into island house plots via SysBot POST /api/villagers.
-
-        Accepts:
-          - Single name: inject_villagers("Raymond", plot=1) -> {"villager": "Raymond", "plot": 1}
-          - List of names: inject_villagers(["Raymond", "Marshal"]) -> ["Raymond", "Marshal"]
-          - List of dicts: inject_villagers([{"villager": "Raymond", "plot": 1}, {"name": "Judy", "plot": 2}])
-          - Dict payload: {"villagers": [...]} or {"villager": "Raymond", "plot": 1}
-          - Command string: inject_villagers("!inject Raymond 1")
-        """
+        """Inject one or more villagers into island house plots via SysBot POST /api/villagers."""
         if not villagers:
             return {"success": False, "error": "No villager specified for injection."}
 
@@ -646,7 +683,88 @@ class SysBotClient:
         else:
             payload = str(villagers)
 
-        data, code = await asyncio.to_thread(self._post, "/api/villagers", payload)
+        data, code = self._post("/api/villagers", payload)
+        if not isinstance(data, dict):
+            return {"success": False, "error": f"Invalid response from SysBot (HTTP {code})."}
+        return data
+
+    async def inject_villagers(
+        self,
+        villagers: Union[str, Dict[str, Any], List[Union[str, Dict[str, Any]]]],
+        plot: Optional[int] = None,
+    ) -> dict:
+        """Inject one or more villagers into island house plots via SysBot POST /api/villagers."""
+        return await asyncio.to_thread(self.inject_villagers_sync, villagers, plot)
+
+    def get_events_sync(
+        self,
+        limit: int = 50,
+        since_id: Optional[int] = None,
+        event_type: Optional[str] = None,
+    ) -> dict:
+        """Fetch ring-buffer island events (arrivals, departures, dodos) via GET /api/events."""
+        params: Dict[str, Any] = {"limit": limit}
+        if since_id is not None:
+            params["since_id"] = since_id
+        if event_type:
+            params["type"] = event_type
+
+        data, code = self._get("/api/events", **params)
+        if not isinstance(data, dict):
+            return {"success": False, "error": f"Invalid response from SysBot (HTTP {code}).", "events": []}
+        return data
+
+    async def get_events(
+        self,
+        limit: int = 50,
+        since_id: Optional[int] = None,
+        event_type: Optional[str] = None,
+    ) -> dict:
+        """Fetch ring-buffer island events asynchronously."""
+        return await asyncio.to_thread(self.get_events_sync, limit, since_id, event_type)
+
+    def refresh_dodo_sync(self, delay_seconds: int = 0) -> dict:
+        """Trigger SysBot to reboot game loop and fetch fresh Dodo code via POST /api/dodo/refresh."""
+        payload = {"delay_seconds": max(0, int(delay_seconds))}
+        data, code = self._post("/api/dodo/refresh", payload)
+        if not isinstance(data, dict):
+            return {"success": False, "error": f"Invalid response from SysBot (HTTP {code})."}
+        return data
+
+    async def refresh_dodo(self, delay_seconds: int = 0) -> dict:
+        """Trigger SysBot Dodo refresh asynchronously."""
+        return await asyncio.to_thread(self.refresh_dodo_sync, delay_seconds)
+
+    def click_button_sync(self, button: str = "UNSTICK", count: int = 1, delay_ms: int = 200) -> dict:
+        """Send virtual controller button press via POST /api/click."""
+        payload = {"button": button, "count": count, "delay_ms": delay_ms}
+        data, code = self._post("/api/click", payload)
+        if not isinstance(data, dict):
+            return {"success": False, "error": f"Invalid response from SysBot (HTTP {code})."}
+        return data
+
+    async def click_button(self, button: str = "UNSTICK", count: int = 1, delay_ms: int = 200) -> dict:
+        """Send virtual controller button press asynchronously."""
+        return await asyncio.to_thread(self.click_button_sync, button, count, delay_ms)
+
+    def submit_drop_sync(
+        self,
+        items: Union[str, List[str]],
+        drop_type: str = "items",
+        username: str = "WebUser",
+        count: Optional[int] = None,
+    ) -> dict:
+        """Request items or DIY recipes to be dropped on the ground via SysBot POST /api/drop."""
+        payload: Dict[str, Any] = {"type": drop_type, "username": username}
+        if isinstance(items, list):
+            payload["items"] = items
+        else:
+            payload["items"] = str(items)
+
+        if count is not None:
+            payload["count"] = int(count)
+
+        data, code = self._post("/api/drop", payload)
         if not isinstance(data, dict):
             return {"success": False, "error": f"Invalid response from SysBot (HTTP {code})."}
         return data
@@ -658,47 +776,73 @@ class SysBotClient:
         username: str = "WebUser",
         count: Optional[int] = None,
     ) -> dict:
-        """
-        Request items or DIY recipes to be dropped on the ground via SysBot POST /api/drop.
-        """
-        payload: Dict[str, Any] = {"type": drop_type, "username": username}
-        if isinstance(items, list):
-            payload["items"] = items
-        else:
-            payload["items"] = str(items)
+        """Request items or DIY recipes to be dropped asynchronously."""
+        return await asyncio.to_thread(self.submit_drop_sync, items, drop_type, username, count)
 
-        if count is not None:
-            payload["count"] = int(count)
-
-        data, code = await asyncio.to_thread(self._post, "/api/drop", payload)
+    def submit_clean_sync(self) -> dict:
+        """Clean dropped items synchronously via POST /api/clean."""
+        data, code = self._post("/api/clean", {})
         if not isinstance(data, dict):
             return {"success": False, "error": f"Invalid response from SysBot (HTTP {code})."}
         return data
 
     async def submit_clean(self) -> dict:
-        """
-        Order the bot to pick up (clean) all dropped items on the ground via SysBot POST /api/clean.
-        """
-        data, code = await asyncio.to_thread(self._post, "/api/clean", {})
+        """Order the bot to pick up (clean) all dropped items on the ground via SysBot POST /api/clean."""
+        return await asyncio.to_thread(self.submit_clean_sync)
+
+    def set_turnips_sync(self, price: int = 999999999) -> dict:
+        """Set island turnip stalk market price synchronously via POST /api/turnips."""
+        data, code = self._post("/api/turnips", {"value": int(price)})
         if not isinstance(data, dict):
             return {"success": False, "error": f"Invalid response from SysBot (HTTP {code})."}
         return data
 
     async def set_turnips(self, price: int = 999999999) -> dict:
-        """
-        Set island turnip stalk market price via SysBot POST /api/turnips.
-        """
-        data, code = await asyncio.to_thread(self._post, "/api/turnips", {"value": int(price)})
+        """Set island turnip stalk market price via SysBot POST /api/turnips."""
+        return await asyncio.to_thread(self.set_turnips_sync, price)
+
+    def speak_sync(self, message: str) -> dict:
+        """Send chat message to Switch in-game chat synchronously via POST /api/speak."""
+        data, code = self._post("/api/speak", {"message": str(message)})
         if not isinstance(data, dict):
             return {"success": False, "error": f"Invalid response from SysBot (HTTP {code})."}
         return data
 
     async def speak(self, message: str) -> dict:
-        """
-        Send a chat message to the in-game chat on the Switch via SysBot POST /api/speak.
-        """
-        data, code = await asyncio.to_thread(self._post, "/api/speak", {"message": str(message)})
-        if not isinstance(data, dict):
-            return {"success": False, "error": f"Invalid response from SysBot (HTTP {code})."}
-        return data
+        """Send a chat message to the in-game chat on the Switch via SysBot POST /api/speak."""
+        return await asyncio.to_thread(self.speak_sync, message)
+
+
+# ============================================================================
+# MULTI-ISLAND CLIENT POOL (48 PORTS)
+# ============================================================================
+
+class SysBotClientPool:
+    """Connection pool and resolver for all 48 island SysBot endpoints."""
+
+    def __init__(self):
+        self._clients: Dict[str, SysBotClient] = {}
+        self._lock = threading.Lock()
+
+    def get_client(self, island_name: str, timeout: int = 5) -> SysBotClient:
+        clean = re.sub(r"^sub\s+island\s+", "", (island_name or "").strip(), flags=re.IGNORECASE).strip().title()
+        url = Config.get_island_sysbot_url(clean)
+        cache_key = f"{clean.lower()}:{url}"
+        with self._lock:
+            if cache_key not in self._clients:
+                self._clients[cache_key] = SysBotClient(
+                    base_url=url,
+                    api_key=getattr(Config, "SYSBOT_API_KEY", "") or "",
+                    timeout=timeout,
+                )
+            return self._clients[cache_key]
+
+
+_GLOBAL_CLIENT_POOL = SysBotClientPool()
+
+
+def get_island_sysbot_client(island_name: str, timeout: int = 5) -> SysBotClient:
+    """Obtain a pooled SysBotClient instance for the specified island."""
+    return _GLOBAL_CLIENT_POOL.get_client(island_name, timeout=timeout)
+
 

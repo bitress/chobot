@@ -316,6 +316,11 @@ def run_flask(data_manager: DataManager):
             logger.info("[FLASK] Starting Flask API...")
             record_service_status("flask", mode="api", status="starting")
             set_data_manager(data_manager)
+            try:
+                from utils.sysbot_telemetry import start_telemetry_worker
+                start_telemetry_worker()
+            except Exception as exc:
+                logger.warning(f"[FLASK] Could not start SysBot telemetry worker: {exc}")
             record_service_status("flask", mode="api", status="running")
             run_flask_app(host="0.0.0.0", port=8100)
             if STOP_EVENT.is_set():

@@ -249,6 +249,8 @@ CORS(app, resources={r"/*": {"origins": Config.FRONTEND_ORIGINS}}, supports_cred
 
 # Register the mod-only web dashboard
 app.register_blueprint(dashboard, url_prefix="/dashboard")
+from api.sub_islands import sub_islands_bp
+app.register_blueprint(sub_islands_bp)
 init_dashboard_db()
 record_service_status("flask", mode="api", status="running")
 
@@ -425,6 +427,21 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
         return None
     if not force_refresh and not should_refresh(user):
         return user
+
+    if user.get("provider") != "discord" or not getattr(Config, "DISCORD_LOGIN_ENABLED", False):
+        try:
+            from utils.unified_auth import get_unified_account_by_id
+            unified = get_unified_account_by_id(user.get("user_id"))
+            if unified:
+                for k in ("is_admin", "is_mod"):
+                    if user.get(k):
+                        unified[k] = user[k]
+                update_auth_user(token, unified)
+                return unified
+        except Exception as ex:
+            logger.debug("Unified user refresh note: %s", ex)
+        return user
+
     try:
         refreshed = refresh_user_payload(user)
         update_auth_user(token, refreshed)
@@ -1069,19 +1086,36 @@ def _build_island_response(
         viewer_is_mod,
     )
 
-    raw_dodo = get_file_content(entry.path, "Dodo.txt")
-    visitors, visitor_list = _parse_visitor_list(get_file_content(entry.path, "Visitors.txt"))
+    # Check live SysBot telemetry cache first
+    live_telemetry = None
+    try:
+        from utils.sysbot_telemetry import get_cached_island_telemetry
+        live_telemetry = get_cached_island_telemetry(name, mask_sub_dodo=True)
+    except Exception:
+        live_telemetry = None
 
-    # Determine live status and dodo_code from filesystem
-    if raw_dodo is None:
-        status = "OFFLINE"
-        dodo_code = None
-    elif (raw_dodo or "").strip().upper() in ["00000", "-----", "", "GETTIN'"]:
-        status = "REFRESHING"
-        dodo_code = "GETTIN'" if (raw_dodo or "").strip().upper() == "GETTIN'" else None
-    else:
-        status = "ONLINE"
+    if live_telemetry and live_telemetry.get("is_online"):
+        is_valid = live_telemetry.get("is_dodo_valid")
+        is_refreshing = live_telemetry.get("is_refreshing_dodo")
+        status = "ONLINE" if is_valid else ("REFRESHING" if is_refreshing else "ONLINE")
+        visitors = live_telemetry.get("visitors_count", 0)
+        visitor_list = live_telemetry.get("visitor_list", [])
+        raw_dodo = live_telemetry.get("dodo_code")
         dodo_code = raw_dodo
+    else:
+        raw_dodo = get_file_content(entry.path, "Dodo.txt")
+        visitors, visitor_list = _parse_visitor_list(get_file_content(entry.path, "Visitors.txt"))
+
+        # Determine live status and dodo_code from filesystem
+        if raw_dodo is None:
+            status = "OFFLINE"
+            dodo_code = None
+        elif (raw_dodo or "").strip().upper() in ["00000", "-----", "", "GETTIN'"]:
+            status = "REFRESHING"
+            dodo_code = "GETTIN'" if (raw_dodo or "").strip().upper() == "GETTIN'" else None
+        else:
+            status = "ONLINE"
+            dodo_code = raw_dodo
 
     # Access gating:
     #   Free islands  (DIR_FREE)  → everyone sees the dodo code
@@ -1091,15 +1125,16 @@ def _build_island_response(
     is_sub_island    = _is_member_island(island_cat, island_type)
     is_order_island  = island_type == "Order" or island_cat == "order"
 
-    if is_sub_island and not viewer_has_access:
-        status    = "SUB ONLY"
-        dodo_code = None  # subscriber-only — hide from non-members
+    if is_sub_island:
+        if not viewer_has_access:
+            status = "SUB ONLY"
+        dodo_code = None  # Sub island Dodo codes are strictly hidden; must be explicitly revealed via POST /api/islands/<name>/dodo
     elif is_order_island:
         dodo_code = None  # order dodo is bot-only, never exposed via API
 
-    # When the Discord bot is not confirmed online, zero visitors to avoid stale counts.
-    # Dodo codes are still shown to authorised viewers — the file is ground truth.
-    if not discord_bot_online and status != "REFRESHING":
+    # When Discord bot is offline, check if live SysBot telemetry is active
+    bot_online = bool(discord_bot_online or (live_telemetry and live_telemetry.get("is_online")))
+    if not bot_online and status != "REFRESHING":
         visitors = 0
         visitor_list = []
         if not (is_free_island or viewer_has_access or viewer_is_mod):
@@ -1143,14 +1178,8 @@ ALLOWED_STATUSES = {"ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE"}
 
 @app.route("/api/auth/discord")
 def auth_discord():
-    """Initiate Discord OAuth flow for public website subscribers."""
-    if not Config.DISCORD_CLIENT_ID:
-        return jsonify({"error": "Discord OAuth not configured"}), 503
-    if not Config.GUILD_ID:
-        return jsonify({"error": "GUILD_ID not set"}), 503
-
+    """Initiate Discord OAuth flow for public website subscribers (disabled for now)."""
     return_to = request.args.get("return_to", "")
-    # Whitelist: only allow redirect back to chopaeng.com or localhost
     allowed_hosts = {"www.chopaeng.com", "chopaeng.com", "localhost"}
     try:
         parsed = urllib.parse.urlparse(return_to)
@@ -1158,6 +1187,15 @@ def auth_discord():
             return_to = "https://www.chopaeng.com/auth/callback"
     except Exception:
         return_to = "https://www.chopaeng.com/auth/callback"
+
+    # Discord login is disabled for now (redirects with error, code kept intact below)
+    if not getattr(Config, "DISCORD_LOGIN_ENABLED", False):
+        return redirect(f"{return_to}?error=discord_login_disabled")
+
+    if not Config.DISCORD_CLIENT_ID:
+        return jsonify({"error": "Discord OAuth not configured"}), 503
+    if not Config.GUILD_ID:
+        return jsonify({"error": "GUILD_ID not set"}), 503
 
     state = _secrets.token_hex(16)
     session["sub_oauth_state"] = state
@@ -1312,6 +1350,28 @@ def auth_me():
     user = _current_auth_user(force_refresh=True)
     if not user:
         return jsonify({"logged_in": False}), 200
+
+    from api.sub_islands import get_user_sub_tier
+    from utils.unified_auth import get_unified_account_by_id
+
+    try:
+        unified = get_unified_account_by_id(user.get("user_id"))
+        if unified:
+            for k in ("connected_providers", "connected_accounts", "roles", "email", "provider", "has_password", "is_subscriber", "username"):
+                if unified.get(k) is not None:
+                    user[k] = unified[k]
+            if unified.get("avatar") and not user.get("avatar"):
+                user["avatar"] = unified["avatar"]
+            if unified.get("sub_tier"):
+                user["sub_tier"] = unified["sub_tier"]
+    except Exception as ex:
+        logger.debug("Unified enrich note in auth_me: %s", ex)
+
+    connected = list((user.get("connected_accounts") or {}).keys())
+    provider = user.get("provider", "unified")
+    if provider and provider != "unified" and provider not in connected:
+        connected.append(provider)
+
     return jsonify({
         "logged_in":  True,
         "user_id":    user["user_id"],
@@ -1319,10 +1379,17 @@ def auth_me():
         "discord_name": user.get("discord_name", user["username"]),
         "nickname":   user.get("nickname", ""),
         "joined_at":  user.get("joined_at", ""),
-        "avatar":     user["avatar"],
-        "roles":      user["roles"],
+        "avatar":     user.get("avatar", ""),
+        "roles":      user.get("roles", []),
         "is_admin":   user.get("is_admin", False),
-        "is_mod":     user["is_mod"],
+        "is_mod":     user.get("is_mod", False),
+        "sub_tier":   get_user_sub_tier(user),
+        "connected_providers": connected,
+        "connected_accounts": user.get("connected_accounts", {}),
+        "email":      user.get("email", ""),
+        "provider":   user.get("provider", "native" if user.get("has_password") else "discord"),
+        "has_password": bool(user.get("has_password", False)),
+        "is_subscriber": bool(user.get("is_subscriber", False)),
     })
 
 
@@ -1562,7 +1629,8 @@ def reveal_dodo(name):
 
     # Check for general island access role first
     island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
-    if island_access_role and not is_viewer_admin:
+    is_discord_auth = bool(user.get("provider") == "discord" or "discord" in user.get("connected_providers", []))
+    if island_access_role and not is_viewer_admin and getattr(Config, "DISCORD_LOGIN_ENABLED", True) and is_discord_auth:
         if island_access_role not in set(user.get("roles", [])):
             _log_dodo_reveal_attempt(
                 user,
@@ -1601,20 +1669,32 @@ def reveal_dodo(name):
             "code": "missing_island_channel_role",
         }), 403
 
-    # Find the dodo code from the filesystem
+    # Find the dodo code from SysBot HTTP API telemetry or filesystem
     dodo_code = None
-    for base_dir in [Config.DIR_FREE, Config.DIR_VIP]:
-        if not base_dir or not os.path.exists(base_dir):
-            continue
-        for candidate in [target, name]:
-            path = os.path.join(base_dir, candidate)
-            if os.path.isdir(path):
-                raw = get_file_content(path, "Dodo.txt")
-                if raw and raw not in ["00000", "-----", "", "GETTIN'"]:
-                    dodo_code = raw
+    try:
+        from utils.sysbot_telemetry import _TELEMETRY_CACHE, _CACHE_LOCK
+        with _CACHE_LOCK:
+            t_data = _TELEMETRY_CACHE.get(target.lower())
+            if t_data and t_data.get("raw_dodo"):
+                cand = str(t_data["raw_dodo"]).strip()
+                if cand not in ["00000", "-----", "", "GETTIN'"]:
+                    dodo_code = cand
+    except Exception:
+        pass
+
+    if not dodo_code:
+        for base_dir in [Config.DIR_FREE, Config.DIR_VIP]:
+            if not base_dir or not os.path.exists(base_dir):
+                continue
+            for candidate in [target, name]:
+                path = os.path.join(base_dir, candidate)
+                if os.path.isdir(path):
+                    raw = get_file_content(path, "Dodo.txt")
+                    if raw and raw not in ["00000", "-----", "", "GETTIN'"]:
+                        dodo_code = raw
+                    break
+            if dodo_code:
                 break
-        if dodo_code:
-            break
 
     if not dodo_code:
         _log_dodo_reveal_attempt(user, target, "failed", "dodo_unavailable", channel_id=channel_id)
@@ -2318,7 +2398,104 @@ def get_island_visitors(name):
                         "timestamp":     datetime.now().isoformat(),
                     })
 
+    # Check live SysBot telemetry cache first
+    try:
+        from utils.sysbot_telemetry import get_cached_island_telemetry, _is_sub_island
+        t_data = get_cached_island_telemetry(target)
+        if t_data and t_data.get("is_online"):
+            v_list = t_data.get("visitor_list") or []
+            return jsonify({
+                "island":        target,
+                "type":          "VIP" if _is_sub_island(target) else "Free",
+                "visitor_count": t_data.get("visitors_count", len(v_list)),
+                "visitor_list":  v_list,
+                "bot_online":    True,
+                "timestamp":     datetime.now().isoformat(),
+            })
+    except Exception:
+        pass
+
     return jsonify({"error": f"Island '{name}' not found"}), 404
+
+
+# --- FLIGHT & ACTIVITY LOGGING ROUTES (NO DISCORD) ---
+
+@app.route('/api/flights/live', methods=['GET'])
+def api_live_flights():
+    """Real-time visitor overview across all 48 islands without Discord."""
+    from utils.sysbot_telemetry import get_live_visitor_overview
+    return jsonify(get_live_visitor_overview())
+
+
+@app.route('/api/flights/history', methods=['GET'])
+def api_flight_history():
+    """Historical island visitor arrivals from SQLite island_visits."""
+    from utils.sysbot_telemetry import get_flight_history
+    island = request.args.get("island")
+    ign = request.args.get("ign")
+    limit = int(request.args.get("limit", 50))
+    offset = int(request.args.get("offset", 0))
+    history = get_flight_history(island_name=island, ign=ign, limit=limit, offset=offset)
+    return jsonify({
+        "success": True,
+        "count": len(history),
+        "history": history,
+    })
+
+
+@app.route('/api/islands/<name>/activity', methods=['GET'])
+def api_island_activity(name):
+    """Recent island activity events (arrivals, departures, dodo updates, crashes) without Discord."""
+    from utils.sysbot_telemetry import get_recent_island_events
+    limit = int(request.args.get("limit", 50))
+    event_type = request.args.get("type")
+    events = get_recent_island_events(island_name=name, event_type=event_type, limit=limit)
+    return jsonify({
+        "success": True,
+        "island": name,
+        "count": len(events),
+        "events": events,
+    })
+
+
+@app.route('/api/islands/<name>/dodo/refresh', methods=['POST'])
+def api_refresh_island_dodo(name):
+    """Trigger SysBot to reboot game loop and fetch a fresh Dodo code."""
+    user = _current_auth_user()
+    if not user or not (user.get("is_admin") or user.get("is_mod")):
+        return jsonify({"success": False, "error": "Admin or Moderator access required."}), 403
+
+    from utils.sysbot_api import get_island_sysbot_client
+    delay = int(request.json.get("delay_seconds", 0)) if request.is_json and request.json else 0
+    client = get_island_sysbot_client(name, timeout=5)
+    resp = client.refresh_dodo_sync(delay_seconds=delay)
+    return jsonify(resp)
+
+
+@app.route('/api/islands/<name>/unstick', methods=['POST'])
+def api_unstick_island(name):
+    """Mashes B 5 times on the Switch virtual controller to clear stuck airport dialogues."""
+    user = _current_auth_user()
+    if not user or not (user.get("is_admin") or user.get("is_mod")):
+        return jsonify({"success": False, "error": "Admin or Moderator access required."}), 403
+
+    from utils.sysbot_api import get_island_sysbot_client
+    client = get_island_sysbot_client(name, timeout=5)
+    resp = client.click_button_sync(button="UNSTICK", count=5, delay_ms=200)
+    return jsonify(resp)
+
+
+@app.route('/api/islands/<name>/clean', methods=['POST'])
+def api_clean_island(name):
+    """Triggers SysBot to pick up all dropped items on the ground."""
+    user = _current_auth_user()
+    if not user or not (user.get("is_admin") or user.get("is_mod")):
+        return jsonify({"success": False, "error": "Admin or Moderator access required."}), 403
+
+    from utils.sysbot_api import get_island_sysbot_client
+    client = get_island_sysbot_client(name, timeout=5)
+    resp = client.submit_clean_sync()
+    return jsonify(resp)
 
 
 @app.route("/api/patreon/posts", methods=["GET"])
@@ -3616,30 +3793,7 @@ def order_villagers():
     return jsonify(data), code
 
 
-# ── Sub Island Drop ──────────────────────────────────────────────────────────
 
-@app.route("/api/order/drop-sub", methods=["POST"])
-def drop_sub_island():
-    """Proxy a drop or villager inject command to a specific Sub Island."""
-    auth_user = _current_auth_user()
-    data = request.get_json() or {}
-    island_id = data.get("island_id")
-    island_name = data.get("island_name") or island_id or "Sub Island"
-    command = data.get("command") or ""
-    plot_num = data.get("plot_number")
-
-    if not island_id or not command:
-        return jsonify({"error": "Island and command are required"}), 400
-    if not auth_user:
-        return jsonify({"error": "Unauthorized. Please log in with Discord to access Sub Islands."}), 401
-
-    return jsonify({
-        "success": True,
-        "island_id": island_id,
-        "island_name": island_name,
-        "plot_number": plot_num,
-        "message": f"Drop command dispatched silently to {island_name}! Items ready on island.",
-    })
 
 # ============================================================================
 # COMMUNITY LOADOUTS & CLOUD SYNC API
