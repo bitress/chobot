@@ -685,6 +685,23 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
     # De-duplicate and expand roles
     unique_roles = expand_roles(aggregated_roles)
 
+    try:
+        from utils.discord_membership import _admin_role_ids
+        if bool(set(str(r) for r in unique_roles) & _admin_role_ids()):
+            is_admin = True
+    except Exception:
+        pass
+
+    try:
+        from utils.island_access import is_mod as _check_mod
+        if _check_mod(unique_roles):
+            is_mod = True
+    except Exception:
+        pass
+
+    if is_admin:
+        is_mod = True
+
     discord_id = (
         connected_accounts.get("discord", {}).get("id")
         or (unified_uid if primary_provider == "discord" else None)

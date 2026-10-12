@@ -1455,7 +1455,13 @@ def auth_callback():
                 # User is not in server or guild scope not allowed: log note, but still allow login smoothly!
                 logger.debug(f"Guild member fetch note for {discord_user_id}: {exc}")
 
-        is_admin = bool(member_perms & _ADMINISTRATOR_PERM)
+        try:
+            from utils.discord_membership import _admin_role_ids
+            admin_roles = _admin_role_ids()
+        except Exception:
+            admin_roles = set()
+
+        is_admin = bool(member_perms & _ADMINISTRATOR_PERM) or bool(set(member_roles) & admin_roles)
         is_mod_user = _is_mod(member_roles) or is_admin
 
         # 3. JIT Provision or Link with Unified Accounts
@@ -1505,6 +1511,9 @@ def auth_callback():
                 if v is not None:
                     user_payload[k] = v
             user_payload["user_id"] = unified_user.get("user_id") or discord_user_id
+            # Preserve Discord admin/mod privilege if granted by Discord or DB
+            user_payload["is_admin"] = bool(is_admin or unified_user.get("is_admin"))
+            user_payload["is_mod"] = bool(is_mod_user or unified_user.get("is_mod") or user_payload["is_admin"])
 
         token = make_auth_token(user_payload)
 
@@ -1547,9 +1556,13 @@ def auth_me():
     try:
         unified = get_unified_account_by_id(user.get("user_id"))
         if unified:
-            for k in ("connected_providers", "connected_accounts", "roles", "email", "provider", "has_password", "is_subscriber", "username", "is_admin", "is_mod"):
+            for k in ("connected_providers", "connected_accounts", "roles", "email", "provider", "has_password", "is_subscriber", "username"):
                 if unified.get(k) is not None:
                     user[k] = unified[k]
+            if unified.get("is_admin"):
+                user["is_admin"] = True
+            if unified.get("is_mod"):
+                user["is_mod"] = True
             if unified.get("avatar") and not user.get("avatar"):
                 user["avatar"] = unified["avatar"]
             if unified.get("sub_tier"):
@@ -1559,11 +1572,16 @@ def auth_me():
 
     # Always re-derive is_admin and is_mod live from current roles
     # in case the user was promoted after their last login.
-    current_roles = user.get("roles") or []
-    if current_roles:
-        live_is_admin = user.get("is_admin", False)
-        live_is_mod = _is_mod(current_roles) or bool(live_is_admin)
-        user["is_mod"] = live_is_mod
+    current_roles = [str(r) for r in (user.get("roles") or [])]
+    try:
+        from utils.discord_membership import _admin_role_ids
+        admin_roles = _admin_role_ids()
+    except Exception:
+        admin_roles = set()
+    live_is_admin = bool(user.get("is_admin")) or bool(set(current_roles) & admin_roles)
+    live_is_mod = _is_mod(current_roles) or live_is_admin or bool(user.get("is_mod"))
+    user["is_admin"] = live_is_admin
+    user["is_mod"] = live_is_mod
 
     connected = list((user.get("connected_accounts") or {}).keys())
     provider = user.get("provider", "unified")
