@@ -173,11 +173,11 @@ class SysBotClient:
             return {"success": False, "error": "SysBot API is not configured."}, 503
 
         now = time.monotonic()
-        if path in ("/api/status", "/api/queue") and now < self._offline_until:
+        if path in ("/api/status", "/api/queue", "/api/villagers", "/api/events") and now < self._offline_until:
             return {"success": False, "error": "SysBot API is unreachable or offline."}, 503
 
         url = f"{self.base_url}{path}"
-        timeout_val = (1.5, 3.0) if path in ("/api/status", "/api/queue") else (3.0, float(self.timeout))
+        timeout_val = (1.5, 3.0) if path in ("/api/status", "/api/queue", "/api/villagers", "/api/events") else (3.0, float(self.timeout))
         try:
             resp = self._get_session().get(
                 url,
@@ -190,7 +190,10 @@ class SysBotClient:
             else:
                 self._offline_until = 0.0
             try:
-                return resp.json(), resp.status_code
+                parsed = resp.json()
+                if isinstance(parsed, list):
+                    return ({"success": resp.ok, "villagers": parsed} if path == "/api/villagers" else {"success": resp.ok, "data": parsed}), resp.status_code
+                return parsed, resp.status_code
             except Exception:
                 return {"success": False, "error": f"HTTP {resp.status_code}: non-JSON response"}, resp.status_code
         except (requests.exceptions.ConnectionError, urllib3.exceptions.HTTPError, OSError):

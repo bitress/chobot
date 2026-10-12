@@ -362,21 +362,140 @@ def _scan_villager_dirs(villager_dirs) -> dict:
     return data
 
 
-def _get_villager_map(villager_dirs) -> tuple[dict, str]:
+_SYSBOT_VILLAGERS_CACHE: dict[str, list[str]] = {}
+_SYSBOT_VILLAGERS_CACHE_TIME: float = 0.0
+_SYSBOT_VILLAGERS_CACHE_TTL: float = 60.0
+_SYSBOT_VILLAGERS_LOCK = threading.Lock()
+
+
+def _fetch_island_villagers_from_sysbot(island_name: str) -> list[str]:
+    """Fetch villagers list from an island's SysBot HTTP API."""
+    try:
+        from utils.sysbot_api import get_island_sysbot_client
+        client = get_island_sysbot_client(island_name, timeout=2)
+        resp = client.get_villagers_sync()
+        if isinstance(resp, dict):
+            raw = resp.get("villagers") or resp.get("data") or []
+            if isinstance(raw, list):
+                res = []
+                for item in raw:
+                    if isinstance(item, str) and item.strip():
+                        res.append(item.strip().title())
+                    elif isinstance(item, dict) and item.get("name"):
+                        res.append(str(item["name"]).strip().title())
+                return sorted(list(dict.fromkeys(res)))
+    except Exception as exc:
+        logger.debug("SysBot villagers fetch failed for %s: %s", island_name, exc)
+    return []
+
+
+def _get_sysbot_villagers_manifest(force_refresh: bool = False) -> tuple[dict[str, list[str]], str]:
+    """
+    Query SysBot HTTP APIs for villagers currently residing on each island across all 48 ports.
+    Falls back to disk Villagers.txt if SysBot is offline or returns empty.
+    Results are cached in memory for 60 seconds.
+    """
+    global _SYSBOT_VILLAGERS_CACHE, _SYSBOT_VILLAGERS_CACHE_TIME
+    now = time.time()
+    with _SYSBOT_VILLAGERS_LOCK:
+        if not force_refresh and _SYSBOT_VILLAGERS_CACHE and (now - _SYSBOT_VILLAGERS_CACHE_TIME < _SYSBOT_VILLAGERS_CACHE_TTL):
+            return _SYSBOT_VILLAGERS_CACHE.copy(), "sysbot_api_cache"
+
+    islands = getattr(Config, "ALL_ISLAND_PORT_ORDER", [])
+    if not islands:
+        islands = [
+            "Hiraya", "Tagumpay", "Bahaghari", "Alapaap", "Bituin",
+            "Lakan", "Galak", "Aruga", "Likha", "Dalisay",
+            "Marahuyo", "Diwa", "Bonita", "Gabay", "Dakila",
+            "Kalangitan", "Malaya", "Pangarap", "Giliw", "Adhika"
+        ]
+
+    manifest: dict[str, list[str]] = {}
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        future_to_isl = {executor.submit(_fetch_island_villagers_from_sysbot, isl): isl for isl in islands}
+        for fut in future_to_isl:
+            isl = future_to_isl[fut]
+            try:
+                v_list = fut.result()
+                if v_list:
+                    manifest[isl] = v_list
+            except Exception:
+                pass
+
+    # Filesystem fallback scan for any island where SysBot is offline
+    disk_manifest: dict[str, list[str]] = {}
+    try:
+        raw_disk_map, _ = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR, Config.ORDER_BOT_DIR], skip_sysbot_merge=True)
+        for villager_name, locs in (raw_disk_map or {}).items():
+            for loc in locs.split(", "):
+                loc_clean = loc.strip().title()
+                if loc_clean not in disk_manifest:
+                    disk_manifest[loc_clean] = []
+                disk_manifest[loc_clean].append(villager_name.title())
+    except Exception:
+        pass
+
+    final_manifest: dict[str, list[str]] = {}
+    for isl in islands:
+        isl_title = isl.strip().title()
+        if isl in manifest and manifest[isl]:
+            final_manifest[isl_title] = sorted(manifest[isl])
+        elif isl_title in disk_manifest and disk_manifest[isl_title]:
+            final_manifest[isl_title] = sorted(disk_manifest[isl_title])
+
+    for loc, v_list in disk_manifest.items():
+        if loc not in final_manifest and v_list:
+            final_manifest[loc] = sorted(v_list)
+
+    with _SYSBOT_VILLAGERS_LOCK:
+        _SYSBOT_VILLAGERS_CACHE = final_manifest
+        _SYSBOT_VILLAGERS_CACHE_TIME = now
+
+    return final_manifest.copy(), "sysbot_api"
+
+
+def _get_villager_map(villager_dirs, skip_sysbot_merge: bool = False) -> tuple[dict, str]:
     global _fallback_villager_cache, _fallback_villager_cache_time
     if data_manager is not None:
-        return data_manager.get_villagers(villager_dirs), "data_manager"
+        disk_map = data_manager.get_villagers(villager_dirs)
+        source = "data_manager"
+    else:
+        now = time.time()
+        cache_key = tuple(sorted(p for p in villager_dirs if p))
+        with _fallback_villager_cache_lock:
+            cached = _fallback_villager_cache.get(cache_key)
+            if cached is not None and _fallback_villager_cache_time and now - _fallback_villager_cache_time < _FALLBACK_VILLAGER_CACHE_TTL:
+                disk_map = cached
+                source = "disk_scan"
+            else:
+                disk_map = _scan_villager_dirs(villager_dirs)
+                _fallback_villager_cache[cache_key] = disk_map
+                _fallback_villager_cache_time = now
+                source = "disk_scan"
 
-    now = time.time()
-    cache_key = tuple(sorted(p for p in villager_dirs if p))
-    with _fallback_villager_cache_lock:
-        cached = _fallback_villager_cache.get(cache_key)
-        if cached is not None and _fallback_villager_cache_time and now - _fallback_villager_cache_time < _FALLBACK_VILLAGER_CACHE_TTL:
-            return cached, "disk_scan"
-        scanned = _scan_villager_dirs(villager_dirs)
-        _fallback_villager_cache[cache_key] = scanned
-        _fallback_villager_cache_time = now
-        return scanned, "disk_scan"
+    if skip_sysbot_merge:
+        return disk_map, source
+
+    # Seamlessly merge villagers from live SysBot API
+    merged = dict(disk_map or {})
+    try:
+        manifest, _ = _get_sysbot_villagers_manifest()
+        for isl_name, v_list in manifest.items():
+            for v_name in v_list:
+                key = normalize_text(v_name)
+                if key in merged:
+                    current_locs = [x.strip() for x in merged[key].split(",")]
+                    if isl_name not in current_locs:
+                        merged[key] += f", {isl_name}"
+                else:
+                    merged[key] = isl_name
+        source = "sysbot_api"
+    except Exception:
+        pass
+
+    return merged, source
 
 # ---------------------------------------------------------------------------
 # Auth â€” short-lived opaque tokens for Discord OAuth (website subscribers)
@@ -1059,13 +1178,21 @@ def process_island(entry, island_type):
 def _build_island_response(
     entry,
     island_type,
-    db_island,
+    db_island=None,
     discord_bot_online=None,
     viewer_roles=None,
     viewer_is_mod=False,
+    entry_path=None,
 ):
-    """Build the enriched island response merging live filesystem data with DB metadata."""
-    name = entry.name.upper()
+    """Build the enriched island response merging SysBot API telemetry with DB metadata."""
+    if isinstance(entry, str):
+        name = entry.strip().upper()
+        path = entry_path
+    else:
+        name = entry.name.upper()
+        path = getattr(entry, "path", None) or entry_path
+
+    db_island = db_island or {}
     viewer_roles = [str(role_id) for role_id in (viewer_roles or []) if str(role_id)]
     default_cat = "member" if island_type == "VIP" else "order" if island_type == "Order" else "public"
     island_cat = db_island.get("cat") or default_cat
@@ -1084,13 +1211,14 @@ def _build_island_response(
         viewer_roles,
         required_roles,
         viewer_is_mod,
+        island_name=name,
     )
 
-    # Check live SysBot telemetry cache first
+    # Check live SysBot telemetry cache first (mask_sub_dodo=False so raw dodo is checked; masked below)
     live_telemetry = None
     try:
         from utils.sysbot_telemetry import get_cached_island_telemetry
-        live_telemetry = get_cached_island_telemetry(name, mask_sub_dodo=True)
+        live_telemetry = get_cached_island_telemetry(name, mask_sub_dodo=False)
     except Exception:
         live_telemetry = None
 
@@ -1100,28 +1228,31 @@ def _build_island_response(
         status = "ONLINE" if is_valid else ("REFRESHING" if is_refreshing else "ONLINE")
         visitors = live_telemetry.get("visitors_count", 0)
         visitor_list = live_telemetry.get("visitor_list", [])
-        raw_dodo = live_telemetry.get("dodo_code")
-        dodo_code = raw_dodo
+        raw_dodo = live_telemetry.get("raw_dodo")
+        sysbot_online = True
     else:
-        raw_dodo = get_file_content(entry.path, "Dodo.txt")
-        visitors, visitor_list = _parse_visitor_list(get_file_content(entry.path, "Visitors.txt"))
+        # Fallback to filesystem if available
+        raw_dodo = get_file_content(path, "Dodo.txt") if path and os.path.exists(path) else None
+        visitors, visitor_list = _parse_visitor_list(get_file_content(path, "Visitors.txt")) if path and os.path.exists(path) else (0, [])
 
-        # Determine live status and dodo_code from filesystem
         if raw_dodo is None:
             status = "OFFLINE"
             dodo_code = None
+            sysbot_online = False
         elif (raw_dodo or "").strip().upper() in ["00000", "-----", "", "GETTIN'"]:
             status = "REFRESHING"
             dodo_code = "GETTIN'" if (raw_dodo or "").strip().upper() == "GETTIN'" else None
+            sysbot_online = True
         else:
             status = "ONLINE"
             dodo_code = raw_dodo
+            sysbot_online = True
 
     # Access gating:
-    #   Free islands  (DIR_FREE)  → everyone sees the dodo code
-    #   Sub islands   (DIR_VIP)   → subs, mods, admins only
-    #   Order islands (DIR_ORDER) → mods and admins only
-    is_free_island   = island_type == "Free"
+    #   Free islands  (public) → everyone sees the dodo code
+    #   Sub islands   (member) → subs, mods, admins only (dodo revealed via POST /api/islands/<name>/dodo)
+    #   Order islands (order)  → bot-only, never exposed directly in public islands list
+    is_free_island   = island_type == "Free" or island_cat == "public"
     is_sub_island    = _is_member_island(island_cat, island_type)
     is_order_island  = island_type == "Order" or island_cat == "order"
 
@@ -1131,18 +1262,15 @@ def _build_island_response(
         dodo_code = None  # Sub island Dodo codes are strictly hidden; must be explicitly revealed via POST /api/islands/<name>/dodo
     elif is_order_island:
         dodo_code = None  # order dodo is bot-only, never exposed via API
-
-    # When Discord bot is offline, check if live SysBot telemetry is active
-    bot_online = bool(discord_bot_online or (live_telemetry and live_telemetry.get("is_online")))
-    if not bot_online and status != "REFRESHING":
-        visitors = 0
-        visitor_list = []
-        if not (is_free_island or viewer_has_access or viewer_is_mod):
+    else:
+        if status not in ("ONLINE", "REFRESHING"):
             dodo_code = None
+        else:
+            dodo_code = raw_dodo
 
     return {
         "id":                db_island.get("id", name.lower()),
-        "name":              (db_island.get("display_name") or name),
+        "name":              (db_island.get("display_name") or name.title()),
         "canonical_name":    name,
         "cat":               island_cat,
         "description":       db_island.get("description", ""),
@@ -1155,13 +1283,16 @@ def _build_island_response(
         "status":            status,
         "theme":             db_island.get("theme", "teal"),
         "type":              db_island.get("type") or island_type,
-        "updated_at":        db_island.get("updated_at"),
-        "discord_bot_online": discord_bot_online,
+        "updated_at":        db_island.get("updated_at") or datetime.now().isoformat(),
+        "bot_online":        sysbot_online,
+        "discord_bot_online": sysbot_online,  # Backwards compatibility alias for frontend
+        "source":            "sysbot_api",
         "channel_id":        resolved_channel_id,
         "required_roles":    required_roles,
         "access_source":     access_source,
         "accessible":        viewer_has_access,
         "viewer_has_access": viewer_has_access,
+        "console_stage":     live_telemetry.get("console_stage") if live_telemetry else ("Running" if sysbot_online else "Offline"),
     }
 
 # ============================================================================
@@ -1630,8 +1761,10 @@ def reveal_dodo(name):
     # Check for general island access role first
     island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
     is_discord_auth = bool(user.get("provider") == "discord" or "discord" in user.get("connected_providers", []))
-    if island_access_role and not is_viewer_admin and getattr(Config, "DISCORD_LOGIN_ENABLED", True) and is_discord_auth:
-        if island_access_role not in set(user.get("roles", [])):
+    user_roles_set = set(user.get("roles", []))
+    has_sub_tier = bool(user.get("sub_tier") or any(t in user_roles_set for t in island_access.TIER_NAME_TO_ROLE_ID))
+    if island_access_role and not is_viewer_admin and getattr(Config, "DISCORD_LOGIN_ENABLED", True) and is_discord_auth and not has_sub_tier:
+        if island_access_role not in user_roles_set:
             _log_dodo_reveal_attempt(
                 user,
                 target,
@@ -1650,7 +1783,7 @@ def reveal_dodo(name):
                 "code": "missing_global_island_access_role",
             }), 403
 
-    if not _has_island_access(user.get("roles", []), effective_required_roles, is_viewer_mod):
+    if not _has_island_access(user.get("roles", []), effective_required_roles, is_viewer_mod, island_name=target, user=user):
         _log_dodo_reveal_attempt(
             user,
             target,
@@ -1665,11 +1798,11 @@ def reveal_dodo(name):
             {"reason": "missing_island_channel_role", "channel_id": channel_id},
         )
         return jsonify({
-            "error": "You do not have the Discord role required for this island channel.",
+            "error": "You do not have the required membership tier or role for this island.",
             "code": "missing_island_channel_role",
         }), 403
 
-    # Find the dodo code from SysBot HTTP API telemetry or filesystem
+    # Find the dodo code from SysBot HTTP API telemetry, direct SysBot query, or filesystem
     dodo_code = None
     try:
         from utils.sysbot_telemetry import _TELEMETRY_CACHE, _CACHE_LOCK
@@ -1677,10 +1810,21 @@ def reveal_dodo(name):
             t_data = _TELEMETRY_CACHE.get(target.lower())
             if t_data and t_data.get("raw_dodo"):
                 cand = str(t_data["raw_dodo"]).strip()
-                if cand not in ["00000", "-----", "", "GETTIN'"]:
+                if cand not in ["00000", "-----", "", "GETTIN'", "None", "null"]:
                     dodo_code = cand
     except Exception:
         pass
+
+    if not dodo_code:
+        try:
+            from utils.sysbot_api import get_island_sysbot_client
+            client = get_island_sysbot_client(target, timeout=2)
+            status_data = client.get_bot_status_sync()
+            cand = str(status_data.get("dodo_code") or "").strip()
+            if cand not in ["00000", "-----", "", "GETTIN'", "None", "null"]:
+                dodo_code = cand
+        except Exception:
+            pass
 
     if not dodo_code:
         for base_dir in [Config.DIR_FREE, Config.DIR_VIP]:
@@ -2051,28 +2195,30 @@ def api_find_villager():
 
 @app.route('/api/villagers/list')
 def api_list_villagers_by_island():
-    """List all villagers grouped by island"""
-    villager_map, source = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR, Config.ORDER_BOT_DIR])
-    if not villager_map:
-        return jsonify({"error": "Service unavailable - villager cache is not loaded"}), 503
-
-    island_manifest = {}
-
-    for villager_name, locations in villager_map.items():
-        loc_list = locations.split(", ")
-        for loc in loc_list:
-            if loc not in island_manifest:
-                island_manifest[loc] = []
-            island_manifest[loc].append(villager_name.title())
-
-    for loc in island_manifest:
-        island_manifest[loc].sort()
-
+    """List all villagers grouped by island using SysBot API."""
+    manifest, source = _get_sysbot_villagers_manifest()
     return jsonify({
         "timestamp": datetime.now().isoformat(),
         "source": source,
-        "total_islands": len(island_manifest),
-        "islands": island_manifest
+        "total_islands": len(manifest),
+        "islands": manifest,
+    })
+
+
+@app.route('/api/islands/<name>/villagers', methods=['GET'])
+def api_list_island_villagers(name):
+    """List villagers residing on a specific island via SysBot API."""
+    target = name.strip().title()
+    manifest, source = _get_sysbot_villagers_manifest()
+    villagers = manifest.get(target)
+    if villagers is None:
+        villagers = _fetch_island_villagers_from_sysbot(target)
+    return jsonify({
+        "island": target,
+        "villagers": villagers or [],
+        "count": len(villagers or []),
+        "source": "sysbot_api",
+        "timestamp": datetime.now().isoformat(),
     })
 
 
@@ -2106,15 +2252,21 @@ def api_search_similar():
 
 @app.route('/api/islands', methods=['GET'])
 def get_islands():
-    """Get all island statuses and Dodo codes with full metadata."""
+    """Get all island statuses and Dodo codes with full metadata via SysBot API."""
     viewer = _current_auth_user()
     viewer_roles = viewer.get("roles", []) if viewer else []
     viewer_is_admin = bool(viewer and viewer.get("is_admin"))
     viewer_is_mod = bool(viewer and (viewer.get("is_mod") or viewer_is_admin or _is_mod(viewer_roles)))
 
+    # Ensure background telemetry worker is running across all 48 ports
+    try:
+        from utils.sysbot_telemetry import start_telemetry_worker, _is_sub_island
+        start_telemetry_worker()
+    except Exception as exc:
+        logger.warning(f"Failed to start SysBot telemetry worker: {exc}")
+
     # Load island metadata from DB, keyed by uppercase name
     db_map = {}
-    discord_status = {}
     db = get_db()
     try:
         rows = db.execute(
@@ -2123,7 +2275,6 @@ def get_islands():
         ).fetchall()
         for row in rows:
             isl = row_to_island_dict(dict(row))
-            # Keep frontend gating aligned with reveal endpoint safety logic.
             isl["required_roles"], resolved_channel_id, access_source = _resolved_island_required_roles(
                 isl.get("name"),
                 isl.get("cat"),
@@ -2135,98 +2286,145 @@ def get_islands():
             isl["access_source"] = access_source
             if isl.get("name"):
                 db_map[isl["name"].upper()] = isl
-        # Load Discord bot presence data (ignore records older than 10 minutes)
-        _bot_status_stale_secs = 600
-        _now_ts = time.time()
-        bot_rows = db.execute("SELECT island_id, is_online, updated_at FROM island_bot_status").fetchall()
-        for r in bot_rows:
-            try:
-                from datetime import timezone as _tz
-                updated = datetime.fromisoformat(r["updated_at"]).replace(tzinfo=_tz.utc).timestamp()
-                if _now_ts - updated > _bot_status_stale_secs:
-                    continue  # Stale record — omit so frontend shows unknown
-            except Exception:
-                pass
-            discord_status[r["island_id"]] = bool(r["is_online"])
     except Exception:
         logger.exception("Failed to load island metadata from DB for /api/islands")
     finally:
         db.close()
 
-    results = []
+    # Map of all known islands: name_upper -> dict(name, display_name, type, cat, path, port_index)
+    all_islands: dict[str, dict[str, Any]] = {}
+
+    # 1. Configured 48 ports (canonical port order 8201..8248)
+    port_order = getattr(Config, "ALL_ISLAND_PORT_ORDER", [])
+    order_bot_name = (getattr(Config, "ORDER_BOT_ISLAND", "") or "Sinta").strip().upper()
+
+    for idx, raw_name in enumerate(port_order):
+        name = raw_name.strip().upper()
+        if not name:
+            continue
+        try:
+            from utils.sysbot_telemetry import _is_sub_island
+            is_sub = _is_sub_island(name)
+        except Exception:
+            is_sub = False
+        is_ord = (name == order_bot_name)
+        isl_type = "Order" if is_ord else ("VIP" if is_sub else "Free")
+        isl_cat = "order" if is_ord else ("member" if is_sub else "public")
+        all_islands[name] = {
+            "name": name,
+            "display_name": raw_name.strip(),
+            "type": isl_type,
+            "cat": isl_cat,
+            "path": None,
+            "port_index": idx,
+        }
+
+    # 2. Check disk directories and attach filesystem paths
+    if Config.DIR_VIP and os.path.exists(Config.DIR_VIP):
+        with os.scandir(Config.DIR_VIP) as entries:
+            for entry in entries:
+                if entry.is_dir():
+                    name = entry.name.strip().upper()
+                    if name in all_islands:
+                        all_islands[name]["path"] = entry.path
+                    else:
+                        all_islands[name] = {
+                            "name": name,
+                            "display_name": entry.name.strip(),
+                            "type": "VIP",
+                            "cat": "member",
+                            "path": entry.path,
+                            "port_index": 999,
+                        }
 
     if Config.DIR_FREE and os.path.exists(Config.DIR_FREE):
         with os.scandir(Config.DIR_FREE) as entries:
             for entry in entries:
                 if entry.is_dir():
-                    name = entry.name.upper()
-                    if db_map.get(name, {}).get("is_visible") is False:
-                        continue
-                    results.append(_build_island_response(
-                        entry, "Free", db_map.get(name, {}),
-                        discord_status.get(name.lower()),
-                        viewer_roles,
-                        viewer_is_mod,
-                    ))
-
-    if Config.DIR_VIP and os.path.exists(Config.DIR_VIP):
-        with os.scandir(Config.DIR_VIP) as entries:
-            for entry in entries:
-                if entry.is_dir():
-                    name = entry.name.upper()
-                    if db_map.get(name, {}).get("is_visible") is False:
-                        continue
-                    results.append(_build_island_response(
-                        entry, "VIP", db_map.get(name, {}),
-                        discord_status.get(name.lower()),
-                        viewer_roles,
-                        viewer_is_mod,
-                    ))
+                    name = entry.name.strip().upper()
+                    if name in all_islands:
+                        all_islands[name]["path"] = entry.path
+                    else:
+                        all_islands[name] = {
+                            "name": name,
+                            "display_name": entry.name.strip(),
+                            "type": "Free",
+                            "cat": "public",
+                            "path": entry.path,
+                            "port_index": 999,
+                        }
 
     if Config.DIR_ORDER and os.path.exists(Config.DIR_ORDER):
-        order_entries = []
-        direct_order_files = [
-            os.path.join(Config.DIR_ORDER, "Dodo.txt"),
-            os.path.join(Config.DIR_ORDER, "Visitors.txt"),
-            os.path.join(Config.DIR_ORDER, "Villagers.txt"),
-        ]
-        order_name = Config.ORDER_BOT_ISLAND or os.path.basename(Config.DIR_ORDER)
-        basename_matches = clean_text(os.path.basename(Config.DIR_ORDER)) == clean_text(order_name)
-        if basename_matches or any(os.path.exists(path) for path in direct_order_files):
-            order_entries.append(SimpleNamespace(
-                name=order_name,
-                path=Config.DIR_ORDER,
-            ))
+        order_name = (Config.ORDER_BOT_ISLAND or os.path.basename(Config.DIR_ORDER) or "Sinta").strip().upper()
+        if order_name in all_islands:
+            all_islands[order_name]["path"] = Config.DIR_ORDER
         with os.scandir(Config.DIR_ORDER) as entries:
-            order_entries.extend(entry for entry in entries if entry.is_dir())
-        for entry in order_entries:
-            name = entry.name.upper()
-            default_order_meta = {
-                "id": name.lower(),
-                "name": name,
-                "cat": "order",
-                "type": "Order Bot",
-                "description": "Order bot island. Dodo access is handled in the configured Discord and Twitch channels.",
-                "theme": "teal",
-                "seasonal": "Year-Round",
-                "channel_id": str(Config.ORDER_BOT_CHANNEL_ID or ""),
-                "is_visible": True,
-            }
-            db_meta = {**default_order_meta, **db_map.get(name, {})}
-            if db_meta.get("is_visible") is False:
-                continue
-            results.append(_build_island_response(
-                entry, "Order", db_meta,
-                discord_status.get(name.lower()),
-                viewer_roles,
-                viewer_is_mod,
-            ))
+            for entry in entries:
+                if entry.is_dir():
+                    name = entry.name.strip().upper()
+                    if name in all_islands:
+                        all_islands[name]["path"] = entry.path
+                    else:
+                        all_islands[name] = {
+                            "name": name,
+                            "display_name": entry.name.strip(),
+                            "type": "Order",
+                            "cat": "order",
+                            "path": entry.path,
+                            "port_index": 999,
+                        }
 
-    results.sort(key=lambda x: x['name'])
+    # 3. Incorporate any additional DB islands
+    for name, db_meta in db_map.items():
+        if name not in all_islands:
+            isl_cat = db_meta.get("cat") or "public"
+            isl_type = db_meta.get("type") or ("VIP" if isl_cat == "member" else "Free")
+            all_islands[name] = {
+                "name": name,
+                "display_name": db_meta.get("display_name") or name.title(),
+                "type": isl_type,
+                "cat": isl_cat,
+                "path": None,
+                "port_index": 999,
+            }
+
+    results = []
+    for name, info in all_islands.items():
+        db_meta = db_map.get(name, {})
+        if db_meta.get("is_visible") is False:
+            continue
+
+        merged_meta = {
+            "id": name.lower(),
+            "name": name,
+            "display_name": info["display_name"],
+            "cat": info["cat"],
+            "type": info["type"],
+            **db_meta,
+        }
+
+        entry_obj = SimpleNamespace(name=info["display_name"], path=info["path"]) if info["path"] else SimpleNamespace(name=info["display_name"], path="")
+
+        resp = _build_island_response(
+            entry_obj,
+            info["type"],
+            merged_meta,
+            discord_bot_online=None,
+            viewer_roles=viewer_roles,
+            viewer_is_mod=viewer_is_mod,
+            entry_path=info["path"],
+        )
+        results.append(resp)
+
+    # Sort stably: port order first (if in 48 configured ports), then alphabetically
+    results.sort(key=lambda x: (all_islands.get(x['canonical_name'], {}).get('port_index', 999), x['name']))
+
     return jsonify({
         "meta": {
             "timestamp": datetime.now().isoformat(),
-            "cache_ttl_seconds": _FILE_CACHE_TTL
+            "source": "sysbot_api",
+            "total_islands": len(results),
+            "cache_ttl_seconds": _FILE_CACHE_TTL,
         },
         "data": results,
     })
@@ -2260,11 +2458,15 @@ def api_browser_islands():
             "theme": island.get("theme"),
             "required_role_count": len(island.get("required_roles") or []),
             "accessible": bool(island.get("accessible")),
-            "discord_bot_online": island.get("discord_bot_online"),
+            "bot_online": island.get("bot_online"),
+            "discord_bot_online": island.get("bot_online"),
+            "source": "sysbot_api",
+            "console_stage": island.get("console_stage"),
             "updated_at": island.get("updated_at"),
         })
     return jsonify({
         "timestamp": datetime.now().isoformat(),
+        "source": "sysbot_api",
         "count": len(cards),
         "items": cards,
     })
@@ -2300,12 +2502,20 @@ def get_island_access():
                 island.get("type"),
                 island.get("channel_id"),
             )
-            user_roles = {str(role_id) for role_id in user.get("roles", [])}
+            user_roles = island_access.normalize_roles(user.get("roles", []))
+            if user.get("sub_tier"):
+                user_roles.add(str(user.get("sub_tier")))
             matched = sorted(user_roles & set(required_roles))
             accessible_flag = (
                 str(island.get("id") or "").lower() in accessible_ids
                 or str(island.get("name") or "").upper() in accessible_names
-                or _has_island_access(user.get("roles", []), required_roles, bool(user.get("is_mod") or user.get("is_admin")))
+                or _has_island_access(
+                    user.get("roles", []),
+                    required_roles,
+                    bool(user.get("is_mod") or user.get("is_admin")),
+                    island_name=island.get("name"),
+                    user=user,
+                )
             )
             rows.append({
                 "id": island.get("id"),
@@ -2341,79 +2551,105 @@ def get_island_access():
 
 @app.route('/api/islands/<name>/visitors', methods=['GET'])
 def get_island_visitors(name):
-    """Get the current visitor list for a single island by name.
+    """Get the current visitor list for a single island by name via SysBot API.
 
-    Reads the live Visitors.txt file written by the C# island bot and returns
-    the parsed list of in-game names currently on the island.
-
-    Returns 404 if no island directory with that name is found.
+    Queries SysBot telemetry and live API first, with fallback to Visitors.txt.
+    Returns 404 if the island is completely unknown.
     """
-    target = name.upper()
-
-    # Load bot online status for all islands (same pattern as get_islands)
-    discord_status = {}
-    db = get_db()
-    try:
-        # Load Discord bot presence data (ignore records older than 10 minutes)
-        _bot_status_stale_secs = 600
-        _now_ts = time.time()
-        bot_rows = db.execute("SELECT island_id, is_online, updated_at FROM island_bot_status").fetchall()
-        for r in bot_rows:
-            try:
-                from datetime import timezone as _tz
-                updated = datetime.fromisoformat(r["updated_at"]).replace(tzinfo=_tz.utc).timestamp()
-                if _now_ts - updated > _bot_status_stale_secs:
-                    continue  # Stale record — omit so frontend shows unknown
-            except Exception:
-                pass
-            discord_status[r["island_id"]] = bool(r["is_online"])
-    except Exception:
-        pass
-    finally:
-        db.close()
-
-    # Search Free and VIP directories for a matching island folder
-    for base_dir, island_type in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP")]:
-        if not base_dir or not os.path.exists(base_dir):
-            continue
-        with os.scandir(base_dir) as entries:
-            for entry in entries:
-                if entry.is_dir() and entry.name.upper() == target:
-                    discord_bot_online = discord_status.get(target.lower())
-
-                    raw_content = get_file_content(entry.path, "Visitors.txt")
-                    visitor_count, visitor_list = _parse_visitor_list(raw_content)
-
-                    # Hide live data when the Discord bot is offline
-                    if not discord_bot_online:
-                        visitor_count = 0
-                        visitor_list = []
-
-                    return jsonify({
-                        "island":        target,
-                        "type":          island_type,
-                        "visitor_count": visitor_count,
-                        "visitor_list":  visitor_list,
-                        "bot_online":    discord_bot_online,
-                        "timestamp":     datetime.now().isoformat(),
-                    })
-
-    # Check live SysBot telemetry cache first
+    target = name.strip().upper()
     try:
         from utils.sysbot_telemetry import get_cached_island_telemetry, _is_sub_island
+    except Exception:
+        _is_sub_island = lambda n: False
+        get_cached_island_telemetry = lambda n: None
+
+    # Check live SysBot telemetry cache first
+    t_data = None
+    try:
         t_data = get_cached_island_telemetry(target)
-        if t_data and t_data.get("is_online"):
-            v_list = t_data.get("visitor_list") or []
-            return jsonify({
-                "island":        target,
-                "type":          "VIP" if _is_sub_island(target) else "Free",
-                "visitor_count": t_data.get("visitors_count", len(v_list)),
-                "visitor_list":  v_list,
-                "bot_online":    True,
-                "timestamp":     datetime.now().isoformat(),
-            })
     except Exception:
         pass
+
+    # If telemetry cache doesn't have it or is offline, query SysBot HTTP client directly
+    if not t_data or not t_data.get("is_online"):
+        try:
+            from utils.sysbot_api import get_island_sysbot_client
+            client = get_island_sysbot_client(target, timeout=2)
+            status_data = client.get_bot_status_sync()
+            if status_data.get("is_running") or status_data.get("is_connected"):
+                t_data = {
+                    "visitors_count": status_data.get("visitors_count", len(status_data.get("visitor_list") or [])),
+                    "visitor_list": status_data.get("visitor_list") or [],
+                    "is_online": True,
+                }
+        except Exception:
+            pass
+
+    order_name = (Config.ORDER_BOT_ISLAND or "Sinta").strip().upper()
+    island_type = "Order" if target == order_name else ("VIP" if _is_sub_island(target) else "Free")
+
+    if t_data and t_data.get("is_online"):
+        v_list = t_data.get("visitor_list") or []
+        return jsonify({
+            "island": target,
+            "type": island_type,
+            "visitor_count": t_data.get("visitors_count", len(v_list)),
+            "visitor_list": v_list,
+            "bot_online": True,
+            "discord_bot_online": True,
+            "source": "sysbot_api",
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    # Filesystem fallback: check Free, VIP, and Order directories
+    for base_dir, d_type in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP"), (Config.DIR_ORDER, "Order")]:
+        if not base_dir or not os.path.exists(base_dir):
+            continue
+        direct_files = [os.path.join(base_dir, "Visitors.txt")]
+        if any(os.path.exists(p) for p in direct_files) and clean_text(os.path.basename(base_dir)) == clean_text(target):
+            visitor_count, visitor_list = _parse_visitor_list(get_file_content(base_dir, "Visitors.txt"))
+            return jsonify({
+                "island": target,
+                "type": d_type,
+                "visitor_count": visitor_count,
+                "visitor_list": visitor_list,
+                "bot_online": False,
+                "discord_bot_online": False,
+                "source": "disk_fallback",
+                "timestamp": datetime.now().isoformat(),
+            })
+        try:
+            with os.scandir(base_dir) as entries:
+                for entry in entries:
+                    if entry.is_dir() and entry.name.upper() == target:
+                        raw_content = get_file_content(entry.path, "Visitors.txt")
+                        visitor_count, visitor_list = _parse_visitor_list(raw_content)
+                        return jsonify({
+                            "island": target,
+                            "type": d_type,
+                            "visitor_count": visitor_count,
+                            "visitor_list": visitor_list,
+                            "bot_online": False,
+                            "discord_bot_online": False,
+                            "source": "disk_fallback",
+                            "timestamp": datetime.now().isoformat(),
+                        })
+        except Exception:
+            pass
+
+    # Check if target is among known 48 islands even if offline and no folder exists
+    all_known = [s.strip().upper() for s in getattr(Config, "ALL_ISLAND_PORT_ORDER", [])]
+    if target in all_known:
+        return jsonify({
+            "island": target,
+            "type": island_type,
+            "visitor_count": 0,
+            "visitor_list": [],
+            "bot_online": False,
+            "discord_bot_online": False,
+            "source": "sysbot_api",
+            "timestamp": datetime.now().isoformat(),
+        })
 
     return jsonify({"error": f"Island '{name}' not found"}), 404
 
@@ -2496,6 +2732,136 @@ def api_clean_island(name):
     client = get_island_sysbot_client(name, timeout=5)
     resp = client.submit_clean_sync()
     return jsonify(resp)
+
+
+@app.route('/api/islands/<name>/drop', methods=['POST'])
+def api_island_drop(name):
+    """
+    Drop items on the ground on a specific island via SysBot HTTP API.
+    Body: { "items": "Nook Miles Ticket 9" | [...], "type": "items"|"diy", "username": "..." }
+    """
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in first."}), 401
+
+    clean_name = re.sub(r"^sub\s+island\s+", "", (name or "").strip(), flags=re.IGNORECASE).strip().title()
+
+    # Access check: mod/admin bypass, or user has island access
+    is_viewer_admin = bool(user.get("is_admin"))
+    is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
+    if not is_viewer_mod and not _has_island_access(user.get("roles", []), [], is_viewer_mod, island_name=clean_name, user=user):
+        return jsonify({"success": False, "error": f"You do not have the required membership tier to drop items on {clean_name}."}), 403
+
+    body = request.get_json(silent=True) or {}
+    items = body.get("items") or body.get("item") or ""
+    if not items:
+        cmd = (body.get("command") or "").strip()
+        if cmd.startswith("!drop "):
+            items = cmd[6:].strip()
+        elif cmd.startswith("!drop"):
+            items = cmd[5:].strip()
+        else:
+            return jsonify({"success": False, "error": "Items list or drop command is required."}), 400
+
+    username = body.get("username") or user.get("nickname") or user.get("username") or "WebUser"
+    drop_type = body.get("type") or "items"
+    count = body.get("count")
+
+    from utils.sysbot_api import get_island_sysbot_client
+    client = get_island_sysbot_client(clean_name, timeout=5)
+    resp = client.submit_drop_sync(items=items, drop_type=drop_type, username=username, count=count)
+
+    _record_api_audit_event("island_drop_dispatched", clean_name.upper(), {
+        "user_id": user.get("user_id"),
+        "username": username,
+        "items": str(items)[:100],
+        "success": bool(resp.get("success")),
+    })
+
+    return jsonify({
+        "success": bool(resp.get("success")),
+        "island": clean_name,
+        "message": resp.get("message") or f"Drop request sent to {clean_name}!",
+        "sysbot_response": resp,
+    })
+
+
+@app.route('/api/islands/<name>/villagers/inject', methods=['POST'])
+@app.route('/api/islands/<name>/villager/inject', methods=['POST'])
+def api_island_villager_inject(name):
+    """
+    Inject villager(s) into house plots 0–9 on a specific island via SysBot HTTP API.
+    Body: { "villager": "Raymond", "plot": 0 } or { "villagers": [...], "plot": ... } or { "command": "!mvi ..." }
+    """
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"success": False, "error": "Authentication required. Please log in first."}), 401
+
+    clean_name = re.sub(r"^sub\s+island\s+", "", (name or "").strip(), flags=re.IGNORECASE).strip().title()
+
+    is_viewer_admin = bool(user.get("is_admin"))
+    is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
+    if not is_viewer_mod and not _has_island_access(user.get("roles", []), [], is_viewer_mod, island_name=clean_name, user=user):
+        return jsonify({"success": False, "error": f"You do not have the required membership tier to inject villagers on {clean_name}."}), 403
+
+    body = request.get_json(silent=True) or {}
+    villager = body.get("villager") or body.get("villagers") or body.get("villager_name")
+    plot = body.get("plot") if body.get("plot") is not None else body.get("plot_number")
+    command = (body.get("command") or "").strip()
+
+    if not villager and not command:
+        return jsonify({"success": False, "error": "Villager or injection command is required."}), 400
+
+    from utils.sysbot_api import get_island_sysbot_client
+    client = get_island_sysbot_client(clean_name, timeout=5)
+
+    if command:
+        resp = client.inject_villagers_sync(command)
+    else:
+        resp = client.inject_villagers_sync(villagers=villager, plot=plot)
+
+    # Log to villager_injections_log
+    status_str = "queued" if resp.get("success") else "failed"
+    try:
+        from utils.sysbot_telemetry import ensure_telemetry_schema
+        ensure_telemetry_schema()
+        db = get_db()
+        try:
+            v_name = villager if isinstance(villager, str) else json.dumps(villager)
+            db.execute("""
+                INSERT INTO villager_injections_log
+                (island_name, villager_name, plot_number, requested_by_user_id, status, response_message)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                clean_name,
+                str(v_name or command or ""),
+                int(plot) if plot is not None else 0,
+                str(user.get("user_id") or ""),
+                status_str,
+                str(resp.get("message") or resp.get("error") or ""),
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.debug(f"Audit log error: {exc}")
+
+    _record_api_audit_event("island_villager_inject", clean_name.upper(), {
+        "user_id": user.get("user_id"),
+        "villager": str(villager or command),
+        "plot": plot,
+        "success": bool(resp.get("success")),
+    })
+
+    return jsonify({
+        "success": bool(resp.get("success")),
+        "island": clean_name,
+        "villager": villager,
+        "plot": plot,
+        "message": resp.get("message") or f"Villager injection sent to {clean_name}!",
+        "sysbot_response": resp,
+    })
+
 
 
 @app.route("/api/patreon/posts", methods=["GET"])
@@ -3068,9 +3434,9 @@ def _sysbot_parse_response(resp: requests.Response, method: str, path: str) -> t
     try:
         return resp.json(), resp.status_code
     except (ValueError, requests.exceptions.JSONDecodeError):
-        # Cloudflare sometimes returns HTML error pages (502/503/504)
+        # Cloudflare or local dev servers sometimes return non-JSON / empty responses
         body_preview = resp.text[:200] if resp.text else "(empty)"
-        logger.warning(
+        logger.debug(
             "[SysBot] %s %s returned non-JSON (HTTP %d): %s",
             method, path, resp.status_code, body_preview,
         )
@@ -3656,13 +4022,30 @@ def get_order_dodo():
 def order_drop():
     """
     Proxy POST /api/drop to SysBot.
-    Body: { "items": "Gold nugget 30", "type": "items"|"diy", "username": "..." }
+    Body: { "items": "Gold nugget 30", "type": "items"|"diy", "username": "...", "island": "..." }
     """
     auth_user = _current_auth_user()
     if not auth_user:
         return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
 
-    body = request.get_json() or {}
+    body = request.get_json(silent=True) or {}
+    island_target = body.get("island") or body.get("island_name")
+    if island_target:
+        clean_name = re.sub(r"^sub\s+island\s+", "", str(island_target).strip(), flags=re.IGNORECASE).strip().title()
+        is_viewer_admin = bool(auth_user.get("is_admin"))
+        is_viewer_mod = bool(auth_user.get("is_mod")) or is_viewer_admin
+        if not is_viewer_mod and not _has_island_access(auth_user.get("roles", []), [], is_viewer_mod, island_name=clean_name, user=auth_user):
+            return jsonify({"success": False, "error": f"You do not have access to drop on {clean_name}."}), 403
+
+        from utils.sysbot_api import get_island_sysbot_client
+        client = get_island_sysbot_client(clean_name, timeout=5)
+        items = body.get("items") or body.get("item") or ""
+        username = body.get("username") or auth_user.get("nickname") or auth_user.get("username") or "WebUser"
+        drop_type = body.get("type") or "items"
+        count = body.get("count")
+        result = client.submit_drop_sync(items=items, drop_type=drop_type, username=username, count=count)
+        return jsonify(result), (200 if result.get("success") else 500 if "error" in result else 200)
+
     username = (
         data.get("username")
         if (data := body) and data.get("username")
@@ -3785,6 +4168,25 @@ def order_villagers():
             if not raw_text:
                 return jsonify({"success": False, "error": "Request body is empty."}), 400
             body = {"command": raw_text}
+
+        island_target = body.get("island") or body.get("island_name") if isinstance(body, dict) else None
+        if island_target:
+            clean_name = re.sub(r"^sub\s+island\s+", "", str(island_target).strip(), flags=re.IGNORECASE).strip().title()
+            is_viewer_admin = bool(auth_user.get("is_admin"))
+            is_viewer_mod = bool(auth_user.get("is_mod")) or is_viewer_admin
+            if not is_viewer_mod and not _has_island_access(auth_user.get("roles", []), [], is_viewer_mod, island_name=clean_name, user=auth_user):
+                return jsonify({"success": False, "error": f"You do not have access to inject on {clean_name}."}), 403
+
+            from utils.sysbot_api import get_island_sysbot_client
+            client = get_island_sysbot_client(clean_name, timeout=5)
+            cmd = body.get("command")
+            if cmd:
+                result = client.inject_villagers_sync(cmd)
+            else:
+                vill = body.get("villager") or body.get("villagers") or body.get("villager_name")
+                plot = body.get("plot") if body.get("plot") is not None else body.get("plot_number")
+                result = client.inject_villagers_sync(villagers=vill, plot=plot)
+            return jsonify(result), (200 if result.get("success") else 500 if "error" in result else 200)
 
         result, code = _sysbot_post("/api/villagers", body)
         return jsonify(result), code

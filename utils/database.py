@@ -344,7 +344,9 @@ def _replace_qmarks(sql: str) -> str:
 def _adapt_mysql_ddl(sql: str) -> str:
     if not re.search(r"CREATE\s+TABLE", sql, re.I):
         if re.search(r"CREATE\s+INDEX", sql, re.I):
-            sql = re.sub(r"\s+COLLATE\s+NOCASE", "", sql, flags=re.I)
+            sql = re.sub(r"\s+COLLATE\s+NOCASE ", "", sql, flags=re.I)
+            # Prevent MySQL Error 1071 (max key length 3072 bytes) on unconstrained TEXT columns
+            sql = re.sub(r"\bdestination(?!\s*\(\d+\))\b", "destination(128)", sql, flags=re.I)
         return sql
 
     replacements = [
@@ -358,6 +360,13 @@ def _adapt_mysql_ddl(sql: str) -> str:
         (r"\busername\s+TEXT\s+NOT\s+NULL\b", "username VARCHAR(255) NOT NULL"),
         (r"\busername\s+TEXT\b", "username VARCHAR(255)"),
         (r"\bisland_id\s+TEXT\s+NOT\s+NULL\b", "island_id VARCHAR(64) NOT NULL"),
+        (r"\bisland_name\s+TEXT\s+NOT\s+NULL\b", "island_name VARCHAR(128) NOT NULL"),
+        (r"\bisland_name\s+TEXT\b", "island_name VARCHAR(128)"),
+        (r"\bevent_type\s+TEXT\s+NOT\s+NULL\b", "event_type VARCHAR(64) NOT NULL"),
+        (r"\bvillager_name\s+TEXT\s+NOT\s+NULL\b", "villager_name VARCHAR(128) NOT NULL"),
+        (r"\bdestination\s+TEXT\s+NOT\s+NULL\b", "destination VARCHAR(255) NOT NULL"),
+        (r"\borigin_island\s+TEXT\s+NOT\s+NULL\b", "origin_island VARCHAR(255) NOT NULL"),
+        (r"\bign\s+TEXT\s+NOT\s+NULL\b", "ign VARCHAR(255) NOT NULL"),
         (r"\bname\s+TEXT\s+PRIMARY\s+KEY\b", "name VARCHAR(255) PRIMARY KEY"),
         (r"\bkey\s+TEXT\s+PRIMARY\s+KEY\b", "`key` VARCHAR(255) PRIMARY KEY"),
         (r"\bisland_id\s+TEXT\s+PRIMARY\s+KEY\b", "island_id VARCHAR(255) PRIMARY KEY"),

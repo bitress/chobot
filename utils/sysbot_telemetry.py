@@ -41,38 +41,48 @@ def ensure_telemetry_schema() -> None:
             CREATE TABLE IF NOT EXISTS island_events_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id INTEGER,
-                island_name TEXT NOT NULL,
-                event_type TEXT NOT NULL,
+                island_name VARCHAR(128) NOT NULL,
+                event_type VARCHAR(64) NOT NULL,
                 message TEXT NOT NULL,
-                player TEXT,
-                origin_island TEXT,
-                dodo_code TEXT,
-                network_id TEXT,
+                player VARCHAR(128),
+                origin_island VARCHAR(128),
+                dodo_code VARCHAR(16),
+                network_id VARCHAR(64),
                 timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS ix_island_events_name_ts ON island_events_log(island_name, timestamp);")
-        conn.execute("CREATE INDEX IF NOT EXISTS ix_island_events_type ON island_events_log(event_type);")
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_island_events_name_ts ON island_events_log(island_name, timestamp);")
+        except Exception as exc:
+            logger.debug("Telemetry index note (island_events_name_ts): %s", exc)
+
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_island_events_type ON island_events_log(event_type);")
+        except Exception as exc:
+            logger.debug("Telemetry index note (island_events_type): %s", exc)
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS villager_injections_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                island_name TEXT NOT NULL,
-                villager_name TEXT NOT NULL,
+                island_name VARCHAR(128) NOT NULL,
+                villager_name VARCHAR(128) NOT NULL,
                 plot_number INTEGER NOT NULL,
-                requested_by_user_id TEXT,
-                status TEXT NOT NULL DEFAULT 'queued',
+                requested_by_user_id VARCHAR(64),
+                status VARCHAR(32) NOT NULL DEFAULT 'queued',
                 response_message TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS ix_villager_inj_island_ts ON villager_injections_log(island_name, created_at);")
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_villager_inj_island_ts ON villager_injections_log(island_name, created_at);")
+        except Exception as exc:
+            logger.debug("Telemetry index note (villager_inj_island_ts): %s", exc)
 
         # Ensure island_visits has destination and timestamp index
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_island_visits_dest_ts ON island_visits(destination, timestamp);")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Telemetry index note (island_visits_dest_ts): %s", exc)
 
     _DB_INITIALIZED = True
 

@@ -146,13 +146,8 @@ def _user_has_island_access(user: Optional[Dict[str, Any]], island_name: str) ->
     """Check whether a user has access to a specific sub island."""
     if not user:
         return False
-    if user.get("is_admin") or user.get("is_mod"):
-        return True
-
-    clean_name = _clean_island_name(island_name)
-    allowed_tiers = SUB_ISLAND_ACCESS_MATRIX.get(clean_name, [])
-    user_roles = _normalize_user_roles(user.get("roles", []))
-    return bool(set(allowed_tiers) & user_roles)
+    from utils.island_access import has_island_access
+    return has_island_access(user.get("roles", []), [], False, island_name=island_name, user=user)
 
 
 # ============================================================================

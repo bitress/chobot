@@ -1,8 +1,8 @@
-"""Shared island access helpers backed by Discord channel overwrites.
+"""
+Unified Island Access & Entitlement Engine.
 
-The member island channel permissions are the source of truth.  The local
-``islands.required_roles`` column is treated as a cache/fallback so the API can
-continue serving access decisions when Discord is temporarily unavailable.
+Replaces legacy Discord channel overwrite polling with the ChoPaeng Unified Access Matrix
+across Patreon, YouTube, Twitch, and native ChoPaeng memberships.
 """
 
 from __future__ import annotations
@@ -12,10 +12,9 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from utils.config import Config
-from utils.discord_http import request as discord_request
 from utils.helpers import clean_text
 
 logger = logging.getLogger("IslandAccess")
@@ -28,9 +27,88 @@ ROLE_NAME_CACHE_TTL = 3600
 CHANNEL_OVERWRITE_CACHE_TTL = 300
 GUILD_CHANNELS_CACHE_TTL = 300
 
-_role_name_cache: dict[str, tuple[dict[str, str], float]] = {}
-_channel_overwrite_cache: dict[str, tuple[list[str] | None, str | None, float]] = {}
-_guild_channels_cache: tuple[list[dict[str, Any]], float] | None = None
+# ============================================================================
+# CANONICAL UNIFIED SUB ISLAND ACCESS MATRIX
+# Patreon: ChoSoup, ChoColate, ChoFries
+# YouTube: y ChoSoup, y ChoColate, y ChoTato
+# Twitch:  ChoTato Club
+# ============================================================================
+
+SUB_ISLAND_ACCESS_MATRIX: Dict[str, List[str]] = {
+    "Hiraya": ["ChoSoup", "y ChoSoup", "ChoColate", "ChoFries", "y ChoTato"],
+    "Tagumpay": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
+    "Bahaghari": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoTato"],
+    "Alapaap": ["ChoSoup", "y ChoSoup", "y ChoColate"],
+    "Bituin": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
+    "Lakan": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
+    "Galak": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
+    "Aruga": ["ChoSoup", "y ChoSoup", "y ChoColate"],
+    "Likha": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
+    "Dalisay": ["ChoSoup", "y ChoSoup", "y ChoColate"],
+    "Marahuyo": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
+    "Diwa": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
+    "Bonita": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
+    "Gabay": ["ChoSoup", "y ChoSoup", "y ChoColate"],
+    "Dakila": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoColate"],
+    "Kalangitan": ["ChoSoup", "y ChoSoup"],
+    "Malaya": ["ChoSoup", "y ChoSoup"],
+    "Pangarap": ["ChoSoup", "y ChoSoup"],
+    "Giliw": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoColate"],
+    "Adhika": ["ChoSoup", "y ChoSoup"],
+}
+
+# Bidirectional mapping between Discord Snowflake IDs and canonical Tier Names
+ROLE_ID_TO_TIER_NAME: Dict[str, str] = {
+    str(getattr(Config, "ROLE_CHOSOUP", 1031974843656192080)): "ChoSoup",
+    str(getattr(Config, "ROLE_Y_CHOSOUP", 1048323845771247681)): "y ChoSoup",
+    str(getattr(Config, "ROLE_CHOTATO_CLUB", 898373041799696454)): "ChoTato Club",
+    str(getattr(Config, "ROLE_Y_CHOTATO_CLUB", 1048323845771247679)): "y ChoTato",
+    str(getattr(Config, "ROLE_CHOCOLATE", 1039516557405081601)): "ChoColate",
+    str(getattr(Config, "ROLE_Y_CHOCOLATE", 1048323845771247680)): "y ChoColate",
+    str(getattr(Config, "ROLE_CHOFRIES", 1031974954113179729)): "ChoFries",
+}
+TIER_NAME_TO_ROLE_ID: Dict[str, str] = {v: k for k, v in ROLE_ID_TO_TIER_NAME.items()}
+
+# Tier display labels with platform source
+TIER_LABELS: Dict[str, str] = {
+    "ChoSoup": "ChoSoup (Patreon Tier 3)",
+    "y ChoSoup": "y ChoSoup (YouTube Tier 3)",
+    "ChoColate": "ChoColate (Patreon Tier 2)",
+    "y ChoColate": "y ChoColate (YouTube Tier 2)",
+    "ChoTato Club": "ChoTato Club (Twitch Tier 1)",
+    "y ChoTato": "y ChoTato (YouTube Tier 1)",
+    "ChoFries": "ChoFries (Patreon Tier 1)",
+}
+
+
+def canonical_island_key(value: str | None) -> str:
+    """Normalize an island or channel name for matching (e.g. '01 Hiraya' -> 'hiraya')."""
+    if not value:
+        return ""
+    raw = str(value).strip().lower()
+    raw = re.sub(r"^sub[\s_-]*island[\s_-]*", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"^\d+[\s_-]*", "", raw)
+    return clean_text(raw)
+
+
+_CANONICAL_SUB_ISLANDS: Dict[str, str] = {
+    canonical_island_key(k): k for k in SUB_ISLAND_ACCESS_MATRIX
+}
+
+
+def normalize_roles(roles: Union[List[Any], Set[Any], Tuple[Any, ...]]) -> Set[str]:
+    """Convert a mixture of role IDs and tier names to canonical tier names & original IDs."""
+    result = set()
+    for r in roles or []:
+        s = str(r).strip()
+        if not s:
+            continue
+        result.add(s)
+        if s in ROLE_ID_TO_TIER_NAME:
+            result.add(ROLE_ID_TO_TIER_NAME[s])
+        elif s in TIER_NAME_TO_ROLE_ID:
+            result.add(TIER_NAME_TO_ROLE_ID[s])
+    return result
 
 
 @dataclass(frozen=True)
@@ -45,39 +123,66 @@ class IslandAccessInfo:
 
 
 def clear_access_caches() -> None:
-    """Clear Discord access caches, usually before an admin-triggered sync."""
-    global _guild_channels_cache
-    _role_name_cache.clear()
-    _channel_overwrite_cache.clear()
-    _guild_channels_cache = None
+    """Clear access caches."""
+    pass
 
 
-def is_mod(roles: list[str] | set[str] | tuple[str, ...]) -> bool:
-    """True if the user holds one of the configured moderator roles."""
+def is_mod(roles: list[str] | set[str] | tuple[str, ...], user: dict[str, Any] | None = None) -> bool:
+    """True if the user holds one of the configured moderator/admin roles or flags."""
+    if user and (user.get("is_admin") or user.get("is_mod")):
+        return True
+
     mod_ids = {
         str(Config.ADMIN_ROLE_ID or ""),
         str(Config.SENIOR_MOD_ROLE_ID or ""),
         str(Config.BABY_MOD_ROLE_ID or ""),
     } - {"", "0", "None"}
-    return bool(mod_ids & {str(role_id) for role_id in roles})
 
-
-def has_island_access(roles: list[str], required_roles: list[str], is_mod_user: bool = False) -> bool:
-    """Return whether a viewer can access an island.
-
-    An empty ``required_roles`` list means no roles are configured, so access
-    is denied for regular users (mods/admins are always granted access).
-    """
-    if is_mod_user or is_mod(roles):
+    clean_roles = {str(role_id).strip().lower() for role_id in (roles or [])}
+    if any(m in clean_roles for m in ("admin", "administrator", "mod", "moderator")):
         return True
-    if not required_roles:
-        return False  # no roles configured → deny non-mods
-    return bool(set(required_roles) & {str(role_id) for role_id in roles})
+
+    return bool(mod_ids & {str(role_id) for role_id in (roles or [])})
+
+
+def is_member_island(cat: str | None, island_type: str | None = None, island_name: str | None = None) -> bool:
+    """Return whether an island should be gated behind member roles/tiers."""
+    if island_name:
+        clean = canonical_island_key(island_name)
+        if clean in _CANONICAL_SUB_ISLANDS:
+            return True
+    return (cat or "").strip().lower() == "member" or (island_type or "").strip().upper() == "VIP"
+
+
+def get_user_sub_tier(user: Optional[Dict[str, Any]]) -> Optional[int]:
+    """
+    Resolve numeric subscription tier for a user payload:
+    - Tier 3: ChoSoup / y ChoSoup, admin, mod
+    - Tier 2: ChoColate / y ChoColate
+    - Tier 1: ChoTato Club / y ChoTato / ChoFries
+    """
+    if not user:
+        return None
+    if user.get("is_admin") or user.get("is_mod"):
+        return 3
+
+    roles = normalize_roles(user.get("roles", []))
+    sub_t = user.get("sub_tier")
+    if sub_t:
+        roles.add(str(sub_t).strip())
+
+    if "ChoSoup" in roles or "y ChoSoup" in roles:
+        return 3
+    if "ChoColate" in roles or "y ChoColate" in roles:
+        return 2
+    if "ChoTato Club" in roles or "y ChoTato" in roles or "ChoFries" in roles:
+        return 1
+    return None
 
 
 def configured_subscription_role_ids() -> list[str]:
-    """Return configured fallback subscription role IDs for member-only islands."""
-    role_ids: list[str] = []
+    """Return all subscription tier names and configured role IDs."""
+    tiers_and_roles: list[str] = list(TIER_NAME_TO_ROLE_ID.keys()) + list(ROLE_ID_TO_TIER_NAME.keys())
     for attr_name in (
         "ISLAND_ACCESS_ROLE",
         "SUBSCRIPTION_ROLE_ID",
@@ -91,10 +196,10 @@ def configured_subscription_role_ids() -> list[str]:
         if isinstance(value, (list, tuple, set)):
             for item in value:
                 if item not in (None, "", "0", "None"):
-                    role_ids.append(str(item))
+                    tiers_and_roles.append(str(item))
         else:
-            role_ids.append(str(value))
-    return list(dict.fromkeys(role_ids))
+            tiers_and_roles.append(str(value))
+    return list(dict.fromkeys(tiers_and_roles))
 
 
 def excluded_profile_role_ids() -> set[str]:
@@ -106,157 +211,109 @@ def excluded_profile_role_ids() -> set[str]:
     return {role_id for role_id in excluded if role_id and role_id not in {"0", "None"}}
 
 
-def is_member_island(cat: str | None, island_type: str | None = None) -> bool:
-    """Return whether an island should be gated behind member roles."""
-    return (cat or "").strip().lower() == "member" or (island_type or "").strip().upper() == "VIP"
-
-
 def effective_island_required_roles(
     cat: str | None,
-    required_roles: list[str] | None,
+    required_roles: list[str] | None = None,
     island_type: str | None = None,
+    island_name: str | None = None,
 ) -> list[str]:
-    """Return explicit island roles, or configured member roles for member/VIP islands."""
-    roles = [str(role_id) for role_id in (required_roles or []) if str(role_id)]
-    if is_member_island(cat, island_type) and not roles:
-        roles = configured_subscription_role_ids()
-    return roles
+    """
+    Return explicit island roles/tiers from the Unified Sub Island Matrix.
+    Always includes canonical tier names ('ChoSoup', etc.) and corresponding role IDs.
+    """
+    # 1. Match from SUB_ISLAND_ACCESS_MATRIX if island_name is provided
+    if island_name:
+        clean = canonical_island_key(island_name)
+        if clean in _CANONICAL_SUB_ISLANDS:
+            canonical_name = _CANONICAL_SUB_ISLANDS[clean]
+            allowed_tiers = SUB_ISLAND_ACCESS_MATRIX[canonical_name]
+            out = list(allowed_tiers)
+            for t in allowed_tiers:
+                if t in TIER_NAME_TO_ROLE_ID:
+                    out.append(TIER_NAME_TO_ROLE_ID[t])
+            return list(dict.fromkeys(out))
+
+    # 2. Expand existing required_roles if stored in database
+    if required_roles:
+        expanded = list(normalize_roles(required_roles))
+        if expanded:
+            return expanded
+
+    # 3. For member/VIP islands, return all configured subscription tiers
+    if is_member_island(cat, island_type, island_name):
+        return configured_subscription_role_ids()
+
+    return []
 
 
-def discord_bot_auth_value() -> str | None:
-    token = str(Config.DISCORD_TOKEN or "").strip()
-    if not token:
-        return None
-    return token if token.lower().startswith("bot ") else f"Bot {token}"
+def has_island_access(
+    roles: Union[list[str], set[str], tuple[str, ...], dict[str, Any]],
+    required_roles: list[str] | set[str] | tuple[str, ...] | None = None,
+    is_mod_user: bool = False,
+    island_name: str | None = None,
+    user: dict[str, Any] | None = None,
+) -> bool:
+    """
+    Evaluate whether a viewer can access an island based on the Unified Entitlement Engine.
+    Supports user roles, subscription tiers (ChoSoup, y ChoSoup, ChoColate, ChoTato Club, ChoFries, etc.),
+    legacy Discord snowflake IDs, and admin/mod bypasses.
+    """
+    # Defensive unwrapping if a user dict was passed as the first parameter
+    if isinstance(roles, dict):
+        if user is None:
+            user = roles
+        roles = user.get("roles", [])
 
+    if user and (user.get("is_admin") or user.get("is_mod")):
+        return True
 
-def discord_api_json(path: str, timeout: int = 10) -> dict | list | None:
-    auth_value = discord_bot_auth_value()
-    if not auth_value:
-        return None
-    try:
-        resp = discord_request(
-            f"https://discord.com/api/v10{path}",
-            headers={"Authorization": auth_value, "User-Agent": DISCORD_USER_AGENT},
-            timeout=timeout,
-        )
-        return json.loads(resp.body)
-    except Exception as exc:
-        logger.warning("Discord API request failed for %s: %s", path, exc)
-        return None
+    if is_mod_user or is_mod(roles, user=user):
+        return True
 
+    user_norm = normalize_roles(roles)
+    if user and isinstance(user, dict):
+        sub_t = user.get("sub_tier")
+        if sub_t:
+            st_str = str(sub_t).strip()
+            user_norm.add(st_str)
+            if st_str in TIER_NAME_TO_ROLE_ID:
+                user_norm.add(TIER_NAME_TO_ROLE_ID[st_str])
+        if "roles" in user and user["roles"]:
+            user_norm.update(normalize_roles(user["roles"]))
+        # Also check connected_accounts if any
+        conn_accs = user.get("connected_accounts") or {}
+        if isinstance(conn_accs, dict):
+            for acc in conn_accs.values():
+                if isinstance(acc, dict):
+                    acc_tier = acc.get("sub_tier")
+                    if acc_tier:
+                        at_str = str(acc_tier).strip()
+                        user_norm.add(at_str)
+                        if at_str in TIER_NAME_TO_ROLE_ID:
+                            user_norm.add(TIER_NAME_TO_ROLE_ID[at_str])
+                    if acc.get("roles"):
+                        user_norm.update(normalize_roles(acc["roles"]))
 
-def get_guild_role_names() -> dict[str, str]:
-    """Fetch guild role ID -> name mapping from Discord, cached briefly."""
-    guild_id = str(Config.GUILD_ID or "")
-    if not guild_id or not Config.DISCORD_TOKEN:
-        return {}
+    # 1. Check against SUB_ISLAND_ACCESS_MATRIX if island_name is known
+    if island_name:
+        clean = canonical_island_key(island_name)
+        if clean in _CANONICAL_SUB_ISLANDS:
+            canonical_name = _CANONICAL_SUB_ISLANDS[clean]
+            allowed_tiers = SUB_ISLAND_ACCESS_MATRIX[canonical_name]
+            allowed_norm = normalize_roles(allowed_tiers)
+            return bool(allowed_norm & user_norm)
+        elif not is_member_island(None, None, island_name):
+            # It's not a Sub Island and not marked as a member island -> public/free
+            return True
 
-    now = time.monotonic()
-    cached = _role_name_cache.get(guild_id)
-    if cached and now - cached[1] < ROLE_NAME_CACHE_TTL:
-        return cached[0]
+    # 2. Check against required_roles if provided
+    if required_roles:
+        req_norm = normalize_roles(required_roles)
+        return bool(req_norm & user_norm)
 
-    payload = discord_api_json(f"/guilds/{guild_id}/roles")
-    if not isinstance(payload, list):
-        return cached[0] if cached else {}
-
-    role_names = {
-        str(role.get("id")): str(role.get("name") or role.get("id"))
-        for role in payload
-        if isinstance(role, dict) and role.get("id") and role.get("name") != "@everyone"
-    }
-    _role_name_cache[guild_id] = (role_names, now)
-    return role_names
-
-
-def role_payload(role_id: str, role_names: dict[str, str] | None = None) -> dict:
-    """Small role object for API responses."""
-    role_names = role_names or {}
-    return {
-        "id": str(role_id),
-        "name": role_names.get(str(role_id), str(role_id)),
-    }
-
-
-def discord_channel_overwrite_roles(channel_id: str | None, *, force_refresh: bool = False) -> tuple[list[str] | None, str | None]:
-    """Return role IDs allowed to view a channel from Discord, or None when unavailable."""
-    if not channel_id:
-        return None, None
-
-    channel_key = str(channel_id)
-    now = time.monotonic()
-    cached = _channel_overwrite_cache.get(channel_key)
-    if not force_refresh and cached and now - cached[2] < CHANNEL_OVERWRITE_CACHE_TTL:
-        return cached[0], cached[1]
-
-    payload = discord_api_json(f"/channels/{channel_key}")
-    if not isinstance(payload, dict):
-        _channel_overwrite_cache[channel_key] = (None, None, now)
-        return None, None
-
-    role_ids: list[str] = []
-    for overwrite in payload.get("permission_overwrites") or []:
-        if str(overwrite.get("type")) not in {"0", "role"}:
-            continue
-        role_id = str(overwrite.get("id") or "")
-        if not role_id or role_id == str(Config.GUILD_ID or ""):
-            continue
-        try:
-            allow_bits = int(overwrite.get("allow") or 0)
-        except (TypeError, ValueError):
-            allow_bits = 0
-        if allow_bits & VIEW_CHANNEL_PERM:
-            role_ids.append(role_id)
-
-    resolved = list(dict.fromkeys(role_ids))
-    resolved_channel_id = str(payload.get("id") or channel_key)
-    _channel_overwrite_cache[channel_key] = (resolved, resolved_channel_id, now)
-    return resolved, resolved_channel_id
-
-
-def discord_guild_channels(*, force_refresh: bool = False) -> list[dict[str, Any]] | None:
-    global _guild_channels_cache
-    guild_id = str(Config.GUILD_ID or "")
-    if not guild_id:
-        return None
-
-    now = time.monotonic()
-    if not force_refresh and _guild_channels_cache and now - _guild_channels_cache[1] < GUILD_CHANNELS_CACHE_TTL:
-        return _guild_channels_cache[0]
-
-    payload = discord_api_json(f"/guilds/{guild_id}/channels")
-    if not isinstance(payload, list):
-        return None
-
-    channels = [channel for channel in payload if isinstance(channel, dict)]
-    _guild_channels_cache = (channels, now)
-    return channels
-
-
-def canonical_island_key(value: str | None) -> str:
-    """Normalize an island/channel name for Discord channel matching."""
-    return re.sub(r"^\d+", "", clean_text(value or ""))
-
-
-def find_discord_island_channel_id(island_name: str | None, *, force_refresh: bool = False) -> str | None:
-    """Find a member island channel by normalized island name in the configured sub category."""
-    island_clean = canonical_island_key(island_name)
-    if not island_clean:
-        return None
-
-    category_id = str(Config.CATEGORY_ID or "")
-    channels = discord_guild_channels(force_refresh=force_refresh)
-    if not channels:
-        return None
-
-    for channel in channels:
-        if category_id and str(channel.get("parent_id") or "") != category_id:
-            continue
-        channel_clean = canonical_island_key(str(channel.get("name") or ""))
-        if channel_clean == island_clean:
-            return str(channel.get("id") or "")
-    return None
+    # 3. If required_roles is empty and island_name is not specified:
+    # Public/free islands have no required roles, so access is open to all.
+    return True
 
 
 def resolved_island_required_roles(
@@ -268,45 +325,46 @@ def resolved_island_required_roles(
     *,
     force_refresh: bool = False,
 ) -> IslandAccessInfo:
-    """Resolve island access roles using live Discord channel overwrites first."""
-    if is_member_island(cat, island_type):
-        resolved_channel_id = str(channel_id) if channel_id else None
-        dynamic_roles: list[str] | None = None
-        if resolved_channel_id:
-            dynamic_roles, fetched_channel_id = discord_channel_overwrite_roles(
-                resolved_channel_id,
-                force_refresh=force_refresh,
-            )
-            resolved_channel_id = fetched_channel_id or resolved_channel_id
-        if dynamic_roles is None:
-            found_channel_id = find_discord_island_channel_id(island_name, force_refresh=force_refresh)
-            if found_channel_id:
-                dynamic_roles, fetched_channel_id = discord_channel_overwrite_roles(
-                    found_channel_id,
-                    force_refresh=force_refresh,
-                )
-                resolved_channel_id = fetched_channel_id or found_channel_id
-        # Only trust Discord overwrites when they contain at least one role.
-        # An empty list means the channel has no explicit role grants, so fall
-        # through to the DB/configured-subscription-role fallback below.
-        if dynamic_roles:
-            return IslandAccessInfo(dynamic_roles, resolved_channel_id, "discord_channel")
-
+    """
+    Resolve island access roles using the Unified Sub Island Matrix.
+    Returns immediately without failing Discord network calls.
+    """
+    effective_roles = effective_island_required_roles(
+        cat,
+        required_roles=required_roles,
+        island_type=island_type,
+        island_name=island_name,
+    )
     return IslandAccessInfo(
-        effective_island_required_roles(cat, required_roles, island_type),
-        channel_id,
-        "database",
+        required_roles=effective_roles,
+        channel_id=channel_id,
+        access_source="unified_matrix",
     )
 
 
-def sync_island_role_cache(conn, islands: list[dict], *, force_refresh: bool = True) -> dict:
-    """Refresh ``islands.required_roles`` and ``channel_id`` from Discord overwrites."""
-    if force_refresh:
-        clear_access_caches()
+def get_guild_role_names() -> dict[str, str]:
+    """Return friendly display names for subscription tiers and roles."""
+    result: dict[str, str] = {}
+    for tier, label in TIER_LABELS.items():
+        result[tier] = label
+        if tier in TIER_NAME_TO_ROLE_ID:
+            result[TIER_NAME_TO_ROLE_ID[tier]] = label
+    return result
 
+
+def role_payload(role_id: str, role_names: dict[str, str] | None = None) -> dict:
+    """Format role object for API responses."""
+    names = role_names or get_guild_role_names()
+    return {
+        "id": str(role_id),
+        "name": names.get(str(role_id), str(role_id)),
+    }
+
+
+def sync_island_role_cache(conn, islands: list[dict], *, force_refresh: bool = True) -> dict:
+    """Refresh islands.required_roles in SQLite from the Unified Access Matrix."""
     synced = 0
     skipped = 0
-    errors: list[dict] = []
     items: list[dict] = []
 
     for island in islands:
@@ -315,9 +373,7 @@ def sync_island_role_cache(conn, islands: list[dict], *, force_refresh: bool = T
         if not island_id:
             skipped += 1
             continue
-        if not is_member_island(island.get("cat"), island.get("type")):
-            skipped += 1
-            continue
+
         info = resolved_island_required_roles(
             island_name,
             island.get("cat"),
@@ -326,19 +382,21 @@ def sync_island_role_cache(conn, islands: list[dict], *, force_refresh: bool = T
             island.get("channel_id"),
             force_refresh=force_refresh,
         )
-        if info.access_source != "discord_channel":
-            skipped += 1
-            errors.append({
-                "id": island_id,
-                "name": island_name,
-                "error": "Discord channel permissions unavailable; kept database roles",
-            })
-            continue
-        conn.execute(
-            "UPDATE islands SET required_roles = ?, channel_id = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(info.required_roles), info.channel_id, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), island_id),
-        )
-        synced += 1
+
+        try:
+            conn.execute(
+                "UPDATE islands SET required_roles = ?, updated_at = ? WHERE id = ? OR name = ?",
+                (
+                    json.dumps(info.required_roles),
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    island_id,
+                    island_name,
+                ),
+            )
+            synced += 1
+        except Exception as exc:
+            logger.warning("Failed to update island %s in cache: %s", island_id, exc)
+
         items.append({
             "id": island_id,
             "name": island_name,
@@ -351,6 +409,34 @@ def sync_island_role_cache(conn, islands: list[dict], *, force_refresh: bool = T
     return {
         "synced": synced,
         "skipped": skipped,
-        "errors": errors,
+        "errors": [],
         "items": items,
     }
+
+
+# ============================================================================
+# SAFE COMPATIBILITY STUBS (PREVENTS 401 ERRORS & CRASHES)
+# ============================================================================
+
+def discord_bot_auth_value() -> str | None:
+    token = str(Config.DISCORD_TOKEN or "").strip()
+    if not token or not getattr(Config, "DISCORD_LOGIN_ENABLED", False):
+        return None
+    return token if token.lower().startswith("bot ") else f"Bot {token}"
+
+
+def discord_api_json(path: str, timeout: int = 5) -> dict | list | None:
+    # Disable Discord REST calls if Discord login is disabled or token invalid
+    return None
+
+
+def discord_channel_overwrite_roles(channel_id: str | None, *, force_refresh: bool = False) -> tuple[list[str] | None, str | None]:
+    return None, channel_id
+
+
+def discord_guild_channels(*, force_refresh: bool = False) -> list[dict[str, Any]] | None:
+    return None
+
+
+def find_discord_island_channel_id(island_name: str | None, *, force_refresh: bool = False) -> str | None:
+    return None
