@@ -283,6 +283,35 @@ def get_session_factory():
     return sessionmaker(bind=get_engine(), autoflush=False, autocommit=False, future=True)
 
 
+def _upgrade_mysql_text_columns(engine) -> None:
+    """Ensure large JSON storage columns use LONGTEXT in MySQL/MariaDB to prevent 1406 Data too long errors."""
+    alters = [
+        ("user_pocket_states", "order_items", "LONGTEXT NOT NULL"),
+        ("user_pocket_states", "drop_items", "LONGTEXT NOT NULL"),
+        ("pocket_bundles", "items_json", "LONGTEXT NOT NULL"),
+        ("shared_pockets", "items_json", "LONGTEXT NOT NULL"),
+        ("user_custom_presets", "order_items", "LONGTEXT NULL"),
+        ("user_custom_presets", "drop_items", "LONGTEXT NULL"),
+        ("community_loadouts", "order_items", "LONGTEXT NOT NULL"),
+        ("community_loadouts", "drop_items", "LONGTEXT NOT NULL"),
+        ("auth_tokens", "user_json", "LONGTEXT NOT NULL"),
+    ]
+    try:
+        raw_conn = engine.raw_connection()
+        try:
+            with raw_conn.cursor() as cur:
+                for table, col, col_def in alters:
+                    try:
+                        cur.execute(f"ALTER TABLE {table} MODIFY COLUMN {col} {col_def}")
+                    except Exception:
+                        pass
+            raw_conn.commit()
+        finally:
+            raw_conn.close()
+    except Exception:
+        pass
+
+
 def ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
@@ -292,7 +321,10 @@ def ensure_schema() -> None:
             return
         from utils.db_models import Base
 
-        Base.metadata.create_all(get_engine())
+        engine = get_engine()
+        Base.metadata.create_all(engine)
+        if get_backend() == "mysql":
+            _upgrade_mysql_text_columns(engine)
         _schema_ready = True
 
 

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from sqlalchemy import BigInteger, Float, Integer, String, Text, Index
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+LongText = Text().with_variant(LONGTEXT, "mysql", "mariadb")
 
 
 class Base(DeclarativeBase):
@@ -214,7 +217,7 @@ class AuthToken(Base):
     __tablename__ = "auth_tokens"
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_json: Mapped[str] = mapped_column(Text, nullable=False)
+    user_json: Mapped[str] = mapped_column(LongText, nullable=False)
     expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
@@ -228,8 +231,8 @@ class CommunityLoadout(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     tags: Mapped[str] = mapped_column(String(255), nullable=False, default="[]")
     category: Mapped[str] = mapped_column(String(64), nullable=False, default="General")
-    order_items: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    drop_items: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    order_items: Mapped[str] = mapped_column(LongText, nullable=False, default="[]")
+    drop_items: Mapped[str] = mapped_column(LongText, nullable=False, default="[]")
     user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False, default="Community")
     upvotes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -364,8 +367,8 @@ class UserCustomPreset(Base):
     description: Mapped[str | None] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(String(64))
     tags: Mapped[str | None] = mapped_column(Text)
-    order_items: Mapped[str | None] = mapped_column(Text)
-    drop_items: Mapped[str | None] = mapped_column(Text)
+    order_items: Mapped[str | None] = mapped_column(LongText)
+    drop_items: Mapped[str | None] = mapped_column(LongText)
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
@@ -376,7 +379,7 @@ class SharedPocket(Base):
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     username: Mapped[str | None] = mapped_column(String(255))
-    items_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    items_json: Mapped[str] = mapped_column(LongText, nullable=False, default="[]")
     villager: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     expires_at: Mapped[int | None] = mapped_column(BigInteger, index=True)
@@ -389,7 +392,7 @@ class PocketBundle(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, default="")
     category: Mapped[str] = mapped_column(String(64), nullable=False, default="General")
-    items_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    items_json: Mapped[str] = mapped_column(LongText, nullable=False, default="[]")
     villager: Mapped[str | None] = mapped_column(String(255))
     created_by: Mapped[str | None] = mapped_column(String(255), default="Admin")
     is_official: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -464,8 +467,8 @@ class UserPocketState(Base):
     __tablename__ = "user_pocket_states"
 
     user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    order_items: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    drop_items: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    order_items: Mapped[str] = mapped_column(LongText, nullable=False, default="[]")
+    drop_items: Mapped[str] = mapped_column(LongText, nullable=False, default="[]")
     villager: Mapped[str | None] = mapped_column(String(255))
     updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
