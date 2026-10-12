@@ -1603,6 +1603,18 @@ def auth_me():
     except Exception:
         pass
 
+    moderation_data = {
+        "has_active_restriction": False,
+        "active_restriction": None,
+        "unacknowledged_warnings": [],
+        "warning_count": 0,
+    }
+    try:
+        from api.control_panel import get_user_moderation_notices
+        moderation_data = get_user_moderation_notices(user)
+    except Exception as mod_err:
+        logger.debug("Failed to fetch user moderation notices: %s", mod_err)
+
     return jsonify({
         "logged_in":  True,
         "user_id":    user["user_id"],
@@ -1622,7 +1634,59 @@ def auth_me():
         "has_password": bool(user.get("has_password", False)),
         "is_subscriber": bool(user.get("is_subscriber", False)),
         "sub_rules_accepted": sub_rules_accepted,
+        "moderation": moderation_data,
     })
+
+
+@app.route("/api/moderation/acknowledge-notice", methods=["POST"])
+def api_acknowledge_moderation_notice():
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    from utils.unified_auth import resolve_all_user_ids
+    cand_ids = resolve_all_user_ids(user)
+    if not cand_ids:
+        return jsonify({"error": "User identifier not found"}), 400
+
+    data = request.get_json(silent=True) or {}
+    warning_id = data.get("warning_id")
+    now = int(time.time())
+
+    conn = get_db()
+    try:
+        placeholders = ",".join("?" for _ in cand_ids)
+        if warning_id:
+            conn.execute(
+                f"UPDATE warnings SET acknowledged_at = ? WHERE id = ? AND user_id IN ({placeholders})",
+                [now, warning_id] + cand_ids,
+            )
+        else:
+            conn.execute(
+                f"UPDATE warnings SET acknowledged_at = ? WHERE acknowledged_at IS NULL AND user_id IN ({placeholders})",
+                [now] + cand_ids,
+            )
+        conn.commit()
+        return jsonify({"success": True, "acknowledged_at": now})
+    except Exception as exc:
+        logger.error("[Moderation] Error acknowledging notice: %s", exc)
+        return jsonify({"error": "Failed to acknowledge notice"}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/moderation/my-notices", methods=["GET"])
+def api_get_my_moderation_notices():
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    try:
+        from api.control_panel import get_user_moderation_notices
+        return jsonify(get_user_moderation_notices(user))
+    except Exception as exc:
+        logger.error("[Moderation] Error fetching notices: %s", exc)
+        return jsonify({"error": "Failed to fetch notices"}), 500
 
 
 @app.route("/api/profile")

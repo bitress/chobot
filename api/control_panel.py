@@ -115,7 +115,55 @@ def init_control_panel_db() -> None:
             except Exception:
                 pass
 
-            # 3. Idempotency store
+            # 3. Warnings table extensions (acknowledged_at, mod_name)
+            warn_cols = set()
+            if backend == "mysql":
+                try:
+                    cur = conn.execute("SHOW COLUMNS FROM warnings")
+                    warn_cols = {str(row[0]).lower() for row in cur.fetchall()}
+                except Exception:
+                    pass
+            else:
+                try:
+                    cur = conn.execute("PRAGMA table_info(warnings)")
+                    warn_cols = {str(row[1]).lower() for row in cur.fetchall()}
+                except Exception:
+                    pass
+
+            for col_name, col_def in [
+                ("acknowledged_at", "BIGINT DEFAULT NULL"),
+                ("mod_name", "VARCHAR(255) DEFAULT NULL"),
+            ]:
+                if col_name.lower() not in warn_cols:
+                    try:
+                        conn.execute(f"ALTER TABLE warnings ADD COLUMN {col_name} {col_def}")
+                        conn.commit()
+                    except Exception:
+                        pass
+
+            # 4. user_moderation_status extensions (mod_name)
+            mod_status_cols = set()
+            if backend == "mysql":
+                try:
+                    cur = conn.execute("SHOW COLUMNS FROM user_moderation_status")
+                    mod_status_cols = {str(row[0]).lower() for row in cur.fetchall()}
+                except Exception:
+                    pass
+            else:
+                try:
+                    cur = conn.execute("PRAGMA table_info(user_moderation_status)")
+                    mod_status_cols = {str(row[1]).lower() for row in cur.fetchall()}
+                except Exception:
+                    pass
+
+            if "mod_name" not in mod_status_cols:
+                try:
+                    conn.execute("ALTER TABLE user_moderation_status ADD COLUMN mod_name VARCHAR(255) DEFAULT NULL")
+                    conn.commit()
+                except Exception:
+                    pass
+
+            # 5. Idempotency store
             conn.execute("""
             CREATE TABLE IF NOT EXISTS control_panel_idempotency (
                 `key` VARCHAR(255) PRIMARY KEY,
@@ -133,7 +181,7 @@ def init_control_panel_db() -> None:
 
 
 # -----------------------------------------------------------------------------
-# Active Restriction Checker (Used by Dodo Reveal Gate)
+# Active Restriction Checker & Moderation Notices
 # -----------------------------------------------------------------------------
 
 def check_user_active_restriction(user_id: str | None, discord_id: str | None = None) -> dict | None:
@@ -157,34 +205,151 @@ def check_user_active_restriction(user_id: str | None, discord_id: str | None = 
         conn = connect_db()
         try:
             placeholders = ",".join("?" for _ in cand_ids)
-            cur = conn.execute(
-                f"""
-                SELECT id, user_id, discord_id, action_type, reason, created_at, expires_at
-                FROM user_moderation_status
-                WHERE is_active = 1
-                  AND (user_id IN ({placeholders}) OR (discord_id IS NOT NULL AND discord_id IN ({placeholders})))
-                  AND (expires_at IS NULL OR expires_at > ?)
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                cand_ids + cand_ids + [now],
-            )
-            row = cur.fetchone()
-            if row:
-                return {
-                    "id": row[0],
-                    "user_id": row[1],
-                    "discord_id": row[2],
-                    "action_type": row[3],
-                    "reason": row[4],
-                    "created_at": row[5],
-                    "expires_at": row[6],
-                }
+            try:
+                cur = conn.execute(
+                    f"""
+                    SELECT id, user_id, discord_id, action_type, reason, created_at, expires_at, mod_name
+                    FROM user_moderation_status
+                    WHERE is_active = 1
+                      AND (user_id IN ({placeholders}) OR (discord_id IS NOT NULL AND discord_id IN ({placeholders})))
+                      AND (expires_at IS NULL OR expires_at > ?)
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    cand_ids + cand_ids + [now],
+                )
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "user_id": row[1],
+                        "discord_id": row[2],
+                        "action_type": row[3],
+                        "reason": row[4],
+                        "created_at": row[5],
+                        "expires_at": row[6],
+                        "mod_name": row[7] or "Moderator",
+                    }
+            except Exception:
+                cur = conn.execute(
+                    f"""
+                    SELECT id, user_id, discord_id, action_type, reason, created_at, expires_at
+                    FROM user_moderation_status
+                    WHERE is_active = 1
+                      AND (user_id IN ({placeholders}) OR (discord_id IS NOT NULL AND discord_id IN ({placeholders})))
+                      AND (expires_at IS NULL OR expires_at > ?)
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    cand_ids + cand_ids + [now],
+                )
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "user_id": row[1],
+                        "discord_id": row[2],
+                        "action_type": row[3],
+                        "reason": row[4],
+                        "created_at": row[5],
+                        "expires_at": row[6],
+                        "mod_name": "Moderator",
+                    }
         finally:
             conn.close()
     except Exception as exc:
         logger.warning("[ControlPanel] Restriction check failed: %s", exc)
     return None
+
+
+def get_user_moderation_notices(user_or_id: Any) -> dict:
+    """Return active restrictions and unacknowledged warnings for a user."""
+    from utils.unified_auth import resolve_all_user_ids
+
+    user_dict = user_or_id if isinstance(user_or_id, dict) else {}
+    cand_ids = resolve_all_user_ids(user_or_id)
+    cand_ids = list(dict.fromkeys([str(c).strip() for c in cand_ids if c]))
+    if not cand_ids:
+        return {
+            "has_active_restriction": False,
+            "active_restriction": None,
+            "unacknowledged_warnings": [],
+            "warning_count": 0,
+        }
+
+    user_id = user_dict.get("user_id") if user_dict else (str(user_or_id) if not isinstance(user_or_id, dict) else None)
+    discord_id = user_dict.get("discord_id") if user_dict else None
+    active_rest = check_user_active_restriction(user_id, discord_id)
+
+    unack_warnings: list[dict] = []
+    total_warnings = 0
+    try:
+        conn = connect_db()
+        try:
+            placeholders = ",".join("?" for _ in cand_ids)
+            try:
+                cur = conn.execute(
+                    f"""
+                    SELECT id, reason, mod_id, timestamp, action_type, acknowledged_at, mod_name, visit_id
+                    FROM warnings
+                    WHERE user_id IN ({placeholders})
+                    ORDER BY timestamp DESC
+                    """,
+                    cand_ids,
+                )
+                rows = cur.fetchall()
+                for r in rows:
+                    act = str(r[4] or "WARN").upper()
+                    if act == "WARN":
+                        total_warnings += 1
+                        is_ack = bool(r[5])
+                        if not is_ack:
+                            unack_warnings.append({
+                                "id": r[0],
+                                "reason": r[1] or "Official warning from moderation",
+                                "mod_id": r[2],
+                                "timestamp": r[3],
+                                "action_type": "WARN",
+                                "acknowledged_at": r[5],
+                                "mod_name": r[6] or "Moderator",
+                                "visit_id": r[7],
+                            })
+            except Exception:
+                cur = conn.execute(
+                    f"""
+                    SELECT id, reason, mod_id, timestamp, action_type, visit_id
+                    FROM warnings
+                    WHERE user_id IN ({placeholders})
+                    ORDER BY timestamp DESC
+                    """,
+                    cand_ids,
+                )
+                rows = cur.fetchall()
+                for r in rows:
+                    act = str(r[4] or "WARN").upper()
+                    if act == "WARN":
+                        total_warnings += 1
+                        unack_warnings.append({
+                            "id": r[0],
+                            "reason": r[1] or "Official warning from moderation",
+                            "mod_id": r[2],
+                            "timestamp": r[3],
+                            "action_type": "WARN",
+                            "acknowledged_at": None,
+                            "mod_name": "Moderator",
+                            "visit_id": r[5],
+                        })
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning("[ControlPanel] Error fetching user moderation notices: %s", exc)
+
+    return {
+        "has_active_restriction": bool(active_rest),
+        "active_restriction": active_rest,
+        "unacknowledged_warnings": unack_warnings,
+        "warning_count": total_warnings,
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -1161,10 +1326,10 @@ def execute_action():
             )
             conn.execute(
                 """
-                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type)
-                VALUES (?, ?, ?, ?, ?, ?, 'WARN')
+                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type, mod_name)
+                VALUES (?, ?, ?, ?, ?, ?, 'WARN', ?)
                 """,
-                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id),
+                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id, mod_name),
             )
         elif action == "timeout":
             status_to_set = "actioned"
@@ -1177,18 +1342,18 @@ def execute_action():
             )
             conn.execute(
                 """
-                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type)
-                VALUES (?, ?, ?, ?, ?, ?, 'TIMEOUT')
+                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type, mod_name)
+                VALUES (?, ?, ?, ?, ?, ?, 'TIMEOUT', ?)
                 """,
-                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id),
+                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id, mod_name),
             )
             conn.execute(
                 """
                 INSERT INTO user_moderation_status
-                (user_id, discord_id, action_type, reason, mod_id, created_at, expires_at, is_active)
-                VALUES (?, ?, 'TIMEOUT', ?, ?, ?, ?, 1)
+                (user_id, discord_id, action_type, reason, mod_id, mod_name, created_at, expires_at, is_active)
+                VALUES (?, ?, 'TIMEOUT', ?, ?, ?, ?, ?, 1)
                 """,
-                (user_id or discord_id or flight_ign, discord_id or None, reason, mod_name, now, expires_at),
+                (user_id or discord_id or flight_ign, discord_id or None, reason, mod_id, mod_name, now, expires_at),
             )
         elif action == "ban":
             # Admin check for permanent ban
@@ -1202,18 +1367,18 @@ def execute_action():
             )
             conn.execute(
                 """
-                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type)
-                VALUES (?, ?, ?, ?, ?, ?, 'BAN')
+                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type, mod_name)
+                VALUES (?, ?, ?, ?, ?, ?, 'BAN', ?)
                 """,
-                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id),
+                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id, mod_name),
             )
             conn.execute(
                 """
                 INSERT INTO user_moderation_status
-                (user_id, discord_id, action_type, reason, mod_id, created_at, expires_at, is_active)
-                VALUES (?, ?, 'BAN', ?, ?, ?, NULL, 1)
+                (user_id, discord_id, action_type, reason, mod_id, mod_name, created_at, expires_at, is_active)
+                VALUES (?, ?, 'BAN', ?, ?, ?, ?, NULL, 1)
                 """,
-                (user_id or discord_id or flight_ign, discord_id or None, reason, mod_name, now),
+                (user_id or discord_id or flight_ign, discord_id or None, reason, mod_id, mod_name, now),
             )
 
         # Audit event record
@@ -1250,6 +1415,43 @@ def execute_action():
 
         conn.commit()
 
+        # Asynchronously dispatch Discord DM notification without blocking
+        target_discord_id = str(discord_id or "").strip()
+        if not target_discord_id and user_id:
+            try:
+                from utils.unified_auth import get_unified_account_by_id
+                acc = get_unified_account_by_id(user_id)
+                if acc:
+                    target_discord_id = str(acc.get("discord_id") or acc.get("connected_accounts", {}).get("discord", {}).get("id") or "").strip()
+            except Exception:
+                pass
+        if not target_discord_id and str(user_id or "").isdigit():
+            target_discord_id = str(user_id).strip()
+
+        if target_discord_id and action in ("warn", "timeout", "ban"):
+            try:
+                import threading
+                from utils.discord_moderation_notifier import send_discord_moderation_dm
+
+                threading.Thread(
+                    target=send_discord_moderation_dm,
+                    kwargs={
+                        "discord_id": target_discord_id,
+                        "action": action,
+                        "reason": reason,
+                        "mod_name": mod_name,
+                        "expires_at": expires_at,
+                        "flight_details": {
+                            "destination": dest_island,
+                            "flight_ign": flight_ign,
+                            "flight_origin": flight_origin,
+                        },
+                    },
+                    daemon=True,
+                ).start()
+            except Exception as dm_err:
+                logger.warning("[ControlPanel] Failed to dispatch Discord DM thread: %s", dm_err)
+
         response_payload = {
             "success": True,
             "action": action,
@@ -1272,6 +1474,55 @@ def execute_action():
         return jsonify(response_payload)
     finally:
         conn.close()
+
+
+@control_panel_bp.route("/notice/acknowledge", methods=["POST"])
+def acknowledge_notice():
+    """Acknowledge one or all active warnings for the logged-in user."""
+    user = _get_current_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    from utils.unified_auth import resolve_all_user_ids
+    cand_ids = resolve_all_user_ids(user)
+    if not cand_ids:
+        return jsonify({"error": "User identifier not found"}), 400
+
+    data = request.get_json(silent=True) or {}
+    warning_id = data.get("warning_id")
+    now = int(time.time())
+
+    conn = connect_db()
+    try:
+        placeholders = ",".join("?" for _ in cand_ids)
+        if warning_id:
+            conn.execute(
+                f"UPDATE warnings SET acknowledged_at = ? WHERE id = ? AND user_id IN ({placeholders})",
+                [now, warning_id] + cand_ids,
+            )
+        else:
+            conn.execute(
+                f"UPDATE warnings SET acknowledged_at = ? WHERE acknowledged_at IS NULL AND user_id IN ({placeholders})",
+                [now] + cand_ids,
+            )
+        conn.commit()
+        return jsonify({"success": True, "acknowledged_at": now})
+    except Exception as exc:
+        logger.error("[ControlPanel] Error acknowledging notice: %s", exc)
+        return jsonify({"error": "Failed to acknowledge notice"}), 500
+    finally:
+        conn.close()
+
+
+@control_panel_bp.route("/notice/my-notices", methods=["GET"])
+def get_my_notices():
+    """Get all moderation notices and active restriction status for caller."""
+    user = _get_current_user()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+
+    notices = get_user_moderation_notices(user)
+    return jsonify(notices)
 
 
 @control_panel_bp.route("/action/undo", methods=["POST"])
