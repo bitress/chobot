@@ -8,6 +8,7 @@ sub-millisecond cached telemetry for web requests—completely decoupled from Di
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -99,6 +100,47 @@ def _is_sub_island(island_name: str) -> bool:
     return clean in canonical_sub
 
 
+def parse_sysbot_visitors(status_data: Dict[str, Any]) -> tuple[int, list[str]]:
+    """
+    Extract clean visitor count and actual player visitor names from SysBot status payload.
+    Correctly handles:
+      - Explicit visitors_count integer (including 0!)
+      - visitor_list (list of strings or raw visitors text)
+      - Filters out header and '#N: Available slot'
+    """
+    raw_list = status_data.get("visitor_list")
+    raw_str = status_data.get("visitors")
+
+    lines: list[str] = []
+    if isinstance(raw_list, list):
+        lines = [str(l).strip() for l in raw_list if str(l).strip()]
+    elif isinstance(raw_str, str):
+        lines = [l.strip() for l in raw_str.strip().splitlines() if l.strip()]
+
+    actual_names: list[str] = []
+    for line in lines:
+        if line.lower().startswith("the following visitors are on"):
+            continue
+        m = re.match(r"^#\d+:\s*(.+)$", line)
+        if m:
+            val = m.group(1).strip()
+            if val.lower() != "available slot":
+                actual_names.append(val)
+        elif line and not line.lower().startswith("available slot"):
+            actual_names.append(line)
+
+    raw_count = status_data.get("visitors_count")
+    if raw_count is not None:
+        try:
+            count = int(raw_count)
+        except (ValueError, TypeError):
+            count = len(actual_names)
+    else:
+        count = len(actual_names)
+
+    return count, actual_names
+
+
 def poll_single_island(island_name: str) -> Dict[str, Any]:
     """Poll a single island's SysBot HTTP port for status and new events."""
     client = get_island_sysbot_client(island_name, timeout=2)
@@ -110,8 +152,7 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
 
     is_online = bool(status_data.get("is_running") and status_data.get("is_connected"))
     dodo_code = status_data.get("dodo_code")
-    visitor_list = status_data.get("visitor_list") or []
-    visitors_count = int(status_data.get("visitors_count") or len(visitor_list))
+    visitors_count, visitor_list = parse_sysbot_visitors(status_data)
 
     cached_entry: Dict[str, Any] = {
         "island": clean_name,
@@ -387,7 +428,7 @@ def get_live_visitor_overview() -> Dict[str, Any]:
 
     for name, data in all_telemetry.items():
         v_list = data.get("visitor_list") or []
-        v_count = data.get("visitors_count") or len(v_list)
+        v_count = data.get("visitors_count") if data.get("visitors_count") is not None else len(v_list)
         total_visitors += v_count
         if data.get("is_online"):
             active_islands.append({

@@ -873,7 +873,12 @@ def _parse_visitor_list(raw):
     if not raw:
         return 0, []
 
-    lines = [l.strip() for l in raw.strip().splitlines() if l.strip()]
+    if isinstance(raw, list):
+        lines = [str(l).strip() for l in raw if str(l).strip()]
+    elif isinstance(raw, str):
+        lines = [l.strip() for l in raw.strip().splitlines() if l.strip()]
+    else:
+        return 0, []
 
     # New multi-line format from C# bot
     if lines and lines[0].lower().startswith("the following visitors are on"):
@@ -887,7 +892,7 @@ def _parse_visitor_list(raw):
         return len(names), names
 
     # Legacy single-value format
-    cleaned = _parse_visitor_value(raw)
+    cleaned = _parse_visitor_value(raw if isinstance(raw, str) else "")
     if not cleaned:
         return 0, []
     if cleaned.isdigit():

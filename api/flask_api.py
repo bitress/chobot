@@ -2577,9 +2577,11 @@ def get_island_visitors(name):
             client = get_island_sysbot_client(target, timeout=2)
             status_data = client.get_bot_status_sync()
             if status_data.get("is_running") or status_data.get("is_connected"):
+                from utils.sysbot_telemetry import parse_sysbot_visitors
+                v_count, v_names = parse_sysbot_visitors(status_data)
                 t_data = {
-                    "visitors_count": status_data.get("visitors_count", len(status_data.get("visitor_list") or [])),
-                    "visitor_list": status_data.get("visitor_list") or [],
+                    "visitors_count": v_count,
+                    "visitor_list": v_names,
                     "is_online": True,
                 }
         except Exception:
@@ -2590,10 +2592,11 @@ def get_island_visitors(name):
 
     if t_data and t_data.get("is_online"):
         v_list = t_data.get("visitor_list") or []
+        v_count = t_data.get("visitors_count") if t_data.get("visitors_count") is not None else len(v_list)
         return jsonify({
             "island": target,
             "type": island_type,
-            "visitor_count": t_data.get("visitors_count", len(v_list)),
+            "visitor_count": v_count,
             "visitor_list": v_list,
             "bot_online": True,
             "discord_bot_online": True,
@@ -3683,12 +3686,10 @@ def get_order_bot_status():
             data.setdefault("island_name", getattr(Config, "ORDER_BOT_ISLAND", "Sinta"))
             data.setdefault("accepting_commands", True)
             data.setdefault("queue_count", 0)
-            # Ensure visitor_list is always an array
-            if "visitors" in data and "visitor_list" not in data:
-                visitors_str = data.get("visitors") or ""
-                data["visitor_list"] = [v.strip() for v in visitors_str.split("\n") if v.strip()] if visitors_str else []
-            data.setdefault("visitor_list", [])
-            data.setdefault("visitors_count", len(data["visitor_list"]))
+            from utils.sysbot_telemetry import parse_sysbot_visitors
+            v_count, v_names = parse_sysbot_visitors(data)
+            data["visitor_list"] = v_names
+            data["visitors_count"] = v_count
         else:
             # Safe defaults when offline so frontend widgets don't crash or show undefined
             data.setdefault("is_running", False)
