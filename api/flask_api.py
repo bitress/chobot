@@ -21,6 +21,7 @@ import urllib.request
 import io
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import requests
 from flask import Flask, jsonify, request, session, redirect, url_for, send_file
@@ -251,7 +252,10 @@ CORS(app, resources={r"/*": {"origins": Config.FRONTEND_ORIGINS}}, supports_cred
 app.register_blueprint(dashboard, url_prefix="/dashboard")
 from api.sub_islands import sub_islands_bp
 app.register_blueprint(sub_islands_bp)
+from api.control_panel import control_panel_bp, init_control_panel_db
+app.register_blueprint(control_panel_bp)
 init_dashboard_db()
+init_control_panel_db()
 record_service_status("flask", mode="api", status="running")
 
 # Suppress Flask/Werkzeug standard logs
@@ -1852,6 +1856,43 @@ def reveal_dodo(name):
             "code": "missing_saved_character",
             "requires_character": True,
         }), 403
+
+    # Check for active moderation suspension (Ban or Timeout from Control Panel)
+    try:
+        from api.control_panel import check_user_active_restriction
+        active_rest = check_user_active_restriction(
+            user.get("user_id"),
+            user.get("discord_id") or user.get("id"),
+        )
+        if active_rest:
+            _log_dodo_reveal_attempt(
+                user,
+                target,
+                "denied",
+                "moderation_restricted",
+                action_type=active_rest["action_type"],
+                restriction_reason=active_rest.get("reason"),
+                channel_id=channel_id,
+            )
+            _record_api_audit_event(
+                "dodo_reveal_denied",
+                target,
+                {
+                    "reason": "moderation_restricted",
+                    "action_type": active_rest.get("action_type"),
+                    "restriction_reason": active_rest.get("reason"),
+                    "channel_id": channel_id,
+                },
+            )
+            return jsonify({
+                "error": f"Your island access has been suspended ({active_rest['action_type'].capitalize()}). Reason: {active_rest['reason']}",
+                "code": "access_suspended",
+                "action_type": active_rest["action_type"],
+                "reason": active_rest["reason"],
+                "expires_at": active_rest["expires_at"],
+            }), 403
+    except Exception as rest_err:
+        logger.warning("[DodoReveal] Moderation check error: %s", rest_err)
 
     if _is_member_island(island_cat, island_type) and not effective_required_roles and not is_viewer_mod:
         _log_dodo_reveal_attempt(user, target, "denied", "no_member_roles_configured", channel_id=channel_id)
