@@ -1543,6 +1543,57 @@ class FlightLoggerCog(commands.Cog):
                     pass
         return None, None
 
+    async def lookup_saved_character_member(
+        self, guild: discord.Guild | None, ign: str, origin: str
+    ) -> discord.Member | None:
+        """Match traveler's IGN and island against user_saved_characters in database."""
+        if not guild:
+            return None
+        ign_clean = clean_text(ign)
+        origin_clean = clean_text(origin)
+        if not ign_clean:
+            return None
+
+        try:
+            async with connect_async_db() as db:
+                cur = await db.execute(
+                    """
+                    SELECT user_id, ign, island_name, is_default
+                    FROM user_saved_characters
+                    WHERE TRIM(ign) != ''
+                    ORDER BY is_default DESC, updated_at DESC
+                    LIMIT 200
+                    """
+                )
+                rows = await cur.fetchall()
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] user_saved_characters lookup failed: {exc}")
+            return None
+
+        # 1. Exact match on both IGN and island
+        for user_id_raw, c_ign, c_isl, _ in rows:
+            if clean_text(c_ign) == ign_clean and origin_clean and clean_text(c_isl) == origin_clean:
+                try:
+                    uid = int(user_id_raw)
+                    member = await self._resolve_member(guild, uid)
+                    if member:
+                        return member
+                except (ValueError, TypeError):
+                    continue
+
+        # 2. Fallback: match on IGN only
+        for user_id_raw, c_ign, c_isl, _ in rows:
+            if clean_text(c_ign) == ign_clean:
+                try:
+                    uid = int(user_id_raw)
+                    member = await self._resolve_member(guild, uid)
+                    if member:
+                        return member
+                except (ValueError, TypeError):
+                    continue
+
+        return None
+
     def _get_db(self):
         """Return an async database connection context manager."""
         return connect_async_db()
@@ -2890,7 +2941,13 @@ class FlightLoggerCog(commands.Cog):
                 self.find_matching_members, target_guild, ign_norm, isl_norm
             )
 
-            # 2. If no member found yet, check Dodo reveal records from DB
+            # 2. Check user_saved_characters table (Website Saved in-game characters)
+            if not found and target_guild:
+                saved_char_member = await self.lookup_saved_character_member(target_guild, ign_raw, island_raw)
+                if saved_char_member:
+                    found = [saved_char_member]
+
+            # 3. Check Dodo reveal records from DB
             if not found and target_guild:
                 reveal_member, reveal_url = await self.lookup_dodo_reveal_member(target_guild, ign_raw, dest_raw)
                 if reveal_member:

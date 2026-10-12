@@ -5156,12 +5156,60 @@ def api_user_characters():
             """, (primary_uid, c_id, ign, island, title, icon, is_def, created_at, now_iso))
 
         conn.commit()
+
+        # Attempt to auto-sync Discord nickname for regular members
+        discord_id = str(auth_user.get("discord_id") or auth_user.get("user_id") or "").strip() if auth_user else ""
+        if discord_id and discord_id.isdigit():
+            active_char = next((c for c in char_list if c.get("isDefault") or c.get("is_default")), char_list[0] if char_list else None)
+            if active_char and active_char.get("ign"):
+                _sync_user_discord_nickname(discord_id, active_char.get("ign"), active_char.get("islandName") or active_char.get("island_name") or "")
+
         return jsonify({"ok": True, "success": True, "count": min(len(char_list), 3)})
     except Exception as exc:
         logger.warning("Error in user_characters API: %s", exc)
         return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
         conn.close()
+
+
+def _sync_user_discord_nickname(discord_id: str, ign: str, island: str) -> tuple[bool, str]:
+    """Attempt to update user's Discord nickname to 'IGN | Island'.
+
+    Returns (success, reason). Skips gracefully if user is Owner/Admin (HTTP 403).
+    """
+    if not discord_id or not ign:
+        return False, "missing_params"
+    raw_nick = f"{ign} | {island}".strip() if island else ign.strip()
+    nick = raw_nick[:32]
+    bot_auth = _discord_bot_auth_value()
+    guild_id = str(Config.GUILD_ID or "").strip()
+    if not bot_auth or not guild_id:
+        return False, "discord_not_configured"
+
+    discord_url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{discord_id}"
+    req_body = json.dumps({"nick": nick}).encode("utf-8")
+    try:
+        discord_request(
+            discord_url,
+            method="PATCH",
+            headers={
+                "Authorization": bot_auth,
+                "Content-Type": "application/json",
+            },
+            data=req_body,
+            timeout=8,
+        )
+        logger.info("Auto-synced Discord nickname for user_id=%s to '%s'", discord_id, nick)
+        return True, "updated"
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            logger.info("Discord nickname sync skipped for user_id=%s (HTTP 403: user is Owner/Admin or higher role)", discord_id)
+            return False, "forbidden_hierarchy"
+        logger.debug("Discord nickname sync failed for user_id=%s: HTTP %s", discord_id, exc.code)
+        return False, f"http_{exc.code}"
+    except Exception as exc:
+        logger.debug("Discord nickname sync error for user_id=%s: %s", discord_id, exc)
+        return False, "error"
 
 
 @app.route("/api/user/sub-rules", methods=["GET", "POST"])
