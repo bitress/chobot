@@ -2043,6 +2043,22 @@ def join_dodo_queue(name):
     if not user:
         return jsonify({"error": "Authentication required"}), 401
 
+    # Check for active moderation suspension
+    try:
+        from api.control_panel import check_user_active_restriction
+        active_rest = check_user_active_restriction(
+            user.get("user_id"),
+            user.get("discord_id") or user.get("id"),
+        )
+        if active_rest:
+            return jsonify({
+                "ok": False,
+                "error": f"Your account is currently suspended ({active_rest['action_type']}). Reason: {active_rest.get('reason') or 'Policy violation'}.",
+                "code": "access_suspended",
+            }), 403
+    except Exception as rest_err:
+        logger.warning("[DodoQueue] Moderation check error: %s", rest_err)
+
     target = name.upper().strip()
     island_clean = clean_text(target)
     maintenance = get_maintenance_settings()
@@ -2913,6 +2929,22 @@ def api_island_drop(name):
     if not user:
         return jsonify({"success": False, "error": "Authentication required. Please log in first."}), 401
 
+    # Check for active moderation suspension
+    try:
+        from api.control_panel import check_user_active_restriction
+        active_rest = check_user_active_restriction(
+            user.get("user_id"),
+            user.get("discord_id") or user.get("id"),
+        )
+        if active_rest:
+            return jsonify({
+                "success": False,
+                "error": f"Your account is currently suspended ({active_rest['action_type']}). Reason: {active_rest.get('reason') or 'Policy violation'}.",
+                "code": "access_suspended",
+            }), 403
+    except Exception as rest_err:
+        logger.warning("[IslandDrop] Moderation check error: %s", rest_err)
+
     clean_name = re.sub(r"^sub\s+island\s+", "", (name or "").strip(), flags=re.IGNORECASE).strip().title()
 
     # Access check: mod/admin bypass, or user has island access
@@ -2965,6 +2997,22 @@ def api_island_villager_inject(name):
     user = _current_auth_user()
     if not user:
         return jsonify({"success": False, "error": "Authentication required. Please log in first."}), 401
+
+    # Check for active moderation suspension
+    try:
+        from api.control_panel import check_user_active_restriction
+        active_rest = check_user_active_restriction(
+            user.get("user_id"),
+            user.get("discord_id") or user.get("id"),
+        )
+        if active_rest:
+            return jsonify({
+                "success": False,
+                "error": f"Your account is currently suspended ({active_rest['action_type']}). Reason: {active_rest.get('reason') or 'Policy violation'}.",
+                "code": "access_suspended",
+            }), 403
+    except Exception as rest_err:
+        logger.warning("[VillagerInject] Moderation check error: %s", rest_err)
 
     clean_name = re.sub(r"^sub\s+island\s+", "", (name or "").strip(), flags=re.IGNORECASE).strip().title()
 
@@ -3906,14 +3954,55 @@ def submit_order_to_bot():
     )
     user_id = str(auth_user.get("user_id") or auth_user.get("id") or "")
 
-    # Require user to setup their server nickname in Character Name | Island Name format before ordering
+    # Check for active moderation suspension
+    try:
+        from api.control_panel import check_user_active_restriction
+        active_rest = check_user_active_restriction(
+            auth_user.get("user_id"),
+            auth_user.get("discord_id") or auth_user.get("id"),
+        )
+        if active_rest:
+            return jsonify({
+                "success": False,
+                "error": f"Your account is currently suspended ({active_rest['action_type']}). Reason: {active_rest.get('reason') or 'Policy violation'}.",
+                "code": "access_suspended",
+            }), 403
+    except Exception as rest_err:
+        logger.warning("[OrderSubmit] Moderation check error: %s", rest_err)
+
+    # Require user to setup their server nickname or register their In-Game Character before ordering
     if not auth_user.get("is_admin") and user_id not in ("bot_system", ""):
         current_nick = str(auth_user.get("nickname") or "").strip()
         candidate_nick = str(data.get("username") or data.get("display_name") or current_nick).strip()
-        if not is_valid_acnh_nickname(candidate_nick) and not is_valid_acnh_nickname(current_nick):
+
+        # Check if user has a registered In-Game Character
+        saved_char = None
+        from utils.unified_auth import resolve_all_user_ids
+        cand_user_ids = resolve_all_user_ids(auth_user)
+        if cand_user_ids:
+            char_db = get_db()
+            try:
+                placeholders = ",".join("?" for _ in cand_user_ids)
+                saved_char = char_db.execute(
+                    f"""
+                    SELECT ign, island_name FROM user_saved_characters
+                    WHERE user_id IN ({placeholders}) AND TRIM(ign) != ''
+                    ORDER BY is_default DESC, updated_at DESC LIMIT 1
+                    """,
+                    cand_user_ids,
+                ).fetchone()
+            finally:
+                char_db.close()
+
+        if saved_char and (saved_char["ign"] or "").strip():
+            char_ign = (saved_char["ign"] or "").strip()
+            char_island = (saved_char["island_name"] or "").strip()
+            if not is_valid_acnh_nickname(candidate_nick) and not is_valid_acnh_nickname(current_nick):
+                username = f"{char_ign} | {char_island}" if char_island else char_ign
+        elif not is_valid_acnh_nickname(candidate_nick) and not is_valid_acnh_nickname(current_nick):
             return jsonify({
                 "success": False,
-                "error": "You must set your Discord server nickname to 'Character Name | Island Name' before ordering.",
+                "error": "You must register your In-Game Character (IGN & Island) in your Profile Settings or set your Discord server nickname to 'Character Name | Island Name' before ordering.",
                 "code": "NICKNAME_REQUIRED",
             }), 400
 
@@ -4910,23 +4999,35 @@ def api_user_favorite_islands():
 def api_user_characters():
     """Get or save authenticated user in-game characters."""
     auth_user = _current_auth_user()
-    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
-    if not user_id:
-        client_header = request.headers.get("x-client-id") or ""
-        ip = request.remote_addr or "127.0.0.1"
-        user_id = f"client_{client_header}_{ip}"[:64]
+    from utils.unified_auth import resolve_all_user_ids
+    cand_user_ids = resolve_all_user_ids(auth_user) if auth_user else []
+    if not cand_user_ids:
+        user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+        if not user_id:
+            client_header = request.headers.get("x-client-id") or ""
+            ip = request.remote_addr or "127.0.0.1"
+            user_id = f"client_{client_header}_{ip}"[:64]
+        cand_user_ids = [user_id]
+
+    primary_uid = cand_user_ids[0]
 
     conn = get_db()
     try:
         if request.method == "GET":
+            placeholders = ",".join("?" for _ in cand_user_ids)
             rows = conn.execute(
-                "SELECT * FROM user_saved_characters WHERE user_id = ? ORDER BY is_default DESC, updated_at DESC",
-                (user_id,)
+                f"SELECT * FROM user_saved_characters WHERE user_id IN ({placeholders}) ORDER BY is_default DESC, updated_at DESC",
+                cand_user_ids,
             ).fetchall()
             characters = []
+            seen_ids = set()
             for r in rows:
+                c_id = r["id"]
+                if c_id in seen_ids:
+                    continue
+                seen_ids.add(c_id)
                 characters.append({
-                    "id": r["id"],
+                    "id": c_id,
                     "ign": r["ign"],
                     "islandName": r["island_name"],
                     "title": r["title"] or "Island Resident",
@@ -4937,19 +5038,20 @@ def api_user_characters():
                 })
             return jsonify({"ok": True, "characters": characters})
 
-        # POST: Save character list
+        # POST: Save character list (up to 3 slots)
         data = request.get_json(silent=True) or {}
         char_list = data.get("characters") if isinstance(data, dict) else data
         if not isinstance(char_list, list):
             char_list = [data] if isinstance(data, dict) and data.get("ign") else []
 
         now_iso = datetime.utcnow().isoformat()
-        # Clear existing and replace with new state
-        conn.execute("DELETE FROM user_saved_characters WHERE user_id = ?", (user_id,))
-        for idx, item in enumerate(char_list[:10]):
+        # Clear existing across all candidate alias IDs and replace with new state
+        del_ph = ",".join("?" for _ in cand_user_ids)
+        conn.execute(f"DELETE FROM user_saved_characters WHERE user_id IN ({del_ph})", cand_user_ids)
+        for idx, item in enumerate(char_list[:3]):
             c_id = str(item.get("id") or f"char_{int(time.time()*1000)}_{idx}")
-            ign = str(item.get("ign") or "").strip()[:32]
-            island = str(item.get("islandName") or item.get("island_name") or "").strip()[:32]
+            ign = str(item.get("ign") or "").strip()[:10]
+            island = str(item.get("islandName") or item.get("island_name") or "").strip()[:10]
             if not ign:
                 continue
             title = str(item.get("title") or "Island Resident").strip()[:40]
@@ -4961,10 +5063,10 @@ def api_user_characters():
                 INSERT OR REPLACE INTO user_saved_characters
                 (user_id, id, ign, island_name, title, icon, is_default, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, c_id, ign, island, title, icon, is_def, created_at, now_iso))
+            """, (primary_uid, c_id, ign, island, title, icon, is_def, created_at, now_iso))
 
         conn.commit()
-        return jsonify({"ok": True, "success": True, "count": len(char_list)})
+        return jsonify({"ok": True, "success": True, "count": min(len(char_list), 3)})
     except Exception as exc:
         logger.warning("Error in user_characters API: %s", exc)
         return jsonify({"ok": False, "error": str(exc)}), 500

@@ -7,10 +7,13 @@ sub-millisecond cached telemetry for web requests—completely decoupled from Di
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -24,6 +27,7 @@ logger = logging.getLogger("SysBotTelemetry")
 # Cache mapping island_name -> live state dict
 _TELEMETRY_CACHE: Dict[str, Dict[str, Any]] = {}
 _LAST_EVENT_IDS: Dict[str, int] = {}
+_SENT_WEBHOOK_EVENT_IDS: set[tuple[str, int]] = set()
 _CACHE_LOCK = threading.Lock()
 
 _WORKER_THREAD: Optional[threading.Thread] = None
@@ -108,13 +112,97 @@ def ensure_telemetry_schema() -> None:
 def _is_sub_island(island_name: str) -> bool:
     """Check if an island is in the 20 Sub Island tier list."""
     clean = (island_name or "").strip().lower()
-    canonical_sub = [
+    canonical_sub = {
         "hiraya", "tagumpay", "bahaghari", "alapaap", "bituin",
         "lakan", "galak", "aruga", "likha", "dalisay",
         "marahuyo", "diwa", "bonita", "gabay", "dakila",
         "kalangitan", "malaya", "pangarap", "giliw", "adhika",
-    ]
-    return clean in canonical_sub
+    }
+    cfg_sub = {str(n).strip().lower() for n in (getattr(Config, "SUB_ISLANDS", []) or [])}
+    return (clean in canonical_sub) or (clean in cfg_sub)
+
+
+def _format_flight_timestamp(raw_ts: Any) -> str:
+    """
+    Format event timestamp as: [YYYY-MM-DD hh:mm:ss am/pm]
+    Example: 2026-10-10 01:47:12 am
+    """
+    now = datetime.now()
+    if not raw_ts:
+        return now.strftime("%Y-%m-%d %I:%M:%S %p").lower()
+    if isinstance(raw_ts, (int, float)):
+        try:
+            return datetime.fromtimestamp(raw_ts).strftime("%Y-%m-%d %I:%M:%S %p").lower()
+        except Exception:
+            return now.strftime("%Y-%m-%d %I:%M:%S %p").lower()
+    if isinstance(raw_ts, str):
+        try:
+            clean = raw_ts.strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone()
+            return dt.strftime("%Y-%m-%d %I:%M:%S %p").lower()
+        except Exception:
+            pass
+    return now.strftime("%Y-%m-%d %I:%M:%S %p").lower()
+
+
+def _is_recent_event(raw_ts: Any, max_age_seconds: int = 120) -> bool:
+    """Check if an event timestamp is within max_age_seconds of now."""
+    try:
+        now_ts = time.time()
+        if isinstance(raw_ts, (int, float)):
+            return (now_ts - float(raw_ts)) <= max_age_seconds
+        if isinstance(raw_ts, str):
+            clean = raw_ts.strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean)
+            ts = dt.timestamp() if dt.tzinfo is not None else dt.astimezone().timestamp()
+            return (now_ts - ts) <= max_age_seconds
+    except Exception:
+        pass
+    return False
+
+
+def send_sub_flight_webhook(content: str) -> None:
+    """Send sub island flight notification to configured Discord webhook asynchronously."""
+    url = (
+        getattr(Config, "SUB_FLIGHT_WEBHOOK_URL", "")
+        or os.getenv("SUB_FLIGHT_WEBHOOK_URL", "")
+        or getattr(Config, "DODO_LOG_WEBHOOK_URL", "")
+    )
+    if not url:
+        logger.debug("[SysBotTelemetry] No webhook configured for sub island flight logging.")
+        return
+
+    def _post_worker() -> None:
+        try:
+            payload = json.dumps({"content": content}).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "ChoBot-FlightWebhook/1.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status not in (200, 204):
+                    logger.warning("[SysBotTelemetry] Sub flight webhook returned HTTP %s", resp.status)
+                else:
+                    logger.info("[SysBotTelemetry] Sub flight webhook posted: %s", content)
+        except urllib.error.HTTPError as exc:
+            err_body = ""
+            try:
+                err_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            logger.warning("[SysBotTelemetry] Sub flight webhook HTTPError %s: %s", exc.code, err_body)
+        except Exception as exc:
+            logger.warning("[SysBotTelemetry] Sub flight webhook error: %s", exc)
+
+    t = threading.Thread(target=_post_worker, daemon=True, name="sub_flight_webhook_sender")
+    t.start()
 
 
 def parse_sysbot_visitors(status_data: Dict[str, Any]) -> tuple[int, list[str]]:
@@ -238,6 +326,53 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                         1,
                     ))
 
+                # Webhook notification for Sub Island flights (arrivals and departures)
+                if is_sub and evt_type in ("arrival", "departure"):
+                    should_notify = False
+                    if last_seen_id is not None:
+                        if evt_id > last_seen_id:
+                            should_notify = True
+                    else:
+                        # Cold bootstrap: only notify if the event is very fresh (< 120s)
+                        if _is_recent_event(evt_time, max_age_seconds=120):
+                            should_notify = True
+
+                    if should_notify:
+                        dedupe_key = (clean_name.lower(), evt_id)
+                        with _CACHE_LOCK:
+                            already_sent = dedupe_key in _SENT_WEBHOOK_EVENT_IDS
+                            if not already_sent:
+                                _SENT_WEBHOOK_EVENT_IDS.add(dedupe_key)
+                                if len(_SENT_WEBHOOK_EVENT_IDS) > 2000:
+                                    _SENT_WEBHOOK_EVENT_IDS.clear()
+                                    _SENT_WEBHOOK_EVENT_IDS.add(dedupe_key)
+
+                        if not already_sent:
+                            formatted_time = _format_flight_timestamp(evt_time)
+                            origin_clean = (origin or "").strip()
+                            if origin_clean.lower() in ("none", "null", "unknown"):
+                                origin_clean = ""
+
+                            if evt_type == "arrival":
+                                if player and origin_clean:
+                                    flight_msg = f"{player} from {origin_clean} is joining {clean_name}."
+                                elif player:
+                                    flight_msg = f"{player} is joining {clean_name}."
+                                elif msg:
+                                    flight_msg = msg.strip() if msg.strip().endswith(".") else f"{msg.strip()}."
+                                else:
+                                    flight_msg = f"A visitor is joining {clean_name}."
+                                send_sub_flight_webhook(f"> [{formatted_time}] 🛬 {flight_msg}")
+
+                            elif evt_type == "departure":
+                                if player:
+                                    flight_msg = f"{player} has departed from {clean_name}"
+                                elif msg:
+                                    flight_msg = msg.strip().rstrip(".")
+                                else:
+                                    flight_msg = f"A visitor has departed from {clean_name}"
+                                send_sub_flight_webhook(f"> [{formatted_time}] 🛫 {flight_msg}")
+
             with _CACHE_LOCK:
                 _LAST_EVENT_IDS[clean_name.lower()] = new_last_id
 
@@ -258,6 +393,10 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                         """, visits_to_insert)
             except Exception as exc:
                 logger.debug(f"[SysBotTelemetry] Ingest error for {clean_name}: {exc}")
+        else:
+            if last_seen_id is None:
+                with _CACHE_LOCK:
+                    _LAST_EVENT_IDS[clean_name.lower()] = 0
 
     return cached_entry
 

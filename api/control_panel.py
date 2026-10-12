@@ -345,6 +345,26 @@ def compute_identity_match_score(
     return score
 
 
+def is_sub_island_destination(destination: str | None, island_type: str | None = None) -> bool:
+    """Check if destination is an official Sub-Island (VIP/Subscriber island)."""
+    if (island_type or "").strip().lower() == "free":
+        return False
+
+    dest_clean = clean_text(destination or "").lower()
+    if not dest_clean:
+        return False
+
+    try:
+        from utils.island_access import _CANONICAL_SUB_ISLANDS
+        canonical_sub_keys = {k.lower() for k in _CANONICAL_SUB_ISLANDS.keys()}
+    except Exception:
+        canonical_sub_keys = set()
+
+    sub_set = {clean_text(name).lower() for name in (getattr(Config, "SUB_ISLANDS", []) or [])}
+
+    return (dest_clean in sub_set) or (dest_clean in canonical_sub_keys)
+
+
 def get_user_characters_with_aliases(
     user_id: str | None,
     saved_chars_by_user: dict[str, list[dict]],
@@ -682,6 +702,40 @@ def correlate_single_flight(
                     runner_ups.insert(0, best_candidate)
                 best_candidate = fallback_cand
 
+    is_sub = is_sub_island_destination(flight.get("destination"), flight.get("island_type"))
+
+    # FREE ISLAND FLIGHTS:
+    # Public / free islands do not require Dodo reveals on the website or active saved character profiles.
+    # Therefore, NEVER flag free island flyers.
+    if not is_sub:
+        if best_candidate:
+            best_candidate["is_flagged"] = False
+            best_candidate["flag_reason"] = None
+            best_candidate["flag_message"] = None
+            best_candidate["match_status"] = "verified"
+            eff_score = max(best_candidate.get("score", 0), 95)
+            best_candidate["score"] = eff_score
+            return {
+                "match_status": "verified",
+                "match_score": eff_score,
+                "is_flagged": False,
+                "flag_reason": None,
+                "flag_message": None,
+                "primary_candidate": best_candidate,
+                "runner_ups": runner_ups[:3],
+            }
+        return {
+            "match_status": "verified",
+            "match_score": 100,
+            "is_flagged": False,
+            "flag_reason": None,
+            "flag_message": None,
+            "primary_candidate": None,
+            "runner_ups": [],
+        }
+
+    # SUB-ISLAND FLIGHTS:
+    # Strictly enforce active character registration & Dodo reveal verification.
     if best_candidate:
         return {
             "match_status": best_candidate["match_status"],
@@ -884,6 +938,15 @@ def get_live_feed():
             dest_key = clean_text(flight["destination"]).lower()
             relevant_reveals = reveals_by_island.get(dest_key, [])
 
+            # Determine whether this flight is to an official Sub-Island or Free Island
+            is_sub = is_sub_island_destination(flight["destination"], flight["island_type"])
+            if not is_sub and flight["island_type"] != "free":
+                flight["island_type"] = "free"
+                try:
+                    conn.execute("UPDATE island_visits SET island_type = 'free' WHERE id = ?", (flight["id"],))
+                except Exception:
+                    pass
+
             # Run correlation against active saved characters & candidate reveals
             correlation = correlate_single_flight(
                 flight,
@@ -900,7 +963,9 @@ def get_live_feed():
             strike_count = get_user_strike_count(revealer_id, strikes_map, user_alias_map)
 
             # Smart next-step recommendation
-            if correlation["is_flagged"]:
+            if not is_sub:
+                suggestion = f"Free Island flight ({flight['destination']}) • Public access permitted (No Dodo reveal needed)"
+            elif correlation["is_flagged"]:
                 suggestion = correlation["flag_message"]
             elif strike_count == 0:
                 suggestion = "Verified active character • Clean record • Recommend: Authorise"
