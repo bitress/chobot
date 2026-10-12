@@ -58,6 +58,11 @@ def ensure_telemetry_schema() -> None:
             logger.debug("Telemetry index note (island_events_name_ts): %s", exc)
 
         try:
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_island_event_id ON island_events_log(island_name, event_id);")
+        except Exception as exc:
+            logger.debug("Telemetry unique index note (uq_island_event_id): %s", exc)
+
+        try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_island_events_type ON island_events_log(event_type);")
         except Exception as exc:
             logger.debug("Telemetry index note (island_events_type): %s", exc)
@@ -84,6 +89,18 @@ def ensure_telemetry_schema() -> None:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_island_visits_dest_ts ON island_visits(destination, timestamp);")
         except Exception as exc:
             logger.debug("Telemetry index note (island_visits_dest_ts): %s", exc)
+
+        # Seed _LAST_EVENT_IDS from existing records to prevent duplicate event ingestion on restart
+        try:
+            cur = conn.execute("SELECT island_name, MAX(event_id) as max_id FROM island_events_log GROUP BY island_name")
+            for row in cur.fetchall():
+                isl = (row["island_name"] or "").strip().lower()
+                m_id = row["max_id"]
+                if isl and m_id is not None:
+                    with _CACHE_LOCK:
+                        _LAST_EVENT_IDS[isl] = int(m_id)
+        except Exception as exc:
+            logger.debug("Telemetry last event id seed note: %s", exc)
 
     _DB_INITIALIZED = True
 
@@ -227,25 +244,18 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
             try:
                 with connect_db() as conn:
                     if new_events_to_insert:
-                        conn.execute("""
-                            INSERT INTO island_events_log
+                        conn.executemany("""
+                            INSERT OR IGNORE INTO island_events_log
                             (event_id, island_name, event_type, message, player, origin_island, dodo_code, network_id, timestamp)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, new_events_to_insert[0])
-                        for row in new_events_to_insert[1:]:
-                            conn.execute("""
-                                INSERT INTO island_events_log
-                                (event_id, island_name, event_type, message, player, origin_island, dodo_code, network_id, timestamp)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, row)
+                        """, new_events_to_insert)
 
                     if visits_to_insert:
-                        for v in visits_to_insert:
-                            conn.execute("""
-                                INSERT INTO island_visits
-                                (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_island_access)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, v)
+                        conn.executemany("""
+                            INSERT INTO island_visits
+                            (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_island_access)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, visits_to_insert)
             except Exception as exc:
                 logger.debug(f"[SysBotTelemetry] Ingest error for {clean_name}: {exc}")
 

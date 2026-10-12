@@ -844,6 +844,8 @@ def _fire_dodo_webhook(
     island_name: str,
     dodo_code: str,
     channel_id: str = None,
+    char_ign: str = "",
+    char_island: str = "",
 ) -> None:
     """POST a Discord webhook message in the background."""
     url = Config.DODO_LOG_WEBHOOK_URL
@@ -862,23 +864,30 @@ def _fire_dodo_webhook(
     island_url_name = urllib.parse.quote(island_name)
     island_link = f"https://www.chopaeng.com/island/{island_url_name.lower()}"
 
+    fields = [
+        {
+            "name": "Member",
+            "value": f"{display_name} (<@{user_id}>)",
+        },
+        {
+            "name": "Island",
+            "value": (
+                (f"<#{channel_id}>" if channel_id else "") +
+                f"\n[View Island]({island_link})"
+            ),
+        }
+    ]
+    if char_ign:
+        fields.append({
+            "name": "In-Game Character",
+            "value": f"IGN: **{char_ign}**" + (f" | Island: **{char_island}**" if char_island else ""),
+        })
+
     embed = {
         "title": f"Dodo Code Revealed",
         "color": 0x2ecc71,  # Emerald Green
         "description": f"<@{user_id}> has revealed the Dodo code for island <#{channel_id}>",
-        "fields": [
-            {
-                "name": "Member",
-                "value": f"{display_name} (<@{user_id}>)",
-            },
-            {
-                "name": "Island",
-                "value": (
-                    (f"<#{channel_id}>" if channel_id else "") +
-                    f"\n[View Island]({island_link})"
-                ),
-            }
-        ],
+        "fields": fields,
         "image": {
             "url": "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
         },
@@ -1309,7 +1318,7 @@ ALLOWED_STATUSES = {"ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE"}
 
 @app.route("/api/auth/discord")
 def auth_discord():
-    """Initiate Discord OAuth flow for public website subscribers (disabled for now)."""
+    """Initiate Discord OAuth flow for public website users & subscribers."""
     return_to = request.args.get("return_to", "")
     allowed_hosts = {"www.chopaeng.com", "chopaeng.com", "localhost"}
     try:
@@ -1319,19 +1328,22 @@ def auth_discord():
     except Exception:
         return_to = "https://www.chopaeng.com/auth/callback"
 
-    # Discord login is disabled for now (redirects with error, code kept intact below)
-    if not getattr(Config, "DISCORD_LOGIN_ENABLED", False):
+    if not getattr(Config, "DISCORD_LOGIN_ENABLED", True):
         return redirect(f"{return_to}?error=discord_login_disabled")
 
     if not Config.DISCORD_CLIENT_ID:
-        return jsonify({"error": "Discord OAuth not configured"}), 503
-    if not Config.GUILD_ID:
-        return jsonify({"error": "GUILD_ID not set"}), 503
+        return jsonify({"error": "Discord OAuth not configured (DISCORD_CLIENT_ID missing)"}), 503
 
     state = _secrets.token_hex(16)
     session["sub_oauth_state"] = state
     session["sub_return_to"] = return_to
-    callback_url = url_for("auth_callback", _external=True)
+
+    # Capture linking token if existing user is connecting their Discord
+    auth_token = request.args.get("auth_token", "")
+    if auth_token:
+        session["sub_link_token"] = auth_token
+
+    callback_url = getattr(Config, "DISCORD_REDIRECT_URI", "") or url_for("auth_callback", _external=True)
     params = urllib.parse.urlencode({
         "client_id":     Config.DISCORD_CLIENT_ID,
         "redirect_uri":  callback_url,
@@ -1344,135 +1356,178 @@ def auth_discord():
 
 @app.route("/api/auth/callback")
 def auth_callback():
-    """Handle Discord OAuth callback for public website subscribers."""
-    error = request.args.get("error")
-    if error:
-        return_to = session.pop("sub_return_to", "https://www.chopaeng.com/auth/callback")
-        return redirect(f"{return_to}?error={urllib.parse.quote(error)}")
-
-    state = request.args.get("state", "")
-    if state != session.pop("sub_oauth_state", ""):
-        return_to = session.pop("sub_return_to", "https://www.chopaeng.com/auth/callback")
-        return redirect(f"{return_to}?error=invalid_state")
-
-    code = request.args.get("code", "")
-    return_to = session.pop("sub_return_to", "https://www.chopaeng.com/auth/callback")
-
-    callback_url = url_for("auth_callback", _external=True)
+    """Handle Discord OAuth callback: authenticate user, sync guild roles, and provision unified account."""
+    return_to = session.get("sub_return_to", "https://www.chopaeng.com/auth/callback")
     try:
-        token_body = urllib.parse.urlencode({
-            "client_id":     Config.DISCORD_CLIENT_ID,
-            "client_secret": Config.DISCORD_CLIENT_SECRET,
-            "grant_type":    "authorization_code",
-            "code":          code,
-            "redirect_uri":  callback_url,
-        }).encode()
-        resp = discord_request(
-            "https://discord.com/api/oauth2/token",
-            data=token_body,
-            headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": _DISCORD_UA},
-            method="POST",
-            timeout=10,
-        )
-        token_resp = json.loads(resp.body)
-    except Exception:
-        return redirect(f"{return_to}?error=token_exchange_failed")
+        error = request.args.get("error")
+        if error:
+            session.pop("sub_return_to", None)
+            return redirect(f"{return_to}?error={urllib.parse.quote(error)}")
 
-    access_token = token_resp.get("access_token")
-    if not access_token:
-        return redirect(f"{return_to}?error=no_access_token")
+        state = request.args.get("state", "")
+        if state != session.pop("sub_oauth_state", ""):
+            session.pop("sub_return_to", None)
+            return redirect(f"{return_to}?error=invalid_state")
 
-    # Fetch guild member record (roles + permissions)
-    member_roles: list[str] = []
-    member_nickname = ""
-    member_joined_at = ""
-    member_perms = 0
-    try:
-        resp = discord_request(
-            f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
-            headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
-            timeout=10,
-        )
-        member_data = json.loads(resp.body)
-        member_roles = [str(r) for r in member_data.get("roles", [])]
-        member_nickname = (member_data.get("nick") or "").strip()
-        member_joined_at = str(member_data.get("joined_at") or "")
+        code = request.args.get("code", "")
+        return_to = session.pop("sub_return_to", return_to)
+        link_token = session.pop("sub_link_token", None)
+
+        callback_url = getattr(Config, "DISCORD_REDIRECT_URI", "") or url_for("auth_callback", _external=True)
         try:
-            member_perms = int(member_data.get("permissions", "0") or 0)
-        except (ValueError, TypeError):
-            member_perms = 0
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return redirect(f"{return_to}?error=not_a_member")
-        return redirect(f"{return_to}?error=roles_fetch_failed")
-    except Exception:
-        return redirect(f"{return_to}?error=roles_fetch_failed")
-
-    # Fetch basic user info
-    discord_user_id = discord_username = discord_avatar_url = ""
-    discord_global_name = discord_account_name = ""
-    try:
-        resp = discord_request(
-            "https://discord.com/api/users/@me",
-            headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
-            timeout=10,
-        )
-        user_data = json.loads(resp.body)
-        discord_user_id  = str(user_data.get("id", ""))
-        discord_global_name = str(user_data.get("global_name") or "")
-        discord_account_name = str(user_data.get("username") or "")
-        discord_username = (
-            member_nickname
-            or discord_global_name
-            or discord_account_name
-        )
-        avatar_hash = user_data.get("avatar") or ""
-        if discord_user_id and avatar_hash and re.fullmatch(r"(?:a_)?[0-9a-f]{32}", avatar_hash):
-            discord_avatar_url = (
-                f"https://cdn.discordapp.com/avatars/{discord_user_id}/{avatar_hash}.png?size=64"
+            token_body = urllib.parse.urlencode({
+                "client_id":     Config.DISCORD_CLIENT_ID,
+                "client_secret": Config.DISCORD_CLIENT_SECRET,
+                "grant_type":    "authorization_code",
+                "code":          code,
+                "redirect_uri":  callback_url,
+            }).encode()
+            resp = discord_request(
+                "https://discord.com/api/oauth2/token",
+                data=token_body,
+                headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": _DISCORD_UA},
+                method="POST",
+                timeout=10,
             )
-    except Exception:
-        pass
+            token_resp = json.loads(resp.body)
+        except Exception as exc:
+            logger.warning(f"Discord OAuth token exchange error: {exc}")
+            return redirect(f"{return_to}?error=token_exchange_failed")
 
-    is_admin = bool(member_perms & _ADMINISTRATOR_PERM)
-    token = make_auth_token({
-        "user_id":   discord_user_id,
-        "username":  discord_username,
-        "discord_name": discord_global_name or discord_account_name,
-        "global_name": discord_global_name,
-        "account_name": discord_account_name,
-        "nickname":  member_nickname,
-        "joined_at": member_joined_at,
-        "joined_timestamp": _iso_to_unix(member_joined_at),
-        "avatar":    discord_avatar_url,
-        "roles":     member_roles,
-        "is_admin":  is_admin,
-        "is_mod":    _is_mod(member_roles) or is_admin,
-        "discord_checked_at": int(time.time()),
-    })
+        access_token = token_resp.get("access_token")
+        if not access_token:
+            return redirect(f"{return_to}?error=no_access_token")
 
-    is_mod_user = _is_mod(member_roles) or is_admin
-    login_event = {
-        "user_id": discord_user_id,
-        "username": discord_username,
-        "discord_name": discord_global_name or discord_account_name,
-        "global_name": discord_global_name,
-        "account_name": discord_account_name,
-        "nickname": member_nickname,
-        "avatar": discord_avatar_url,
-        "roles": member_roles,
-        "role_count": len(member_roles),
-        "is_admin": is_admin,
-        "is_mod": is_mod_user,
-        "ip_address": _client_ip(),
-        "user_agent": request.headers.get("User-Agent", ""),
-        "return_to": return_to,
-        "created_at": datetime.utcnow().isoformat() + "Z",
-    }
-    _record_website_login(login_event)
+        # 1. Fetch user identity (@me) - works universally for any Discord account without intents
+        discord_user_id = discord_username = discord_avatar_url = ""
+        discord_global_name = discord_account_name = ""
+        user_data = {}
+        try:
+            resp = discord_request(
+                "https://discord.com/api/users/@me",
+                headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
+                timeout=10,
+            )
+            user_data = json.loads(resp.body)
+            discord_user_id = str(user_data.get("id", ""))
+            discord_global_name = str(user_data.get("global_name") or "")
+            discord_account_name = str(user_data.get("username") or "")
+            discord_username = discord_global_name or discord_account_name or f"User-{discord_user_id[-4:]}"
+            avatar_hash = user_data.get("avatar") or ""
+            if discord_user_id and avatar_hash and re.fullmatch(r"(?:a_)?[0-9a-f]{32}", avatar_hash):
+                discord_avatar_url = (
+                    f"https://cdn.discordapp.com/avatars/{discord_user_id}/{avatar_hash}.png?size=64"
+                )
+        except Exception as exc:
+            logger.warning(f"Failed to fetch Discord user profile: {exc}")
+            return redirect(f"{return_to}?error=profile_fetch_failed")
 
-    logger.info("Website OAuth login: user=%s is_mod=%s", discord_username, is_mod_user)
-    return redirect(f"{return_to}?token={urllib.parse.quote(token)}")
+        if not discord_user_id:
+            return redirect(f"{return_to}?error=profile_fetch_failed")
+
+        # 2. Optionally fetch guild member record (roles + permissions) - non-blocking!
+        member_roles: list[str] = []
+        member_nickname = ""
+        member_joined_at = ""
+        member_perms = 0
+        if Config.GUILD_ID:
+            try:
+                resp = discord_request(
+                    f"https://discord.com/api/users/@me/guilds/{Config.GUILD_ID}/member",
+                    headers={"Authorization": f"Bearer {access_token}", "User-Agent": _DISCORD_UA},
+                    timeout=10,
+                )
+                member_data = json.loads(resp.body)
+                member_roles = [str(r) for r in member_data.get("roles", [])]
+                member_nickname = (member_data.get("nick") or "").strip()
+                member_joined_at = str(member_data.get("joined_at") or "")
+                if member_nickname:
+                    discord_username = member_nickname
+                try:
+                    member_perms = int(member_data.get("permissions", "0") or 0)
+                except (ValueError, TypeError):
+                    member_perms = 0
+            except Exception as exc:
+                # User is not in server or guild scope not allowed: log note, but still allow login smoothly!
+                logger.debug(f"Guild member fetch note for {discord_user_id}: {exc}")
+
+        is_admin = bool(member_perms & _ADMINISTRATOR_PERM)
+        is_mod_user = _is_mod(member_roles) or is_admin
+
+        # 3. JIT Provision or Link with Unified Accounts
+        active_user_id = None
+        if link_token:
+            try:
+                tok_payload = get_auth_user(link_token)
+                if tok_payload:
+                    active_user_id = tok_payload.get("user_id")
+            except Exception:
+                pass
+
+        from utils.unified_auth import provision_or_link_unified_account
+        unified_user = None
+        try:
+            unified_user = provision_or_link_unified_account(
+                provider="discord",
+                provider_user_id=discord_user_id,
+                username=discord_username,
+                avatar=discord_avatar_url,
+                email=user_data.get("email"),
+                roles=member_roles,
+                sub_tier=None,
+                raw_profile=user_data,
+                active_user_id=active_user_id,
+            )
+        except Exception as exc:
+            logger.warning(f"Unified auth JIT provisioning error: {exc}")
+
+        user_payload = {
+            "user_id":   discord_user_id,
+            "username":  discord_username,
+            "discord_name": discord_global_name or discord_account_name,
+            "global_name": discord_global_name,
+            "account_name": discord_account_name,
+            "nickname":  member_nickname,
+            "joined_at": member_joined_at,
+            "joined_timestamp": _iso_to_unix(member_joined_at),
+            "avatar":    discord_avatar_url,
+            "roles":     member_roles,
+            "is_admin":  is_admin,
+            "is_mod":    is_mod_user,
+            "discord_checked_at": int(time.time()),
+        }
+        if unified_user and isinstance(unified_user, dict):
+            for k, v in unified_user.items():
+                if v is not None:
+                    user_payload[k] = v
+            user_payload["user_id"] = unified_user.get("user_id") or discord_user_id
+
+        token = make_auth_token(user_payload)
+
+        login_event = {
+            "user_id": discord_user_id,
+            "username": discord_username,
+            "discord_name": discord_global_name or discord_account_name,
+            "global_name": discord_global_name,
+            "account_name": discord_account_name,
+            "nickname": member_nickname,
+            "avatar": discord_avatar_url,
+            "roles": member_roles,
+            "role_count": len(member_roles),
+            "is_admin": is_admin,
+            "is_mod": is_mod_user,
+            "ip_address": _client_ip(),
+            "user_agent": request.headers.get("User-Agent", ""),
+            "return_to": return_to,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        }
+        _record_website_login(login_event)
+
+        logger.info("Website Discord login: user=%s is_mod=%s roles=%d", discord_username, is_mod_user, len(member_roles))
+        return redirect(f"{return_to}?token={urllib.parse.quote(token)}")
+    except Exception as exc:
+        logger.exception("Discord OAuth callback unhandled exception: %s", exc)
+        return redirect(f"{return_to}?error=auth_internal_error")
 
 
 @app.route("/api/auth/me")
@@ -1503,6 +1558,21 @@ def auth_me():
     if provider and provider != "unified" and provider not in connected:
         connected.append(provider)
 
+    sub_rules_accepted = False
+    try:
+        conn = get_db()
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS user_sub_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)")
+            from utils.unified_auth import resolve_all_user_ids
+            cand_uids = resolve_all_user_ids(user)
+            placeholders = ",".join("?" for _ in cand_uids)
+            sub_rules_row = conn.execute(f"SELECT accepted_at FROM user_sub_rules_accepted WHERE user_id IN ({placeholders}) LIMIT 1", cand_uids).fetchone()
+            sub_rules_accepted = bool(sub_rules_row)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
     return jsonify({
         "logged_in":  True,
         "user_id":    user["user_id"],
@@ -1521,6 +1591,7 @@ def auth_me():
         "provider":   user.get("provider", "native" if user.get("has_password") else "discord"),
         "has_password": bool(user.get("has_password", False)),
         "is_subscriber": bool(user.get("is_subscriber", False)),
+        "sub_rules_accepted": sub_rules_accepted,
     })
 
 
@@ -1753,10 +1824,62 @@ def reveal_dodo(name):
     is_viewer_admin = bool(user.get("is_admin"))
     is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
 
+    # Check that user has saved at least one In-Game Character (IGN & Island Name)
+    from utils.unified_auth import resolve_all_user_ids
+    cand_user_ids = resolve_all_user_ids(user)
+
+    saved_char = None
+    if cand_user_ids:
+        char_db = get_db()
+        try:
+            placeholders = ",".join("?" for _ in cand_user_ids)
+            saved_char = char_db.execute(
+                f"""
+                SELECT ign, island_name FROM user_saved_characters
+                WHERE user_id IN ({placeholders}) AND TRIM(ign) != ''
+                ORDER BY is_default DESC, updated_at DESC LIMIT 1
+                """,
+                cand_user_ids,
+            ).fetchone()
+        finally:
+            char_db.close()
+
+    if not saved_char or not (saved_char["ign"] or "").strip():
+        _log_dodo_reveal_attempt(user, target, "denied", "missing_saved_character", channel_id=channel_id)
+        _record_api_audit_event("dodo_reveal_denied", target, {"reason": "missing_saved_character", "channel_id": channel_id})
+        return jsonify({
+            "error": "You must save your In-Game Character (IGN & Island Name) first before you can reveal Dodo codes. Please add your character in your <a href=\"/profile\">Profile Settings</a>.",
+            "code": "missing_saved_character",
+            "requires_character": True,
+        }), 403
+
     if _is_member_island(island_cat, island_type) and not effective_required_roles and not is_viewer_mod:
         _log_dodo_reveal_attempt(user, target, "denied", "no_member_roles_configured", channel_id=channel_id)
         _record_api_audit_event("dodo_reveal_denied", target, {"reason": "no_member_roles_configured", "channel_id": channel_id})
         return jsonify({"error": "Subscriber roles are not configured for this island"}), 403
+
+    # Enforce one-time Sub Rules acceptance for member islands
+    if _is_member_island(island_cat, island_type) and not is_viewer_admin:
+        sub_rules_ok = False
+        if cand_user_ids:
+            rule_db = get_db()
+            try:
+                rule_ph = ",".join("?" for _ in cand_user_ids)
+                rule_row = rule_db.execute(
+                    f"SELECT accepted_at FROM user_sub_rules_accepted WHERE user_id IN ({rule_ph}) LIMIT 1",
+                    cand_user_ids,
+                ).fetchone()
+                sub_rules_ok = bool(rule_row)
+            finally:
+                rule_db.close()
+        if not sub_rules_ok:
+            _log_dodo_reveal_attempt(user, target, "denied", "missing_sub_rules_acceptance", channel_id=channel_id)
+            _record_api_audit_event("dodo_reveal_denied", target, {"reason": "missing_sub_rules_acceptance", "channel_id": channel_id})
+            return jsonify({
+                "error": "You must review and accept the Subscriber Island Rules (:c1_: to :c8_:) first before revealing Dodo codes.",
+                "code": "missing_sub_rules_acceptance",
+                "requires_sub_rules": True,
+            }), 403
 
     # Check for general island access role first
     island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
@@ -1856,6 +1979,8 @@ def reveal_dodo(name):
             target,
             dodo_code,
             channel_id,
+            saved_char["ign"] if saved_char else "",
+            saved_char["island_name"] if saved_char else "",
         ),
         daemon=True,
     ).start()
@@ -3918,22 +4043,29 @@ def get_user_order_history():
     if not auth_user:
         return jsonify({"success": False, "error": "Authentication required", "orders": []}), 401
 
-    user_id = str(request.args.get("user_id") or auth_user.get("user_id") or auth_user.get("id") or "")
-    if not user_id:
+    from utils.unified_auth import resolve_all_user_ids
+    cand_ids = resolve_all_user_ids(auth_user)
+    req_uid = str(request.args.get("user_id") or "").strip()
+    if req_uid and req_uid not in cand_ids:
+        cand_ids.extend(resolve_all_user_ids(req_uid))
+    cand_ids = list(dict.fromkeys([c for c in cand_ids if c]))
+
+    if not cand_ids:
         return jsonify({"success": True, "orders": []})
 
     limit = min(int(request.args.get("limit", 50)), 100)
     db = get_db()
     try:
+        placeholders = ",".join("?" for _ in cand_ids)
         rows = db.execute(
-            """SELECT id, user_id, username, command, order_type, status,
+            f"""SELECT id, user_id, username, command, order_type, status,
                       queue_position, estimated_minutes, dodo_code, island_name,
                       message, created_at, updated_at
                FROM order_bot_queue
-               WHERE user_id = ?
+               WHERE user_id IN ({placeholders})
                ORDER BY created_at DESC
                LIMIT ?""",
-            (user_id, limit),
+            tuple(cand_ids) + (limit,),
         ).fetchall()
 
         orders = []
@@ -4794,6 +4926,47 @@ def api_user_characters():
         return jsonify({"ok": True, "success": True, "count": len(char_list)})
     except Exception as exc:
         logger.warning("Error in user_characters API: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/user/sub-rules", methods=["GET", "POST"])
+@app.route("/api/profile/sub-rules", methods=["GET", "POST"])
+def api_user_sub_rules():
+    """Check or mark the one-time acceptance of Sub Member Rules."""
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"ok": False, "error": "Authentication required"}), 401
+
+    from utils.unified_auth import resolve_all_user_ids
+    cand_ids = resolve_all_user_ids(auth_user)
+
+    conn = get_db()
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS user_sub_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)")
+        if request.method == "POST":
+            now_iso = datetime.utcnow().isoformat()
+            for uid in set(cand_ids):
+                conn.execute(
+                    "INSERT OR REPLACE INTO user_sub_rules_accepted (user_id, accepted_at) VALUES (?, ?)",
+                    (uid, now_iso),
+                )
+            conn.commit()
+            return jsonify({"ok": True, "accepted": True, "accepted_at": now_iso})
+
+        placeholders = ",".join("?" for _ in cand_ids)
+        row = conn.execute(
+            f"SELECT accepted_at FROM user_sub_rules_accepted WHERE user_id IN ({placeholders}) LIMIT 1",
+            cand_ids,
+        ).fetchone()
+        return jsonify({
+            "ok": True,
+            "accepted": bool(row),
+            "accepted_at": row["accepted_at"] if row else None,
+        })
+    except Exception as exc:
+        logger.warning("Error in api_user_sub_rules: %s", exc)
         return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
         conn.close()

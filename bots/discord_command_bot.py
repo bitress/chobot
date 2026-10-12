@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from itertools import cycle
 from pathlib import Path
+from typing import Any, Optional
 
 import discord
 import requests
@@ -31,7 +32,6 @@ from utils.nookipedia import NookipediaClient
 from utils.nickname_format import is_valid_acnh_nickname, nickname_warning_for, NICKNAME_FORMAT_EXAMPLE
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
 from utils.ops_status import create_sqlite_backup, get_maintenance_settings
-from chorder import ChorderCog, OrderPanelView, build_panel_embed, sysbot, resolve_guild_icon
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -792,6 +792,28 @@ class FindResultView(discord.ui.View):
         for child in self.children:
             if hasattr(child, "disabled"):
                 child.disabled = True
+
+
+def resolve_guild_icon(target_or_interaction: Any, bot: Optional[Any] = None) -> Optional[str]:
+    """Safely extract a static PNG guild icon URL that renders properly in Discord embed footers and thumbnails."""
+    guild = None
+    if hasattr(target_or_interaction, "icon") and target_or_interaction.icon:
+        guild = target_or_interaction
+    elif hasattr(target_or_interaction, "guild") and target_or_interaction.guild:
+        guild = target_or_interaction.guild
+    elif hasattr(target_or_interaction, "channel") and hasattr(target_or_interaction.channel, "guild"):
+        guild = target_or_interaction.channel.guild
+
+    if not guild and bot and getattr(Config, "GUILD_ID", None):
+        guild = bot.get_guild(Config.GUILD_ID)
+
+    if guild and guild.icon:
+        try:
+            return guild.icon.with_format("png").url
+        except Exception:
+            return guild.icon.url
+
+    return getattr(Config, "DEFAULT_PFP", None)
 
 
 # ── Find Station Panel ────────────────────────────────────────────────────────
@@ -2715,24 +2737,18 @@ class DiscordCommandCog(commands.Cog):
 
     @app_commands.command(
         name="place",
-        description="Deploy an interactive station panel (find or chorder) to any channel",
+        description="Deploy the interactive Find Station panel to any channel",
     )
     @app_commands.describe(
-        panel="Which station to place: 'find' (Find Station) or 'chorder' (Order Station)",
         channel="The channel to deploy into (defaults to current channel)",
     )
-    @app_commands.choices(panel=[
-        app_commands.Choice(name="find (Find Station — Search Items & Villagers)", value="find"),
-        app_commands.Choice(name="chorder (ChOrder Station — Custom Order Bot & Cart)", value="chorder"),
-    ])
     @app_commands.default_permissions(manage_channels=True)
     async def slash_place(
         self,
         interaction: discord.Interaction,
-        panel: str,
         channel: discord.TextChannel | None = None,
     ):
-        """Deploy either the Find Station or the Chorder Order Station to a channel."""
+        """Deploy the Find Station to a channel."""
         perms = getattr(interaction.user, "guild_permissions", None)
         if perms and not (perms.manage_channels or perms.administrator):
             await interaction.response.send_message(
@@ -2746,42 +2762,20 @@ class DiscordCommandCog(commands.Cog):
             await interaction.response.send_message("❌ Target channel not found.", ephemeral=True)
             return
 
-        panel_type = panel.lower().strip()
         await interaction.response.defer(ephemeral=True)
         try:
             guild_icon = resolve_guild_icon(target or interaction, self.bot)
-
-            if panel_type == "find":
-                embed = build_find_panel_embed(guild_icon=guild_icon)
-                view = FindPanelView()
-                await target.send(embed=embed, view=view)
-                await interaction.followup.send(
-                    f"✅ **Find Station** deployed to {target.mention}!", ephemeral=True
-                )
-                logger.info(f"[DISCORD] Find Station placed in #{target.name} by {interaction.user}")
-
-            elif panel_type in ("chorder", "order"):
-                bot_status = await sysbot.get_bot_status()
-                island_name = bot_status.get("island_name", getattr(Config, "ORDER_BOT_ISLAND", "Sinta"))
-                is_online = bot_status.get("is_running", True)
-                embed = build_panel_embed(island_name, is_online, guild_icon=guild_icon)
-                view = OrderPanelView()
-                await target.send(embed=embed, view=view)
-                await interaction.followup.send(
-                    f"✅ **ChOrder Station** deployed to {target.mention}!", ephemeral=True
-                )
-                logger.info(f"[DISCORD] ChOrder Station placed in #{target.name} by {interaction.user}")
-
-            else:
-                await interaction.followup.send(
-                    f"❌ Unknown panel type '{panel}'. Please select either `find` or `chorder`.",
-                    ephemeral=True,
-                )
-        except Exception as exc:
-            logger.exception(f"[slash_place] Error placing {panel_type}: {exc}")
+            embed = build_find_panel_embed(guild_icon=guild_icon)
+            view = FindPanelView()
+            await target.send(embed=embed, view=view)
             await interaction.followup.send(
-                f"❌ Failed to place station panel in {target.mention}. Check bot permissions.",
-                ephemeral=True,
+                f"✅ **Find Station** deployed to {target.mention}!", ephemeral=True
+            )
+            logger.info(f"[DISCORD] Find Station placed in #{target.name} by {interaction.user}")
+        except Exception as exc:
+            logger.exception(f"[DISCORD] Failed to place Find Station: {exc}")
+            await interaction.followup.send(
+                f"❌ Failed to place station: {exc}", ephemeral=True
             )
 
     @commands.hybrid_command(name="help")
@@ -3998,8 +3992,8 @@ class DiscordCommandCog(commands.Cog):
         island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
         island_bot = None
         if island_bot_role:
-            # If role has no members, the cache may be stale — try chunking once
-            if not island_bot_role.members and not guild.chunked:
+            # If role has no members, the cache may be stale — try chunking once (only if members intent enabled)
+            if not island_bot_role.members and not guild.chunked and getattr(self.intents, "members", False):
                 try:
                     await guild.chunk(cache=True)
                 except Exception:
@@ -5480,11 +5474,23 @@ class DiscordCommandCog(commands.Cog):
 class DiscordCommandBot(commands.Bot):
     """Main Discord bot with command functionality"""
 
-    def __init__(self, data_manager, load_command_cog: bool = True):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
-        intents.presences = True
+    def __init__(self, data_manager, load_command_cog: bool = True, intents: Optional[discord.Intents] = None):
+        if intents is None:
+            intents = discord.Intents.default()
+            # Privileged intents are optional and opt-in so the bot does not require
+            # privileged gateway intents enabled in the Discord Developer Portal to run.
+            if os.getenv("DISCORD_ALL_INTENTS", "0").lower() in ("1", "true", "yes"):
+                intents.message_content = True
+                intents.members = True
+                intents.presences = True
+            else:
+                if os.getenv("DISCORD_MESSAGE_CONTENT_INTENT", "0").lower() in ("1", "true", "yes"):
+                    intents.message_content = True
+                if os.getenv("DISCORD_MEMBERS_INTENT", "0").lower() in ("1", "true", "yes"):
+                    intents.members = True
+                if os.getenv("DISCORD_PRESENCES_INTENT", "0").lower() in ("1", "true", "yes"):
+                    intents.presences = True
+
         super().__init__(command_prefix='!', intents=intents, help_command=None)
 
         self.data_manager = data_manager
@@ -5552,8 +5558,6 @@ class DiscordCommandBot(commands.Bot):
 
         if self._load_command_cog:
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
-            await self.add_cog(ChorderCog(self))
-            self.add_view(OrderPanelView())
             self.add_view(FindPanelView())
 
         # Add global interaction check for slash commands in FIND_BOT_CHANNEL

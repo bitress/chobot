@@ -388,24 +388,46 @@ def drop_sub_island():
 
 @sub_islands_bp.route("/api/islands/<name>/clean", methods=["POST"])
 def clean_sub_island(name: str):
+    auth_user = _get_auth_from_request()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required"}), 401
+
     clean = _clean_island_name(name)
+    if not _user_has_island_access(auth_user, clean):
+        return jsonify({"success": False, "error": f"You do not have access to {clean}."}), 403
+
+    from utils.sysbot_api import get_island_sysbot_client
+    client = get_island_sysbot_client(clean, timeout=3)
+    resp = client.submit_clean_sync()
+
     return jsonify({
         "success": True,
         "island": clean,
         "message": f"Clean command dispatched to {clean}.",
+        "sysbot_response": resp,
     })
 
 
 @sub_islands_bp.route("/api/islands/<name>/reset", methods=["POST"])
 def reset_sub_island(name: str):
+    auth_user = _get_auth_from_request()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required"}), 401
+
     clean = _clean_island_name(name)
-    state = _get_island_state(clean)
-    new_dodo = "".join(random.choices("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", k=5))
-    state["dodo_code"] = new_dodo
+    is_mod_or_admin = bool(auth_user.get("is_mod") or auth_user.get("is_admin"))
+    if not is_mod_or_admin and not _user_has_island_access(auth_user, clean):
+        return jsonify({"success": False, "error": f"You do not have access to reset {clean}."}), 403
+
+    from utils.sysbot_api import get_island_sysbot_client
+    client = get_island_sysbot_client(clean, timeout=5)
+    resp = client.refresh_dodo_sync()
+
     return jsonify({
         "success": True,
         "island": clean,
-        "new_dodo": new_dodo,
+        "message": f"Reset / Dodo refresh dispatched to {clean}.",
+        "sysbot_response": resp,
     })
 
 

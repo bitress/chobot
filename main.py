@@ -51,7 +51,6 @@ VALID_SERVICES = {
     "all", "flask",
     "twitch", "twitch-find",
     "discord", "discord-find", "flight-logger",
-    "chorder", "order-bot",
     "migrate-mariadb",
 }
 
@@ -60,11 +59,9 @@ SERVICE_DESCRIPTIONS = {
     "flask":          "Flask API server",
     "twitch":         "Twitch bot (full, all commands)",
     "twitch-find":    "Twitch bot (find/search commands only)",
-    "discord":        "Discord bot (all cogs including FlightLogger & Chorder)",
+    "discord":        "Discord bot (all cogs including FlightLogger)",
     "discord-find":   "Discord bot (find/search cogs only)",
     "flight-logger":  "Discord bot with FlightLoggerCog only",
-    "chorder":        "Standalone SysBot Order Bot & Order Panel (/orderpanel)",
-    "order-bot":      "Alias for chorder",
     "migrate-mariadb": "Migrate local SQLite database to MariaDB",
 }
 
@@ -299,7 +296,7 @@ def expand_services(requested: Set[str]) -> dict:
         "flask": "flask" in requested,
         "twitch": "twitch" in requested,
         "twitch_find_only": "twitch-find" in requested,
-        "discord": bool({"discord", "chorder", "order-bot"} & requested),
+        "discord": "discord" in requested,
         "discord_find_only": "discord-find" in requested,
         "flight_logger_only": "flight-logger" in requested,
     }

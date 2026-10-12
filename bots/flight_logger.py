@@ -2263,8 +2263,13 @@ class FlightLoggerCog(commands.Cog):
 
     async def _safe_wait_until_ready(self):
         """Wait until bot cache and connection are fully initialized without raising RuntimeError."""
-        while not self.bot.is_ready():
-            await asyncio.sleep(0.5)
+        while getattr(self.bot, "_ready", None) is discord.utils.MISSING:
+            await asyncio.sleep(0.05)
+        if hasattr(self.bot, "wait_until_ready") and callable(self.bot.wait_until_ready):
+            await self.bot.wait_until_ready()
+        else:
+            while not self.bot.is_ready():
+                await asyncio.sleep(0.5)
 
     def cog_unload(self):
         self.fetch_islands_task.cancel()
@@ -2720,7 +2725,13 @@ class FlightLoggerCog(commands.Cog):
     async def on_message(self, message):
         if message.author == self.bot.user or message.channel.id != Config.FLIGHT_LISTEN_CHANNEL_ID:
             return
-        match = self.join_pattern.search(message.content)
+        content = message.content or ""
+        if not content and message.embeds:
+            for emb in message.embeds:
+                content = f"{emb.title or ''} {emb.description or ''}".strip()
+                if content:
+                    break
+        match = self.join_pattern.search(content)
         if match:
             ign_raw    = match.group(1).strip()
             island_raw = match.group(2).strip()
@@ -2729,14 +2740,15 @@ class FlightLoggerCog(commands.Cog):
             isl_norm = self.normalize_identity_text(island_raw)
             self.last_processed = discord.utils.utcnow()
             asyncio.create_task(
-                self._process_flight_log(message.guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message.jump_url, message.content)
+                self._process_flight_log(message.guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message.jump_url, content)
             )
 
     async def _process_flight_log(self, guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message_url=None, message_content=None):
         """Background task: look up members then run the full log pipeline."""
         try:
             target_guild = guild or self.bot.get_guild(Config.GUILD_ID)
-            if target_guild and not target_guild.chunked:
+            has_members_intent = bool(getattr(getattr(self.bot, "intents", None), "members", False))
+            if target_guild and not target_guild.chunked and has_members_intent:
                 async with self._chunk_lock:
                     if not target_guild.chunked:
                         try:
@@ -2746,6 +2758,18 @@ class FlightLoggerCog(commands.Cog):
             found = await asyncio.to_thread(
                 self.find_matching_members, target_guild, ign_norm, isl_norm
             )
+            # If no cached member matched and members intent is disabled, query Gateway
+            # for the in-game name (allowed without privileged Server Members intent).
+            if not found and target_guild and hasattr(target_guild, "query_members"):
+                try:
+                    queried = await target_guild.query_members(query=ign_raw, limit=20, cache=True)
+                    if queried:
+                        found = await asyncio.to_thread(
+                            self.find_matching_members, target_guild, ign_norm, isl_norm
+                        )
+                except Exception as query_err:
+                    logger.debug(f"[FLIGHT] Member query fallback for {ign_raw}: {query_err}")
+
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub', message_url=message_url, message_content=message_content)
         except Exception as e:
             logger.error(f"[FLIGHT] Pipeline error for {ign_raw}: {e}", exc_info=True)
@@ -4041,7 +4065,13 @@ class FreeFlightCog(commands.Cog, name="FreeFlightLogger"):
             return
         if message.author == self.bot.user or message.channel.id != listen_id:
             return
-        match = JOIN_PATTERN.search(message.content)
+        content = message.content or ""
+        if not content and message.embeds:
+            for emb in message.embeds:
+                content = f"{emb.title or ''} {emb.description or ''}".strip()
+                if content:
+                    break
+        match = JOIN_PATTERN.search(content)
         if not match:
             return
 

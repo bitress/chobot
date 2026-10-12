@@ -179,8 +179,9 @@ class Config:
     SYSBOT_URL_TEMPLATE = os.getenv("SYSBOT_URL_TEMPLATE", "").strip()
     SYSBOT_ISLAND_URLS: dict[str, str] = {}
 
-    # Multi-Provider OAuth Settings (Twitch, Patreon, YouTube)
-    DISCORD_LOGIN_ENABLED = os.getenv("DISCORD_LOGIN_ENABLED", "false").lower() in ("true", "1", "yes")
+    # Multi-Provider OAuth Settings (Discord, Twitch, Patreon, YouTube)
+    DISCORD_LOGIN_ENABLED = os.getenv("DISCORD_LOGIN_ENABLED", "true").lower() in ("true", "1", "yes")
+    DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "")
     TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "")
     TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET", "")
     TWITCH_BROADCASTER_ID = os.getenv("TWITCH_BROADCASTER_ID", "")

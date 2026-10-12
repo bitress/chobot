@@ -685,8 +685,14 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
     # De-duplicate and expand roles
     unique_roles = expand_roles(aggregated_roles)
 
+    discord_id = (
+        connected_accounts.get("discord", {}).get("id")
+        or (unified_uid if primary_provider == "discord" else None)
+    )
+
     return {
         "user_id": unified_uid,
+        "discord_id": discord_id,
         "username": primary_name or unified_uid,
         "discord_name": primary_name or unified_uid,
         "email": primary_email,
@@ -702,3 +708,88 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
         "connected_accounts": connected_accounts,
         "auth_checked_at": int(time.time()),
     }
+
+
+def get_user_candidate_ids(user: Optional[Dict[str, Any]]) -> List[str]:
+    """
+    Return all possible user identifiers for a given user payload:
+    - Primary user_id (e.g. cp_usr_... or Discord snowflake)
+    - id
+    - discord_id
+    - Connected account provider IDs (e.g. discord snowflake, twitch id, patreon id)
+    - Provider-prefixed IDs (e.g. 'discord_123456789')
+    """
+    if not user or not isinstance(user, dict):
+        return []
+
+    cands: list[str] = []
+    for k in ("user_id", "id", "discord_id"):
+        val = user.get(k)
+        if val:
+            cands.append(str(val).strip())
+
+    connected = user.get("connected_accounts") or {}
+    if isinstance(connected, dict):
+        for p_name, p_data in connected.items():
+            uid = ""
+            if isinstance(p_data, dict):
+                uid = str(p_data.get("id") or "").strip()
+            elif p_data:
+                uid = str(p_data).strip()
+
+            if uid:
+                cands.append(uid)
+                cands.append(f"{p_name}_{uid}")
+
+    return list(dict.fromkeys([c for c in cands if c]))
+
+
+def resolve_all_user_ids(user_or_id: Any) -> List[str]:
+    """
+    Resolve all linked user IDs (unified UID, discord_id, twitch_id, etc.)
+    accepting either a user dict or a raw user_id string.
+    """
+    cands: list[str] = []
+    if isinstance(user_or_id, dict):
+        cands.extend(get_user_candidate_ids(user_or_id))
+    elif user_or_id:
+        cands.append(str(user_or_id).strip())
+
+    cp_uids = [c for c in cands if c.startswith("cp_usr_")]
+    if cp_uids:
+        try:
+            with connect_db() as conn:
+                for cp_uid in cp_uids:
+                    rows = conn.execute(
+                        "SELECT provider, provider_user_id FROM user_provider_links WHERE unified_user_id = ?",
+                        (cp_uid,),
+                    ).fetchall()
+                    for r in rows:
+                        p_uid = str(r["provider_user_id"] or "").strip()
+                        if p_uid:
+                            cands.append(p_uid)
+                            cands.append(f"{r['provider']}_{p_uid}")
+        except Exception:
+            pass
+    elif cands and not cp_uids:
+        try:
+            with connect_db() as conn:
+                for uid in list(cands):
+                    rows = conn.execute(
+                        "SELECT unified_user_id FROM user_provider_links WHERE provider_user_id = ?",
+                        (uid,),
+                    ).fetchall()
+                    for r in rows:
+                        u_uid = str(r["unified_user_id"] or "").strip()
+                        if u_uid:
+                            cands.append(u_uid)
+        except Exception:
+            pass
+
+    return list(dict.fromkeys([c for c in cands if c]))
+
+
+# Backward-compatible alias
+provision_unified_account_jit = provision_or_link_unified_account
+
+

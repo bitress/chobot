@@ -572,18 +572,28 @@ class SysBotClient:
         def _query():
             orders = []
             try:
+                from utils.unified_auth import resolve_all_user_ids
+                cands = resolve_all_user_ids(str(user_id))
+            except Exception:
+                cands = [str(user_id)]
+
+            if not cands:
+                cands = [str(user_id)]
+
+            placeholders = ",".join("?" for _ in cands)
+            try:
                 with connect_db() as conn:
                     cur = conn.execute(
-                        """
+                        f"""
                         SELECT id, user_id, username, command, order_type, status,
                                queue_position, estimated_minutes, dodo_code, island_name,
                                message, created_at, updated_at
                         FROM order_bot_queue
-                        WHERE user_id = ?
+                        WHERE user_id IN ({placeholders})
                         ORDER BY created_at DESC
                         LIMIT ?
                         """,
-                        (str(user_id), limit),
+                        tuple(cands) + (limit,),
                     )
                     rows = cur.fetchall()
                     for r in rows:
