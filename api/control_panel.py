@@ -137,27 +137,37 @@ def init_control_panel_db() -> None:
 # -----------------------------------------------------------------------------
 
 def check_user_active_restriction(user_id: str | None, discord_id: str | None = None) -> dict | None:
-    """Check if user has an active ban or unexpired timeout.
+    """Check if user has an active ban or unexpired timeout across all candidate IDs.
     Returns restriction dict or None.
     """
-    if not user_id and not discord_id:
+    from utils.unified_auth import resolve_all_user_ids
+
+    cand_ids = []
+    if user_id:
+        cand_ids.extend(resolve_all_user_ids(user_id))
+    if discord_id and str(discord_id) not in cand_ids:
+        cand_ids.extend(resolve_all_user_ids(discord_id))
+    cand_ids = list(dict.fromkeys([str(c).strip() for c in cand_ids if c]))
+
+    if not cand_ids:
         return None
 
     now = int(time.time())
     try:
         conn = connect_db()
         try:
+            placeholders = ",".join("?" for _ in cand_ids)
             cur = conn.execute(
-                """
+                f"""
                 SELECT id, user_id, discord_id, action_type, reason, created_at, expires_at
                 FROM user_moderation_status
                 WHERE is_active = 1
-                  AND (user_id = ? OR (discord_id IS NOT NULL AND discord_id = ?))
+                  AND (user_id IN ({placeholders}) OR (discord_id IS NOT NULL AND discord_id IN ({placeholders})))
                   AND (expires_at IS NULL OR expires_at > ?)
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                (str(user_id or ""), str(discord_id or ""), now),
+                cand_ids + cand_ids + [now],
             )
             row = cur.fetchone()
             if row:
@@ -288,6 +298,42 @@ def normalize_text_for_comparison(text: str | None) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
+def compare_identity(
+    flight_ign: str | None,
+    flight_origin: str | None,
+    target_ign: str | None,
+    target_island: str | None,
+) -> tuple[int, bool, bool]:
+    """Calculate 0-100 match score and boolean flags for IGN & Island.
+    Returns: (score, ign_matched, isl_matched)
+    """
+    f_ign = normalize_text_for_comparison(flight_ign)
+    f_isl = normalize_text_for_comparison(flight_origin)
+    t_ign = normalize_text_for_comparison(target_ign)
+    t_isl = normalize_text_for_comparison(target_island)
+
+    if not f_ign or not t_ign:
+        return 0, False, False
+
+    ign_ratio = fuzz.ratio(f_ign, t_ign)
+    isl_ratio = fuzz.ratio(f_isl, t_isl) if (f_isl and t_isl) else 50
+
+    ign_matched = (f_ign == t_ign) or (ign_ratio >= 88)
+    isl_matched = ((f_isl == t_isl) or (isl_ratio >= 80)) if (f_isl and t_isl) else False
+
+    if ign_matched and isl_matched:
+        exact_score = 100 if (f_ign == t_ign and f_isl == t_isl) else 95
+        return exact_score, True, True
+
+    # Weight character name 70%, origin island 30%
+    weighted = int((ign_ratio * 0.70) + (isl_ratio * 0.30))
+
+    if ign_matched and isl_ratio >= 70:
+        return max(weighted, 90), True, False
+
+    return min(100, max(0, weighted)), ign_matched, isl_matched
+
+
 def compute_identity_match_score(
     flight_ign: str,
     flight_origin: str,
@@ -295,28 +341,180 @@ def compute_identity_match_score(
     target_island: str,
 ) -> int:
     """Calculate 0-100 match score using Levenshtein fuzzy comparison."""
-    f_ign = normalize_text_for_comparison(flight_ign)
-    f_isl = normalize_text_for_comparison(flight_origin)
-    t_ign = normalize_text_for_comparison(target_ign)
-    t_isl = normalize_text_for_comparison(target_island)
+    score, _, _ = compare_identity(flight_ign, flight_origin, target_ign, target_island)
+    return score
 
-    if not f_ign or not t_ign:
+
+def get_user_characters_with_aliases(
+    user_id: str | None,
+    saved_chars_by_user: dict[str, list[dict]],
+    user_alias_map: dict[str, set[str]],
+) -> list[dict]:
+    """Retrieve saved characters for a user ID, resolving any linked provider aliases."""
+    if not user_id:
+        return []
+    uid_str = str(user_id).strip()
+    if uid_str in saved_chars_by_user:
+        return saved_chars_by_user[uid_str]
+    for alias in user_alias_map.get(uid_str, set()):
+        if alias in saved_chars_by_user:
+            return saved_chars_by_user[alias]
+    return []
+
+
+def get_user_strike_count(
+    user_id: str | None,
+    strikes_map: dict[str, int],
+    user_alias_map: dict[str, set[str]],
+) -> int:
+    """Get total active warnings/strikes for user across all aliases."""
+    if not user_id:
         return 0
+    uid_str = str(user_id).strip()
+    if uid_str in strikes_map:
+        return strikes_map[uid_str]
+    for alias in user_alias_map.get(uid_str, set()):
+        if alias in strikes_map:
+            return strikes_map[alias]
+    return 0
 
-    if f_ign == t_ign and f_isl == t_isl:
-        return 100
 
-    ign_ratio = fuzz.ratio(f_ign, t_ign)
-    isl_ratio = fuzz.ratio(f_isl, t_isl) if f_isl and t_isl else 50
+def get_user_active_restriction(
+    user_id: str | None,
+    active_restr_by_user: dict[str, dict],
+    user_alias_map: dict[str, set[str]],
+) -> dict | None:
+    """Get active TIMEOUT/BAN restriction record for user across aliases."""
+    if not user_id:
+        return None
+    uid_str = str(user_id).strip()
+    if uid_str in active_restr_by_user:
+        return active_restr_by_user[uid_str]
+    for alias in user_alias_map.get(uid_str, set()):
+        if alias in active_restr_by_user:
+            return active_restr_by_user[alias]
+    return None
 
-    # Weight character name 70%, origin island 30%
-    weighted = int((ign_ratio * 0.70) + (isl_ratio * 0.30))
 
-    # Exact IGN match with missing or slight island difference gives at least 90
-    if f_ign == t_ign and isl_ratio >= 70:
-        return max(weighted, 90)
+def evaluate_flight_against_user_characters(
+    flight_ign: str,
+    flight_origin: str,
+    user_chars: list[dict],
+) -> dict:
+    """
+    Match an incoming flight against a user's saved in-game characters.
+    The character MUST be the active one (is_default == True).
+    If it matches an inactive slot, has island mismatch, IGN mismatch, or no saved character,
+    flag it accordingly with appropriate match_status and capped match_score (< 90).
+    """
+    if not user_chars:
+        return {
+            "is_flagged": True,
+            "flag_reason": "no_saved_character",
+            "flag_message": "Flagged: Revealing user has no saved in-game character in profile",
+            "match_status": "mismatch",
+            "score": 0,
+            "matched_character": None,
+            "active_character": None,
+        }
 
-    return min(100, max(0, weighted))
+    # Find the active / default character slot
+    active_char = next((c for c in user_chars if c.get("is_default")), None)
+
+    if active_char:
+        act_score, act_ign_match, act_isl_match = compare_identity(
+            flight_ign, flight_origin, active_char["ign"], active_char["island_name"]
+        )
+
+        # Full match with active character
+        if act_ign_match and act_isl_match:
+            return {
+                "is_flagged": False,
+                "flag_reason": None,
+                "flag_message": None,
+                "match_status": "verified",
+                "score": max(act_score, 90),
+                "matched_character": active_char,
+                "active_character": active_char,
+            }
+
+        # Did NOT fully match active character. Check if it matches an INACTIVE saved character slot!
+        inactive_match = None
+        for c in user_chars:
+            if c.get("is_default"):
+                continue
+            c_score, c_ign_match, c_isl_match = compare_identity(
+                flight_ign, flight_origin, c["ign"], c["island_name"]
+            )
+            if c_ign_match and c_isl_match:
+                inactive_match = (c, max(c_score, 70), "full")
+                break
+            elif c_ign_match and (inactive_match is None or c_score > inactive_match[1]):
+                inactive_match = (c, c_score, "ign_only")
+
+        if inactive_match:
+            # Matched inactive character slot! Must flag it!
+            matched_c, raw_score, _ = inactive_match
+            return {
+                "is_flagged": True,
+                "flag_reason": "inactive_character",
+                "flag_message": f"Flagged: Inactive character slot '{matched_c['ign']}' used. Active character is '{active_char['ign']}'.",
+                "match_status": "partial",
+                "score": min(raw_score, 75),  # Capped strictly < 90 so bulk-authorise will NOT approve
+                "matched_character": matched_c,
+                "active_character": active_char,
+            }
+
+        # Check partial relation to active character:
+        if act_ign_match:
+            return {
+                "is_flagged": True,
+                "flag_reason": "island_mismatch",
+                "flag_message": f"Flagged: Island mismatch (Flight: '{flight_origin}' vs Active: '{active_char['island_name']}').",
+                "match_status": "partial",
+                "score": min(act_score, 70),
+                "matched_character": active_char,
+                "active_character": active_char,
+            }
+        elif act_isl_match:
+            return {
+                "is_flagged": True,
+                "flag_reason": "ign_mismatch",
+                "flag_message": f"Flagged: IGN mismatch (Flight: '{flight_ign}' vs Active: '{active_char['ign']}').",
+                "match_status": "partial",
+                "score": min(act_score, 50),
+                "matched_character": active_char,
+                "active_character": active_char,
+            }
+        else:
+            return {
+                "is_flagged": True,
+                "flag_reason": "character_mismatch",
+                "flag_message": f"Flagged: Neither IGN nor Island match active character '{active_char['ign']}' from '{active_char['island_name']}'.",
+                "match_status": "mismatch",
+                "score": min(act_score, 25),
+                "matched_character": active_char,
+                "active_character": active_char,
+            }
+
+    # No character marked is_default (user has saved characters, but none set as active)
+    best_c = None
+    best_c_score = 0
+    for c in user_chars:
+        c_score, c_ign, c_isl = compare_identity(flight_ign, flight_origin, c["ign"], c["island_name"])
+        if c_score > best_c_score:
+            best_c_score = c_score
+            best_c = c
+
+    return {
+        "is_flagged": True,
+        "flag_reason": "no_active_character",
+        "flag_message": "Flagged: User has saved characters, but none is set as active.",
+        "match_status": "partial" if best_c_score >= 70 else "mismatch",
+        "score": min(best_c_score, 60) if best_c_score >= 70 else 20,
+        "matched_character": best_c or user_chars[0],
+        "active_character": None,
+    }
 
 
 def correlate_single_flight(
@@ -324,95 +522,185 @@ def correlate_single_flight(
     reveals_for_dest: list[dict],
     saved_chars_by_user: dict[str, list[dict]],
     all_saved_chars: list[dict],
+    user_alias_map: dict[str, set[str]] | None = None,
+    strikes_map: dict[str, int] | None = None,
+    active_restr_by_user: dict[str, dict] | None = None,
 ) -> dict:
     """Correlate a flight against candidate Dodo reveals and saved character slots."""
     f_ign = flight["ign"]
     f_isl = flight["origin_island"]
     f_ts = flight["timestamp"]
 
-    best_candidate: dict | None = None
-    best_score = 0
-    runner_ups: list[dict] = []
+    user_alias_map = user_alias_map or {}
+    strikes_map = strikes_map or {}
+    active_restr_by_user = active_restr_by_user or {}
+
+    candidates: list[dict] = []
 
     # 1. Search against recent Dodo reveals for this destination island
     for rev in reveals_for_dest:
-        rev_user_id = rev["user_id"]
+        rev_user_id = str(rev["user_id"])
         rev_created_at = rev["created_at"]
         time_diff = abs(f_ts - rev_created_at)
 
-        # Look up saved character slots for this revealing user
-        user_chars = saved_chars_by_user.get(rev_user_id, [])
+        # Look up saved character slots for this revealing user with alias support
+        user_chars = get_user_characters_with_aliases(rev_user_id, saved_chars_by_user, user_alias_map)
 
-        max_char_score = 0
-        best_char = None
-        for char in user_chars:
-            score = compute_identity_match_score(f_ign, f_isl, char["ign"], char["island_name"])
-            if score > max_char_score:
-                max_char_score = score
-                best_char = char
+        eval_res = evaluate_flight_against_user_characters(f_ign, f_isl, user_chars)
 
-        # Also check against Discord nickname if formatted as "IGN | Island"
-        nick_score = 0
-        if rev.get("nickname"):
+        # Also check against Discord nickname if formatted as "IGN | Island" when no saved chars or low score
+        if (not user_chars or eval_res["score"] < 50) and rev.get("nickname"):
             parts = [p.strip() for p in rev["nickname"].replace("/", "|").split("|")]
             if len(parts) >= 2:
-                nick_score = compute_identity_match_score(f_ign, f_isl, parts[0], parts[1])
+                n_score, n_ign, n_isl = compare_identity(f_ign, f_isl, parts[0], parts[1])
             elif len(parts) == 1:
-                nick_score = fuzz.ratio(normalize_text_for_comparison(f_ign), normalize_text_for_comparison(parts[0]))
+                n_ign = fuzz.ratio(normalize_text_for_comparison(f_ign), normalize_text_for_comparison(parts[0])) >= 88
+                n_isl = False
+                n_score = 50 if n_ign else 0
+            else:
+                n_score, n_ign, n_isl = 0, False, False
 
-        effective_score = max(max_char_score, nick_score)
+            if n_ign:
+                eval_res = {
+                    "is_flagged": True,
+                    "flag_reason": "no_saved_character",
+                    "flag_message": f"Flagged: Discord nickname '{rev['nickname']}' matches, but character is not saved in profile.",
+                    "match_status": "partial",
+                    "score": min(n_score, 65),
+                    "matched_character": {
+                        "ign": parts[0],
+                        "island_name": parts[1] if len(parts) >= 2 else "",
+                        "is_default": False,
+                        "icon": "",
+                    },
+                    "active_character": None,
+                }
+
+        matched_char = eval_res.get("matched_character")
+        active_char = eval_res.get("active_character")
+        strikes = get_user_strike_count(rev_user_id, strikes_map, user_alias_map)
+        active_restr = get_user_active_restriction(rev_user_id, active_restr_by_user, user_alias_map)
 
         candidate_record = {
             "reveal_id": rev["id"],
             "user_id": rev_user_id,
             "username": rev.get("username", ""),
             "nickname": rev.get("nickname", ""),
-            "reveal_created_at": rev_created_at,
+            "ign": matched_char["ign"] if matched_char else (active_char["ign"] if active_char else ""),
+            "island_name": matched_char["island_name"] if matched_char else (active_char["island_name"] if active_char else ""),
+            "char_icon": matched_char.get("icon") if matched_char else (active_char.get("icon") if active_char else ""),
+            "char_default": bool(matched_char.get("is_default")) if matched_char else (bool(active_char.get("is_default")) if active_char else False),
+            "revealed_at": rev_created_at,
             "time_diff_seconds": time_diff,
-            "matched_character": best_char,
-            "score": effective_score,
+            "score": eval_res["score"],
+            "is_flagged": eval_res["is_flagged"],
+            "flag_reason": eval_res["flag_reason"],
+            "flag_message": eval_res["flag_message"],
+            "match_status": eval_res["match_status"],
+            "strikes": strikes,
+            "active_restriction": active_restr,
+            "channel_id": rev.get("channel_id"),
+            "message_url": rev.get("message_url"),
+            "matched_character": matched_char,
+            "active_character": active_char,
             "all_user_characters": user_chars,
         }
+        candidates.append(candidate_record)
 
-        if effective_score > best_score:
-            if best_candidate:
-                runner_ups.append(best_candidate)
-            best_score = effective_score
-            best_candidate = candidate_record
-        elif effective_score >= 60:
-            runner_ups.append(candidate_record)
+    # Sort reveals: unflagged (verified) first, then highest score, then closest in time
+    candidates.sort(
+        key=lambda c: (
+            0 if c["is_flagged"] else 1,
+            c["score"],
+            -c["time_diff_seconds"],
+        ),
+        reverse=True,
+    )
 
-    # 2. Fallback: If no Dodo reveal matched with score >= 70, check globally across all saved characters
-    if best_score < 70 and all_saved_chars:
+    best_candidate: dict | None = None
+    runner_ups: list[dict] = []
+
+    if candidates:
+        best_candidate = candidates[0]
+        runner_ups = candidates[1:4]
+
+    # 2. Fallback: If no Dodo reveals matched with score >= 70, check globally across all saved characters
+    if (not best_candidate or best_candidate["score"] < 70) and all_saved_chars:
+        global_match = None
+        global_best_score = 0
         for char in all_saved_chars:
-            g_score = compute_identity_match_score(f_ign, f_isl, char["ign"], char["island_name"])
-            if g_score > best_score:
-                best_score = g_score
-                best_candidate = {
-                    "reveal_id": None,
-                    "user_id": char["user_id"],
-                    "username": "Registered Member",
-                    "nickname": "",
-                    "reveal_created_at": None,
-                    "time_diff_seconds": None,
-                    "matched_character": char,
-                    "score": g_score,
-                    "all_user_characters": [char],
-                }
+            g_score, g_ign, g_isl = compare_identity(f_ign, f_isl, char["ign"], char["island_name"])
+            if g_score > global_best_score:
+                global_best_score = g_score
+                global_match = (char, g_score, g_ign, g_isl)
 
-    # Classify match status
-    if best_score >= 90:
-        match_status = "match"
-    elif best_score >= 70:
-        match_status = "partial"
-    else:
-        match_status = "mismatch"
+        if global_match and global_best_score >= 70:
+            char, g_score, g_ign, g_isl = global_match
+            is_act = bool(char.get("is_default"))
+            if is_act and g_ign and g_isl:
+                flag_reason = "missing_dodo_reveal"
+                flag_message = f"Flagged: Matched registered active character '{char['ign']}', but NO Dodo code reveal was logged in 40m window."
+                m_status = "partial"
+                eff_score = 65
+            elif not is_act:
+                flag_reason = "inactive_character_no_reveal"
+                flag_message = f"Flagged: Matched registered inactive slot '{char['ign']}' with no Dodo reveal."
+                m_status = "partial"
+                eff_score = 50
+            else:
+                flag_reason = "partial_match_no_reveal"
+                flag_message = f"Flagged: Partial match with registered '{char['ign']}', no Dodo reveal."
+                m_status = "partial"
+                eff_score = 45
+
+            fallback_cand = {
+                "reveal_id": None,
+                "user_id": str(char["user_id"]),
+                "username": "Registered Member",
+                "nickname": "",
+                "ign": char["ign"],
+                "island_name": char["island_name"],
+                "char_icon": char.get("icon"),
+                "char_default": is_act,
+                "revealed_at": None,
+                "time_diff_seconds": None,
+                "score": eff_score,
+                "is_flagged": True,
+                "flag_reason": flag_reason,
+                "flag_message": flag_message,
+                "match_status": m_status,
+                "strikes": get_user_strike_count(char["user_id"], strikes_map, user_alias_map),
+                "active_restriction": get_user_active_restriction(char["user_id"], active_restr_by_user, user_alias_map),
+                "channel_id": None,
+                "message_url": None,
+                "matched_character": char,
+                "active_character": char if is_act else None,
+                "all_user_characters": [char],
+            }
+            if not best_candidate or eff_score > best_candidate["score"]:
+                if best_candidate:
+                    runner_ups.insert(0, best_candidate)
+                best_candidate = fallback_cand
+
+    if best_candidate:
+        return {
+            "match_status": best_candidate["match_status"],
+            "match_score": best_candidate["score"],
+            "is_flagged": best_candidate["is_flagged"],
+            "flag_reason": best_candidate["flag_reason"],
+            "flag_message": best_candidate["flag_message"],
+            "primary_candidate": best_candidate,
+            "runner_ups": runner_ups[:3],
+        }
 
     return {
-        "match_status": match_status,
-        "match_score": best_score,
-        "primary_candidate": best_candidate,
-        "runner_ups": sorted(runner_ups, key=lambda r: r["score"], reverse=True)[:3],
+        "match_status": "unregistered",
+        "match_score": 0,
+        "is_flagged": True,
+        "flag_reason": "unregistered_flight",
+        "flag_message": f"Flagged: No Dodo reveal found for '{flight['destination']}' in the 40-minute window.",
+        "primary_candidate": None,
+        "runner_ups": [],
     }
 
 
@@ -534,6 +822,45 @@ def get_live_feed():
         )
         strikes_map = {str(row[0]): row[1] for row in cur.fetchall()}
 
+        # Fetch active restrictions (active TIMEOUT / BAN)
+        now_ts = int(time.time())
+        cur = conn.execute(
+            """
+            SELECT id, user_id, discord_id, action_type, reason, created_at, expires_at
+            FROM user_moderation_status
+            WHERE is_active = 1 AND (expires_at IS NULL OR expires_at > ?)
+            ORDER BY created_at DESC
+            """,
+            (now_ts,),
+        )
+        active_restr_by_user: dict[str, dict] = {}
+        for ar in cur.fetchall():
+            restr_dict = {
+                "id": ar[0],
+                "user_id": ar[1],
+                "discord_id": ar[2],
+                "action_type": ar[3],
+                "reason": ar[4],
+                "created_at": ar[5],
+                "expires_at": ar[6],
+            }
+            if ar[1]:
+                active_restr_by_user.setdefault(str(ar[1]), restr_dict)
+            if ar[2]:
+                active_restr_by_user.setdefault(str(ar[2]), restr_dict)
+
+        # Pre-build user alias mapping from user_provider_links
+        user_alias_map: dict[str, set[str]] = {}
+        try:
+            cur = conn.execute("SELECT provider_user_id, unified_user_id FROM user_provider_links")
+            for prow in cur.fetchall():
+                p_uid, u_uid = str(prow[0] or "").strip(), str(prow[1] or "").strip()
+                if p_uid and u_uid:
+                    user_alias_map.setdefault(p_uid, set()).add(u_uid)
+                    user_alias_map.setdefault(u_uid, set()).add(p_uid)
+        except Exception:
+            pass
+
         # Correlate each flight
         feed_items = []
         for row in flight_rows:
@@ -557,24 +884,43 @@ def get_live_feed():
             dest_key = clean_text(flight["destination"]).lower()
             relevant_reveals = reveals_by_island.get(dest_key, [])
 
-            # Run correlation
+            # Run correlation against active saved characters & candidate reveals
             correlation = correlate_single_flight(
-                flight, relevant_reveals, saved_chars_by_user, all_saved_chars
+                flight,
+                relevant_reveals,
+                saved_chars_by_user,
+                all_saved_chars,
+                user_alias_map,
+                strikes_map,
+                active_restr_by_user,
             )
 
             primary = correlation["primary_candidate"]
             revealer_id = primary["user_id"] if primary else (str(flight["user_id"]) if flight["user_id"] else "")
-            strike_count = strikes_map.get(revealer_id, 0)
+            strike_count = get_user_strike_count(revealer_id, strikes_map, user_alias_map)
 
             # Smart next-step recommendation
-            if strike_count == 0:
-                suggestion = "Clean record • Recommend: Authorise or Warn"
+            if correlation["is_flagged"]:
+                suggestion = correlation["flag_message"]
+            elif strike_count == 0:
+                suggestion = "Verified active character • Clean record • Recommend: Authorise"
             elif strike_count == 1:
-                suggestion = "1 prior warning • Recommend: 24h Timeout"
+                suggestion = "Verified active character • 1 prior warning • Recommend: 24h Timeout"
             elif strike_count >= 2:
-                suggestion = f"{strike_count} prior strikes • Recommend: 7d Timeout or Ban"
+                suggestion = f"Verified active character • {strike_count} prior strikes • Recommend: Action"
             else:
-                suggestion = "Review identity match"
+                suggestion = "Verified active character"
+
+            # Sync calculated match_score and correlated_reveal_id to database
+            if flight["persisted_match_score"] != correlation["match_score"] or flight["correlated_reveal_id"] != (primary["reveal_id"] if primary else None):
+                try:
+                    conn.execute(
+                        "UPDATE island_visits SET match_score = ?, correlated_reveal_id = ? WHERE id = ?",
+                        (correlation["match_score"], primary["reveal_id"] if primary else None, flight["id"]),
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
 
             item = {
                 "id": flight["id"],
@@ -588,14 +934,16 @@ def get_live_feed():
                 "handled_at": flight["handled_at"],
                 "match_status": correlation["match_status"],
                 "match_score": correlation["match_score"],
+                "is_flagged": correlation["is_flagged"],
+                "flag_reason": correlation["flag_reason"],
                 "strike_count": strike_count,
                 "suggestion": suggestion,
                 "primary_candidate": primary,
                 "runner_ups": correlation["runner_ups"],
             }
 
-            # Optional filter by alerts only
-            if status_filter == "alerts" and correlation["match_status"] == "match":
+            # Filter alerts only: skip verified unflagged flights
+            if status_filter == "alerts" and not correlation["is_flagged"] and correlation["match_status"] == "verified":
                 continue
 
             # Optional search filtering
@@ -1006,10 +1354,42 @@ def user_inspect():
 
     conn = connect_db()
     try:
-        # 1. Saved characters
+        # 1. Saved characters (supporting all linked aliases)
         chars = []
         if user_id:
-            cur = conn.execute("SELECT id, ign, island_name, icon, is_default, created_at FROM user_saved_characters WHERE user_id = ?", (user_id,))
+            from utils.unified_auth import resolve_all_user_ids
+            cand_uids = resolve_all_user_ids(user_id)
+            if not cand_uids:
+                cand_uids = [str(user_id)]
+            placeholders = ",".join("?" for _ in cand_uids)
+            cur = conn.execute(
+                f"""
+                SELECT id, ign, island_name, icon, is_default, created_at 
+                FROM user_saved_characters 
+                WHERE user_id IN ({placeholders})
+                ORDER BY is_default DESC, created_at DESC
+                """,
+                cand_uids,
+            )
+            for r in cur.fetchall():
+                chars.append({
+                    "id": r[0],
+                    "ign": r[1],
+                    "island_name": r[2],
+                    "icon": r[3],
+                    "is_default": bool(r[4]),
+                    "created_at": r[5],
+                })
+        elif ign:
+            cur = conn.execute(
+                """
+                SELECT id, ign, island_name, icon, is_default, created_at 
+                FROM user_saved_characters 
+                WHERE LOWER(ign) = LOWER(?)
+                ORDER BY is_default DESC, created_at DESC
+                """,
+                (ign,),
+            )
             for r in cur.fetchall():
                 chars.append({
                     "id": r[0],
