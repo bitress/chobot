@@ -1547,7 +1547,7 @@ def auth_me():
     try:
         unified = get_unified_account_by_id(user.get("user_id"))
         if unified:
-            for k in ("connected_providers", "connected_accounts", "roles", "email", "provider", "has_password", "is_subscriber", "username"):
+            for k in ("connected_providers", "connected_accounts", "roles", "email", "provider", "has_password", "is_subscriber", "username", "is_admin", "is_mod"):
                 if unified.get(k) is not None:
                     user[k] = unified[k]
             if unified.get("avatar") and not user.get("avatar"):
@@ -1556,6 +1556,14 @@ def auth_me():
                 user["sub_tier"] = unified["sub_tier"]
     except Exception as ex:
         logger.debug("Unified enrich note in auth_me: %s", ex)
+
+    # Always re-derive is_admin and is_mod live from current roles
+    # in case the user was promoted after their last login.
+    current_roles = user.get("roles") or []
+    if current_roles:
+        live_is_admin = user.get("is_admin", False)
+        live_is_mod = _is_mod(current_roles) or bool(live_is_admin)
+        user["is_mod"] = live_is_mod
 
     connected = list((user.get("connected_accounts") or {}).keys())
     provider = user.get("provider", "unified")
