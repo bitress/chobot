@@ -87,10 +87,16 @@ class IslandVisit(Base):
     timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     island_type: Mapped[str] = mapped_column(String(64), nullable=False, default="sub", index=True)
     has_island_access: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    handled_by: Mapped[str | None] = mapped_column(String(255))
+    handled_at: Mapped[int | None] = mapped_column(BigInteger)
+    match_score: Mapped[int | None] = mapped_column(Integer)
+    correlated_reveal_id: Mapped[int | None] = mapped_column(BigInteger)
 
     __table_args__ = (
         Index("ix_island_visits_user_guild_ts", "user_id", "guild_id", "timestamp"),
         Index("ix_island_visits_ign_ts", "ign", "timestamp"),
+        Index("ix_island_visits_review_status", "review_status"),
     )
 
 
@@ -492,3 +498,33 @@ class UserInAppNotification(Base):
     __table_args__ = (
         Index("ix_user_notifications_uid_ts", "user_id", "timestamp"),
     )
+
+
+class UserModerationStatus(Base):
+    __tablename__ = "user_moderation_status"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    discord_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    mod_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expires_at: Mapped[int | None] = mapped_column(BigInteger)
+    is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    reverted_at: Mapped[int | None] = mapped_column(BigInteger)
+    reverted_by: Mapped[str | None] = mapped_column(String(255))
+
+    __table_args__ = (
+        Index("ix_mod_status_user", "user_id", "is_active"),
+        Index("ix_mod_status_discord", "discord_id", "is_active"),
+    )
+
+
+class ControlPanelIdempotency(Base):
+    __tablename__ = "control_panel_idempotency"
+
+    key: Mapped[str] = mapped_column("key", String(255), primary_key=True)
+    response_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+

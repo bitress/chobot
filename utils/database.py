@@ -121,6 +121,9 @@ class Connection:
                 return Cursor(cur)
             except Exception as e:
                 err_str = str(e).lower()
+                if self._dialect == "mysql" and re.search(r"CREATE\s+INDEX", sql, re.I):
+                    if "duplicate key name" in err_str or "1061" in err_str:
+                        return StaticCursor([], [])
                 if "database is locked" in err_str or "operationalerror" in err_str:
                     try:
                         self._conn.rollback()
@@ -345,6 +348,7 @@ def _adapt_mysql_ddl(sql: str) -> str:
     if not re.search(r"CREATE\s+TABLE", sql, re.I):
         if re.search(r"CREATE\s+INDEX", sql, re.I):
             sql = re.sub(r"\s+COLLATE\s+NOCASE ", "", sql, flags=re.I)
+            sql = re.sub(r"\bIF\s+NOT\s+EXISTS\s+", "", sql, flags=re.I)
             # Prevent MySQL Error 1071 (max key length 3072 bytes) on unconstrained TEXT columns
             sql = re.sub(r"\bdestination(?!\s*\(\d+\))\b", "destination(128)", sql, flags=re.I)
         return sql
@@ -432,9 +436,9 @@ def _adapt_mysql_upsert(sql: str) -> str:
 
 
 def _quote_settings_key(sql: str) -> str:
-    if not re.search(r"\bsettings\b", sql, re.I):
+    if not re.search(r"\b(settings|control_panel_idempotency)\b", sql, re.I):
         return sql
     sql = re.sub(r"\bWHERE\s+key\s*=", "WHERE `key` =", sql, flags=re.I)
-    sql = re.sub(r"\bON\s+CONFLICT\s*\(\s*key\s*\)", "ON CONFLICT(`key`)", sql, flags=re.I)
+    sql = re.sub(r"\bON\s+CONFLICT\s*\(\s*`?key`?\s*\)", "ON CONFLICT(`key`)", sql, flags=re.I)
     sql = re.sub(r"\(\s*key\s*,", "(`key`,", sql, flags=re.I)
     return sql

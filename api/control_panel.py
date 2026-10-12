@@ -22,7 +22,7 @@ from thefuzz import fuzz
 
 from utils.auth_tokens import get_auth_user
 from utils.config import Config
-from utils.database import connect_db
+from utils.database import connect_db, get_backend
 from utils.helpers import clean_text
 
 logger = logging.getLogger("ControlPanel")
@@ -34,63 +34,97 @@ control_panel_bp = Blueprint("control_panel", __name__, url_prefix="/api/control
 # -----------------------------------------------------------------------------
 
 def init_control_panel_db() -> None:
-    """Safely apply migrations for Control Panel tables and columns."""
+    """Safely apply migrations for Control Panel tables and columns across SQLite and MySQL."""
     try:
         conn = connect_db()
         try:
-            # 1. Extend island_visits
-            cur = conn.execute("PRAGMA table_info(island_visits)")
-            existing_cols = {row[1] for row in cur.fetchall()}
+            backend = get_backend()
+            existing_cols = set()
+            if backend == "mysql":
+                try:
+                    cur = conn.execute("SHOW COLUMNS FROM island_visits")
+                    existing_cols = {str(row[0]).lower() for row in cur.fetchall()}
+                except Exception as exc:
+                    logger.warning("[ControlPanel] Could not inspect columns via SHOW COLUMNS: %s", exc)
+            else:
+                try:
+                    cur = conn.execute("PRAGMA table_info(island_visits)")
+                    existing_cols = {str(row[1]).lower() for row in cur.fetchall()}
+                except Exception as exc:
+                    logger.warning("[ControlPanel] Could not inspect columns via PRAGMA: %s", exc)
 
             new_cols = [
-                ("review_status", "TEXT DEFAULT 'pending'"),
-                ("handled_by", "TEXT DEFAULT NULL"),
-                ("handled_at", "INTEGER DEFAULT NULL"),
+                ("review_status", "VARCHAR(32) DEFAULT 'pending'"),
+                ("handled_by", "VARCHAR(255) DEFAULT NULL"),
+                ("handled_at", "BIGINT DEFAULT NULL"),
                 ("match_score", "INTEGER DEFAULT NULL"),
-                ("correlated_reveal_id", "INTEGER DEFAULT NULL"),
+                ("correlated_reveal_id", "BIGINT DEFAULT NULL"),
             ]
             for col_name, col_def in new_cols:
-                if col_name not in existing_cols:
-                    conn.execute(f"ALTER TABLE island_visits ADD COLUMN {col_name} {col_def}")
+                if col_name.lower() not in existing_cols:
+                    try:
+                        conn.execute(f"ALTER TABLE island_visits ADD COLUMN {col_name} {col_def}")
+                        conn.commit()
+                    except Exception:
+                        pass  # Column already exists or table not ready
 
-            conn.execute("CREATE INDEX IF NOT EXISTS ix_island_visits_review_status ON island_visits(review_status)")
+            try:
+                conn.execute("CREATE INDEX ix_island_visits_review_status ON island_visits(review_status)")
+                conn.commit()
+            except Exception:
+                pass
 
             # Backfill existing visits if review_status is empty
-            conn.execute(
-                "UPDATE island_visits SET review_status = 'authorised' "
-                "WHERE authorized = 1 AND (review_status IS NULL OR review_status = 'pending')"
-            )
-            conn.execute("UPDATE island_visits SET review_status = 'pending' WHERE review_status IS NULL")
+            try:
+                conn.execute(
+                    "UPDATE island_visits SET review_status = 'authorised' "
+                    "WHERE authorized = 1 AND (review_status IS NULL OR review_status = 'pending')"
+                )
+                conn.execute("UPDATE island_visits SET review_status = 'pending' WHERE review_status IS NULL")
+                conn.commit()
+            except Exception:
+                pass
 
             # 2. Moderation enforcement status table
             conn.execute("""
             CREATE TABLE IF NOT EXISTS user_moderation_status (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                discord_id TEXT DEFAULT NULL,
-                action_type TEXT NOT NULL,
+                user_id VARCHAR(64) NOT NULL,
+                discord_id VARCHAR(64) DEFAULT NULL,
+                action_type VARCHAR(64) NOT NULL,
                 reason TEXT NOT NULL,
-                mod_id TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                expires_at INTEGER DEFAULT NULL,
+                mod_id VARCHAR(64) NOT NULL,
+                created_at BIGINT NOT NULL,
+                expires_at BIGINT DEFAULT NULL,
                 is_active INTEGER DEFAULT 1,
-                reverted_at INTEGER DEFAULT NULL,
-                reverted_by TEXT DEFAULT NULL
+                reverted_at BIGINT DEFAULT NULL,
+                reverted_by VARCHAR(255) DEFAULT NULL
             )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS ix_mod_status_user ON user_moderation_status(user_id, is_active)")
-            conn.execute("CREATE INDEX IF NOT EXISTS ix_mod_status_discord ON user_moderation_status(discord_id, is_active)")
+            conn.commit()
+
+            try:
+                conn.execute("CREATE INDEX ix_mod_status_user ON user_moderation_status(user_id, is_active)")
+                conn.commit()
+            except Exception:
+                pass
+
+            try:
+                conn.execute("CREATE INDEX ix_mod_status_discord ON user_moderation_status(discord_id, is_active)")
+                conn.commit()
+            except Exception:
+                pass
 
             # 3. Idempotency store
             conn.execute("""
             CREATE TABLE IF NOT EXISTS control_panel_idempotency (
-                key TEXT PRIMARY KEY,
+                `key` VARCHAR(255) PRIMARY KEY,
                 response_json TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at BIGINT NOT NULL
             )
             """)
-
             conn.commit()
+
             logger.info("[ControlPanel] Database migrations verified.")
         finally:
             conn.close()
@@ -646,7 +680,7 @@ def execute_action():
     conn = connect_db()
     try:
         if idempotency_key:
-            cur = conn.execute("SELECT response_json FROM control_panel_idempotency WHERE key = ?", (idempotency_key,))
+            cur = conn.execute("SELECT response_json FROM control_panel_idempotency WHERE `key` = ?", (idempotency_key,))
             existing = cur.fetchone()
             if existing:
                 return jsonify(json.loads(existing[0]))
@@ -671,6 +705,8 @@ def execute_action():
         user = _get_current_user() or {}
         mod_name = user.get("username") or user.get("user_id") or "Moderator"
         mod_id = str(user.get("user_id") or "system")
+        warn_user_id = int(discord_id) if str(discord_id).isdigit() else (int(user_id) if str(user_id).isdigit() else 0)
+        warn_mod_id = int(user.get("discord_id")) if str(user.get("discord_id") or "").isdigit() else (int(mod_id) if str(mod_id).isdigit() else 0)
         now = int(time.time())
 
         # Check optimistic concurrency
@@ -715,7 +751,7 @@ def execute_action():
                 INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type)
                 VALUES (?, ?, ?, ?, ?, ?, 'WARN')
                 """,
-                (discord_id or user_id or "0", Config.GUILD_ID, reason, mod_id, now, visit_id),
+                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id),
             )
         elif action == "timeout":
             status_to_set = "actioned"
@@ -731,7 +767,7 @@ def execute_action():
                 INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type)
                 VALUES (?, ?, ?, ?, ?, ?, 'TIMEOUT')
                 """,
-                (discord_id or user_id or "0", Config.GUILD_ID, reason, mod_id, now, visit_id),
+                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id),
             )
             conn.execute(
                 """
@@ -756,7 +792,7 @@ def execute_action():
                 INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type)
                 VALUES (?, ?, ?, ?, ?, ?, 'BAN')
                 """,
-                (discord_id or user_id or "0", Config.GUILD_ID, reason, mod_id, now, visit_id),
+                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id),
             )
             conn.execute(
                 """
@@ -815,7 +851,7 @@ def execute_action():
         # Cache idempotency
         if idempotency_key:
             conn.execute(
-                "INSERT OR REPLACE INTO control_panel_idempotency (key, response_json, created_at) VALUES (?, ?, ?)",
+                "INSERT OR REPLACE INTO control_panel_idempotency (`key`, response_json, created_at) VALUES (?, ?, ?)",
                 (idempotency_key, json.dumps(response_payload), now),
             )
             conn.commit()
@@ -985,14 +1021,15 @@ def user_inspect():
                 })
 
         # 2. Warnings history
+        numeric_uid = int(user_id) if str(user_id).isdigit() else 0
         cur = conn.execute(
             """
             SELECT id, reason, mod_id, timestamp, action_type 
             FROM warnings 
-            WHERE user_id = ? OR reason LIKE ?
+            WHERE (user_id = ? AND ? > 0) OR reason LIKE ?
             ORDER BY id DESC LIMIT 20
             """,
-            (user_id or "0", f"%{ign}%" if ign else "%"),
+            (numeric_uid, numeric_uid, f"%{ign}%" if ign else "%"),
         )
         warnings_list = [
             {"id": r[0], "reason": r[1], "mod_id": r[2], "timestamp": r[3], "action_type": r[4]}
@@ -1004,10 +1041,10 @@ def user_inspect():
             """
             SELECT id, ign, origin_island, destination, review_status, timestamp 
             FROM island_visits 
-            WHERE (user_id = ? OR LOWER(ign) = LOWER(?))
+            WHERE ((? > 0 AND user_id = ?) OR LOWER(ign) = LOWER(?))
             ORDER BY id DESC LIMIT 15
             """,
-            (user_id or "0", ign or ""),
+            (numeric_uid, numeric_uid, ign or ""),
         )
         recent_flights = [
             {"id": r[0], "ign": r[1], "origin_island": r[2], "destination": r[3], "review_status": r[4], "timestamp": r[5]}
