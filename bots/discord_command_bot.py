@@ -32,6 +32,8 @@ from utils.nookipedia import NookipediaClient
 from utils.nickname_format import is_valid_acnh_nickname, nickname_warning_for, NICKNAME_FORMAT_EXAMPLE
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
 from utils.ops_status import create_sqlite_backup, get_maintenance_settings
+from utils.sysbot_api import get_island_sysbot_client, _INVALID_DODO_CODES
+from utils.sysbot_telemetry import get_cached_island_telemetry
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -1201,6 +1203,53 @@ class DiscordCommandCog(commands.Cog):
             self.order_island_lookup[clean_text(Config.ORDER_BOT_ISLAND)] = Config.ORDER_BOT_CHANNEL_ID
 
 
+    async def _get_island_sysbot_status(self, island_name: str) -> tuple[bool, str]:
+        """Check online/offline status of an island using its dedicated SysBot API endpoint.
+
+        Returns (is_online, status_reason).
+        """
+        clean_name = clean_text(island_name).title()
+        if not clean_name:
+            return False, "Unknown island"
+        if clean_name.lower() in ("sysbotacnhorders", "sysbotorders", "orders", "order"):
+            clean_name = "Sinta"
+
+        # 1. Fast path: check cached telemetry from background worker if fresh (< 30s)
+        try:
+            cached = get_cached_island_telemetry(clean_name, mask_sub_dodo=False)
+            if cached and (time.time() - cached.get("last_updated", 0)) < 30:
+                is_online = bool(cached.get("is_online"))
+                stage = cached.get("console_stage") or ("Running" if is_online else "Offline")
+                dodo = cached.get("raw_dodo")
+                has_dodo = bool(cached.get("is_dodo_valid") or (dodo and str(dodo).strip() not in _INVALID_DODO_CODES))
+                if is_online:
+                    reason = "Dodo code active" if has_dodo else (stage if stage not in ("Offline", "Stopped") else "SysBot online")
+                    return True, reason
+                return False, "Console disconnected" if cached.get("is_running") and not cached.get("is_connected") else (stage or "SysBot offline")
+        except Exception:
+            pass
+
+        # 2. Live query via island's SysBotClient
+        try:
+            client = get_island_sysbot_client(clean_name, timeout=2)
+            st = await client.get_bot_status()
+            is_running = bool(st.get("is_running"))
+            is_connected = bool(st.get("is_connected"))
+            is_online = bool(is_running and is_connected)
+            dodo = st.get("dodo_code")
+            has_dodo = bool(st.get("is_dodo_valid") or (dodo and str(dodo).strip() not in _INVALID_DODO_CODES))
+            stage = st.get("console_stage") or ("Running" if is_online else "Offline")
+
+            if is_online:
+                reason = "Dodo code active" if has_dodo else (stage if stage not in ("Offline", "Stopped") else "SysBot online")
+                return True, reason
+            if is_running and not is_connected:
+                return False, "Console disconnected"
+            return False, stage if stage and stage != "Stopped" else "SysBot offline"
+        except Exception as exc:
+            logger.debug(f"[DISCORD] SysBot status check error for {clean_name}: {exc}")
+            return False, "SysBot unreachable"
+
     async def _compute_island_status(
         self,
         guild: discord.Guild,
@@ -1208,31 +1257,19 @@ class DiscordCommandCog(commands.Cog):
         include_free: bool = True,
         include_order: bool = True,
     ) -> dict:
-        """Compute sub/free/order island status results.
+        """Compute sub/free/order island status results using SysBot API for each island.
 
         Shared by the sticky embed refresher and the /islands command so the
         two never drift out of sync with each other.
         """
-        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
-        if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
-            logger.warning(f"[DISCORD] ISLAND_BOT_ROLE_ID {Config.ISLAND_BOT_ROLE_ID} not found in guild; bot name matching disabled")
-
         # --- Sub island results ---
         sub_results: list = []
         sub_online = 0
         if include_sub:
             await self.fetch_islands()
-            dodo_codes = {}
-            try:
-                async with connect_async_db() as db:
-                    cur = await db.execute("SELECT id, dodo_code FROM islands")
-                    for r in await cur.fetchall():
-                        if r.get("id"):
-                            dodo_codes[clean_text(r.get("id"))] = r.get("dodo_code")
-            except Exception as exc:
-                logger.warning(f"[DISCORD] Could not prefetch island dodo codes: {exc}")
-
-            for island in Config.SUB_ISLANDS:
+            sub_tasks = [self._get_island_sysbot_status(isl) for isl in Config.SUB_ISLANDS]
+            statuses = await asyncio.gather(*sub_tasks, return_exceptions=True)
+            for island, res in zip(Config.SUB_ISLANDS, statuses):
                 island_clean = clean_text(island)
                 channel_id = self.sub_island_lookup.get(island_clean)
 
@@ -1242,98 +1279,68 @@ class DiscordCommandCog(commands.Cog):
                             channel_id = ch.id
                             break
 
-                if not channel_id:
-                    sub_results.append((island, "❓", "Channel not found", None))
-                    continue
+                if isinstance(res, Exception):
+                    is_up, reason = False, "SysBot error"
+                else:
+                    is_up, reason = res
 
-                channel = guild.get_channel(channel_id)
-                if not channel:
-                    sub_results.append((island, "❓", "Channel not found", None))
-                    continue
-
-                island_bot = None
-                if island_bot_role:
-                    target = clean_text(f"chobot {island}")
-                    for member in island_bot_role.members:
-                        if member.bot and clean_text(member.display_name) == target:
-                            island_bot = member
-                            break
-
-                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    sub_results.append((island, "✅", "Bot online", channel_id))
-                    sub_online += 1
-                    continue
-
-                island_up = False
-                status_reason = ""
-                dodo_code = dodo_codes.get(island_clean)
-                if dodo_code and str(dodo_code).strip() not in ["", "00000", "-----", "GETTIN'"]:
-                    island_up = True
-                    status_reason = "Dodo code active"
-
-                if island_up:
-                    sub_results.append((island, "✅", status_reason, channel_id))
+                if is_up:
+                    sub_results.append((island, "✅", reason, channel_id))
                     sub_online += 1
                 else:
-                    sub_results.append((island, "❌", "No recent activity", channel_id))
+                    sub_results.append((island, "❌", reason, channel_id))
 
         # --- Free island results ---
         free_results: list = []
         free_online = 0
         if include_free:
             await self.fetch_free_islands()
-            for island in Config.FREE_ISLANDS:
+            free_tasks = [self._get_island_sysbot_status(isl) for isl in Config.FREE_ISLANDS]
+            statuses = await asyncio.gather(*free_tasks, return_exceptions=True)
+            for island, res in zip(Config.FREE_ISLANDS, statuses):
                 island_clean = clean_text(island)
                 channel_id = self.free_island_lookup.get(island_clean)
 
-                island_bot = None
-                if island_bot_role:
-                    target = clean_text(f"chobot {island}")
-                    for member in island_bot_role.members:
-                        if member.bot and clean_text(member.display_name) == target:
-                            island_bot = member
-                            break
-
-                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    free_results.append((island, "✅", "Bot online", channel_id))
-                    free_online += 1
-                elif island_bot:
-                    free_results.append((island, "❌", "Bot offline", channel_id))
+                if isinstance(res, Exception):
+                    is_up, reason = False, "SysBot error"
                 else:
-                    free_results.append((island, "❓", "Bot not found", channel_id))
+                    is_up, reason = res
+
+                if is_up:
+                    free_results.append((island, "✅", reason, channel_id))
+                    free_online += 1
+                else:
+                    free_results.append((island, "❌", reason, channel_id))
 
         # --- Order island results ---
         order_results: list = []
         order_online = 0
         if include_order:
             self._refresh_order_island_lookup()
-            order_bot_member = None
-            if Config.ORDER_BOT_DISCORD_ID:
-                order_bot_member = guild.get_member(Config.ORDER_BOT_DISCORD_ID)
-                if order_bot_member is None:
-                    try:
-                        order_bot_member = await guild.fetch_member(Config.ORDER_BOT_DISCORD_ID)
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        order_bot_member = None
-
-            for island in getattr(Config, "ORDER_BOT_ISLANDS", []):
+            order_islands = getattr(Config, "ORDER_BOT_ISLANDS", ["Sinta"]) or ["Sinta"]
+            order_tasks = [self._get_island_sysbot_status(isl) for isl in order_islands]
+            statuses = await asyncio.gather(*order_tasks, return_exceptions=True)
+            for island, res in zip(order_islands, statuses):
                 island_clean = clean_text(island)
                 channel_id = self.order_island_lookup.get(island_clean)
-                display_name = "Sinta"  # order-bot island is always shown as "Sinta"
+                display_name = "Sinta" if island_clean == "sinta" else island
 
-                if order_bot_member and order_bot_member.status in ONLINE_DISCORD_STATUSES:
-                    order_results.append((display_name, "✅", "Bot online", channel_id))
-                    order_online += 1
-                elif order_bot_member:
-                    order_results.append((display_name, "❌", "Bot offline", channel_id))
+                if isinstance(res, Exception):
+                    is_up, reason = False, "SysBot error"
                 else:
-                    order_results.append((display_name, "❓", "Bot not found", channel_id))
+                    is_up, reason = res
+
+                if is_up:
+                    order_results.append((display_name, "✅", reason, channel_id))
+                    order_online += 1
+                else:
+                    order_results.append((display_name, "❌", reason, channel_id))
 
         return {
             "sub_results": sub_results, "sub_online": sub_online, "sub_total": len(Config.SUB_ISLANDS),
             "free_results": free_results, "free_online": free_online, "free_total": len(Config.FREE_ISLANDS),
             "order_results": order_results, "order_online": order_online,
-            "order_total": len(getattr(Config, "ORDER_BOT_ISLANDS", [])),
+            "order_total": len(order_results) if include_order else len(getattr(Config, "ORDER_BOT_ISLANDS", ["Sinta"]) or ["Sinta"]),
         }
 
 
@@ -3107,127 +3114,19 @@ class DiscordCommandCog(commands.Cog):
         show_free  = kind in ("", "free")
         show_order = kind in ("", "order")
 
-        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
-        if Config.ISLAND_BOT_ROLE_ID and not island_bot_role:
-            logger.warning(f"[DISCORD] ISLAND_BOT_ROLE_ID {Config.ISLAND_BOT_ROLE_ID} not found in guild; bot name matching disabled")
-
-        # --- Sub island results ---
-        sub_results: list = []
-        sub_online = 0
-        if show_sub:
-            await self.fetch_islands()
-            for isl in Config.SUB_ISLANDS:
-                island_clean = clean_text(isl)
-                channel_id = self.sub_island_lookup.get(island_clean)
-
-                if not channel_id:
-                    for ch in guild.channels:
-                        if isinstance(ch, discord.TextChannel) and island_clean in clean_text(ch.name):
-                            channel_id = ch.id
-                            break
-
-                if not channel_id:
-                    sub_results.append((isl, "❓", "Channel not found", None))
-                    continue
-
-                channel = guild.get_channel(channel_id)
-                if not channel:
-                    sub_results.append((isl, "❓", "Channel not found", None))
-                    continue
-
-                island_bot = None
-                if island_bot_role:
-                    target = clean_text(f"chobot {isl}")
-                    for member in island_bot_role.members:
-                        if member.bot and clean_text(member.display_name) == target:
-                            island_bot = member
-                            break
-
-                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    sub_results.append((isl, "✅", "Bot online", channel_id))
-                    sub_online += 1
-                    continue
-
-                try:
-                    messages = [msg async for msg in channel.history(limit=25)]
-                except discord.Forbidden:
-                    sub_results.append((isl, "❓", "No channel access", channel_id))
-                    continue
-
-                island_up = False
-                status_reason = ""
-                for msg in messages:
-                    if island_bot:
-                        if msg.author.id != island_bot.id:
-                            continue
-                    elif not msg.author.bot:
-                        continue
-                    if DODO_CODE_PATTERN.search(msg.content):
-                        island_up = True
-                        status_reason = "Dodo code active"
-                        break
-                    if ISLAND_HOST_NAME in msg.content.lower():
-                        island_up = True
-                        status_reason = "Chopaeng is visiting"
-                        break
-
-                if island_up:
-                    sub_results.append((isl, "✅", status_reason, channel_id))
-                    sub_online += 1
-                else:
-                    sub_results.append((isl, "❌", "No recent activity", channel_id))
-
-        # --- Free island results ---
-        free_results: list = []
-        free_online = 0
-        if show_free:
-            await self.fetch_free_islands()
-            for isl in Config.FREE_ISLANDS:
-                island_clean = clean_text(isl)
-                channel_id = self.free_island_lookup.get(island_clean)
-
-                island_bot = None
-                if island_bot_role:
-                    target = clean_text(f"chobot {isl}")
-                    for member in island_bot_role.members:
-                        if member.bot and clean_text(member.display_name) == target:
-                            island_bot = member
-                            break
-
-                if island_bot and island_bot.status in ONLINE_DISCORD_STATUSES:
-                    free_results.append((isl, "✅", "Bot online", channel_id))
-                    free_online += 1
-                elif island_bot:
-                    free_results.append((isl, "❌", "Bot offline", channel_id))
-                else:
-                    free_results.append((isl, "❓", "Bot not found", channel_id))
-
-        # --- Order island results ---
-        order_results: list = []
-        order_online = 0
-        if show_order:
-            self._refresh_order_island_lookup()
-            order_bot_member = None
-            if Config.ORDER_BOT_DISCORD_ID:
-                order_bot_member = guild.get_member(Config.ORDER_BOT_DISCORD_ID)
-                if order_bot_member is None:
-                    try:
-                        order_bot_member = await guild.fetch_member(Config.ORDER_BOT_DISCORD_ID)
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        order_bot_member = None
-
-            for isl in getattr(Config, "ORDER_BOT_ISLANDS", []):
-                island_clean = clean_text(isl)
-                channel_id = self.order_island_lookup.get(island_clean)
-                display_name = "Sinta"
-
-                if order_bot_member and order_bot_member.status in ONLINE_DISCORD_STATUSES:
-                    order_results.append((display_name, "✅", "Bot online", channel_id))
-                    order_online += 1
-                elif order_bot_member:
-                    order_results.append((display_name, "❌", "Bot offline", channel_id))
-                else:
-                    order_results.append((display_name, "❓", "Bot not found", channel_id))
+        # --- Compute island status using SysBot API ---
+        status = await self._compute_island_status(
+            guild,
+            include_sub=show_sub,
+            include_free=show_free,
+            include_order=show_order,
+        )
+        sub_results = status["sub_results"]
+        sub_online = status["sub_online"]
+        free_results = status["free_results"]
+        free_online = status["free_online"]
+        order_results = status["order_results"]
+        order_online = status["order_online"]
 
         # --- Build embed(s) ---
         pfp_url = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
@@ -3951,85 +3850,15 @@ class DiscordCommandCog(commands.Cog):
             logger.warning(f"[DISCORD] Failed to post dodo request to xlog: {e}")
 
     async def _check_island_online(self, guild: discord.Guild, island: str, lookup: dict | None = None) -> bool:
-        """Return True if the island appears to be online, False otherwise.
+        """Return True if the island appears to be online via SysBot API, False otherwise.
 
         ``lookup`` should be the channel-name → channel-id mapping for the island
-        type being checked (sub or free).  Keys must be normalised with
+        type being checked (sub or free). Keys must be normalised with
         ``clean_text()`` — the same normalisation applied when the lookup was
-        built.  Defaults to ``self.sub_island_lookup``.
+        built. Defaults to ``self.sub_island_lookup``.
         """
-        island_clean = clean_text(island)
-        order_island_keys = {clean_text(name) for name in getattr(Config, "ORDER_BOT_ISLANDS", [])}
-        is_order_island = island_clean in order_island_keys
-        effective_lookup = lookup if lookup is not None else self.sub_island_lookup
-        channel_id = effective_lookup.get(island_clean)
-        if not channel_id:
-            return False
-
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            return False
-
-        if (
-            Config.ORDER_BOT_DISCORD_ID
-            and is_order_island
-        ):
-            order_bot = guild.get_member(Config.ORDER_BOT_DISCORD_ID)
-            if order_bot is None:
-                try:
-                    order_bot = await guild.fetch_member(Config.ORDER_BOT_DISCORD_ID)
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    order_bot = None
-            if order_bot:
-                if order_bot.status in ONLINE_DISCORD_STATUSES:
-                    return True
-                logger.info(
-                    f"[DISCORD] Order bot {Config.ORDER_BOT_DISCORD_ID} status for {island}: {order_bot.status}"
-                )
-
-        # Check island bot presence first (fast, no API call)
-        # Ensure role members are populated (large guilds may need chunking)
-        island_bot_role = guild.get_role(Config.ISLAND_BOT_ROLE_ID) if Config.ISLAND_BOT_ROLE_ID else None
-        island_bot = None
-        if island_bot_role:
-            # If role has no members, the cache may be stale — try chunking once (only if members intent enabled)
-            if not island_bot_role.members and not guild.chunked and getattr(self.intents, "members", False):
-                try:
-                    await guild.chunk(cache=True)
-                except Exception:
-                    pass
-            target = clean_text(f"chobot {island}")
-            for member in island_bot_role.members:
-                if member.bot and clean_text(member.display_name) == target:
-                    island_bot = member
-                    break
-
-        if island_bot:
-            return island_bot.status in ONLINE_DISCORD_STATUSES
-
-        # Fallback: scan recent channel messages for dodo code / host presence
-        try:
-            messages = [msg async for msg in channel.history(limit=MESSAGE_HISTORY_LIMIT)]
-        except discord.Forbidden:
-            return False
-
-        for msg in messages:
-            if not msg.author.bot:
-                continue
-            if is_order_island and Config.ORDER_BOT_DISCORD_ID and msg.author.id != Config.ORDER_BOT_DISCORD_ID:
-                continue
-            content = msg.content or ""
-            if (
-                DODO_CODE_PATTERN.search(content)
-                or ISLAND_HOST_NAME in content.lower()
-                or ISLAND_DROP_PATTERN.search(content)
-                or ISLAND_INJECT_QUEUED_PATTERN.search(content)
-                or ISLAND_INJECT_MULTI_QUEUED_PATTERN.search(content)
-                or ISLAND_INJECT_COMPLETE_PATTERN.search(content)
-            ):
-                return True
-
-        return False
+        is_up, _ = await self._get_island_sysbot_status(island)
+        return is_up
 
 
     async def _send_order_island_status_alert(self, channel: discord.TextChannel, island_display: str, online: bool) -> None:
