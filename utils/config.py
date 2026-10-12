@@ -44,7 +44,7 @@ class Config:
     # Auth Tokens
     TWITCH_TOKEN = os.getenv('TWITCH_TOKEN')
     TWITCH_CHANNEL = os.getenv('TWITCH_CHANNEL')
-    DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
+    DISCORD_TOKEN = (lambda t: t.strip().strip('"').strip("'") if t else None)(os.getenv('DISCORD_TOKEN'))
 
     # Discord IDs (Safe Integer Casting)
     GUILD_ID = _get_int('GUILD_ID')
