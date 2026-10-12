@@ -356,10 +356,20 @@ def get_guild_role_names() -> dict[str, str]:
 
 def role_payload(role_id: str, role_names: dict[str, str] | None = None) -> dict:
     """Format role object for API responses."""
+    rid_str = str(role_id).strip()
     names = role_names or get_guild_role_names()
+    name = names.get(rid_str)
+    if not name or name == rid_str:
+        if rid_str in ROLE_ID_TO_TIER_NAME:
+            tier_key = ROLE_ID_TO_TIER_NAME[rid_str]
+            name = TIER_LABELS.get(tier_key, tier_key)
+        elif rid_str in TIER_LABELS:
+            name = TIER_LABELS[rid_str]
+        else:
+            name = rid_str
     return {
-        "id": str(role_id),
-        "name": names.get(str(role_id), str(role_id)),
+        "id": rid_str,
+        "name": name,
     }
 
 

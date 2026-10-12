@@ -162,3 +162,101 @@ def should_refresh(user: dict) -> bool:
 def is_beyond_stale_grace(user: dict) -> bool:
     checked_at = int(user.get("discord_checked_at") or user.get("auth_checked_at") or 0)
     return not checked_at or time.time() - checked_at >= STALE_GRACE_SECONDS
+
+
+def add_guild_member_role(user_id: int | str, role_id: int | str) -> bool:
+    """Add a role to a Discord guild member via REST API (zero gateway intents)."""
+    uid = str(user_id).strip()
+    rid = str(role_id).strip()
+    guild_id = str(Config.GUILD_ID or "").strip()
+    if not uid.isdigit() or not rid.isdigit() or not guild_id:
+        return False
+    try:
+        headers = _bot_headers()
+    except Exception:
+        return False
+
+    url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{uid}/roles/{rid}"
+    try:
+        discord_request(url, method="PUT", headers=headers, timeout=8)
+        logger.info("Added Discord role %s to member %s", rid, uid)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to add Discord role %s to member %s: %s", rid, uid, exc)
+        return False
+
+
+def remove_guild_member_role(user_id: int | str, role_id: int | str) -> bool:
+    """Remove a role from a Discord guild member via REST API (zero gateway intents)."""
+    uid = str(user_id).strip()
+    rid = str(role_id).strip()
+    guild_id = str(Config.GUILD_ID or "").strip()
+    if not uid.isdigit() or not rid.isdigit() or not guild_id:
+        return False
+    try:
+        headers = _bot_headers()
+    except Exception:
+        return False
+
+    url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{uid}/roles/{rid}"
+    try:
+        discord_request(url, method="DELETE", headers=headers, timeout=8)
+        logger.info("Removed Discord role %s from member %s", rid, uid)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to remove Discord role %s from member %s: %s", rid, uid, exc)
+        return False
+
+
+def revoke_sub_rules_acceptance(user_id: int | str) -> bool:
+    """Revoke user_sub_rules_accepted and remove SUB_RULES_ROLE_ID when warned."""
+    uid = str(user_id).strip()
+    if not uid:
+        return False
+
+    # 1. Resolve all candidate user IDs linked to this user
+    cand_ids = [uid]
+    try:
+        from utils.unified_auth import resolve_all_user_ids
+        resolved = resolve_all_user_ids({"user_id": uid, "discord_id": uid})
+        if resolved:
+            cand_ids = list(set(cand_ids + resolved))
+    except Exception:
+        pass
+
+    # 2. Delete from user_sub_rules_accepted in SQLite
+    try:
+        from utils.database import connect_db
+        with connect_db() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS user_sub_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)")
+            del_ph = ",".join("?" for _ in cand_ids)
+            conn.execute(f"DELETE FROM user_sub_rules_accepted WHERE user_id IN ({del_ph})", cand_ids)
+            conn.commit()
+            logger.info("Revoked user_sub_rules_accepted for IDs: %s", cand_ids)
+    except Exception as exc:
+        logger.warning("Failed to delete user_sub_rules_accepted for %s: %s", uid, exc)
+
+    # 3. Remove Discord role 1077997850165772398
+    role_id = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
+    discord_uids = [cid for cid in cand_ids if str(cid).isdigit()]
+    if not discord_uids:
+        try:
+            from utils.database import connect_db
+            with connect_db() as conn:
+                del_ph = ",".join("?" for _ in cand_ids)
+                rows = conn.execute(
+                    f"SELECT provider_user_id FROM user_provider_links WHERE provider = 'discord' AND unified_user_id IN ({del_ph})",
+                    cand_ids,
+                ).fetchall()
+                for r in rows:
+                    p_uid = str(r["provider_user_id"] or "").strip()
+                    if p_uid.isdigit():
+                        discord_uids.append(p_uid)
+        except Exception:
+            pass
+
+    for d_uid in set(discord_uids):
+        remove_guild_member_role(d_uid, role_id)
+
+    return True
+

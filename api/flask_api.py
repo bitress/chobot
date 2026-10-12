@@ -719,13 +719,13 @@ def _load_profile_subscriptions(user: dict) -> dict:
 
     return {
         "role_ids": subscription_role_ids,
-        "role_names": [role["name"] for role in subscription_roles],
+        "role_names": [role["name"] for role in subscription_roles if role.get("name") and not str(role["name"]).isdigit()],
         "roles": subscription_roles,
         "configured_subscription_role_ids": sorted(configured_role_ids - excluded_role_ids),
-        "configured_subscription_role_names": [role["name"] for role in configured_subscription_roles],
+        "configured_subscription_role_names": [role["name"] for role in configured_subscription_roles if role.get("name") and not str(role["name"]).isdigit()],
         "configured_subscription_roles": configured_subscription_roles,
         "matched_subscription_role_ids": matched_subscription_role_ids,
-        "matched_subscription_role_names": [role["name"] for role in matched_subscription_roles],
+        "matched_subscription_role_names": [role["name"] for role in matched_subscription_roles if role.get("name") and not str(role["name"]).isdigit()],
         "matched_subscription_roles": matched_subscription_roles,
         "accessible_islands": accessible_islands,
         "accessible_member_islands": accessible_islands,
@@ -5234,7 +5234,24 @@ def api_user_sub_rules():
                     (uid, now_iso),
                 )
             conn.commit()
-            return jsonify({"ok": True, "accepted": True, "accepted_at": now_iso})
+
+            # If they accepted the sub rules, add role 1077997850165772398 (this is only for sub members)
+            role_added = False
+            is_sub = bool(auth_user.get("is_subscriber"))
+            if is_sub:
+                discord_uids = [uid for uid in cand_ids if str(uid).isdigit()]
+                if not discord_uids:
+                    d_uid = str(auth_user.get("discord_id") or "").strip()
+                    if d_uid.isdigit():
+                        discord_uids = [d_uid]
+
+                from utils.discord_membership import add_guild_member_role
+                role_id = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
+                for d_uid in discord_uids:
+                    if add_guild_member_role(d_uid, role_id):
+                        role_added = True
+
+            return jsonify({"ok": True, "accepted": True, "accepted_at": now_iso, "role_added": role_added})
 
         placeholders = ",".join("?" for _ in cand_ids)
         row = conn.execute(

@@ -1381,6 +1381,15 @@ def execute_action():
                 (user_id or discord_id or flight_ign, discord_id or None, reason, mod_id, mod_name, now),
             )
 
+        if action in ("warn", "timeout", "ban"):
+            target_to_revoke = warn_user_id or user_id or discord_id
+            if target_to_revoke:
+                try:
+                    from utils.discord_membership import revoke_sub_rules_acceptance
+                    revoke_sub_rules_acceptance(target_to_revoke)
+                except Exception as rev_err:
+                    logger.warning(f"Failed to revoke sub rules in control panel for {target_to_revoke}: {rev_err}")
+
         # Audit event record
         audit_details = {
             "visit_id": visit_id,

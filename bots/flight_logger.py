@@ -1620,6 +1620,14 @@ class FlightLoggerCog(commands.Cog):
                 (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp()), visit_id, action_type)
             )
 
+        # If user got warned, delete their user_sub_rules_accepted and remove Discord role 1077997850165772398
+        if action_type in ('WARN', 'R1', 'TIMEOUT', 'BAN') and user_id:
+            try:
+                from utils.discord_membership import revoke_sub_rules_acceptance
+                await asyncio.to_thread(revoke_sub_rules_acceptance, user_id)
+            except Exception as exc:
+                logger.warning(f"[FLIGHT] Failed to revoke sub rules for warned user {user_id}: {exc}")
+
     async def get_warn_count(self, user_id: int, guild_id: int, days: int = WARN_EXPIRY_DAYS):
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
         async with connect_async_db() as db:
