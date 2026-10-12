@@ -10,6 +10,7 @@ import unicodedata
 import datetime
 import asyncio
 import json
+import time
 
 import discord
 from discord import app_commands
@@ -18,6 +19,7 @@ from discord.ui import View, UserSelect, Select, button
 from utils.config import Config
 from utils.database import connect_async_db, get_backend
 from utils.helpers import clean_text
+from utils.sysbot_telemetry import register_flight_event_listener, unregister_flight_event_listener
 
 logger = logging.getLogger("FlightLogger")
 
@@ -1416,11 +1418,13 @@ class FlightLoggerCog(commands.Cog):
         self._pending_alerts: dict[tuple[str, str], tuple[int, int]] = {}
         self._creating_alerts: set[tuple[str, str]] = set()
         self._pending_dodo_requests: dict[int, dict] = {}
+        self._recent_flight_keys: dict[tuple[str, str], float] = {}
         self._chunk_lock = asyncio.Lock()
 
     def _prune_stale_caches(self):
-        """Prune in-memory alert and dodo request caches to prevent unbounded growth over days."""
+        """Prune in-memory alert, flight dedupe, and dodo request caches to prevent unbounded growth over days."""
         now = int(discord.utils.utcnow().timestamp())
+        now_f = time.time()
         stale_alert_keys = [
             k for k, v in self._pending_alerts.items()
             if (now - (v[1] if isinstance(v, tuple) else now)) > MAX_ALERT_MERGE_SECONDS * 2
@@ -1434,6 +1438,13 @@ class FlightLoggerCog(commands.Cog):
         ]
         for uid in stale_dodo_users:
             self._pending_dodo_requests.pop(uid, None)
+
+        stale_flights = [
+            k for k, ts in self._recent_flight_keys.items()
+            if (now_f - ts) > 120
+        ]
+        for k in stale_flights:
+            self._recent_flight_keys.pop(k, None)
 
         if stale_alert_keys or stale_dodo_users:
             logger.debug(f"[FLIGHT] Pruned {len(stale_alert_keys)} stale alerts, {len(stale_dodo_users)} stale dodo requests.")
@@ -1495,6 +1506,42 @@ class FlightLoggerCog(commands.Cog):
             if ign_matches_dodo_reveal(ign, username, nickname):
                 return message_url
         return None
+
+    async def lookup_dodo_reveal_member(
+        self, guild: discord.Guild | None, ign: str, destination: str, max_age_seconds: int = 7200
+    ) -> tuple[discord.Member | None, str | None]:
+        """Look up member and reveal message URL from recent dodo_reveal_messages by island + IGN."""
+        if not guild:
+            return None, None
+        dest_clean = clean_text(destination)
+        if not dest_clean:
+            return None, None
+        cutoff = int(discord.utils.utcnow().timestamp()) - max_age_seconds
+        try:
+            async with connect_async_db() as db:
+                cur = await db.execute(
+                    """
+                    SELECT user_id, message_url, username, nickname FROM dodo_reveal_messages
+                    WHERE island_clean = ? AND created_at >= ?
+                    ORDER BY created_at DESC
+                    LIMIT 40
+                    """,
+                    (dest_clean, cutoff),
+                )
+                rows = await cur.fetchall()
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] dodo_reveal_messages member lookup failed: {exc}")
+            return None, None
+        for uid_raw, message_url, username, nickname in rows:
+            if ign_matches_dodo_reveal(ign, username, nickname):
+                try:
+                    uid = int(uid_raw)
+                    member = await self._resolve_member(guild, uid)
+                    if member:
+                        return member, message_url
+                except Exception:
+                    pass
+        return None, None
 
     def _get_db(self):
         """Return an async database connection context manager."""
@@ -1924,6 +1971,7 @@ class FlightLoggerCog(commands.Cog):
         await init_db()
         self.bot.add_view(TravelerActionView(bot=self.bot))
         self.bot.add_view(VerifiedFlightFlagView(bot=self.bot))
+        register_flight_event_listener(self._on_sysbot_flight_event)
         if not self.fetch_islands_task.is_running():
             self.fetch_islands_task.start()
         if not self.cleanup_warnings_task.is_running():
@@ -2272,6 +2320,7 @@ class FlightLoggerCog(commands.Cog):
                 await asyncio.sleep(0.5)
 
     def cog_unload(self):
+        unregister_flight_event_listener(self._on_sysbot_flight_event)
         self.fetch_islands_task.cancel()
         self.cleanup_warnings_task.cancel()
         self.check_r1_reminders_task.cancel()
@@ -2721,6 +2770,69 @@ class FlightLoggerCog(commands.Cog):
         except Exception as exc:
             logger.warning(f"[FLIGHT] Could not record member join for {member.id}: {exc}")
 
+    def _on_sysbot_flight_event(self, event_data: dict) -> None:
+        """Receive live flight event from SysBot telemetry background thread."""
+        try:
+            if hasattr(self.bot, "loop") and self.bot.loop and self.bot.loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self.handle_direct_flight_event(event_data),
+                    self.bot.loop,
+                )
+        except Exception as exc:
+            logger.debug(f"[FLIGHT] Error dispatching direct flight event to bot loop: {exc}")
+
+    async def handle_direct_flight_event(self, event_data: dict) -> None:
+        """Handle structured flight event directly from SysBot without Discord on_message scraping."""
+        try:
+            evt_type = event_data.get("event_type", "arrival")
+            island_name = event_data.get("island_name", "")
+            island_type = event_data.get("island_type", "sub")
+            player = event_data.get("player", "")
+            origin = event_data.get("origin", "")
+
+            if not player or not island_name:
+                return
+
+            if evt_type == "arrival":
+                ign_raw = player.strip()
+                island_raw = origin.strip()
+                dest_raw = island_name.strip()
+                ign_norm = self.normalize_identity_text(ign_raw)
+                isl_norm = self.normalize_identity_text(island_raw)
+                self.last_processed = discord.utils.utcnow()
+
+                if island_type == "sub":
+                    guild = self.bot.get_guild(Config.GUILD_ID)
+                    reveal_url = await self.lookup_dodo_reveal_jump_url(ign_raw, dest_raw)
+                    msg_content = f"{ign_raw} from {island_raw} is joining {dest_raw}." if island_raw else f"{ign_raw} is joining {dest_raw}."
+                    await self._process_flight_log(
+                        guild,
+                        ign_raw,
+                        island_raw,
+                        dest_raw,
+                        ign_norm,
+                        isl_norm,
+                        message_url=reveal_url,
+                        message_content=msg_content,
+                    )
+                else:
+                    # Free island arrival: record visit silently into island_visits table
+                    guild = self.bot.get_guild(Config.GUILD_ID)
+                    guild_id = guild.id if guild else None
+                    visit_ts = int(discord.utils.utcnow().timestamp())
+                    await self.record_island_visit(
+                        ign_raw,
+                        island_raw,
+                        dest_raw,
+                        [],
+                        guild_id,
+                        visit_ts,
+                        island_type="free",
+                    )
+                    logger.info(f"[FREE-FLIGHT] Recorded direct visit: {ign_raw} → {dest_raw}")
+        except Exception as exc:
+            logger.error(f"[FLIGHT] Direct flight event processing error: {exc}", exc_info=True)
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author == self.bot.user or message.channel.id != Config.FLIGHT_LISTEN_CHANNEL_ID:
@@ -2746,6 +2858,16 @@ class FlightLoggerCog(commands.Cog):
     async def _process_flight_log(self, guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message_url=None, message_content=None):
         """Background task: look up members then run the full log pipeline."""
         try:
+            ign_clean = clean_text(ign_raw)
+            dest_clean = clean_text(dest_raw)
+            now = time.time()
+            flight_key = (ign_clean, dest_clean)
+            last_seen = self._recent_flight_keys.get(flight_key, 0)
+            if (now - last_seen) < 25:
+                logger.debug(f"[FLIGHT] Duplicate flight event suppressed for {ign_raw} -> {dest_raw}")
+                return
+            self._recent_flight_keys[flight_key] = now
+
             target_guild = guild or self.bot.get_guild(Config.GUILD_ID)
             has_members_intent = bool(getattr(getattr(self.bot, "intents", None), "members", False))
             if target_guild and not target_guild.chunked and has_members_intent:
@@ -2755,20 +2877,34 @@ class FlightLoggerCog(commands.Cog):
                             await target_guild.chunk()
                         except Exception as chunk_err:
                             logger.warning(f"[FLIGHT] Guild chunking failed/timed out: {chunk_err}")
+
+            # 1. Proactive Gateway Query: When members intent is not enabled, query Gateway
+            # for the in-game name. This searches usernames and nicknames without privileged intents.
+            if target_guild and not has_members_intent and hasattr(target_guild, "query_members"):
+                try:
+                    await target_guild.query_members(query=ign_raw, limit=20, cache=True)
+                except Exception as query_err:
+                    logger.debug(f"[FLIGHT] Member query fallback for {ign_raw}: {query_err}")
+
             found = await asyncio.to_thread(
                 self.find_matching_members, target_guild, ign_norm, isl_norm
             )
-            # If no cached member matched and members intent is disabled, query Gateway
-            # for the in-game name (allowed without privileged Server Members intent).
-            if not found and target_guild and hasattr(target_guild, "query_members"):
-                try:
-                    queried = await target_guild.query_members(query=ign_raw, limit=20, cache=True)
-                    if queried:
-                        found = await asyncio.to_thread(
-                            self.find_matching_members, target_guild, ign_norm, isl_norm
-                        )
-                except Exception as query_err:
-                    logger.debug(f"[FLIGHT] Member query fallback for {ign_raw}: {query_err}")
+
+            # 2. If no member found yet, check Dodo reveal records from DB
+            if not found and target_guild:
+                reveal_member, reveal_url = await self.lookup_dodo_reveal_member(target_guild, ign_raw, dest_raw)
+                if reveal_member:
+                    found = [reveal_member]
+                    if not message_url and reveal_url:
+                        message_url = reveal_url
+
+            # 3. If still not found, check recent authorized targets in island_visits
+            if not found and target_guild:
+                auth_target = await self._get_recent_authorized_target(ign_raw, guild_id=target_guild.id)
+                if auth_target and auth_target.get("user_id"):
+                    member = await self._resolve_member(target_guild, int(auth_target["user_id"]))
+                    if member:
+                        found = [member]
 
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub', message_url=message_url, message_content=message_content)
         except Exception as e:

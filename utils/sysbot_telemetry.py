@@ -31,6 +31,35 @@ _LAST_EVENT_IDS: Dict[str, int] = {}
 _SENT_WEBHOOK_EVENT_IDS: set[tuple[str, int]] = set()
 _CACHE_LOCK = threading.Lock()
 
+_FLIGHT_LISTENERS: list[Any] = []
+_FLIGHT_LISTENERS_LOCK = threading.Lock()
+
+
+def register_flight_event_listener(callback: Any) -> None:
+    """Register a callback for live flight events (arrivals, departures)."""
+    with _FLIGHT_LISTENERS_LOCK:
+        if callback not in _FLIGHT_LISTENERS:
+            _FLIGHT_LISTENERS.append(callback)
+
+
+def unregister_flight_event_listener(callback: Any) -> None:
+    """Unregister a flight event callback."""
+    with _FLIGHT_LISTENERS_LOCK:
+        if callback in _FLIGHT_LISTENERS:
+            _FLIGHT_LISTENERS.remove(callback)
+
+
+def dispatch_flight_event(event_data: Dict[str, Any]) -> None:
+    """Dispatch a flight event to all registered listeners."""
+    with _FLIGHT_LISTENERS_LOCK:
+        listeners = list(_FLIGHT_LISTENERS)
+    for listener in listeners:
+        try:
+            listener(event_data)
+        except Exception as exc:
+            logger.error(f"[SysBotTelemetry] Error in flight event listener: {exc}", exc_info=True)
+
+
 _WORKER_THREAD: Optional[threading.Thread] = None
 _WORKER_STOP_EVENT = threading.Event()
 _DB_INITIALIZED = False
@@ -327,8 +356,8 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                         1,
                     ))
 
-                # Webhook notification for Sub Island flights (arrivals and departures)
-                if is_sub and evt_type in ("arrival", "departure"):
+                # Flight event notification and dispatch (arrivals and departures)
+                if evt_type in ("arrival", "departure"):
                     should_notify = False
                     if last_seen_id is not None:
                         if evt_id > last_seen_id:
@@ -354,25 +383,40 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                             if origin_clean.lower() in ("none", "null", "unknown"):
                                 origin_clean = ""
 
-                            if evt_type == "arrival":
-                                if player and origin_clean:
-                                    flight_msg = f"{player} from {origin_clean} is joining {clean_name}."
-                                elif player:
-                                    flight_msg = f"{player} is joining {clean_name}."
-                                elif msg:
-                                    flight_msg = msg.strip() if msg.strip().endswith(".") else f"{msg.strip()}."
-                                else:
-                                    flight_msg = f"A visitor is joining {clean_name}."
-                                send_sub_flight_webhook(f"> [{formatted_time}] 🛬 {flight_msg}")
+                            # 1. Post to Sub flight webhook if sub island
+                            if is_sub:
+                                if evt_type == "arrival":
+                                    if player and origin_clean:
+                                        flight_msg = f"{player} from {origin_clean} is joining {clean_name}."
+                                    elif player:
+                                        flight_msg = f"{player} is joining {clean_name}."
+                                    elif msg:
+                                        flight_msg = msg.strip() if msg.strip().endswith(".") else f"{msg.strip()}."
+                                    else:
+                                        flight_msg = f"A visitor is joining {clean_name}."
+                                    send_sub_flight_webhook(f"> [{formatted_time}] 🛬 {flight_msg}")
 
-                            elif evt_type == "departure":
-                                if player:
-                                    flight_msg = f"{player} has departed from {clean_name}"
-                                elif msg:
-                                    flight_msg = msg.strip().rstrip(".")
-                                else:
-                                    flight_msg = f"A visitor has departed from {clean_name}"
-                                send_sub_flight_webhook(f"> [{formatted_time}] 🛫 {flight_msg}")
+                                elif evt_type == "departure":
+                                    if player:
+                                        flight_msg = f"{player} has departed from {clean_name}"
+                                    elif msg:
+                                        flight_msg = msg.strip().rstrip(".")
+                                    else:
+                                        flight_msg = f"A visitor has departed from {clean_name}"
+                                    send_sub_flight_webhook(f"> [{formatted_time}] 🛫 {flight_msg}")
+
+                            # 2. Direct in-process dispatch to flight loggers (FlightLoggerCog, etc.)
+                            dispatch_flight_event({
+                                "event_id": evt_id,
+                                "event_type": evt_type,
+                                "island_name": clean_name,
+                                "island_type": "sub" if is_sub else "free",
+                                "player": (player or "").strip(),
+                                "origin": origin_clean,
+                                "message": (msg or "").strip(),
+                                "timestamp": evt_time,
+                                "formatted_time": formatted_time,
+                            })
 
             with _CACHE_LOCK:
                 _LAST_EVENT_IDS[clean_name.lower()] = new_last_id
