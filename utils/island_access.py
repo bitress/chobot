@@ -35,10 +35,10 @@ GUILD_CHANNELS_CACHE_TTL = 300
 # ============================================================================
 
 SUB_ISLAND_ACCESS_MATRIX: Dict[str, List[str]] = {
-    "Hiraya": ["ChoSoup", "y ChoSoup", "ChoColate", "ChoFries", "y ChoTato"],
+    "Hiraya": ["ChoSoup", "y ChoSoup", "ChoColate", "ChoFries", "y ChoTato", "Server Booster"],
     "Tagumpay": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
     "Bahaghari": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoTato"],
-    "Alapaap": ["ChoSoup", "y ChoSoup", "y ChoColate"],
+    "Alapaap": ["ChoSoup", "y ChoSoup", "y ChoColate", "Server Booster"],
     "Bituin": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
     "Lakan": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
     "Galak": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
@@ -66,6 +66,7 @@ ROLE_ID_TO_TIER_NAME: Dict[str, str] = {
     str(getattr(Config, "ROLE_CHOCOLATE", 1039516557405081601)): "ChoColate",
     str(getattr(Config, "ROLE_Y_CHOCOLATE", 1048323845771247680)): "y ChoColate",
     str(getattr(Config, "ROLE_CHOFRIES", 1031974954113179729)): "ChoFries",
+    str(getattr(Config, "ROLE_SERVER_BOOSTER", 760256226448638006)): "Server Booster",
 }
 TIER_NAME_TO_ROLE_ID: Dict[str, str] = {v: k for k, v in ROLE_ID_TO_TIER_NAME.items()}
 
@@ -78,6 +79,7 @@ TIER_LABELS: Dict[str, str] = {
     "ChoTato Club": "ChoTato Club (Twitch Tier 1)",
     "y ChoTato": "y ChoTato (YouTube Tier 1)",
     "ChoFries": "ChoFries (Patreon Tier 1)",
+    "Server Booster": "Server Booster (Discord)",
 }
 
 
@@ -175,7 +177,7 @@ def get_user_sub_tier(user: Optional[Dict[str, Any]]) -> Optional[int]:
         return 3
     if "ChoColate" in roles or "y ChoColate" in roles:
         return 2
-    if "ChoTato Club" in roles or "y ChoTato" in roles or "ChoFries" in roles:
+    if "ChoTato Club" in roles or "y ChoTato" in roles or "ChoFries" in roles or "Server Booster" in roles:
         return 1
     return None
 

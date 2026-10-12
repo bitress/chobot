@@ -283,7 +283,7 @@ class Config:
     SENIOR_MOD_ROLE_ID = _get_int("SENIOR_MOD_ROLE_ID")
     BABY_MOD_ROLE_ID   = _get_int("BABY_MOD_ROLE_ID")
 
-    # Subscription Tier Role IDs (Patreon, Twitch, YouTube)
+    # Subscription Tier Role IDs (Patreon, Twitch, YouTube, Server Booster)
     ROLE_CHOSOUP        = _get_int("ROLE_CHOSOUP", 1031974843656192080)
     ROLE_Y_CHOSOUP      = _get_int("ROLE_Y_CHOSOUP", 1048323845771247681)
     ROLE_CHOTATO_CLUB   = _get_int("ROLE_CHOTATO_CLUB", 898373041799696454)
@@ -291,6 +291,7 @@ class Config:
     ROLE_CHOCOLATE      = _get_int("ROLE_CHOCOLATE", 1039516557405081601)
     ROLE_Y_CHOCOLATE    = _get_int("ROLE_Y_CHOCOLATE", 1048323845771247680)
     ROLE_CHOFRIES       = _get_int("ROLE_CHOFRIES", 1031974954113179729)
+    ROLE_SERVER_BOOSTER = _get_int("ROLE_SERVER_BOOSTER", 760256226448638006)
 
 
     # Discord Embed Assets

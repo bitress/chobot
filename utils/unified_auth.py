@@ -32,6 +32,7 @@ ROLE_ID_TO_TIER_NAME: Dict[str, str] = {
     str(getattr(Config, "ROLE_CHOCOLATE", 1039516557405081601)): "ChoColate",
     str(getattr(Config, "ROLE_Y_CHOCOLATE", 1048323845771247680)): "y ChoColate",
     str(getattr(Config, "ROLE_CHOFRIES", 1031974954113179729)): "ChoFries",
+    str(getattr(Config, "ROLE_SERVER_BOOSTER", 760256226448638006)): "Server Booster",
 }
 TIER_NAME_TO_ROLE_ID: Dict[str, str] = {v: k for k, v in ROLE_ID_TO_TIER_NAME.items()}
 
