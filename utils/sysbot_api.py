@@ -320,6 +320,26 @@ class SysBotClient:
 
         return data
 
+    async def get_game_time(self) -> dict:
+        """Fetch in-game time and Nook's Cranny status from GET /api/gametime."""
+        if not self.base_url or time.monotonic() < self._offline_until:
+            return {"success": False, "error": "SysBot API is offline or not configured."}
+
+        data, code = await asyncio.to_thread(self._get, "/api/gametime")
+        if not isinstance(data, dict):
+            return {"success": False, "error": "Invalid response"}
+        return data
+
+    def get_game_time_sync(self) -> dict:
+        """Synchronously fetch in-game time and Nook's Cranny status from GET /api/gametime."""
+        if not self.base_url or time.monotonic() < self._offline_until:
+            return {"success": False, "error": "SysBot API is offline or not configured."}
+
+        data, code = self._get("/api/gametime")
+        if not isinstance(data, dict):
+            return {"success": False, "error": "Invalid response"}
+        return data
+
     async def submit_order(
         self,
         username: str,

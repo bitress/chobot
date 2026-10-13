@@ -27,6 +27,7 @@ logger = logging.getLogger("SysBotTelemetry")
 
 # Cache mapping island_name -> live state dict
 _TELEMETRY_CACHE: Dict[str, Dict[str, Any]] = {}
+_GAMETIME_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
 _LAST_EVENT_IDS: Dict[str, int] = {}
 _SENT_WEBHOOK_EVENT_IDS: set[tuple[str, int]] = set()
 _CACHE_LOCK = threading.Lock()
@@ -289,12 +290,37 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
     dodo_code = status_data.get("dodo_code")
     visitors_count, visitor_list = parse_sysbot_visitors(status_data)
 
+    # Ingest /api/gametime incrementally (every 30s) if island is online
+    gametime_data: Optional[Dict[str, Any]] = None
+    with _CACHE_LOCK:
+        gt_cached = _GAMETIME_CACHE.get(clean_name.lower())
+
+    if is_online:
+        if not gt_cached or (now_ts - gt_cached[0] >= 30.0):
+            try:
+                gt_resp = client.get_game_time_sync()
+                if isinstance(gt_resp, dict) and gt_resp.get("success"):
+                    gametime_data = gt_resp
+                    with _CACHE_LOCK:
+                        _GAMETIME_CACHE[clean_name.lower()] = (now_ts, gametime_data)
+                elif gt_cached:
+                    gametime_data = gt_cached[1]
+            except Exception as exc:
+                logger.debug(f"[SysBotTelemetry] Gametime poll error for {clean_name}: {exc}")
+                if gt_cached:
+                    gametime_data = gt_cached[1]
+        else:
+            gametime_data = gt_cached[1]
+
+    gt_formatted = (gametime_data.get("formatted") or gametime_data.get("game_time")) if gametime_data else None
+    gt_mode = (gametime_data.get("mode") or status_data.get("mode")) if gametime_data else status_data.get("mode")
+
     cached_entry: Dict[str, Any] = {
         "island": clean_name,
         "is_online": is_online,
         "is_connected": bool(status_data.get("is_connected")),
         "console_stage": status_data.get("console_stage") or ("Running" if is_online else "Offline"),
-        "mode": status_data.get("mode") or ("DropMode" if not is_sub else "DropMode"),
+        "mode": gt_mode or ("DropMode" if not is_sub else "DropMode"),
         "raw_dodo": dodo_code,  # Stored internally, hidden in public queries for sub islands
         "is_dodo_valid": bool(status_data.get("is_dodo_valid")),
         "is_refreshing_dodo": bool(status_data.get("is_refreshing_dodo")),
@@ -303,6 +329,11 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
         "last_arrival": status_data.get("last_arrival"),
         "last_departure": status_data.get("last_departure"),
         "last_updated": now_ts,
+        "gametime": gametime_data,
+        "game_time": gt_formatted,
+        "is_nooks_open": gametime_data.get("is_nooks_open") if gametime_data else None,
+        "nooks_status": gametime_data.get("nooks_status") if gametime_data else None,
+        "nooks_message": gametime_data.get("nooks_message") if gametime_data else None,
     }
 
     with _CACHE_LOCK:

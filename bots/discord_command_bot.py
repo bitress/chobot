@@ -1779,12 +1779,49 @@ class DiscordCommandCog(commands.Cog):
 
         island_map: dict[str, dict] = {}
         for item in data:
-            name = item.get("name") if isinstance(item, dict) else None
-            if not name:
+            if not isinstance(item, dict):
                 continue
-            normalized = clean_text(name)
-            canonical = re.sub(r'^\d+', '', normalized)
-            island_map[canonical or normalized] = item
+            name = item.get("name")
+            item_id = str(item.get("id") or "").lower()
+            canon_name = str(item.get("canonical_name") or "").lower()
+            keys = set()
+            if name:
+                norm = clean_text(name)
+                keys.add(norm)
+                keys.add(re.sub(r'^\d+', '', norm))
+            if item_id:
+                keys.add(item_id)
+                keys.add(clean_text(item_id))
+            if canon_name:
+                keys.add(canon_name)
+                keys.add(clean_text(canon_name))
+
+            for k in keys:
+                if not k:
+                    continue
+                # If key already exists, never let an offline item overwrite an online item!
+                existing = island_map.get(k)
+                if existing and existing.get("bot_online") and not item.get("bot_online"):
+                    continue
+                island_map[k] = item
+
+        # Ensure Sinta and SYSBOT-ACNH-ORDERS alias together and prefer whichever is online
+        sinta_online = island_map.get("sinta")
+        sysbot_online = island_map.get("sysbotacnhorders") or island_map.get("sysbot-acnh-orders")
+        best_order = None
+        if sinta_online and sinta_online.get("bot_online"):
+            best_order = sinta_online
+        elif sysbot_online and sysbot_online.get("bot_online"):
+            best_order = sysbot_online
+        elif sinta_online:
+            best_order = sinta_online
+        elif sysbot_online:
+            best_order = sysbot_online
+
+        if best_order:
+            island_map["sinta"] = best_order
+            island_map["sysbotacnhorders"] = best_order
+            island_map["sysbot-acnh-orders"] = best_order
 
         return island_map, api_timestamp
 
@@ -2048,6 +2085,18 @@ class DiscordCommandCog(commands.Cog):
         embed.add_field(name="Dodo Code", value=code_line, inline=True)
         embed.add_field(name="Visitors", value=visitors, inline=True)
         embed.add_field(name="Status", value=status_line, inline=True)
+
+        game_time = item.get("game_time")
+        gt_obj = item.get("gametime")
+        if not game_time and isinstance(gt_obj, dict):
+            game_time = gt_obj.get("formatted") or gt_obj.get("game_time")
+        is_nooks_open = item.get("is_nooks_open")
+        if is_nooks_open is None and isinstance(gt_obj, dict):
+            is_nooks_open = gt_obj.get("is_nooks_open")
+
+        if game_time:
+            shop_str = "🛒 Nook's Open" if is_nooks_open else "🌙 Nook's Closed"
+            embed.add_field(name="In-Game Time", value=f"🕒 {game_time}\n{shop_str}", inline=True)
         if map_url:
             embed.set_thumbnail(url=map_url)
         embed.set_image(url=Config.FOOTER_LINE)
@@ -2933,10 +2982,20 @@ class DiscordCommandCog(commands.Cog):
 
     async def _enforce_find_channel(self, ctx) -> bool:
         """
-        Returns True if in the correct channel.
+        Returns True if in the correct channel or if user is admin/mod.
         Otherwise, deletes the message and returns False.
         """
-        if not Config.FIND_BOT_CHANNEL_ID or ctx.channel.id == Config.FIND_BOT_CHANNEL_ID:
+        # Admins and moderators can use find commands anywhere
+        perms = getattr(ctx.author, "guild_permissions", None)
+        if perms and (perms.administrator or perms.manage_guild or perms.manage_messages):
+            return True
+        if _is_mod_member(ctx.author):
+            return True
+
+        find_channels = {Config.FIND_BOT_CHANNEL_ID, 1473566991615787149}
+        find_channels.discard(None)
+
+        if not find_channels or ctx.channel.id in find_channels:
             return True
 
         # Nuke the unauthorized text command
@@ -3976,6 +4035,11 @@ class DiscordCommandCog(commands.Cog):
 
         # Fetch live SysBot API snapshot once for all islands
         api_snapshot, _ = await self._fetch_islands_api_snapshot()
+        if not api_snapshot:
+            logger.warning("[DISCORD] island_monitor_loop: SysBot API snapshot unreachable; skipping this cycle to prevent false offline alerts.")
+            return
+
+        logger.debug(f"[DISCORD] island_monitor_loop: checked live status for {len(api_snapshot)} islands from SysBot API.")
 
         for island in Config.SUB_ISLANDS:
             island_clean = clean_text(island)
@@ -5476,7 +5540,10 @@ class DiscordCommandBot(commands.Bot):
             if not interaction.command:
                 return True
 
-            if interaction.channel_id == Config.FIND_BOT_CHANNEL_ID:
+            find_channels = {Config.FIND_BOT_CHANNEL_ID, 1473566991615787149}
+            find_channels.discard(None)
+
+            if interaction.channel_id in find_channels:
                 # Allowed commands in FIND_BOT_CHANNEL
                 allowed_commands = {
                     'find', 'locate', 'where', 'search',  # find and aliases

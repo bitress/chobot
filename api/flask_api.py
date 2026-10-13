@@ -1281,6 +1281,14 @@ def _build_island_response(
         else:
             dodo_code = raw_dodo
 
+    gametime_data = live_telemetry.get("gametime") if live_telemetry else None
+    gt_obj = gametime_data if isinstance(gametime_data, dict) else {}
+    game_time = gt_obj.get("formatted") or gt_obj.get("game_time")
+    is_nooks_open = gt_obj.get("is_nooks_open")
+    nooks_status = gt_obj.get("nooks_status")
+    nooks_message = gt_obj.get("nooks_message")
+    mode = gt_obj.get("mode") or (live_telemetry.get("mode") if live_telemetry else None)
+
     return {
         "id":                db_island.get("id", name.lower()),
         "name":              (db_island.get("display_name") or name.title()),
@@ -1306,6 +1314,12 @@ def _build_island_response(
         "accessible":        viewer_has_access,
         "viewer_has_access": viewer_has_access,
         "console_stage":     live_telemetry.get("console_stage") if live_telemetry else ("Running" if sysbot_online else "Offline"),
+        "game_time":         game_time,
+        "is_nooks_open":     is_nooks_open,
+        "nooks_status":      nooks_status,
+        "nooks_message":     nooks_message,
+        "mode":              mode,
+        "gametime":          gametime_data,
     }
 
 # ============================================================================
@@ -2735,6 +2749,12 @@ def api_browser_islands():
             "source": "sysbot_api",
             "console_stage": island.get("console_stage"),
             "updated_at": island.get("updated_at"),
+            "game_time": island.get("game_time"),
+            "is_nooks_open": island.get("is_nooks_open"),
+            "nooks_status": island.get("nooks_status"),
+            "nooks_message": island.get("nooks_message"),
+            "mode": island.get("mode"),
+            "gametime": island.get("gametime"),
         })
     return jsonify({
         "timestamp": datetime.now().isoformat(),

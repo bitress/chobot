@@ -491,6 +491,26 @@ def _build_panel_embed(island_name: str, status_data: dict | None = None) -> dis
         )
         embed.add_field(name="Queue", value=f"**{queue_count}** order(s)", inline=True)
 
+        game_time = status_data.get("game_time")
+        gametime_obj = status_data.get("gametime")
+        if not game_time and isinstance(gametime_obj, dict):
+            game_time = gametime_obj.get("formatted") or gametime_obj.get("game_time")
+        is_nooks_open = status_data.get("is_nooks_open")
+        if is_nooks_open is None and isinstance(gametime_obj, dict):
+            is_nooks_open = gametime_obj.get("is_nooks_open")
+        mode = status_data.get("mode")
+        if not mode and isinstance(gametime_obj, dict):
+            mode = gametime_obj.get("mode")
+
+        if game_time:
+            shop_str = "🛒 Nook's Open" if is_nooks_open else "🌙 Nook's Closed"
+            mode_str = f" • `{mode}`" if mode else ""
+            embed.add_field(
+                name="🕒 In-Game Clock",
+                value=f"**{game_time}**\n{shop_str}{mode_str}",
+                inline=True,
+            )
+
         if villagers:
             embed.add_field(
                 name="Current Villagers",
@@ -1475,6 +1495,16 @@ class RefreshButton(
             ]
         except Exception:
             status_data["villagers"] = []
+
+        try:
+            gt_data = await client.get_game_time()
+            if isinstance(gt_data, dict) and gt_data.get("success"):
+                status_data["gametime"] = gt_data
+                status_data["game_time"] = gt_data.get("formatted") or gt_data.get("game_time")
+                status_data["is_nooks_open"] = gt_data.get("is_nooks_open")
+                status_data["mode"] = gt_data.get("mode")
+        except Exception:
+            pass
 
         # Same deterministic custom_ids as before, so the buttons keep working.
         await interaction.edit_original_response(
