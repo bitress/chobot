@@ -2653,8 +2653,10 @@ class DiscordCommandCog(commands.Cog):
             embed.description = f"I searched everywhere but couldn't find it.\n\n{Config.DROPBOT_INFO}"
 
 
-        user_avatar = ctx.author.avatar.url if ctx.author.avatar else Config.DEFAULT_PFP
-        embed.set_footer(text=f"Requested by {ctx.author.display_name}", icon_url=user_avatar)
+        user = getattr(ctx, "author", getattr(ctx, "user", None))
+        user_avatar = user.avatar.url if (user and user.avatar) else Config.DEFAULT_PFP
+        display_name = user.display_name if user else "Unknown"
+        embed.set_footer(text=f"Requested by {display_name}", icon_url=user_avatar)
         embed.set_image(url=Config.FOOTER_LINE)
         return embed
 
@@ -3370,183 +3372,7 @@ class DiscordCommandCog(commands.Cog):
             )
         
         
-    @commands.hybrid_command(name="senddodo", aliases=["sd"])
-    async def send_dodo(self, ctx):
-        """Send the dodo code to a user via DM"""
-        if self._is_order_island_channel(ctx.channel):
-            island_name = Config.ORDER_BOT_ISLAND or "This island"
-            await ctx.reply(
-                f"{island_name} is an order-bot island. Dodo access is handled by the order bot in this channel, so `!senddodo` / `!sd` is not available here.",
-                ephemeral=True,
-            )
-            return
-        if not self._is_sub_island_channel(ctx.channel):
-            await ctx.reply("This command can only be used in a sub island channel. Please read the sticky post below carefully and make sure you understand and follow all the <#783677194576330792> before agreeing to them.", ephemeral=True)
-            return
 
-        if self.check_cooldown(str(ctx.author.id)):
-            return
-
-        guild = self.bot.get_guild(Config.GUILD_ID)
-        if not guild or not await self._is_channel_online(guild, ctx.channel):
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
-            return
-
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        def dodo_check(msg):
-            return (
-                msg.author.id == island_bot.id
-                and msg.channel.id == ctx.channel.id
-                and ISLAND_DODO_SENT_PATTERN.search(msg.content)
-            )
-
-        # Register this member as waiting for a Dodo code so the island monitor
-        # can DM them immediately if the island goes offline during the wait.
-        island_clean_key = clean_text(ctx.channel.name)
-        self.pending_dodo_waiters.setdefault(island_clean_key, []).append(ctx.author)
-        try:
-            island_msg = await self.bot.wait_for('message', check=dodo_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
-            with contextlib.suppress(discord.HTTPException):
-                await island_msg.delete()
-            reply_msg = await ctx.reply(embed=self._build_dodo_sent_embed(ctx))
-            logger.info(f"[DISCORD] Intercepted and redesigned !sd response for {ctx.channel.name}")
-            await self._log_dodo_request_to_xlog(ctx, reply_msg)
-        except asyncio.TimeoutError:
-            logger.warning(f"[DISCORD] Timeout waiting for island bot !sd response in {ctx.channel.name}")
-        finally:
-            # Always deregister — success, timeout, or unexpected error.
-            waiters = self.pending_dodo_waiters.get(island_clean_key, [])
-            if ctx.author in waiters:
-                waiters.remove(ctx.author)
-
-    @commands.hybrid_command(name="visitors")
-    async def visitors(self, ctx):
-        """Check current visitors on the sub island"""
-        if not self._is_sub_island_channel(ctx.channel):
-            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
-            return
-
-        if self.check_cooldown(str(ctx.author.id)):
-            return
-
-        guild = self.bot.get_guild(Config.GUILD_ID)
-        if not guild or not await self._is_channel_online(guild, ctx.channel):
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
-            return
-
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        def visitors_check(msg):
-            return (
-                msg.author.id == island_bot.id
-                and msg.channel.id == ctx.channel.id
-                and ISLAND_VISITORS_PATTERN.search(msg.content)
-            )
-
-        try:
-            island_msg = await self.bot.wait_for('message', check=visitors_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
-
-            match = ISLAND_VISITORS_PATTERN.search(island_msg.content)
-            island_name = match.group(1).strip() if match else ctx.channel.name
-
-            visitor_lines = []
-            for line in island_msg.content.split('\n'):
-                m = VISITOR_LINE_PATTERN.match(line.strip())
-                if m:
-                    visitor_lines.append(m.group(1).strip())
-
-            with contextlib.suppress(discord.HTTPException):
-                await island_msg.delete()
-            await ctx.reply(embed=self._build_visitors_embed(ctx, island_name, visitor_lines))
-            logger.info(f"[DISCORD] Intercepted and redesigned !visitors response for {ctx.channel.name}")
-        except asyncio.TimeoutError:
-            logger.warning(f"[DISCORD] Timeout waiting for island bot !visitors response in {ctx.channel.name}")
-
-    @commands.hybrid_command(name="villagers")
-    async def villagers(self, ctx):
-        """Check current villagers on the sub island"""
-        if not self._is_sub_island_channel(ctx.channel):
-            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
-            return
-
-        if self.check_cooldown(str(ctx.author.id)):
-            return
-
-        guild = self.bot.get_guild(Config.GUILD_ID)
-        if not guild or not await self._is_channel_online(guild, ctx.channel):
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
-            return
-
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        def villagers_check(msg):
-            return (
-                msg.author.id == island_bot.id
-                and msg.channel.id == ctx.channel.id
-                and ISLAND_VILLAGERS_PATTERN.search(msg.content)
-            )
-
-        try:
-            island_msg = await self.bot.wait_for('message', check=villagers_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
-
-            match = ISLAND_VILLAGERS_PATTERN.search(island_msg.content)
-            island_name = match.group(1).strip() if match else ctx.channel.name
-
-            # Extract villagers from the message
-            villager_text = island_msg.content
-            if ":" in villager_text:
-                villager_list = villager_text.split(":", 1)[1].strip()
-                villagers_list = [v.strip() for v in villager_list.split(",")]
-            else:
-                villagers_list = []
-
-            with contextlib.suppress(discord.HTTPException):
-                await island_msg.delete()
-            await ctx.reply(embed=self._build_villagers_embed(ctx, island_name, villagers_list))
-            logger.info(f"[DISCORD] Intercepted and redesigned !villagers response for {ctx.channel.name}")
-        except asyncio.TimeoutError:
-            logger.warning(f"[DISCORD] Timeout waiting for island bot !villagers response in {ctx.channel.name}")
-
-    @commands.hybrid_command(name="drop")
-    async def drop(self, ctx):
-        """Request item drop on the sub island"""
-        if self._is_order_island_channel(ctx.channel):
-            island_name = Config.ORDER_BOT_ISLAND or "This island"
-            await ctx.reply(
-                f"{island_name} is an order-bot island. Use the order bot flow for this channel; `!drop` is only available on sub islands.",
-                ephemeral=True,
-            )
-            return
-        if not self._is_sub_island_channel(ctx.channel):
-            await ctx.reply("This command can only be used in a sub island channel.", ephemeral=True)
-            return
-
-        if self.check_cooldown(str(ctx.author.id)):
-            return
-
-        guild = self.bot.get_guild(Config.GUILD_ID)
-        if not guild or not await self._is_channel_online(guild, ctx.channel):
-            await ctx.reply(embed=self._create_island_down_embed(ctx))
-            return
-
-        island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
-
-        def drop_check(msg):
-            return (
-                msg.author.id == island_bot.id
-                and msg.channel.id == ctx.channel.id
-                and ISLAND_DROP_PATTERN.search(msg.content)
-            )
-
-        try:
-            island_msg = await self.bot.wait_for('message', check=drop_check, timeout=ISLAND_BOT_INTERCEPT_TIMEOUT)
-            with contextlib.suppress(discord.HTTPException):
-                await island_msg.delete()
-            await ctx.reply(embed=self._build_drop_embed(ctx))
-            logger.info(f"[DISCORD] Intercepted and redesigned !drop response for {ctx.channel.name}")
-        except asyncio.TimeoutError:
-            logger.warning(f"[DISCORD] Timeout waiting for island bot !drop response in {ctx.channel.name}")
 
     @commands.hybrid_command(name="injectvillager", aliases=["iv"])
     async def inject_villager(self, ctx, villager_name: str):
@@ -4075,19 +3901,7 @@ class DiscordCommandCog(commands.Cog):
             if not is_online and not was_down:
                 # Transition: online → offline
                 self.island_down_states[island_clean] = True
-                embed = discord.Embed(
-                    title="🏝️ Island is Down",
-                    description=f"**{island}** island is currently **offline**.",
-                    color=discord.Color.red(),
-                    timestamp=discord.utils.utcnow()
-                )
-                embed.set_image(url=ISLAND_DOWN_IMAGE_URL)
-                try:
-                    msg = await channel.send(embed=embed)
-                    self.island_down_messages[island_clean] = msg
-                    logger.info(f"[DISCORD] Island monitor: {island} went OFFLINE")
-                except Exception as e:
-                    logger.error(f"[DISCORD] Failed to send island-down embed for {island}: {e}")
+                logger.info(f"[DISCORD] Island monitor: {island} went OFFLINE")
 
                 # DM any members who are mid-!senddodo wait for this island so
                 # they aren't left hanging until their wait_for times out.
@@ -4108,7 +3922,7 @@ class DiscordCommandCog(commands.Cog):
             elif is_online and was_down:
                 # Transition: offline → online
                 self.island_down_states[island_clean] = False
-                # Remove the sticky "island is down" embed
+                # Remove any leftover sticky "island is down" embed if one was previously recorded
                 sticky_msg = self.island_down_messages.pop(island_clean, None)
                 if sticky_msg:
                     try:
@@ -4117,18 +3931,7 @@ class DiscordCommandCog(commands.Cog):
                         pass  # Already deleted externally — nothing to do
                     except Exception as e:
                         logger.warning(f"[DISCORD] Could not delete sticky down embed for {island}: {e}")
-                embed = discord.Embed(
-                    title="🏝️ Island is Back Up!",
-                    description=f"**{island}** island is back online and ready to visit! 🎉",
-                    color=discord.Color.green(),
-                    timestamp=discord.utils.utcnow()
-                )
-                embed.set_image(url=Config.FOOTER_LINE)
-                try:
-                    await channel.send(embed=embed)
-                    logger.info(f"[DISCORD] Island monitor: {island} is back ONLINE")
-                except Exception as e:
-                    logger.error(f"[DISCORD] Failed to send island-back-up embed for {island}: {e}")
+                logger.info(f"[DISCORD] Island monitor: {island} is back ONLINE")
 
         # --- Free island status ---
         if self.free_island_lookup:
@@ -4172,10 +3975,8 @@ class DiscordCommandCog(commands.Cog):
                     continue
                 if not is_online and not order_was_down:
                     self.island_down_states[state_key] = True
-                    await self._send_order_island_status_alert(channel, island, online=False)
                 elif is_online and order_was_down:
                     self.island_down_states[state_key] = False
-                    await self._send_order_island_status_alert(channel, island, online=True)
 
         # Batch update all island statuses asynchronously so event loop is not blocked
         if bot_status_records:

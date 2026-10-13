@@ -37,7 +37,7 @@ from typing import Any
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils.acnh_catalog import ACNHCatalog, CatalogItem, CatalogVillager
 from utils.config import Config
@@ -463,6 +463,174 @@ def _fire_dropbot_dodo_webhook(
 
 # ─── Embed + reply helpers ─────────────────────────────────────────────────────
 
+_CONSOLE_API_CACHE: tuple[float, list[dict]] = (0.0, [])
+
+
+async def _get_console_api_islands() -> list[dict]:
+    global _CONSOLE_API_CACHE
+    now = time.monotonic()
+    if _CONSOLE_API_CACHE[1] and (now - _CONSOLE_API_CACHE[0]) < 15.0:
+        return _CONSOLE_API_CACHE[1]
+
+    def _fetch():
+        import requests
+        url = getattr(Config, "ISLANDS_API_URL", "") or "https://console.chopaeng.com/api/islands"
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.ok:
+                data = resp.json()
+                return data.get("data", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        except Exception as exc:
+            logger.debug("[DropBot] Could not fetch console islands API: %s", exc)
+        return []
+
+    items = await asyncio.to_thread(_fetch)
+    if items:
+        _CONSOLE_API_CACHE = (now, items)
+    elif _CONSOLE_API_CACHE[1]:
+        return _CONSOLE_API_CACHE[1]
+    return items
+
+
+def _clean_key(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]", "", str(text or "")).lower()
+
+
+async def fetch_island_live_status(island_name: str) -> dict:
+    """Fetch live bot state, villagers, in-game clock, and visitors for an island."""
+    canonical = _canonical_island(island_name) or island_name
+    canonical_key = _clean_key(canonical)
+
+    # 1. Check Console API snapshot (same source as discord_command_bot status)
+    api_item = None
+    try:
+        api_items = await _get_console_api_islands()
+        for it in api_items:
+            if isinstance(it, dict) and _clean_key(it.get("name")) == canonical_key:
+                api_item = it
+                break
+    except Exception as exc:
+        logger.debug("[DropBot] Error finding island in console API: %s", exc)
+
+    # 2. Check telemetry cache
+    telem = None
+    try:
+        from utils.sysbot_telemetry import get_cached_island_telemetry
+        telem = get_cached_island_telemetry(canonical, mask_sub_dodo=False)
+    except Exception:
+        pass
+
+    # 3. Query SysBot client (if configured)
+    client_status: dict = {}
+    client = None
+    try:
+        client = get_island_sysbot_client(canonical, timeout=2)
+        client_status = await client.get_bot_status()
+    except Exception:
+        pass
+
+    # Determine if online:
+    is_running = False
+    if client_status.get("is_running") and client_status.get("is_connected"):
+        is_running = True
+    elif api_item and (api_item.get("bot_online") or api_item.get("discord_bot_online")):
+        is_running = True
+    elif telem and telem.get("is_online"):
+        is_running = True
+
+    # Determine console_stage
+    console_stage = "Running" if is_running else "Offline"
+    if client_status.get("console_stage") and client_status.get("console_stage") not in ("Stopped", "Offline", "Unknown"):
+        console_stage = client_status["console_stage"]
+    elif api_item:
+        stage = api_item.get("console_stage")
+        if stage and stage not in ("Offline", "Stopped"):
+            console_stage = stage
+        elif is_running:
+            console_stage = api_item.get("status") or "Online"
+    elif telem and telem.get("console_stage"):
+        console_stage = telem["console_stage"]
+
+    # Determine dodo validity
+    dodo = (
+        client_status.get("dodo_code")
+        or (telem.get("raw_dodo") if telem else None)
+        or (api_item.get("dodo_code") if api_item else None)
+    )
+    is_valid_dodo = bool(
+        client_status.get("is_dodo_valid")
+        or (dodo and str(dodo).strip() not in _INVALID_DODO_CODES)
+        or is_running
+    )
+
+    # Clock & mode
+    game_time = client_status.get("game_time")
+    is_nooks_open = client_status.get("is_nooks_open")
+    mode = client_status.get("mode")
+    if not game_time and api_item:
+        game_time = api_item.get("game_time")
+        is_nooks_open = api_item.get("is_nooks_open")
+        mode = api_item.get("mode")
+    if not game_time and client:
+        try:
+            gt_data = await client.get_game_time()
+            if isinstance(gt_data, dict) and gt_data.get("success"):
+                game_time = gt_data.get("formatted") or gt_data.get("game_time")
+                is_nooks_open = gt_data.get("is_nooks_open")
+                mode = gt_data.get("mode")
+        except Exception:
+            pass
+
+    # Visitors
+    visitors: list[str] = []
+    if client_status:
+        try:
+            from utils.sysbot_telemetry import parse_sysbot_visitors
+            _, v_names = parse_sysbot_visitors(client_status)
+            if v_names:
+                visitors = v_names
+        except Exception:
+            pass
+    if not visitors and api_item:
+        v_raw = api_item.get("visitor_list")
+        if isinstance(v_raw, list):
+            visitors = [str(x) for x in v_raw if str(x).strip()]
+        elif api_item.get("visitors") and isinstance(api_item["visitors"], list):
+            visitors = [str(x) for x in api_item["visitors"]]
+    if not visitors and telem and telem.get("visitor_list"):
+        visitors = telem["visitor_list"]
+
+    # Villagers
+    villagers: list[str] = []
+    if client:
+        try:
+            vdata = await client.get_villagers()
+            raw_list = vdata.get("villagers", [])
+            villagers = [
+                (v.get("name") or v.get("Name") or str(v)) if isinstance(v, dict) else str(v)
+                for v in raw_list
+            ]
+        except Exception:
+            pass
+    if not villagers and api_item:
+        raw_v = api_item.get("villagers") or api_item.get("residents") or []
+        if isinstance(raw_v, list):
+            villagers = [str(v) for v in raw_v]
+
+    return {
+        "island_name": canonical,
+        "is_running": is_running,
+        "is_dodo_valid": is_valid_dodo,
+        "dodo_code": dodo,
+        "console_stage": console_stage,
+        "game_time": game_time,
+        "is_nooks_open": is_nooks_open,
+        "mode": mode,
+        "villagers": villagers,
+        "visitors": visitors,
+    }
+
+
 def _build_panel_embed(island_name: str, status_data: dict | None = None) -> discord.Embed:
     embed = discord.Embed(
         title=f"🏝️ {island_name} — Island Control Panel",
@@ -478,9 +646,9 @@ def _build_panel_embed(island_name: str, status_data: dict | None = None) -> dis
     if status_data:
         is_running     = status_data.get("is_running", False)
         is_valid_dodo  = status_data.get("is_dodo_valid", False)
-        queue_count    = status_data.get("queue_count", 0)
         console_stage  = status_data.get("console_stage", "Unknown")
         villagers      = status_data.get("villagers", [])
+        visitors       = status_data.get("visitors", [])
 
         status_emoji   = "🟢" if is_running else "🔴"
         dodo_line      = "✅ Dodo code is active" if is_valid_dodo else "🔄 Dodo code is refreshing…"
@@ -489,7 +657,6 @@ def _build_panel_embed(island_name: str, status_data: dict | None = None) -> dis
             value=f"{status_emoji} **{'Online' if is_running else 'Offline'}** — {console_stage}\n{dodo_line}",
             inline=True,
         )
-        embed.add_field(name="Queue", value=f"**{queue_count}** order(s)", inline=True)
 
         game_time = status_data.get("game_time")
         gametime_obj = status_data.get("gametime")
@@ -511,16 +678,21 @@ def _build_panel_embed(island_name: str, status_data: dict | None = None) -> dis
                 inline=True,
             )
 
-        if villagers:
-            embed.add_field(
-                name="Current Villagers",
-                value="\n".join(f"• {v}" for v in villagers[:10]),
-                inline=False,
-            )
+        embed.add_field(
+            name="Current Villagers",
+            value="\n".join(f"• {v}" for v in villagers[:10]) if villagers else "*None*",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Current Visitors",
+            value="\n".join(f"• {v}" for v in visitors[:10]) if visitors else "*None*",
+            inline=False,
+        )
     else:
         embed.add_field(
-            name="Status",
-            value="Click **🔄 Refresh** to load live island data.",
+            name="Bot Status",
+            value="🔄 *Loading live island data…*",
             inline=False,
         )
 
@@ -530,8 +702,7 @@ def _build_panel_embed(island_name: str, status_data: dict | None = None) -> dis
             "🦤 **Get Dodo** — Reveal this island's Dodo code privately\n"
             "📦 **Drop Items** — Enter items or codes to drop on the island\n"
             "🔍 **Search Catalog** — Browse & drop items or villagers with images\n"
-            "🐱 **Inject Villager** — Request a villager injection\n"
-            "🔄 **Refresh** — Update this panel with live data"
+            "🐱 **Inject Villager** — Request a villager injection"
         ),
         inline=False,
     )
@@ -1304,6 +1475,13 @@ class GetDodoButton(
         is_valid = bool(data.get("is_dodo_valid") or (dodo and str(dodo).strip() not in _INVALID_DODO_CODES))
 
         if not is_valid:
+            status_data = await fetch_island_live_status(island)
+            cand = status_data.get("dodo_code")
+            if cand and str(cand).strip() not in _INVALID_DODO_CODES:
+                dodo = cand
+                is_valid = True
+
+        if not is_valid:
             embed = discord.Embed(
                 title="🔄 Dodo code unavailable",
                 description=(
@@ -1478,48 +1656,25 @@ class RefreshButton(
         resolved = await _resolve_client(interaction, self.island)
         if not resolved:
             return
-        island, client = resolved
+        island, _ = resolved
 
-        try:
-            status_data: dict = await client.get_bot_status()
-        except Exception:
-            logger.exception("[DropBot] get_bot_status failed for %s", island)
-            status_data = {"is_running": False}
+        status_data = await fetch_island_live_status(island)
 
-        try:
-            vdata = await client.get_villagers()
-            raw_list = vdata.get("villagers", [])
-            status_data["villagers"] = [
-                (v.get("name") or v.get("Name") or str(v)) if isinstance(v, dict) else str(v)
-                for v in raw_list
-            ]
-        except Exception:
-            status_data["villagers"] = []
-
-        try:
-            gt_data = await client.get_game_time()
-            if isinstance(gt_data, dict) and gt_data.get("success"):
-                status_data["gametime"] = gt_data
-                status_data["game_time"] = gt_data.get("formatted") or gt_data.get("game_time")
-                status_data["is_nooks_open"] = gt_data.get("is_nooks_open")
-                status_data["mode"] = gt_data.get("mode")
-        except Exception:
-            pass
-
-        # Same deterministic custom_ids as before, so the buttons keep working.
+        # Upgrade panel to auto-refreshing format (without refresh button)
         await interaction.edit_original_response(
             embed=_build_panel_embed(island, status_data),
             view=IslandPanelView(island),
         )
 
 
-PANEL_ITEMS = (GetDodoButton, DropItemsButton, SearchCatalogButton, InjectVillagerButton, RefreshButton)
+PANEL_ITEMS = (GetDodoButton, DropItemsButton, SearchCatalogButton, InjectVillagerButton)
+ALL_REGISTERED_DYNAMIC_ITEMS = (GetDodoButton, DropItemsButton, SearchCatalogButton, InjectVillagerButton, RefreshButton)
 
 
 class IslandPanelView(discord.ui.View):
     """
-    The panel's five buttons. All are DynamicItems registered in cog_load(), so this view
-    needs no per-message bot.add_view() and survives restarts.
+    The panel's four interactive action buttons. All are DynamicItems registered in cog_load(),
+    so this view needs no per-message bot.add_view() and survives restarts.
     """
 
     def __init__(self, island_name: str):
@@ -1535,6 +1690,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
     """
     Manages persistent interactive island control panels across sub-island channels.
     No privileged intents required — operates entirely on Discord's Interaction API.
+    Auto-refreshes panel messages in background so users always see live status.
     """
 
     def __init__(self, bot: commands.Bot):
@@ -1544,11 +1700,72 @@ class DropBotCog(commands.Cog, name="DropBot"):
         _init_panel_table()
         _get_villager_names()   # pre-warm cache
         # One registration covers every panel in every channel (the island is in the custom_id).
-        self.bot.add_dynamic_items(*PANEL_ITEMS)
-        logger.info("[DropBot] Registered %d persistent button types.", len(PANEL_ITEMS))
+        self.bot.add_dynamic_items(*ALL_REGISTERED_DYNAMIC_ITEMS)
+        self.auto_refresh_panels_loop.start()
+        logger.info("[DropBot] Registered %d persistent button types and started auto-refresh loop.", len(ALL_REGISTERED_DYNAMIC_ITEMS))
 
     async def cog_unload(self) -> None:
-        self.bot.remove_dynamic_items(*PANEL_ITEMS)
+        self.auto_refresh_panels_loop.cancel()
+        self.bot.remove_dynamic_items(*ALL_REGISTERED_DYNAMIC_ITEMS)
+
+    @tasks.loop(seconds=30)
+    async def auto_refresh_panels_loop(self) -> None:
+        """Background task: periodically auto-refresh all active Island Control Panels."""
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if not guild:
+            return
+
+        panels = await asyncio.to_thread(_load_all_panels)
+        if not panels:
+            return
+
+        for p in panels:
+            channel_id_raw = p.get("channel_id")
+            message_id_raw = p.get("message_id")
+            island_name = p.get("island_name")
+            if not channel_id_raw or not message_id_raw or not island_name:
+                continue
+
+            try:
+                channel_id = int(channel_id_raw)
+                message_id = int(message_id_raw)
+            except (ValueError, TypeError):
+                continue
+
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except Exception:
+                    continue
+
+            if not isinstance(channel, discord.TextChannel):
+                continue
+
+            try:
+                msg = await channel.fetch_message(message_id)
+            except discord.NotFound:
+                continue
+            except Exception as exc:
+                logger.debug("[DropBot] Failed to fetch panel message %s in channel %s: %s", message_id, channel_id, exc)
+                continue
+
+            try:
+                status_data = await fetch_island_live_status(island_name)
+                embed = _build_panel_embed(island_name, status_data)
+                await msg.edit(embed=embed, view=IslandPanelView(island_name))
+            except discord.NotFound:
+                continue
+            except discord.HTTPException as exc:
+                logger.debug("[DropBot] HTTP error updating panel for %s: %s", island_name, exc)
+            except Exception as exc:
+                logger.warning("[DropBot] Unexpected error auto-refreshing panel for %s: %s", island_name, exc)
+
+            await asyncio.sleep(0.8)
+
+    @auto_refresh_panels_loop.before_loop
+    async def before_auto_refresh_panels_loop(self) -> None:
+        await self.bot.wait_until_ready()
 
     # ── Slash command group ───────────────────────────────────────────────────
 
@@ -1641,7 +1858,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
             except Exception:
                 pass
 
-        embed = _build_panel_embed(island)
+        status_data = await fetch_island_live_status(island)
+        embed = _build_panel_embed(island, status_data)
         view = IslandPanelView(island_name=island)
         panel_msg = await channel.send(embed=embed, view=view)
         _upsert_panel(channel.id, island, panel_msg.id)
@@ -1699,7 +1917,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
                     pass
 
             try:
-                embed = _build_panel_embed(island)
+                status_data = await fetch_island_live_status(island)
+                embed = _build_panel_embed(island, status_data)
                 view = IslandPanelView(island_name=island)
                 panel_msg = await channel.send(embed=embed, view=view)
                 _upsert_panel(channel.id, island, panel_msg.id)
