@@ -3089,12 +3089,19 @@ def api_island_drop(name):
         "success": bool(resp.get("success")),
     })
 
+    is_success = bool(resp.get("success"))
+    err_text = resp.get("error") or resp.get("message") or f"Drop request failed on {clean_name}."
+    succ_text = resp.get("message") or f"Drop request sent to {clean_name}!"
+    status_code = 200 if is_success else (502 if any(w in str(err_text).lower() for w in ("unreachable", "offline", "timed out")) else 400)
+
     return jsonify({
-        "success": bool(resp.get("success")),
+        "success": is_success,
         "island": clean_name,
-        "message": resp.get("message") or f"Drop request sent to {clean_name}!",
+        "message": succ_text if is_success else err_text,
+        "error": None if is_success else err_text,
         "sysbot_response": resp,
-    })
+    }), status_code
+
 
 
 @app.route('/api/islands/<name>/villagers/inject', methods=['POST'])

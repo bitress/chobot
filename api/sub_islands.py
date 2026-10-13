@@ -338,13 +338,17 @@ def drop_sub_island():
         items = [x.strip() for x in items_part.split(",") if x.strip()]
         item_count = len(items) if items else 1
         resp = client.submit_drop_sync(items_part, username=auth_user.get("username", "WebUser"))
+        is_success = bool(resp.get("success"))
+        err_text = resp.get("error") or resp.get("message") or f"Drop command failed on {clean}."
+        succ_text = resp.get("message") or f"Drop command dispatched silently to {clean}."
         return jsonify({
-            "success": True,
+            "success": is_success,
             "island_name": clean,
             "item_count": item_count,
-            "message": f"Drop command dispatched silently to {clean}.",
+            "message": succ_text if is_success else err_text,
+            "error": None if is_success else err_text,
             "sysbot_response": resp,
-        })
+        }), (200 if is_success else 400)
     elif command.startswith("!inject"):
         parts = command[7:].strip().split()
         villager_name = parts[0] if parts else "Raymond"
