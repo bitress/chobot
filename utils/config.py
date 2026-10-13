@@ -65,7 +65,7 @@ class Config:
 
     # Environment Specific Channels
     if IS_PRODUCTION:
-        FLIGHT_LISTEN_CHANNEL_ID = _get_int('FLIGHT_LISTEN_CHANNEL_ID')
+        FLIGHT_LISTEN_CHANNEL_ID = _get_int('FLIGHT_LISTEN_CHANNEL_ID', 809295405128089611)
         FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID = _get_int('FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID')
         FLIGHT_LOG_CHANNEL_ID = _get_int('FLIGHT_LOG_CHANNEL_ID')
         IGNORE_CHANNEL_ID = _get_int('IGNORE_CHANNEL_ID')
@@ -73,12 +73,15 @@ class Config:
         XLOG_VERBOSE_CHANNEL_ID = _get_int('XLOG_VERBOSE_CHANNEL_ID', 1486899475631968367)
     else:
         # Development / Fallback IDs
-        FLIGHT_LISTEN_CHANNEL_ID = 1473286697461616732
+        FLIGHT_LISTEN_CHANNEL_ID = 809295405128089611
         FREE_ISLAND_FLIGHT_LISTEN_CHANNEL_ID = None
         FLIGHT_LOG_CHANNEL_ID = 1473286727224524915
         IGNORE_CHANNEL_ID = 809295405128089611
         SUB_MOD_CHANNEL_ID = 1473286794995830845
         XLOG_VERBOSE_CHANNEL_ID = 1491101080430579964
+
+    SUB_FLIGHT_CHANNEL_ID = _get_int('SUB_FLIGHT_CHANNEL_ID', 809295405128089611)
+
 
     # Patreon
     PATREON_TOKEN = os.getenv("PATREON_TOKEN")
@@ -198,13 +201,18 @@ class Config:
     YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "")
     YOUTUBE_REDIRECT_URI = os.getenv("YOUTUBE_REDIRECT_URI", "")
 
-    # Sequential Island Port Allocation Order (48 islands)
-    ALL_ISLAND_PORT_ORDER = [
-        # 20 Sub Islands (indices 0..19 -> ports 8201..8220)
+    # 20 Sub Islands (indices 0..19 -> ports 8201..8220)
+    SUB_ISLANDS = [
         "Hiraya", "Tagumpay", "Bahaghari", "Alapaap", "Bituin",
         "Lakan", "Galak", "Aruga", "Likha", "Dalisay",
         "Marahuyo", "Diwa", "Bonita", "Gabay", "Dakila",
         "Kalangitan", "Malaya", "Pangarap", "Giliw", "Adhika",
+    ]
+
+    # Sequential Island Port Allocation Order (48 islands)
+    ALL_ISLAND_PORT_ORDER = [
+        # 20 Sub Islands (indices 0..19 -> ports 8201..8220)
+        *SUB_ISLANDS,
         # 27 Free Islands (indices 20..46 -> ports 8221..8247)
         "Kakanggata", "Kalawakan", "Kundiman", "Kilig", "Bathala",
         "Dalangin", "Gunita", "Kaulayaw", "Tala", "Sinagtala",

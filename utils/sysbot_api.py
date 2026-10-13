@@ -845,6 +845,89 @@ class SysBotClient:
         """Send a chat message to the in-game chat on the Switch via SysBot POST /api/speak."""
         return await asyncio.to_thread(self.speak_sync, message)
 
+    def control_action_sync(self, action: str, **kwargs) -> dict:
+        """
+        Execute control action via SysBot control API.
+        Attempts POST /api/control with {"action": action}, falling back to dedicated REST endpoints.
+        Supported actions:
+          start, stop, restart, pause, resume, screen-on, screen-off, screen,
+          detach, queue, newdodo, mash-on, mash-off, mash, map-on, map-off, map, guide
+        """
+        action_clean = action.strip().lower()
+        # 1. Try unified dispatcher endpoint: POST /api/control
+        payload: Dict[str, Any] = {"action": action_clean}
+        payload.update(kwargs)
+        data, code = self._post("/api/control", payload)
+        if code != 404 and isinstance(data, dict) and not (code >= 500 and not data.get("success")):
+            return data
+
+        # 2. Fallback to dedicated REST endpoints
+        if action_clean in ("start", "startbot"):
+            res, _ = self._post("/api/control/start", {})
+            return res
+        elif action_clean in ("stop", "stopbot"):
+            res, _ = self._post("/api/control/stop", {})
+            return res
+        elif action_clean in ("restart", "restartconnection"):
+            res, _ = self._post("/api/control/restart", {})
+            return res
+        elif action_clean in ("pause", "pause_requests"):
+            res, _ = self._post("/api/requests/pause", {})
+            return res
+        elif action_clean in ("resume", "resume_requests"):
+            res, _ = self._post("/api/requests/resume", {})
+            return res
+        elif action_clean in ("screen-on", "screen_on"):
+            res, _ = self._post("/api/screen", {"state": "on"})
+            return res
+        elif action_clean in ("screen-off", "screen_off"):
+            res, _ = self._post("/api/screen", {"state": "off"})
+            return res
+        elif action_clean in ("screen", "setscreen"):
+            state = kwargs.get("state", "toggle")
+            res, _ = self._post("/api/screen", {"state": state} if state != "toggle" else {})
+            return res
+        elif action_clean in ("detach", "controller_detach"):
+            res, _ = self._post("/api/detach", {})
+            return res
+        elif action_clean in ("queue", "getqueue"):
+            res, _ = self._get("/api/queue")
+            return res
+        elif action_clean in ("newdodo", "refreshdodo", "refresh_dodo"):
+            res, _ = self._post("/api/dodo/refresh", {})
+            return res
+        elif action_clean in ("mash-on", "mash_on"):
+            res, _ = self._post("/api/togglemashb", {"enabled": True})
+            return res
+        elif action_clean in ("mash-off", "mash_off"):
+            res, _ = self._post("/api/togglemashb", {"enabled": False})
+            return res
+        elif action_clean in ("mash", "togglemashb"):
+            enabled = kwargs.get("enabled")
+            payload_m = {"enabled": enabled} if enabled is not None else {}
+            res, _ = self._post("/api/togglemashb", payload_m)
+            return res
+        elif action_clean in ("map-on", "map_on"):
+            res, _ = self._post("/api/togglerefresh", {"enabled": True})
+            return res
+        elif action_clean in ("map-off", "map_off"):
+            res, _ = self._post("/api/togglerefresh", {"enabled": False})
+            return res
+        elif action_clean in ("map", "togglerefresh"):
+            enabled = kwargs.get("enabled")
+            payload_r = {"enabled": enabled} if enabled is not None else {}
+            res, _ = self._post("/api/togglerefresh", payload_r)
+            return res
+        elif action_clean in ("guide", "control_guide"):
+            res, _ = self._get("/api/control/guide")
+            return res
+
+        return data if isinstance(data, dict) else {"success": False, "error": f"Unknown control action: {action}"}
+
+    async def control_action(self, action: str, **kwargs) -> dict:
+        """Execute control action asynchronously."""
+        return await asyncio.to_thread(self.control_action_sync, action, **kwargs)
+
 
 # ============================================================================
 # MULTI-ISLAND CLIENT POOL (48 PORTS)

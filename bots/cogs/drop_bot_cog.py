@@ -2017,6 +2017,310 @@ class CatalogSearchView(discord.ui.View):
                 await self.message.edit(view=self)
 
 
+# ─── Interactive Drop & Villager Pickers ───────────────────────────────────────
+
+
+class InteractiveDropPickerView(discord.ui.View):
+    """Interactive item drop picker: presets dropdown, search catalog, browse all, or custom text."""
+
+    def __init__(self, island_name: str, user_id: int):
+        super().__init__(timeout=180)
+        self.island_name = island_name
+        self.user_id = user_id
+
+        catalog = ACNHCatalog.get_instance()
+        preset_options = [
+            discord.SelectOption(
+                label=label[:100],
+                description=desc[:100],
+                emoji=emoji,
+                value=item_code[:100],
+            )
+            for label, desc, item_code, emoji in catalog.get_drop_presets()
+        ]
+        preset_select = discord.ui.Select(
+            placeholder="📦 Select an item preset to drop…",
+            options=preset_options,
+            row=0,
+        )
+        preset_select.callback = self._on_preset_select
+        self.add_item(preset_select)
+
+        search_btn = discord.ui.Button(label="Search Catalog", emoji="🔍", style=discord.ButtonStyle.primary, row=1)
+        search_btn.callback = self._on_search_catalog
+        self.add_item(search_btn)
+
+        browse_btn = discord.ui.Button(label="Browse All Items", emoji="📦", style=discord.ButtonStyle.secondary, row=1)
+        browse_btn.callback = self._on_browse_all
+        self.add_item(browse_btn)
+
+        custom_btn = discord.ui.Button(label="Custom / Hex", emoji="📝", style=discord.ButtonStyle.secondary, row=1)
+        custom_btn.callback = self._on_custom_modal
+        self.add_item(custom_btn)
+
+        close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=1)
+        close_btn.callback = self._on_close
+        self.add_item(close_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This menu isn't yours.", ephemeral=True)
+            return False
+        return True
+
+    async def _on_preset_select(self, interaction: discord.Interaction) -> None:
+        vals = getattr(interaction.data, "get", lambda k, d: d)("values", [""])
+        select = vals[0] if vals else ""
+        if not select:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed, _ = await _perform_drop(
+            interaction.user,
+            self.island_name,
+            select,
+            heading="📦 Drop queued",
+            contents=select,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        self.stop()
+
+    async def _on_search_catalog(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(CatalogSearchModal(island_name=self.island_name))
+
+    async def _on_browse_all(self, interaction: discord.Interaction) -> None:
+        await _show_catalog(interaction, self.island_name, query="")
+
+    async def _on_custom_modal(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(CustomDropModal(island_name=self.island_name))
+
+    async def _on_close(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content="Menu closed.", embed=None, view=None)
+        self.stop()
+
+
+class VillagerPlotPickView(discord.ui.View):
+    """Pick plot (1–10 or next available) and confirm villager injection."""
+
+    def __init__(self, user_id: int, island_name: str, villager_name: str):
+        super().__init__(timeout=90)
+        self.user_id = user_id
+        self.island_name = island_name
+        self.villager_name = villager_name
+        self.selected_plot: int | None = None
+
+        plot_options = [
+            discord.SelectOption(
+                label="Next Available Plot (Default)",
+                description="Automatically uses the next available house plot",
+                value="none",
+                default=True,
+            )
+        ] + [
+            discord.SelectOption(
+                label=f"Plot #{p}",
+                description=f"House plot slot #{p}",
+                value=str(p),
+            )
+            for p in range(PLOT_MIN, PLOT_MAX + 1)
+        ]
+
+        plot_select = discord.ui.Select(
+            placeholder="Select house plot (optional)…",
+            options=plot_options,
+            row=0,
+        )
+        plot_select.callback = self._on_plot_select
+        self.add_item(plot_select)
+
+        inject_btn = discord.ui.Button(
+            label=f"Inject {villager_name}"[:80],
+            emoji="⚡",
+            style=discord.ButtonStyle.success,
+            row=1,
+        )
+        inject_btn.callback = self._on_inject
+        self.add_item(inject_btn)
+
+        cancel_btn = discord.ui.Button(
+            label="Cancel",
+            emoji="✖",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        cancel_btn.callback = self._on_cancel
+        self.add_item(cancel_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This menu isn't yours.", ephemeral=True)
+            return False
+        return True
+
+    async def _on_plot_select(self, interaction: discord.Interaction) -> None:
+        vals = getattr(interaction.data, "get", lambda k, d: d)("values", ["none"])
+        val = vals[0] if vals else "none"
+        if val != "none" and val.isdigit():
+            self.selected_plot = int(val)
+        else:
+            self.selected_plot = None
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
+    async def _on_inject(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(
+            content=f"⏳ Injecting **{self.villager_name}** into **{self.island_name}**…",
+            embed=None,
+            view=None,
+        )
+        embed, _ = await _perform_injection(
+            interaction.user, self.island_name, self.villager_name, self.selected_plot
+        )
+        await interaction.edit_original_response(content=None, embed=embed, view=None)
+        self.stop()
+
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content="Injection cancelled.", embed=None, view=None)
+        self.stop()
+
+
+class VillagerSearchModal(discord.ui.Modal, title="🔍 Search Villager"):
+    search_query = discord.ui.TextInput(
+        label="Villager Name or Keyword",
+        placeholder="e.g. Raymond, Marshal, Cat, Rabbit, Peppy",
+        required=True,
+        max_length=60,
+    )
+
+    def __init__(self, island_name: str):
+        super().__init__()
+        self.island_name = island_name
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        raw_name = self.search_query.value.strip()
+
+        exact, candidates = await asyncio.to_thread(_match_villagers, raw_name, 15)
+        if exact:
+            view = VillagerPlotPickView(
+                user_id=interaction.user.id,
+                island_name=self.island_name,
+                villager_name=exact,
+            )
+            embed = discord.Embed(
+                title=f"🐱 Inject {exact}",
+                description=(
+                    f"Found **{exact}**! Choose where to inject on **[{self.island_name}]({_island_url(self.island_name)})**.\n\n"
+                    "• Click **⚡ Inject** for the next available plot\n"
+                    f"• Or choose a specific plot ({PLOT_MIN}–{PLOT_MAX}) from the dropdown."
+                ),
+                color=PANEL_EMBED_COLOR,
+            )
+            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            return
+
+        if not candidates:
+            await interaction.followup.send(
+                embed=_err_embed(f"I couldn't find any villager matching **{raw_name[:50]}**. Check the spelling and try again."),
+                ephemeral=True,
+            )
+            return
+
+        view = VillagerChoiceView(interaction.user.id, self.island_name, candidates, None)
+        prompt = discord.Embed(
+            title="🔍 Villager Search Results",
+            description=(
+                f"Matching villagers for **{raw_name[:50]}**:\n"
+                "Pick the villager you want to inject from the list below."
+            ),
+            color=PANEL_EMBED_COLOR,
+        )
+        prompt.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        await interaction.followup.send(embed=prompt, view=view, ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logger.error("[DropBot] VillagerSearchModal error: %s", error, exc_info=error)
+        await _reply(interaction, "❌ Something went wrong searching villagers.")
+
+
+class InteractiveVillagerPickerView(discord.ui.View):
+    """Interactive villager selection: top villagers dropdown, live search, manual text."""
+
+    def __init__(self, island_name: str, user_id: int):
+        super().__init__(timeout=180)
+        self.island_name = island_name
+        self.user_id = user_id
+
+        catalog = ACNHCatalog.get_instance()
+        popular_villagers = catalog.get_popular_villagers()
+        v_options = [
+            discord.SelectOption(
+                label=v.name[:100],
+                description=(f"{v.personality} • {v.species}" if v.personality and v.species else v.species or "Villager")[:100],
+                emoji=v.emoji,
+                value=v.name[:100],
+            )
+            for v in popular_villagers
+        ]
+        v_select = discord.ui.Select(
+            placeholder="🐱 Choose a popular villager to inject…",
+            options=v_options,
+            row=0,
+        )
+        v_select.callback = self._on_villager_select
+        self.add_item(v_select)
+
+        search_btn = discord.ui.Button(label="Search Villager", emoji="🔍", style=discord.ButtonStyle.primary, row=1)
+        search_btn.callback = self._on_search_villager
+        self.add_item(search_btn)
+
+        type_btn = discord.ui.Button(label="Type Any Name", emoji="✏️", style=discord.ButtonStyle.secondary, row=1)
+        type_btn.callback = self._on_type_modal
+        self.add_item(type_btn)
+
+        close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=1)
+        close_btn.callback = self._on_close
+        self.add_item(close_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This menu isn't yours.", ephemeral=True)
+            return False
+        return True
+
+    async def _on_villager_select(self, interaction: discord.Interaction) -> None:
+        vals = getattr(interaction.data, "get", lambda k, d: d)("values", [""])
+        selected_name = vals[0] if vals else ""
+        if not selected_name:
+            return
+        view = VillagerPlotPickView(
+            user_id=self.user_id,
+            island_name=self.island_name,
+            villager_name=selected_name,
+        )
+        embed = discord.Embed(
+            title=f"🐱 Inject {selected_name}",
+            description=(
+                f"Choose where to inject **{selected_name}** into **[{self.island_name}]({_island_url(self.island_name)})**.\n\n"
+                "• Click **⚡ Next Available Plot** for quick injection\n"
+                f"• Or choose a specific plot ({PLOT_MIN}–{PLOT_MAX}) from the dropdown."
+            ),
+            color=PANEL_EMBED_COLOR,
+        )
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    async def _on_search_villager(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(VillagerSearchModal(island_name=self.island_name))
+
+    async def _on_type_modal(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(InjectVillagerModal(island_name=self.island_name))
+
+    async def _on_close(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content="Menu closed.", embed=None, view=None)
+        self.stop()
+
+
 # ─── Persistent panel buttons (DynamicItem) ────────────────────────────────────
 
 def _cid(action: str, island: str) -> str:
@@ -2167,7 +2471,20 @@ class DropItemsButton(
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if island := await self._gate(interaction):
-            await interaction.response.send_modal(CustomDropModal(island_name=island))
+            embed = discord.Embed(
+                title=f"📦 Drop Items — {island}",
+                description=(
+                    f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
+                    f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
+                    f"• Pick an item preset from the dropdown for instant dropping\n"
+                    f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
+                    f"• Use **📝 Custom / Hex** to enter your own items or hex list"
+                ),
+                color=PANEL_EMBED_COLOR,
+            )
+            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+            view = InteractiveDropPickerView(island_name=island, user_id=interaction.user.id)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 class SearchCatalogButton(
@@ -2191,7 +2508,20 @@ class InjectVillagerButton(
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if island := await self._gate(interaction):
-            await interaction.response.send_modal(InjectVillagerModal(island_name=island))
+            embed = discord.Embed(
+                title=f"🐱 Inject Villager — {island}",
+                description=(
+                    f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
+                    f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
+                    f"• Choose a villager from the menu to inject\n"
+                    f"• Use **🔍 Search Villager** to search by name or species\n"
+                    f"• Use **✏️ Type Any Name** to enter any name manually"
+                ),
+                color=PANEL_EMBED_COLOR,
+            )
+            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+            view = InteractiveVillagerPickerView(island_name=island, user_id=interaction.user.id)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 class GuideButton(
@@ -2282,9 +2612,10 @@ class DropBotCog(commands.Cog, name="DropBot"):
         await asyncio.to_thread(_get_villager_names)   # pre-warm cache
         # Telemetry worker is shared with other cogs; we start it but never stop it on unload.
         try:
-            from utils.sysbot_telemetry import start_telemetry_worker
+            from utils.sysbot_telemetry import start_telemetry_worker, set_telemetry_discord_bot
+            set_telemetry_discord_bot(self.bot)
             start_telemetry_worker()
-            logger.info("[DropBot] Started SysBot telemetry worker.")
+            logger.info("[DropBot] Started SysBot telemetry worker and registered bot instance.")
         except Exception as exc:
             logger.warning("[DropBot] Could not start telemetry worker: %s", exc)
         # One registration covers every panel in every channel (the island is in the custom_id).
@@ -2390,8 +2721,72 @@ class DropBotCog(commands.Cog, name="DropBot"):
     async def island_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
-        cur = current.lower()
-        return [app_commands.Choice(name=i, value=i) for i in Config.SUB_ISLANDS if cur in i.lower()][:25]
+        cur = (current or "").strip().lower()
+        islands = getattr(Config, "SUB_ISLANDS", []) or []
+        if not cur:
+            return [app_commands.Choice(name=i, value=i) for i in islands[:25]]
+        return [app_commands.Choice(name=i, value=i) for i in islands if cur in i.lower()][:25]
+
+    async def item_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Real-time autocomplete for orderable item drops."""
+        cur = (current or "").strip()
+        if not cur:
+            try:
+                catalog = ACNHCatalog.get_instance()
+                popular = catalog.get_popular_item_names()
+                return [app_commands.Choice(name=f"📦 {p}", value=p) for p in popular[:25]]
+            except Exception:
+                return []
+
+        try:
+            catalog = ACNHCatalog.get_instance()
+            hits = await asyncio.to_thread(lambda: catalog.search_items(cur, limit=25))
+            choices: list[app_commands.Choice[str]] = []
+            seen: set[str] = set()
+            for it in hits:
+                name = it.display_name[:100]
+                if name not in seen:
+                    seen.add(name)
+                    cat = f" ({it.category})" if it.category else ""
+                    emoji = "📜" if it.diy else "📦"
+                    label = f"{emoji} {name}{cat}"[:100]
+                    choices.append(app_commands.Choice(name=label, value=name))
+            return choices[:25]
+        except Exception as exc:
+            logger.warning("[DropBot] item_autocomplete error: %s", exc)
+            return []
+
+    async def villager_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Real-time autocomplete for villager injection."""
+        cur = (current or "").strip()
+        if not cur:
+            try:
+                catalog = ACNHCatalog.get_instance()
+                popular_v = catalog.get_popular_villagers()
+                return [app_commands.Choice(name=f"{v.emoji} {v.name}", value=v.name) for v in popular_v[:25]]
+            except Exception:
+                return []
+
+        try:
+            catalog = ACNHCatalog.get_instance()
+            hits = await asyncio.to_thread(lambda: catalog.search_villagers(cur, limit=25))
+            choices: list[app_commands.Choice[str]] = []
+            seen: set[str] = set()
+            for v in hits:
+                name = v.display_name[:100]
+                if name not in seen:
+                    seen.add(name)
+                    details = f" • {v.species}" if v.species else ""
+                    label = f"🐱 {name}{details}"[:100]
+                    choices.append(app_commands.Choice(name=label, value=name))
+            return choices[:25]
+        except Exception as exc:
+            logger.warning("[DropBot] villager_autocomplete error: %s", exc)
+            return []
 
     async def catalog_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -2604,3 +2999,245 @@ class DropBotCog(commands.Cog, name="DropBot"):
         island: str | None = None,
     ) -> None:
         await self._handle_catalog_search(interaction, query, island)
+
+    # ── /dropbot drop & /drop ──────────────────────────────────────────────────
+
+    async def _handle_drop_cmd(
+        self,
+        interaction: discord.Interaction,
+        item: str | None,
+        quantity: int | None,
+        island: str | None,
+    ) -> None:
+        if island:
+            target_island = _canonical_island(island)
+            if not target_island:
+                await _reply(interaction, embed=_err_embed(f"**{island[:50]}** isn't a sub island."))
+                return
+        else:
+            target_island = await _infer_island(interaction.channel)
+
+        if not target_island:
+            await _reply(
+                interaction,
+                embed=_err_embed("Please specify a target island or use this command inside a sub-island channel."),
+            )
+            return
+
+        if not await _user_can_target(interaction, target_island):
+            await _reply(
+                interaction,
+                embed=_err_embed(f"You don't have access to **{target_island}**. Use the command in that island's channel."),
+            )
+            return
+
+        # If no item is specified, open the interactive drop picker view!
+        if not item or not item.strip():
+            embed = discord.Embed(
+                title=f"📦 Drop Items — {target_island}",
+                description=(
+                    f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
+                    f"🏝️ **Target Island:** [{target_island}]({_island_url(target_island)})\n"
+                    f"• Pick an item preset from the dropdown for instant dropping\n"
+                    f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
+                    f"• Use **📝 Custom / Hex** to enter your own items or hex list"
+                ),
+                color=PANEL_EMBED_COLOR,
+            )
+            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+            view = InteractiveDropPickerView(island_name=target_island, user_id=interaction.user.id)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
+
+        clean_item = item.strip()
+        if clean_item.startswith(("📦 ", "📜 ")):
+            clean_item = clean_item[2:].strip()
+        if " (" in clean_item and clean_item.endswith(")"):
+            clean_item = clean_item.split(" (")[0].strip()
+
+        if quantity is None:
+            try:
+                catalog = ACNHCatalog.get_instance()
+                it_obj = catalog.get_item(clean_item)
+                quantity = min(int(it_obj.stack_size or 1), MAX_STACK) if it_obj else 1
+            except Exception:
+                quantity = 1
+
+        quantity = max(1, min(quantity, MAX_STACK))
+        drop_str = f"{clean_item} {quantity}"
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed, _ = await _perform_drop(
+            interaction.user,
+            target_island,
+            drop_str,
+            heading="📦 Drop queued",
+            contents=f"{clean_item} x{quantity}",
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @dropbot_group.command(
+        name="drop",
+        description="Drop items on a sub-island with live search autocomplete",
+    )
+    @app_commands.describe(
+        item="Item name to drop (search autocomplete)",
+        quantity="Quantity to drop (default: max stack size)",
+        island="Target island (auto-detected from channel if omitted)",
+    )
+    @app_commands.autocomplete(item=item_autocomplete, island=island_autocomplete)
+    async def dropbot_drop(
+        self,
+        interaction: discord.Interaction,
+        item: str | None = None,
+        quantity: int | None = None,
+        island: str | None = None,
+    ) -> None:
+        await self._handle_drop_cmd(interaction, item, quantity, island)
+
+    @app_commands.command(
+        name="drop",
+        description="Drop items on a sub-island with live search autocomplete",
+    )
+    @app_commands.describe(
+        item="Item name to drop (search autocomplete)",
+        quantity="Quantity to drop (default: max stack size)",
+        island="Target island (auto-detected from channel if omitted)",
+    )
+    @app_commands.autocomplete(item=item_autocomplete, island=island_autocomplete)
+    async def slash_drop(
+        self,
+        interaction: discord.Interaction,
+        item: str | None = None,
+        quantity: int | None = None,
+        island: str | None = None,
+    ) -> None:
+        await self._handle_drop_cmd(interaction, item, quantity, island)
+
+    # ── /dropbot inject & /inject ──────────────────────────────────────────────
+
+    async def _handle_inject_cmd(
+        self,
+        interaction: discord.Interaction,
+        villager: str | None,
+        plot: int | None,
+        island: str | None,
+    ) -> None:
+        if island:
+            target_island = _canonical_island(island)
+            if not target_island:
+                await _reply(interaction, embed=_err_embed(f"**{island[:50]}** isn't a sub island."))
+                return
+        else:
+            target_island = await _infer_island(interaction.channel)
+
+        if not target_island:
+            await _reply(
+                interaction,
+                embed=_err_embed("Please specify a target island or use this command inside a sub-island channel."),
+            )
+            return
+
+        if not await _user_can_target(interaction, target_island):
+            await _reply(
+                interaction,
+                embed=_err_embed(f"You don't have access to **{target_island}**. Use the command in that island's channel."),
+            )
+            return
+
+        # If no villager is specified, open the interactive villager picker view!
+        if not villager or not villager.strip():
+            embed = discord.Embed(
+                title=f"🐱 Inject Villager — {target_island}",
+                description=(
+                    f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
+                    f"🏝️ **Target Island:** [{target_island}]({_island_url(target_island)})\n"
+                    f"• Choose a villager from the menu to inject\n"
+                    f"• Use **🔍 Search Villager** to search by name or species\n"
+                    f"• Use **✏️ Type Any Name** to enter any name manually"
+                ),
+                color=PANEL_EMBED_COLOR,
+            )
+            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+            view = InteractiveVillagerPickerView(island_name=target_island, user_id=interaction.user.id)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
+
+        clean_v = villager.strip()
+        if clean_v.startswith("🐱 "):
+            clean_v = clean_v[2:].strip()
+        if " • " in clean_v:
+            clean_v = clean_v.split(" • ")[0].strip()
+
+        if plot is not None and not (PLOT_MIN <= plot <= PLOT_MAX):
+            await _reply(interaction, embed=_err_embed(f"Plot must be between {PLOT_MIN} and {PLOT_MAX}."))
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        exact, candidates = await asyncio.to_thread(_match_villagers, clean_v)
+
+        if exact:
+            embed, _ = await _perform_injection(interaction.user, target_island, exact, plot)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        if not candidates:
+            await interaction.followup.send(
+                embed=_err_embed(f"I couldn't find a villager called **{clean_v[:64]}**. Check the spelling and try again."),
+                ephemeral=True,
+            )
+            return
+
+        view = VillagerChoiceView(interaction.user.id, target_island, candidates, plot)
+        prompt = discord.Embed(
+            title="Did you mean…?",
+            description=(
+                f"I couldn't find **{clean_v[:64]}** exactly.\n"
+                + (
+                    f"Did you mean **{candidates[0]}**?"
+                    if len(candidates) == 1
+                    else "Pick the villager you meant from the list."
+                )
+            ),
+            color=PANEL_EMBED_COLOR_WARN,
+        )
+        prompt.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        await interaction.followup.send(embed=prompt, view=view, ephemeral=True)
+
+    @dropbot_group.command(
+        name="inject",
+        description="Inject a villager into a sub-island with live search autocomplete",
+    )
+    @app_commands.describe(
+        villager="Villager name to inject (search autocomplete)",
+        plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)",
+        island="Target island (auto-detected from channel if omitted)",
+    )
+    @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
+    async def dropbot_inject(
+        self,
+        interaction: discord.Interaction,
+        villager: str | None = None,
+        plot: int | None = None,
+        island: str | None = None,
+    ) -> None:
+        await self._handle_inject_cmd(interaction, villager, plot, island)
+
+    @app_commands.command(
+        name="inject",
+        description="Inject a villager into a sub-island with live search autocomplete",
+    )
+    @app_commands.describe(
+        villager="Villager name to inject (search autocomplete)",
+        plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)",
+        island="Target island (auto-detected from channel if omitted)",
+    )
+    @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
+    async def slash_inject(
+        self,
+        interaction: discord.Interaction,
+        villager: str | None = None,
+        plot: int | None = None,
+        island: str | None = None,
+    ) -> None:
+        await self._handle_inject_cmd(interaction, villager, plot, island)

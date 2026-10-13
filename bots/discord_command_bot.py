@@ -35,6 +35,7 @@ from utils.ops_status import create_sqlite_backup, get_maintenance_settings
 from utils.sysbot_api import get_island_sysbot_client, _INVALID_DODO_CODES
 from utils.sysbot_telemetry import get_cached_island_telemetry
 from bots.cogs.drop_bot_cog import DropBotCog
+from bots.cogs.control_panel_cog import ControlPanelCog
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -5267,6 +5268,12 @@ class DiscordCommandBot(commands.Bot):
         # Toggle for keyword auto-replies (load from DB, default to True)
         self.autoreply_enabled = _get_setting("autoreply_enabled", "1") == "1"
 
+        try:
+            from utils.sysbot_telemetry import set_telemetry_discord_bot
+            set_telemetry_discord_bot(self)
+        except Exception:
+            pass
+
         self.status_list = cycle([
             discord.Activity(type=discord.ActivityType.watching, name="flights arrive ✈️ | !find"),
             discord.Activity(type=discord.ActivityType.watching, name="villagers pack up 📦 | !villager"),
@@ -5331,6 +5338,10 @@ class DiscordCommandBot(commands.Bot):
         drop_bot_cog = DropBotCog(self)
         await self.add_cog(drop_bot_cog)
 
+        # Register ControlPanel persistent panels and slash-command group
+        control_panel_cog = ControlPanelCog(self)
+        await self.add_cog(control_panel_cog)
+
         # Add global interaction check for slash commands in FIND_BOT_CHANNEL
         async def check_find_channel_restriction(interaction: discord.Interaction) -> bool:
             """Restrict slash commands in FIND_BOT_CHANNEL to only allowed commands"""
@@ -5362,6 +5373,8 @@ class DiscordCommandBot(commands.Bot):
                     'queue',
                     'presets',
                     'dropbot',
+                    'control-panel',
+                    'controlpanel',
                 }
                 
                 # Get the command name and root group name

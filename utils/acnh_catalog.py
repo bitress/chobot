@@ -165,6 +165,10 @@ class CatalogVillager:
         self.raw_data = raw_data or {}
 
     @property
+    def emoji(self) -> str:
+        return SPECIES_EMOJI.get(self.species, "🐱")
+
+    @property
     def display_name(self) -> str:
         return f"{self.name} ({self.species})"
 
@@ -175,9 +179,115 @@ class CatalogVillager:
             "villager_id": self.villager_id,
             "species": self.species,
             "personality": self.personality,
+            "emoji": self.emoji,
             "icon_url": self.icon_url,
             "photo_url": self.photo_url,
         }
+
+
+# ─── Preset & Popular Data ───────────────────────────────────────────────────
+
+SPECIES_EMOJI: Dict[str, str] = {
+    "Alligator": "🐊",
+    "Anteater": "🐜",
+    "Bear": "🐻",
+    "Bear cub": "🧸",
+    "Bird": "🐦",
+    "Bull": "🐂",
+    "Cat": "🐱",
+    "Chicken": "🐔",
+    "Cow": "🐄",
+    "Deer": "🦌",
+    "Dog": "🐶",
+    "Duck": "🦆",
+    "Eagle": "🦅",
+    "Elephant": "🐘",
+    "Frog": "🐸",
+    "Goat": "🐐",
+    "Gorilla": "🦍",
+    "Hamster": "🐹",
+    "Hippo": "🦛",
+    "Horse": "🐴",
+    "Kangaroo": "🦘",
+    "Koala": "🐨",
+    "Lion": "🦁",
+    "Monkey": "🐵",
+    "Mouse": "🐭",
+    "Octopus": "🐙",
+    "Ostrich": "🦤",
+    "Penguin": "🐧",
+    "Pig": "🐷",
+    "Rabbit": "🐰",
+    "Rhinoceros": "🦏",
+    "Sheep": "🐑",
+    "Squirrel": "🐿️",
+    "Tiger": "🐯",
+    "Wolf": "🐺",
+}
+
+POPULAR_DROP_PRESETS: List[Tuple[str, str, str, str]] = [
+    ("Royal Crown x40", "12M Bells max inventory drop", "Royal Crown 40", "👑"),
+    ("Gold Nuggets x30", "Full stack of 30 gold crafting nuggets", "Gold nugget 30", "🪙"),
+    ("Nook Miles Tickets x30", "Full stack of 30 travel tickets", "Nook Miles Ticket 30", "🎫"),
+    ("Max Bells (3.96M)", "40 bags of 99,000 Bells", "99,000 Bells 40", "💰"),
+    ("Fish Bait x30", "Full stack of 30 fishing bait", "Fish bait 30", "🐟"),
+    ("Golden Tools Set", "All 6 tools (Axe, Shovel, Net, Rod, Can, Slingshot)", "Golden axe 1, Golden shovel 1, Golden net 1, Golden rod 1, Golden watering can 1, Golden slingshot 1", "🛠️"),
+    ("Wood Stacks (30 each)", "Normal Wood, Hardwood, Softwood (90 total)", "Wood 30, Hardwood 30, Softwood 30", "🪵"),
+    ("Iron Nuggets x30", "Full stack of 30 iron nuggets", "Iron nugget 30", "🪨"),
+    ("Clay x30", "Full stack of 30 crafting clay", "Clay 30", "🧱"),
+    ("Stone x30", "Full stack of 30 crafting stone", "Stone 30", "🪨"),
+    ("Star Fragments x30", "Full stack of 30 yellow star fragments", "Star fragment 30", "⭐"),
+    ("Large Star Fragments x10", "Full stack of 10 large star fragments", "Large star fragment 10", "🌟"),
+    ("Pearls x30", "Full stack of 30 mermaid pearls", "Pearl 30", "💎"),
+    ("Glowing Moss x30", "Full stack of 30 glowing moss", "Glowing moss 30", "✨"),
+    ("Vines x30", "Full stack of 30 climbing vines", "Vine 30", "🌿"),
+    ("Cherry-Blossom Petals x30", "Full stack of 30 sakura petals", "Cherry-blossom petal 30", "🌸"),
+    ("Round Mushrooms x30", "Full stack of 30 forest mushrooms", "Round mushroom 30", "🍄"),
+    ("Young Spring Bamboo x30", "Full stack of 30 bamboo", "Young spring bamboo 30", "🎋"),
+]
+
+POPULAR_VILLAGER_NAMES: List[str] = [
+    "Raymond", "Marshal", "Shino", "Sasha", "Ione", "Ankha",
+    "Sherb", "Audie", "Judy", "Dom", "Stitches", "Marina",
+    "Zucker", "Bob", "Coco", "Lucky", "Fauna", "Roald",
+    "Tia", "Merengue", "Maple", "Beau", "Lolly", "Tangy", "Molly",
+]
+
+POPULAR_VILLAGERS: List[Tuple[str, str, str]] = [
+    ("Raymond", "Smug • Cat", "🐱"),
+    ("Marshal", "Smug • Squirrel", "🐿️"),
+    ("Shino", "Peppy • Deer", "🦌"),
+    ("Sasha", "Lazy • Rabbit", "🐰"),
+    ("Ione", "Normal • Squirrel", "🐿️"),
+    ("Ankha", "Snooty • Cat", "🐱"),
+    ("Sherb", "Lazy • Goat", "🐐"),
+    ("Audie", "Peppy • Wolf", "🐺"),
+    ("Judy", "Snooty • Bear cub", "🧸"),
+    ("Dom", "Jock • Sheep", "🐑"),
+    ("Stitches", "Lazy • Bear cub", "🧸"),
+    ("Marina", "Normal • Octopus", "🐙"),
+    ("Zucker", "Lazy • Octopus", "🐙"),
+    ("Bob", "Lazy • Cat", "🐱"),
+    ("Coco", "Normal • Rabbit", "🐰"),
+    ("Lucky", "Lazy • Dog", "🐶"),
+    ("Fauna", "Normal • Deer", "🦌"),
+    ("Roald", "Jock • Penguin", "🐧"),
+    ("Tia", "Normal • Elephant", "🐘"),
+    ("Merengue", "Normal • Rhinoceros", "🦏"),
+    ("Maple", "Normal • Bear cub", "🧸"),
+    ("Beau", "Lazy • Deer", "🦌"),
+    ("Lolly", "Normal • Cat", "🐱"),
+    ("Tangy", "Peppy • Cat", "🐱"),
+    ("Molly", "Normal • Duck", "🦆"),
+]
+
+POPULAR_ITEM_NAMES: List[str] = [
+    "Royal Crown", "Gold Nugget", "Nook Miles Ticket", "99,000 Bells",
+    "Fish Bait", "Golden Axe", "Golden Shovel", "Golden Net", "Golden Rod",
+    "Golden Watering Can", "Golden Slingshot", "Wood", "Hardwood", "Softwood",
+    "Iron Nugget", "Clay", "Stone", "Star Fragment", "Large Star Fragment", "Pearl",
+    "Glowing Moss", "Vine", "Cherry-Blossom Petal", "Round Mushroom",
+]
 
 
 class ACNHCatalog:
@@ -471,3 +581,49 @@ class ACNHCatalog:
                 seen.add(key)
                 deduped.append(it)
         return deduped[:limit]
+
+    def get_drop_presets(self) -> List[Tuple[str, str, str, str]]:
+        """Return popular item drop presets: list of (label, description, drop_code, emoji)."""
+        return list(POPULAR_DROP_PRESETS)
+
+    def get_popular_villagers(self, limit: int = 25) -> List[CatalogVillager]:
+        """Return curated popular villagers as CatalogVillager instances with .emoji support."""
+        res: List[CatalogVillager] = []
+        for name in POPULAR_VILLAGER_NAMES:
+            v = self.get_villager(name)
+            if v and v not in res:
+                res.append(v)
+            if len(res) >= limit:
+                break
+        if len(res) < limit:
+            for v in self.villagers:
+                if v not in res:
+                    res.append(v)
+                if len(res) >= limit:
+                    break
+        return res
+
+    def get_popular_villager_names(self, limit: int = 25) -> List[str]:
+        """Return names of popular villagers."""
+        return [v.name for v in self.get_popular_villagers(limit=limit)]
+
+    def get_popular_item_names(self, limit: int = 25) -> List[str]:
+        """Return names of popular drop items."""
+        return list(POPULAR_ITEM_NAMES[:limit])
+
+    def get_popular_items(self, limit: int = 25) -> List[CatalogItem]:
+        """Return CatalogItem objects for popular items (if found in catalog)."""
+        res: List[CatalogItem] = []
+        for name in POPULAR_ITEM_NAMES:
+            it = self.get_item(name)
+            if it and it not in res:
+                res.append(it)
+            if len(res) >= limit:
+                break
+        return res
+
+    @staticmethod
+    def get_species_emoji(species: str) -> str:
+        """Return emoji for a villager species."""
+        return SPECIES_EMOJI.get(species, "🐱")
+
