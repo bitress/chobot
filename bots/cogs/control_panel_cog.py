@@ -22,7 +22,10 @@ Provides persistent, interaction-only remote control panels in Discord:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import datetime
 import difflib
+import json
 import logging
 import re
 import time
@@ -30,16 +33,19 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils.config import Config
+from utils.database import connect_db
 from utils.sysbot_api import _INVALID_DODO_CODES, get_island_sysbot_client
 
 logger = logging.getLogger("ControlPanelCog")
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-CONTROL_PANEL_ROLE_ID = 1559583848050851980
+CONTROL_PANEL_ROLE_ID = getattr(Config, "CONTROL_PANEL_ROLE_ID", 1559583848050851980) or 1559583848050851980
+PERSISTENT_CONTROL_CHANNEL_ID = getattr(Config, "CONTROL_PANEL_CHANNEL_ID", 1559482907762884630) or 1559482907762884630
+FORCE_EDIT_SECONDS = 300.0
 
 PANEL_COLOR_ONLINE  = 0x57F287   # Discord Green
 PANEL_COLOR_WARN    = 0xFEE75C   # Yellow
@@ -47,29 +53,161 @@ PANEL_COLOR_OFFLINE = 0xED4245   # Red
 PANEL_FOOTER_TEXT   = "ChoPaeng Camp • Island Control Panel • SysBot Integration"
 PANEL_FOOTER_ICON   = "https://www.chopaeng.com/assets/logo-C5oO0bbj.webp"
 
-CONTROL_GUIDE_DATA = {
-    "Start bot": ("POST /api/control/start", "Starts the console loop / reconnects Switch and opens incoming requests."),
-    "Stop bot": ("POST /api/control/stop", "Pauses requests, waits for active order, stops console loop & disconnects Switch."),
-    "Restart connection": ("POST /api/control/restart", "Pauses requests, finishes active order, then restarts console loop."),
-    "Pause requests": ("POST /api/requests/pause", "Pauses incoming requests and queue processing. Active order finishes."),
-    "Resume requests": ("POST /api/requests/resume", "Re-opens requests while the console loop continues running."),
-    "Screen on / off": ("POST /api/screen", "Toggles Switch display on or off to reduce hardware strain."),
-    "Detach controller": ("POST /api/detach", "Detaches the virtual controller from the Switch."),
-    "New Dodo code": ("POST /api/dodo/refresh", "Requests a game restart and a fresh Dodo code in restore mode."),
-    "Mash B on / off": ("POST /api/togglemashb", "Toggles auto dialogue button presses to advance game dialogues."),
-    "Map refresh on / off": ("POST /api/togglerefresh", "Toggles automatic map refresh in restore mode."),
-    "Guide": ("GET /api/control/guide", "Returns explanations and metadata for all controls."),
-}
+
+def _embed_signature(embed: discord.Embed) -> str:
+    """Stable fingerprint of an embed ignoring changing timestamp fields, to skip no-op edits."""
+    d = embed.to_dict()
+    d.pop("timestamp", None)
+    if "fields" in d:
+        fields = []
+        for f in d["fields"]:
+            if f.get("name") == "🕒 Last Updated":
+                continue
+            fields.append(f)
+        d["fields"] = fields
+    return json.dumps(d, sort_keys=True)
+
+
+def _init_panel_table() -> None:
+    """Create island_control_panels table if it does not exist."""
+    try:
+        with connect_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS island_control_panels (
+                    channel_id  VARCHAR(64) PRIMARY KEY,
+                    island_name VARCHAR(128) NOT NULL,
+                    message_id  VARCHAR(64),
+                    updated_at  VARCHAR(64)
+                )
+                """
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.error("[ControlPanel] Failed to initialize database table: %s", exc)
+
+
+def _upsert_control_panel(channel_id: int, island_name: str, message_id: int | None = None) -> None:
+    """Insert or update a control panel entry in the database."""
+    try:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with connect_db() as conn:
+            conn.execute(
+                """
+                INSERT INTO island_control_panels (channel_id, island_name, message_id, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    island_name=excluded.island_name,
+                    message_id=COALESCE(excluded.message_id, island_control_panels.message_id),
+                    updated_at=excluded.updated_at
+                """,
+                (str(channel_id), island_name, str(message_id) if message_id else None, now_iso),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.error("[ControlPanel] Failed to upsert control panel: %s", exc)
+
+
+def _get_control_panel(channel_id: int) -> dict | None:
+    """Retrieve existing control panel record for a given channel."""
+    try:
+        with connect_db() as conn:
+            row = conn.execute(
+                "SELECT channel_id, island_name, message_id, updated_at FROM island_control_panels WHERE channel_id = ?",
+                (str(channel_id),),
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception as exc:
+        logger.warning("[ControlPanel] Failed to get panel row for %s: %s", channel_id, exc)
+        return None
+
+
+def _load_all_control_panels() -> list[dict]:
+    """Retrieve all saved control panel records."""
+    try:
+        with connect_db() as conn:
+            rows = conn.execute(
+                "SELECT channel_id, island_name, message_id, updated_at FROM island_control_panels"
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("[ControlPanel] Failed to load all panels: %s", exc)
+        return []
+
+def build_guide_embed() -> discord.Embed:
+    """Build the static help guide embed for all remote controls."""
+    embed = discord.Embed(
+        title="📖 Island Remote Control Guide",
+        description="Quick reference guide for all controls available on the Sub-Island Remote Control Panel.",
+        color=PANEL_COLOR_ONLINE,
+    )
+    embed.add_field(
+        name="🟢 Start Bot",
+        value="Starts the console loop, reconnects Switch, and opens incoming requests.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔴 Stop Bot",
+        value="Pauses requests, finishes active order, stops loop & disconnects Switch.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔄 Restart Connection",
+        value="Pauses requests, finishes active order, then restarts the console loop.",
+        inline=False,
+    )
+    embed.add_field(
+        name="⏸️ Pause Requests",
+        value="Pauses incoming requests and queue processing. Active order finishes.",
+        inline=False,
+    )
+    embed.add_field(
+        name="▶️ Resume Requests",
+        value="Re-opens incoming requests while the console loop continues running.",
+        inline=False,
+    )
+    embed.add_field(
+        name="📺 Screen On / Off",
+        value="Toggles Switch display output on or off to reduce hardware strain.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎮 Detach Controller",
+        value="Detaches the virtual controller from the Switch.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🦤 New Dodo Code",
+        value="Requests a game restart and a fresh Dodo code in restore mode.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🅱️ Mash B On / Off",
+        value="Toggles automatic dialogue button presses to advance dialogues.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🗺️ Map Refresh On / Off",
+        value="Toggles automatic map refresh in restore mode.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔄 Refresh Status",
+        value="Fetches live status and Dodo code from SysBot to refresh the panel in-place.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🏝️ Switch Island",
+        value="Use the top dropdown to switch the control panel target to any sub-island.",
+        inline=False,
+    )
+    embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+    return embed
 
 
 def check_control_panel_role(user: discord.User | discord.Member) -> bool:
-    """Check if the user has the required control panel role or administrator permissions."""
-    if isinstance(user, discord.Member):
-        if any(r.id == CONTROL_PANEL_ROLE_ID for r in user.roles):
-            return True
-        if user.guild_permissions.administrator:
-            return True
-    return False
+    """Access is managed directly via Discord channel permissions."""
+    return True
 
 
 def _err_embed(message: str) -> discord.Embed:
@@ -145,7 +283,6 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
         description=(
             f"{status_text}\n"
             f"Direct hardware & SysBot loop controller for **[{island_name}](https://www.chopaeng.com/island/{island_name})**.\n\n"
-            f"🔒 **Security:** Restricted to <@&{CONTROL_PANEL_ROLE_ID}>\n"
             "Use the interactive controls below to manage the console loop and hardware."
         ),
         color=color,
@@ -240,13 +377,6 @@ class ControlPanelIslandSelect(
         return cls(match.group("island"))
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if not check_control_panel_role(interaction.user):
-            await interaction.response.send_message(
-                embed=_err_embed(f"You need the <@&{CONTROL_PANEL_ROLE_ID}> role to use the Island Control Panel."),
-                ephemeral=True,
-            )
-            return
-
         values = getattr(interaction.data, "get", lambda k, d: d)("values", [self.current_island])
         new_island = values[0] if values else self.current_island
 
@@ -255,6 +385,13 @@ class ControlPanelIslandSelect(
         embed = build_control_panel_embed(new_island, status)
         view = IslandControlPanelView(new_island)
         await interaction.edit_original_response(embed=embed, view=view)
+
+        if interaction.channel_id:
+            msg_id = interaction.message.id if interaction.message else None
+            await asyncio.to_thread(_upsert_control_panel, interaction.channel_id, new_island, msg_id)
+            cog: Any = getattr(interaction.client, "get_cog", lambda _: None)("ControlPanelCog")
+            if cog and hasattr(cog, "_sigs"):
+                cog._sigs[str(interaction.channel_id)] = (_embed_signature(embed), time.monotonic())
 
 
 class ControlPanelActionButton(
@@ -292,26 +429,11 @@ class ControlPanelActionButton(
         return cls(action=action, island=island, label=item.label or action, emoji=str(item.emoji or ""), style=item.style)
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if not check_control_panel_role(interaction.user):
-            await interaction.response.send_message(
-                embed=_err_embed(f"You need the <@&{CONTROL_PANEL_ROLE_ID}> role to execute controls."),
-                ephemeral=True,
-            )
-            return
-
         client = get_island_sysbot_client(self.island)
 
         # ─── Specialized Actions: Queue, Guide, Refresh Status ─────────────────
         if self.action == "guide":
-            embed = discord.Embed(
-                title="📖 SysBot Remote Control Guide",
-                description="Descriptions and parameters for all 12 SysBot island controls:",
-                color=PANEL_COLOR_ONLINE,
-            )
-            for name, (ep, desc) in CONTROL_GUIDE_DATA.items():
-                embed.add_field(name=f"• {name}", value=f"`{ep}`\n{desc}", inline=False)
-            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.response.send_message(embed=build_guide_embed(), ephemeral=True)
             return
 
         if self.action == "status":
@@ -364,6 +486,9 @@ class ControlPanelActionButton(
             embed = build_control_panel_embed(self.island, status)
             view = IslandControlPanelView(self.island)
             await interaction.edit_original_response(embed=embed, view=view)
+            cog: Any = getattr(interaction.client, "get_cog", lambda _: None)("ControlPanelCog")
+            if cog and hasattr(cog, "_sigs") and interaction.channel_id:
+                cog._sigs[str(interaction.channel_id)] = (_embed_signature(embed), time.monotonic())
         except Exception as exc:
             logger.debug("[ControlPanel] Could not update original panel: %s", exc)
 
@@ -404,18 +529,143 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._sigs: dict[str, tuple[str, float]] = {}  # channel_id -> (signature, last_edit_time)
+        self._lock = asyncio.Lock()
 
     async def cog_load(self) -> None:
         """Register dynamic items on cog load for persistent interaction across bot restarts."""
         try:
+            await asyncio.to_thread(_init_panel_table)
             self.bot.add_dynamic_items(ControlPanelIslandSelect, ControlPanelActionButton)
             logger.info("[ControlPanelCog] Dynamic items registered successfully.")
         except Exception as exc:
             logger.warning("[ControlPanelCog] Failed to register dynamic items: %s", exc)
 
+        try:
+            if not self.auto_refresh_control_panel_loop.is_running():
+                self.auto_refresh_control_panel_loop.start()
+        except Exception as exc:
+            logger.warning("[ControlPanelCog] Could not start auto_refresh_control_panel_loop: %s", exc)
+
     async def cog_unload(self) -> None:
         try:
+            if self.auto_refresh_control_panel_loop.is_running():
+                self.auto_refresh_control_panel_loop.cancel()
+        except Exception:
+            pass
+        try:
             self.bot.remove_dynamic_items(ControlPanelIslandSelect, ControlPanelActionButton)
+        except Exception:
+            pass
+
+    async def ensure_persistent_panel(self, channel_id: int = PERSISTENT_CONTROL_CHANNEL_ID) -> discord.Message | None:
+        """
+        Ensure that a persistent, interactive control panel exists and is kept fresh in channel_id.
+        Recovers existing messages, edits them with fresh status, or posts a new one if missing.
+        """
+        async with self._lock:
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except Exception as exc:
+                    logger.debug("[ControlPanelCog] Could not resolve channel %s: %s", channel_id, exc)
+                    return None
+
+            if not hasattr(channel, "send"):
+                return None
+
+            panel_data = await asyncio.to_thread(_get_control_panel, channel_id)
+            island = (panel_data.get("island_name") if panel_data else None) or _infer_island_from_channel(channel)
+            message_id = int(panel_data["message_id"]) if (panel_data and panel_data.get("message_id")) else None
+
+            msg: Optional[discord.Message] = None
+            if message_id:
+                try:
+                    msg = await channel.fetch_message(message_id)
+                except (discord.NotFound, discord.HTTPException):
+                    msg = None
+
+            # If not found by message_id, check recent history for an existing control panel embed by this bot
+            if msg is None and hasattr(channel, "history"):
+                try:
+                    bot_user_id = getattr(getattr(self.bot, "user", None), "id", None)
+                    async for candidate in channel.history(limit=25):
+                        is_bot_msg = (candidate.author.id == bot_user_id) if bot_user_id else getattr(candidate.author, "bot", False)
+                        if is_bot_msg and candidate.embeds:
+                            title = candidate.embeds[0].title or ""
+                            if "Island Remote Control Panel" in title:
+                                msg = candidate
+                                break
+                except Exception as exc:
+                    logger.debug("[ControlPanelCog] Error scanning history in %s: %s", channel_id, exc)
+
+            status = await fetch_island_status(island)
+            embed = build_control_panel_embed(island, status)
+            view = IslandControlPanelView(island)
+            sig = _embed_signature(embed)
+            now = time.monotonic()
+            cid_str = str(channel_id)
+
+            if msg is not None:
+                prev = self._sigs.get(cid_str)
+                # If neither the status content changed nor FORCE_EDIT_SECONDS passed, skip edit
+                if prev and prev[0] == sig and (now - prev[1]) < FORCE_EDIT_SECONDS:
+                    return msg
+                try:
+                    await msg.edit(embed=embed, view=view)
+                    self._sigs[cid_str] = (sig, now)
+                    if not message_id or message_id != msg.id:
+                        await asyncio.to_thread(_upsert_control_panel, channel_id, island, msg.id)
+                    return msg
+                except discord.NotFound:
+                    msg = None
+                except Exception as exc:
+                    logger.warning("[ControlPanelCog] Failed to edit panel in %s: %s", channel_id, exc)
+
+            # If no message found or it was deleted, create new panel message
+            try:
+                msg = await channel.send(embed=embed, view=view)
+                self._sigs[cid_str] = (sig, now)
+                await asyncio.to_thread(_upsert_control_panel, channel_id, island, msg.id)
+                logger.info("[ControlPanelCog] Created persistent control panel in channel %s for %s", channel_id, island)
+                return msg
+            except Exception as exc:
+                logger.error("[ControlPanelCog] Failed to send persistent panel in channel %s: %s", channel_id, exc)
+                return None
+
+    # ── Auto-refresh loop ─────────────────────────────────────────────────────
+
+    @tasks.loop(seconds=30)
+    async def auto_refresh_control_panel_loop(self) -> None:
+        """Background task: periodically refreshes the persistent panel and any other configured panels."""
+        if not self.bot.is_ready():
+            return
+
+        # 1. Always ensure persistent panel in the dedicated channel (1559482907762884630)
+        try:
+            await self.ensure_persistent_panel(PERSISTENT_CONTROL_CHANNEL_ID)
+        except Exception as exc:
+            logger.warning("[ControlPanelCog] Error in ensure_persistent_panel for %s: %s", PERSISTENT_CONTROL_CHANNEL_ID, exc)
+
+        # 2. Also refresh any other channels recorded in the database
+        try:
+            all_panels = await asyncio.to_thread(_load_all_control_panels)
+            for p in all_panels:
+                cid = p.get("channel_id")
+                if not cid or int(cid) == PERSISTENT_CONTROL_CHANNEL_ID:
+                    continue
+                try:
+                    await self.ensure_persistent_panel(int(cid))
+                except Exception as exc:
+                    logger.debug("[ControlPanelCog] Error refreshing secondary panel in %s: %s", cid, exc)
+        except Exception as exc:
+            logger.debug("[ControlPanelCog] Error loading panels in loop: %s", exc)
+
+    @auto_refresh_control_panel_loop.before_loop
+    async def before_auto_refresh(self) -> None:
+        try:
+            await self.bot.wait_until_ready()
         except Exception:
             pass
 
@@ -454,17 +704,6 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
         island: str | None = None,
     ) -> None:
         """Handle /control-panel setup command."""
-        # 1. Enforce Role ID 1559583848050851980 restriction
-        if not check_control_panel_role(interaction.user):
-            await interaction.response.send_message(
-                embed=_err_embed(
-                    f"You must have the <@&{CONTROL_PANEL_ROLE_ID}> role to set up or use the Island Control Panel."
-                ),
-                ephemeral=True,
-            )
-            return
-
-        # 2. Determine target island
         target_island = _canonical_island(island) if island else _infer_island_from_channel(interaction.channel)
 
         await interaction.response.defer(thinking=True)
@@ -472,7 +711,11 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
         embed = build_control_panel_embed(target_island, status)
         view = IslandControlPanelView(target_island)
 
-        await interaction.followup.send(embed=embed, view=view)
+        sent_msg = await interaction.followup.send(embed=embed, view=view, wait=True)
+        msg_id = getattr(sent_msg, "id", None)
+        if interaction.channel_id:
+            await asyncio.to_thread(_upsert_control_panel, interaction.channel_id, target_island, msg_id)
+            self._sigs[str(interaction.channel_id)] = (_embed_signature(embed), time.monotonic())
 
 
 async def setup(bot: commands.Bot) -> None:
