@@ -368,11 +368,12 @@ class ControlPanelIslandSelect(
             options=options,
             row=0,
         )
+        select_item.callback = self.callback
         super().__init__(select_item)
 
     @classmethod
     async def from_custom_id(
-        cls, interaction: discord.Interaction, item: discord.ui.Select, match: re.Match[str], /
+        cls, interaction: discord.Interaction, item: discord.ui.Item[Any], match: re.Match[str], /
     ):
         return cls(match.group("island"))
 
@@ -396,7 +397,7 @@ class ControlPanelIslandSelect(
 
 class ControlPanelActionButton(
     discord.ui.DynamicItem[discord.ui.Button],
-    template=r"ctrlpanel:(?P<action>[a-zA-Z0-9_-]+):(?P<island>[^:]+)",
+    template=r"ctrlpanel:(?:btn:)?(?P<action>(?!select\b)[a-zA-Z0-9_-]+):(?P<island>[^:]+)",
 ):
     """Dynamic action buttons handling all SysBot control actions."""
 
@@ -418,15 +419,19 @@ class ControlPanelActionButton(
             custom_id=f"ctrlpanel:{action}:{island}",
             row=row,
         )
+        button.callback = self.callback
         super().__init__(button)
 
     @classmethod
     async def from_custom_id(
-        cls, interaction: discord.Interaction, item: discord.ui.Button, match: re.Match[str], /
+        cls, interaction: discord.Interaction, item: discord.ui.Item[Any], match: re.Match[str], /
     ):
         action = match.group("action")
         island = match.group("island")
-        return cls(action=action, island=island, label=item.label or action, emoji=str(item.emoji or ""), style=item.style)
+        label = getattr(item, "label", None) or action
+        emoji = str(getattr(item, "emoji", None) or "")
+        style = getattr(item, "style", discord.ButtonStyle.secondary)
+        return cls(action=action, island=island, label=label, emoji=emoji, style=style)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         client = get_island_sysbot_client(self.island)
