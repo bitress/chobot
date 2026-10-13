@@ -89,10 +89,10 @@ def _init_panel_table() -> None:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS island_dropbot_panels (
-                    channel_id  TEXT PRIMARY KEY,
-                    island_name TEXT NOT NULL,
-                    message_id  TEXT,
-                    updated_at  TEXT
+                    channel_id  VARCHAR(64) PRIMARY KEY,
+                    island_name VARCHAR(128) NOT NULL,
+                    message_id  VARCHAR(64),
+                    updated_at  VARCHAR(64)
                 )
                 """
             )

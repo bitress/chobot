@@ -408,6 +408,8 @@ def _adapt_mysql_ddl(sql: str) -> str:
         (r"\bisland_id\s+TEXT\s+PRIMARY\s+KEY\b", "island_id VARCHAR(255) PRIMARY KEY"),
         (r"\bisland_clean\s+TEXT\s+NOT\s+NULL\b", "island_clean VARCHAR(255) NOT NULL"),
         (r"\bkind\s+TEXT\s+NOT\s+NULL\b", "kind VARCHAR(64) NOT NULL"),
+        (r"\bchannel_id\s+TEXT\s+PRIMARY\s+KEY\b", "channel_id VARCHAR(64) PRIMARY KEY"),
+        (r"\bchannel_id\s+TEXT\b", "channel_id VARCHAR(64)"),
     ]
     for pattern, replacement in replacements:
         sql = re.sub(pattern, replacement, sql, flags=re.I)

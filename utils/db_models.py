@@ -531,3 +531,13 @@ class ControlPanelIdempotency(Base):
     response_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
+
+class IslandDropbotPanel(Base):
+    __tablename__ = "island_dropbot_panels"
+
+    channel_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    island_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    message_id: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[str | None] = mapped_column(String(64))
+
+
