@@ -75,9 +75,10 @@ UNKNOWN_ISLAND_MSG = (
     "Ask a moderator to run `/dropbot setup-panel` in this channel."
 )
 
-# Debounce per (user_id, island_name) to avoid log spam
+# Debounce per (user_id, island_name) to avoid duplicate double-clicks
 _WEBHOOK_DEBOUNCE: dict[str, float] = {}
-_WEBHOOK_DEBOUNCE_TTL = 180  # 3 minutes
+_WEBHOOK_DEBOUNCE_TTL = 3  # 3 seconds
+
 
 
 # ─── Database helpers ──────────────────────────────────────────────────────────
@@ -405,12 +406,58 @@ def _match_villagers(query: str, limit: int = 5) -> tuple[str | None, list[str]]
 # ─── Dodo audit webhook ────────────────────────────────────────────────────────
 
 def _dodo_webhook_url() -> str:
-    """The spec calls it DODO_WEBHOOK_URL; older code used DODO_LOG_WEBHOOK_URL. Accept both."""
-    for name in ("DODO_WEBHOOK_URL", "DODO_LOG_WEBHOOK_URL"):
+    """Check all possible webhook URLs for Dodo logging."""
+    for name in ("DODO_WEBHOOK_URL", "DODO_LOG_WEBHOOK_URL", "SUB_FLIGHT_WEBHOOK_URL"):
         val = getattr(Config, name, "") or os.getenv(name, "")
         if val:
             return val
     return ""
+
+
+def _persist_dodo_reveal_message(
+    message_url: str | None,
+    user_id: str,
+    island_name: str,
+    channel_id: str,
+    username: str,
+    nickname: str,
+) -> None:
+    try:
+        with connect_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dodo_reveal_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT,
+                    island_clean TEXT,
+                    channel_id TEXT,
+                    message_url TEXT,
+                    username TEXT,
+                    nickname TEXT,
+                    created_at INTEGER
+                )
+                """
+            )
+            clean = re.sub(r"[^a-zA-Z0-9]", "", island_name.lower())
+            conn.execute(
+                """
+                INSERT INTO dodo_reveal_messages
+                (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(user_id),
+                    clean,
+                    str(channel_id) if channel_id else None,
+                    message_url,
+                    username or "",
+                    nickname or "",
+                    int(time.time()),
+                ),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.debug("[DropBot] Could not persist dodo_reveal_message: %s", exc)
 
 
 def _fire_dropbot_dodo_webhook(
@@ -424,6 +471,7 @@ def _fire_dropbot_dodo_webhook(
     """POST a Dodo reveal audit embed matching Chopaeng's standard format."""
     url = _dodo_webhook_url()
     if not url:
+        logger.warning("[DropBot] No webhook URL configured for Dodo reveals!")
         return
 
     cache_key = f"{user_id}:{island_name}"
@@ -434,14 +482,37 @@ def _fire_dropbot_dodo_webhook(
     _WEBHOOK_DEBOUNCE[cache_key] = now
 
     island_link = f"https://www.chopaeng.com/island/{urllib.parse.quote(island_name).lower()}"
+    fields = [
+        {"name": "Member", "value": f"{display_name} (<@{user_id}>)"},
+        {"name": "Island", "value": (f"<#{channel_id}>\n" if channel_id else "") + f"[View Island]({island_link})"},
+    ]
+
+    # Look up in-game character if registered
+    try:
+        with connect_db() as conn:
+            row = conn.execute(
+                """
+                SELECT ign, island_name FROM user_saved_characters
+                WHERE user_id = ? OR user_id = ? OR user_id = ?
+                ORDER BY is_default DESC, updated_at DESC LIMIT 1
+                """,
+                (str(user_id), f"dc_{user_id}", f"cp_usr_{user_id}"),
+            ).fetchone()
+            if row and row["ign"]:
+                char_ign = row["ign"]
+                char_isl = row["island_name"] or ""
+                fields.append({
+                    "name": "In-Game Character",
+                    "value": f"IGN: **{char_ign}**" + (f" | Island: **{char_isl}**" if char_isl else ""),
+                })
+    except Exception as exc:
+        logger.debug("[DropBot] Saved character lookup note: %s", exc)
+
     embed = {
         "title": "Dodo Code Revealed",
         "color": 0x2ECC71,
-        "description": f"<@{user_id}> has revealed the Dodo code for island <#{channel_id}>",
-        "fields": [
-            {"name": "Member", "value": f"{display_name} (<@{user_id}>)"},
-            {"name": "Island", "value": f"<#{channel_id}>\n[View Island]({island_link})"},
-        ],
+        "description": f"<@{user_id}> has revealed the Dodo code for island <#{channel_id}>" if channel_id else f"<@{user_id}> has revealed the Dodo code for **{island_name}**",
+        "fields": fields,
         "image": {"url": DODO_GIF},
         "footer": {"text": "Chopaeng Camp - Dodo Log", "icon_url": LOGO_URL},
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -455,8 +526,18 @@ def _fire_dropbot_dodo_webhook(
             headers={"Content-Type": "application/json", "User-Agent": "ChoBot/2.0"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=8):
-            pass
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            body = resp.read()
+            msg_id = None
+            if body:
+                try:
+                    data = json.loads(body.decode())
+                    msg_id = data.get("id")
+                except Exception:
+                    pass
+            msg_url = f"https://discord.com/channels/{getattr(Config, 'GUILD_ID', '')}/{channel_id}/{msg_id}" if msg_id else None
+            _persist_dodo_reveal_message(msg_url, str(user_id), island_name, channel_id, username, display_name)
+            logger.info("[DropBot] Dodo reveal webhook successfully sent for %s by user %s", island_name, user_id)
     except Exception as exc:
         logger.warning("[DropBot] Dodo webhook failed: %s", exc)
 
@@ -1465,21 +1546,71 @@ class GetDodoButton(
             await _reply(interaction, embed=_err_embed(denied))
             return
 
+        dodo = None
+        is_valid = False
+
+        # 1. Fetch Dodo code via SysBot Telemetry
         try:
-            data = await client.get_bot_status()
-        except Exception:
-            logger.exception("[DropBot] get_bot_status failed for %s", island)
-            data = {"is_running": False}
+            from utils.sysbot_telemetry import get_cached_island_telemetry, poll_single_island
+            # Check cached telemetry first (mask_sub_dodo=False to obtain unmasked Dodo code)
+            telem = get_cached_island_telemetry(island, mask_sub_dodo=False)
+            if not telem or not (telem.get("raw_dodo") or telem.get("dodo_code")):
+                # Actively poll telemetry if not in cache or missing raw_dodo
+                telem = await asyncio.to_thread(poll_single_island, island)
 
-        dodo = data.get("dodo_code") or data.get("dodo")
-        is_valid = bool(data.get("is_dodo_valid") or (dodo and str(dodo).strip() not in _INVALID_DODO_CODES))
+            if telem:
+                cand = telem.get("raw_dodo") or telem.get("dodo_code")
+                if cand and str(cand).strip() not in _INVALID_DODO_CODES and str(cand).strip().upper() not in ("00000", "-----", "GETTIN'", "NONE", "NULL"):
+                    dodo = str(cand).strip()
+                    is_valid = True
+        except Exception as exc:
+            logger.warning("[DropBot] Error querying sysbot telemetry for %s: %s", island, exc)
 
+        # 2. SysBot direct client queries fallback
+        if not is_valid:
+            try:
+                data = await client.get_bot_status()
+                cand = data.get("dodo_code") or data.get("dodo")
+                if cand and str(cand).strip() not in _INVALID_DODO_CODES and str(cand).strip().upper() not in ("00000", "-----", "GETTIN'", "NONE", "NULL"):
+                    dodo = str(cand).strip()
+                    is_valid = True
+            except Exception:
+                pass
+
+        if not is_valid:
+            try:
+                ddata = await client.get_dodo()
+                cand = ddata.get("dodo_code") or ddata.get("dodo")
+                if cand and str(cand).strip() not in _INVALID_DODO_CODES and str(cand).strip().upper() not in ("00000", "-----", "GETTIN'", "NONE", "NULL"):
+                    dodo = str(cand).strip()
+                    is_valid = True
+            except Exception:
+                pass
+
+        # 3. Live status snapshot fallback
         if not is_valid:
             status_data = await fetch_island_live_status(island)
             cand = status_data.get("dodo_code")
-            if cand and str(cand).strip() not in _INVALID_DODO_CODES:
-                dodo = cand
+            if cand and str(cand).strip() not in _INVALID_DODO_CODES and str(cand).strip().upper() not in ("00000", "-----", "GETTIN'", "NONE", "NULL"):
+                dodo = str(cand).strip()
                 is_valid = True
+
+        # 4. Filesystem fallback if available locally
+        if not is_valid:
+            for base_dir in [getattr(Config, "DIR_VIP", ""), getattr(Config, "DIR_FREE", "")]:
+                if not base_dir or not os.path.exists(base_dir):
+                    continue
+                cand_path = os.path.join(base_dir, island, "Dodo.txt")
+                if os.path.exists(cand_path):
+                    try:
+                        with open(cand_path, "r", encoding="utf-8") as f:
+                            raw = f.read().strip()
+                        if raw and raw not in _INVALID_DODO_CODES and raw.upper() not in ("00000", "-----", "GETTIN'", "NONE", "NULL"):
+                            dodo = raw
+                            is_valid = True
+                            break
+                    except Exception:
+                        pass
 
         if not is_valid:
             embed = discord.Embed(
@@ -1527,6 +1658,21 @@ class GetDodoButton(
             str(interaction.channel_id or ""),
             str(dodo),
         )
+
+        # FlightLogger integration
+        flight_cog = interaction.client.get_cog("FlightLoggerCog")
+        if flight_cog and hasattr(flight_cog, "register_dodo_request"):
+            try:
+                guild_icon = interaction.guild.icon.url if interaction.guild and interaction.guild.icon else None
+                flight_cog.register_dodo_request(
+                    interaction.user.id,
+                    interaction.user,
+                    interaction.channel,
+                    None,
+                    guild_icon,
+                )
+            except Exception as exc:
+                logger.debug("[DropBot] flight_cog note: %s", exc)
 
 
 class DropItemsButton(
@@ -1699,6 +1845,13 @@ class DropBotCog(commands.Cog, name="DropBot"):
     async def cog_load(self) -> None:
         _init_panel_table()
         _get_villager_names()   # pre-warm cache
+        # Start SysBot telemetry background worker
+        try:
+            from utils.sysbot_telemetry import start_telemetry_worker
+            start_telemetry_worker()
+            logger.info("[DropBot] Started SysBot telemetry worker.")
+        except Exception as exc:
+            logger.warning("[DropBot] Could not start telemetry worker: %s", exc)
         # One registration covers every panel in every channel (the island is in the custom_id).
         self.bot.add_dynamic_items(*ALL_REGISTERED_DYNAMIC_ITEMS)
         self.auto_refresh_panels_loop.start()
@@ -1707,6 +1860,11 @@ class DropBotCog(commands.Cog, name="DropBot"):
     async def cog_unload(self) -> None:
         self.auto_refresh_panels_loop.cancel()
         self.bot.remove_dynamic_items(*ALL_REGISTERED_DYNAMIC_ITEMS)
+        try:
+            from utils.sysbot_telemetry import stop_telemetry_worker
+            stop_telemetry_worker()
+        except Exception:
+            pass
 
     @tasks.loop(seconds=30)
     async def auto_refresh_panels_loop(self) -> None:
