@@ -238,7 +238,7 @@ class Config:
         if idx is not None:
             return f"http://localhost:{base_port + idx}"
 
-        return (getattr(cls, "SYSBOT_API_URL", "http://localhost:5202") or "http://localhost:5202").rstrip("/")
+        return (getattr(cls, "SYSBOT_API_URL", "http://localhost:8248") or "http://localhost:8248").rstrip("/")
 
     @classmethod
     def get_all_island_sysbot_urls(cls) -> dict[str, str]:
