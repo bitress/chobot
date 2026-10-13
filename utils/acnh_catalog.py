@@ -601,6 +601,13 @@ class ACNHCatalog:
                     res.append(v)
                 if len(res) >= limit:
                     break
+        if not res:
+            for item in POPULAR_VILLAGERS[:limit]:
+                name, desc, emoji_char = item[0], item[1], item[2]
+                parts = [p.strip() for p in desc.split("•")]
+                pers = parts[0] if len(parts) > 0 else ""
+                spec = parts[1] if len(parts) > 1 else ""
+                res.append(CatalogVillager(name=name, villager_id=name.lower(), species=spec, personality=pers))
         return res
 
     def get_popular_villager_names(self, limit: int = 25) -> List[str]:

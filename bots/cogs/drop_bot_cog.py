@@ -2029,6 +2029,10 @@ class InteractiveDropPickerView(discord.ui.View):
         self.user_id = user_id
 
         catalog = ACNHCatalog.get_instance()
+        presets_data = catalog.get_drop_presets()
+        if not presets_data:
+            from utils.acnh_catalog import POPULAR_DROP_PRESETS
+            presets_data = list(POPULAR_DROP_PRESETS)
         preset_options = [
             discord.SelectOption(
                 label=label[:100],
@@ -2036,7 +2040,7 @@ class InteractiveDropPickerView(discord.ui.View):
                 emoji=emoji,
                 value=item_code[:100],
             )
-            for label, desc, item_code, emoji in catalog.get_drop_presets()
+            for label, desc, item_code, emoji in presets_data
         ]
         preset_select = discord.ui.Select(
             placeholder="📦 Select an item preset to drop…",
@@ -2253,15 +2257,27 @@ class InteractiveVillagerPickerView(discord.ui.View):
 
         catalog = ACNHCatalog.get_instance()
         popular_villagers = catalog.get_popular_villagers()
-        v_options = [
-            discord.SelectOption(
-                label=v.name[:100],
-                description=(f"{v.personality} • {v.species}" if v.personality and v.species else v.species or "Villager")[:100],
-                emoji=v.emoji,
-                value=v.name[:100],
-            )
-            for v in popular_villagers
-        ]
+        if not popular_villagers:
+            from utils.acnh_catalog import POPULAR_VILLAGERS
+            v_options = [
+                discord.SelectOption(
+                    label=name[:100],
+                    description=desc[:100],
+                    emoji=emoji_char,
+                    value=name[:100],
+                )
+                for name, desc, emoji_char in POPULAR_VILLAGERS
+            ]
+        else:
+            v_options = [
+                discord.SelectOption(
+                    label=v.name[:100],
+                    description=(f"{v.personality} • {v.species}" if v.personality and v.species else v.species or "Villager")[:100],
+                    emoji=v.emoji,
+                    value=v.name[:100],
+                )
+                for v in popular_villagers
+            ]
         v_select = discord.ui.Select(
             placeholder="🐱 Choose a popular villager to inject…",
             options=v_options,
@@ -2470,21 +2486,28 @@ class DropItemsButton(
     _btn_style = discord.ButtonStyle.primary
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if island := await self._gate(interaction):
-            embed = discord.Embed(
-                title=f"📦 Drop Items — {island}",
-                description=(
-                    f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
-                    f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
-                    f"• Pick an item preset from the dropdown for instant dropping\n"
-                    f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
-                    f"• Use **📝 Custom / Hex** to enter your own items or hex list"
-                ),
-                color=PANEL_EMBED_COLOR,
-            )
-            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
-            view = InteractiveDropPickerView(island_name=island, user_id=interaction.user.id)
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        try:
+            if island := await self._gate(interaction):
+                embed = discord.Embed(
+                    title=f"📦 Drop Items — {island}",
+                    description=(
+                        f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
+                        f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
+                        f"• Pick an item preset from the dropdown for instant dropping\n"
+                        f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
+                        f"• Use **📝 Custom / Hex** to enter your own items or hex list"
+                    ),
+                    color=PANEL_EMBED_COLOR,
+                )
+                embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+                view = InteractiveDropPickerView(island_name=island, user_id=interaction.user.id)
+                if interaction.response.is_done():
+                    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                else:
+                    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        except Exception as exc:
+            logger.error("[DropBot] DropItemsButton error: %s", exc, exc_info=exc)
+            await _reply(interaction, "❌ Something went wrong opening the item drop picker.")
 
 
 class SearchCatalogButton(
@@ -2507,21 +2530,28 @@ class InjectVillagerButton(
     _btn_action, _btn_label, _btn_emoji = "villager", "Inject Villager", "🐱"
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if island := await self._gate(interaction):
-            embed = discord.Embed(
-                title=f"🐱 Inject Villager — {island}",
-                description=(
-                    f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
-                    f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
-                    f"• Choose a villager from the menu to inject\n"
-                    f"• Use **🔍 Search Villager** to search by name or species\n"
-                    f"• Use **✏️ Type Any Name** to enter any name manually"
-                ),
-                color=PANEL_EMBED_COLOR,
-            )
-            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
-            view = InteractiveVillagerPickerView(island_name=island, user_id=interaction.user.id)
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        try:
+            if island := await self._gate(interaction):
+                embed = discord.Embed(
+                    title=f"🐱 Inject Villager — {island}",
+                    description=(
+                        f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
+                        f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
+                        f"• Choose a villager from the menu to inject\n"
+                        f"• Use **🔍 Search Villager** to search by name or species\n"
+                        f"• Use **✏️ Type Any Name** to enter any name manually"
+                    ),
+                    color=PANEL_EMBED_COLOR,
+                )
+                embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+                view = InteractiveVillagerPickerView(island_name=island, user_id=interaction.user.id)
+                if interaction.response.is_done():
+                    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                else:
+                    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        except Exception as exc:
+            logger.error("[DropBot] InjectVillagerButton error: %s", exc, exc_info=exc)
+            await _reply(interaction, "❌ Something went wrong opening the villager picker.")
 
 
 class GuideButton(
