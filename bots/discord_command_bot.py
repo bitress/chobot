@@ -2574,6 +2574,8 @@ class DiscordCommandCog(commands.Cog):
     @app_commands.autocomplete(item=item_autocomplete)
     async def find(self, ctx, *, item: str = ""):
         """Find an item"""
+        if ctx.interaction and not ctx.interaction.response.is_done():
+            await ctx.defer()
 
         if not await self._enforce_find_channel(ctx):
             return
@@ -2639,6 +2641,8 @@ class DiscordCommandCog(commands.Cog):
     @app_commands.describe(name="The name of the villager")
     async def villager(self, ctx, *, name: str = ""):
         """Find a villager"""
+        if ctx.interaction and not ctx.interaction.response.is_done():
+            await ctx.defer()
 
         if not await self._enforce_find_channel(ctx):
             return
@@ -2701,6 +2705,30 @@ class DiscordCommandCog(commands.Cog):
 
         logger.info(f"[DISCORD] Villager Miss: {search_term}")
 
+    @commands.command(name="sync")
+    async def sync_commands(self, ctx: commands.Context, spec: str | None = None):
+        """Sync slash commands immediately. Usage: !sync or !sync global"""
+        perms = getattr(ctx.author, "guild_permissions", None)
+        is_owner = bool(self.bot.owner_id and ctx.author.id == self.bot.owner_id)
+        is_admin = bool(perms and (perms.administrator or perms.manage_guild))
+        if not (is_owner or is_admin):
+            await ctx.reply("❌ Permission denied. You need Administrator or Manage Server permission.")
+            return
+
+        async with ctx.typing():
+            if spec == "global":
+                synced = await self.bot.tree.sync()
+                await ctx.reply(f"✅ Synced {len(synced)} commands globally.")
+            else:
+                target_guild = ctx.guild
+                if not target_guild:
+                    await ctx.reply("❌ Must be used in a server.")
+                    return
+                self.bot.tree.copy_global_to(guild=target_guild)
+                synced = await self.bot.tree.sync(guild=target_guild)
+                names = ", ".join(f"`/{c.name}`" for c in synced)
+                await ctx.reply(f"✅ Synced {len(synced)} slash commands to **{target_guild.name}**:\n{names}")
+
     @app_commands.command(
         name="findpanel",
         description="Deploy the interactive Find Station panel to a channel",
@@ -2713,9 +2741,11 @@ class DiscordCommandCog(commands.Cog):
         channel: discord.TextChannel | None = None,
     ):
         """Deploy a persistent Find Station panel that anyone can search from."""
+        await interaction.response.defer(ephemeral=True)
+
         perms = getattr(interaction.user, "guild_permissions", None)
         if perms and not (perms.manage_channels or perms.administrator):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You need **Manage Channels** or **Administrator** permission to deploy the Find Station.",
                 ephemeral=True,
             )
@@ -2723,10 +2753,9 @@ class DiscordCommandCog(commands.Cog):
 
         target = channel or interaction.channel
         if not target:
-            await interaction.response.send_message("❌ Target channel not found.", ephemeral=True)
+            await interaction.followup.send("❌ Target channel not found.", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)
         try:
             guild_icon = resolve_guild_icon(target or interaction, self.bot)
             embed = build_find_panel_embed(guild_icon=guild_icon)
@@ -2757,9 +2786,11 @@ class DiscordCommandCog(commands.Cog):
         channel: discord.TextChannel | None = None,
     ):
         """Deploy the Find Station to a channel."""
+        await interaction.response.defer(ephemeral=True)
+
         perms = getattr(interaction.user, "guild_permissions", None)
         if perms and not (perms.manage_channels or perms.administrator):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You need **Manage Channels** or **Administrator** permission to deploy station panels.",
                 ephemeral=True,
             )
@@ -2767,10 +2798,9 @@ class DiscordCommandCog(commands.Cog):
 
         target = channel or interaction.channel
         if not target:
-            await interaction.response.send_message("❌ Target channel not found.", ephemeral=True)
+            await interaction.followup.send("❌ Target channel not found.", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)
         try:
             guild_icon = resolve_guild_icon(target or interaction, self.bot)
             embed = build_find_panel_embed(guild_icon=guild_icon)
@@ -2879,12 +2909,13 @@ class DiscordCommandCog(commands.Cog):
                 pass
 
         # Scold them ephemerally if they used a slash command
-        if ctx.interaction and not ctx.interaction.response.is_done():
+        if ctx.interaction:
             try:
-                await ctx.interaction.response.send_message(
-                    f"Keep it clean. Use this command in <#{Config.FIND_BOT_CHANNEL_ID}>.",
-                    ephemeral=True
-                )
+                msg = f"Keep it clean. Use this command in <#{Config.FIND_BOT_CHANNEL_ID}>."
+                if ctx.interaction.response.is_done():
+                    await ctx.interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await ctx.interaction.response.send_message(msg, ephemeral=True)
             except discord.HTTPException:
                 pass
 
@@ -5400,6 +5431,10 @@ class DiscordCommandBot(commands.Bot):
             if not Config.FIND_BOT_CHANNEL_ID:
                 return True  # No restriction if channel ID not set
             
+            # Non-command interactions (buttons, modals, selects) should always pass
+            if not interaction.command:
+                return True
+
             if interaction.channel_id == Config.FIND_BOT_CHANNEL_ID:
                 # Allowed commands in FIND_BOT_CHANNEL
                 allowed_commands = {
@@ -5420,15 +5455,20 @@ class DiscordCommandBot(commands.Bot):
                     'dropbot',
                 }
                 
-                # Get the command name
-                command_name = interaction.command.name if interaction.command else None
+                # Get the command name and root group name
+                command_name = interaction.command.name
+                root_name = interaction.command.root_parent.name if getattr(interaction.command, 'root_parent', None) else command_name
                 
-                # If it's a command and not allowed, block it
-                if command_name and command_name not in allowed_commands:
-                    await interaction.channel.send(
-                        "You can only use `/find` (and its aliases), `/villager` commands in this channel.",
-                        delete_after=5
-                    )
+                # If neither the subcommand nor the parent group is allowed, block it
+                if command_name not in allowed_commands and root_name not in allowed_commands:
+                    try:
+                        if not interaction.response.is_done():
+                            await interaction.response.send_message(
+                                "You can only use `/find`, `/villager`, and related commands in this channel.",
+                                ephemeral=True
+                            )
+                    except Exception as e:
+                        logger.warning(f"[DISCORD] Failed to send restriction response: {e}")
 
                     logger.info(f"[DISCORD] Blocked slash command '/{command_name}' in FIND_BOT_CHANNEL from {interaction.user}")
                     return False
@@ -5436,6 +5476,23 @@ class DiscordCommandBot(commands.Bot):
             return True
         
         self.tree.interaction_check = check_find_channel_restriction
+
+        async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+            logger.exception(f"[DISCORD] Slash command error ({getattr(interaction.command, 'qualified_name', 'unknown')}): {error}")
+            err_msg = "❌ An error occurred while executing this command."
+            if isinstance(error, app_commands.CheckFailure):
+                err_msg = "❌ You do not have permission or this command cannot be run in this channel."
+            elif isinstance(error, app_commands.CommandOnCooldown):
+                err_msg = f"⏳ This command is on cooldown. Try again in {error.retry_after:.1f}s."
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(err_msg, ephemeral=True)
+                else:
+                    await interaction.followup.send(err_msg, ephemeral=True)
+            except Exception as resp_err:
+                logger.error(f"[DISCORD] Failed to send error interaction response: {resp_err}")
+
+        self.tree.on_error = on_tree_error
 
         if Config.GUILD_ID:
             guild_obj = discord.Object(id=Config.GUILD_ID)
@@ -5451,6 +5508,14 @@ class DiscordCommandBot(commands.Bot):
     async def on_ready(self):
         """Called when bot is ready"""
         logger.info(f"[DISCORD] Logged in as: {self.user} (ID: {self.user.id})")
+        # Ensure commands are synced to all connected guilds for instant suggestions
+        for guild in self.guilds:
+            try:
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                logger.info(f"[DISCORD] Synced {len(synced)} slash commands to guild '{guild.name}' ({guild.id})")
+            except Exception as e:
+                logger.warning(f"[DISCORD] Failed to sync slash commands to '{guild.name}' ({guild.id}): {e}")
 
     @tasks.loop(minutes=5)
     async def change_status_loop(self):

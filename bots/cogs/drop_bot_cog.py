@@ -1524,8 +1524,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
 
     dropbot_group = app_commands.Group(
         name="dropbot",
-        description="Manage island DropBot control panels",
-        default_permissions=discord.Permissions(manage_messages=True),
+        description="Island DropBot control panels and catalog search",
         guild_only=True,
     )
 
@@ -1574,6 +1573,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
 
     @dropbot_group.command(name="setup-panel", description="Post or refresh the DropBot control panel in this channel")
     @app_commands.describe(island="Island name (auto-detected from channel name if omitted)")
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.autocomplete(island=island_autocomplete)
     async def setup_panel(self, interaction: discord.Interaction, island: str | None = None) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1626,6 +1626,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
     # ── /dropbot setup-all ─────────────────────────────────────────────────────
 
     @dropbot_group.command(name="setup-all", description="Bulk-deploy DropBot panels to all sub-island channels")
+    @app_commands.default_permissions(manage_messages=True)
     async def setup_all(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
@@ -1689,6 +1690,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
     # ── /dropbot status ────────────────────────────────────────────────────────
 
     @dropbot_group.command(name="status", description="List all registered DropBot panels")
+    @app_commands.default_permissions(manage_messages=True)
     async def status_cmd(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         panels = _load_all_panels()
