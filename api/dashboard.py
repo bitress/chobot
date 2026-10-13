@@ -193,6 +193,7 @@ def get_db():
 
 def init_dashboard_db():
     """Create dashboard-specific tables if they do not already exist."""
+    conn = None
     try:
         conn = get_db()
 

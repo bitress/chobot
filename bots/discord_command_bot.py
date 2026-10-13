@@ -1204,18 +1204,37 @@ class DiscordCommandCog(commands.Cog):
             self.order_island_lookup[clean_text(Config.ORDER_BOT_ISLAND)] = Config.ORDER_BOT_CHANNEL_ID
 
 
-    async def _get_island_sysbot_status(self, island_name: str) -> tuple[bool, str]:
-        """Check online/offline status of an island using its dedicated SysBot API endpoint.
+    async def _get_island_sysbot_status(self, island_name: str, api_snapshot: dict | None = None) -> tuple[bool, str]:
+        """Check online/offline status of an island using the SysBot API snapshot or live client.
 
         Returns (is_online, status_reason).
         """
         clean_name = clean_text(island_name).title()
+        canonical_key = re.sub(r'^\d+', '', clean_text(island_name))
         if not clean_name:
             return False, "Unknown island"
         if clean_name.lower() in ("sysbotacnhorders", "sysbotorders", "orders", "order"):
             clean_name = "Sinta"
+            canonical_key = "sinta"
 
-        # 1. Fast path: check cached telemetry from background worker if fresh (< 30s)
+        # 1. Fast & reliable: query SysBot API snapshot from /api/islands
+        if api_snapshot is None:
+            try:
+                api_snapshot, _ = await self._fetch_islands_api_snapshot()
+            except Exception as e:
+                logger.debug(f"[DISCORD] Could not fetch SysBot API island snapshot: {e}")
+                api_snapshot = None
+
+        if api_snapshot:
+            item = api_snapshot.get(canonical_key) or api_snapshot.get(clean_name.lower())
+            if item:
+                is_online = bool(item.get("bot_online"))
+                stage = item.get("console_stage") or ("Running" if is_online else "Offline")
+                status_str = item.get("status", "")
+                reason = stage if stage not in ("Offline", "Stopped") else (status_str or ("SysBot online" if is_online else "SysBot offline"))
+                return is_online, reason
+
+        # 2. Check cached telemetry from background worker if fresh (< 30s)
         try:
             cached = get_cached_island_telemetry(clean_name, mask_sub_dodo=False)
             if cached and (time.time() - cached.get("last_updated", 0)) < 30:
@@ -1230,7 +1249,7 @@ class DiscordCommandCog(commands.Cog):
         except Exception:
             pass
 
-        # 2. Live query via island's SysBotClient
+        # 3. Live query via island's SysBotClient (fallback)
         try:
             client = get_island_sysbot_client(clean_name, timeout=2)
             st = await client.get_bot_status()
@@ -1710,11 +1729,32 @@ class DiscordCommandCog(commands.Cog):
             return None
 
     async def _fetch_islands_api_data(self) -> tuple[list[dict], datetime | None] | tuple[None, None]:
-        """Fetch raw island snapshot data from the API."""
-        url = f"{Config.API_BASE_URL}/api/islands"
+        """Fetch raw island snapshot data from the SysBot API / console."""
+        primary_url = f"{Config.API_BASE_URL}/api/islands"
+        remote_url = "https://console.chopaeng.com/api/islands"
 
         def _get_json():
-            response = requests.get(url, timeout=8)
+            # If primary URL is configured, attempt it first
+            if primary_url:
+                try:
+                    response = requests.get(primary_url, timeout=8)
+                    if response.ok:
+                        payload = response.json()
+                        items = payload.get("data", []) if isinstance(payload, dict) else []
+                        # If localhost returns no online bots, fallback to remote production console
+                        if ("localhost" in primary_url or "127.0.0.1" in primary_url) and not any(i.get("bot_online") for i in items):
+                            try:
+                                rem = requests.get(remote_url, timeout=8)
+                                if rem.ok:
+                                    return rem.json()
+                            except Exception:
+                                pass
+                        return payload
+                except Exception as exc:
+                    logger.debug(f"[DISCORD] Primary island API failed ({primary_url}): {exc}")
+
+            # Fallback to remote console
+            response = requests.get(remote_url, timeout=8)
             response.raise_for_status()
             return response.json()
 
@@ -2734,7 +2774,6 @@ class DiscordCommandCog(commands.Cog):
         description="Deploy the interactive Find Station panel to a channel",
     )
     @app_commands.describe(channel="The channel to deploy into (defaults to current channel)")
-    @app_commands.default_permissions(manage_channels=True)
     async def slash_findpanel(
         self,
         interaction: discord.Interaction,
@@ -2779,7 +2818,6 @@ class DiscordCommandCog(commands.Cog):
     @app_commands.describe(
         channel="The channel to deploy into (defaults to current channel)",
     )
-    @app_commands.default_permissions(manage_channels=True)
     async def slash_place(
         self,
         interaction: discord.Interaction,
@@ -3881,7 +3919,7 @@ class DiscordCommandCog(commands.Cog):
         except Exception as e:
             logger.warning(f"[DISCORD] Failed to post dodo request to xlog: {e}")
 
-    async def _check_island_online(self, guild: discord.Guild, island: str, lookup: dict | None = None) -> bool:
+    async def _check_island_online(self, guild: discord.Guild, island: str, lookup: dict | None = None, api_snapshot: dict | None = None) -> bool:
         """Return True if the island appears to be online via SysBot API, False otherwise.
 
         ``lookup`` should be the channel-name → channel-id mapping for the island
@@ -3889,7 +3927,7 @@ class DiscordCommandCog(commands.Cog):
         ``clean_text()`` — the same normalisation applied when the lookup was
         built. Defaults to ``self.sub_island_lookup``.
         """
-        is_up, _ = await self._get_island_sysbot_status(island)
+        is_up, _ = await self._get_island_sysbot_status(island, api_snapshot=api_snapshot)
         return is_up
 
 
@@ -3936,6 +3974,9 @@ class DiscordCommandCog(commands.Cog):
         self._refresh_order_island_lookup()
         bot_status_records: list[tuple[str, str, bool]] = []
 
+        # Fetch live SysBot API snapshot once for all islands
+        api_snapshot, _ = await self._fetch_islands_api_snapshot()
+
         for island in Config.SUB_ISLANDS:
             island_clean = clean_text(island)
             channel_id = self.sub_island_lookup.get(island_clean)
@@ -3947,7 +3988,7 @@ class DiscordCommandCog(commands.Cog):
                 continue
 
             try:
-                is_online = await self._check_island_online(guild, island)
+                is_online = await self._check_island_online(guild, island, api_snapshot=api_snapshot)
             except Exception as e:
                 logger.error(f"[DISCORD] island_monitor_loop error checking {island}: {e}")
                 continue
@@ -4030,7 +4071,7 @@ class DiscordCommandCog(commands.Cog):
             for island in Config.FREE_ISLANDS:
                 free_island_clean = clean_text(island)
                 try:
-                    is_online = await self._check_island_online(guild, island, lookup=self.free_island_lookup)
+                    is_online = await self._check_island_online(guild, island, lookup=self.free_island_lookup, api_snapshot=api_snapshot)
                 except Exception as e:
                     logger.error(f"[DISCORD] island_monitor_loop error checking free island {island}: {e}")
                     continue
@@ -4054,7 +4095,7 @@ class DiscordCommandCog(commands.Cog):
                 if not isinstance(channel, discord.TextChannel):
                     continue
                 try:
-                    is_online = await self._check_island_online(guild, island, lookup=self.order_island_lookup)
+                    is_online = await self._check_island_online(guild, island, lookup=self.order_island_lookup, api_snapshot=api_snapshot)
                 except Exception as e:
                     logger.error(f"[DISCORD] island_monitor_loop error checking order island {island}: {e}")
                     continue
