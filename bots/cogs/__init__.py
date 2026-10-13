@@ -1,0 +1,1 @@
+"""DropBot Cog package."""

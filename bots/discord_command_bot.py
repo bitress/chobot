@@ -34,6 +34,7 @@ from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_messag
 from utils.ops_status import create_sqlite_backup, get_maintenance_settings
 from utils.sysbot_api import get_island_sysbot_client, _INVALID_DODO_CODES
 from utils.sysbot_telemetry import get_cached_island_telemetry
+from bots.cogs.drop_bot_cog import DropBotCog
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -5389,6 +5390,10 @@ class DiscordCommandBot(commands.Bot):
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
             self.add_view(FindPanelView())
 
+        # Register DropBot persistent panels and slash-command group
+        drop_bot_cog = DropBotCog(self)
+        await self.add_cog(drop_bot_cog)
+
         # Add global interaction check for slash commands in FIND_BOT_CHANNEL
         async def check_find_channel_restriction(interaction: discord.Interaction) -> bool:
             """Restrict slash commands in FIND_BOT_CHANNEL to only allowed commands"""
@@ -5411,7 +5416,8 @@ class DiscordCommandBot(commands.Bot):
                     'cart',
                     'myorders',
                     'queue',
-                    'presets'
+                    'presets',
+                    'dropbot',
                 }
                 
                 # Get the command name

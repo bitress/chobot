@@ -1794,8 +1794,8 @@ def auth_logout():
 def api_suggestions():
     """Submit a resident suggestion/feedback via secure server-side Discord webhook."""
     data = request.get_json(silent=True) or {}
-    title = clean_text(data.get("title") or "")
-    description = clean_text(data.get("description") or "")
+    title = str(data.get("title") or "").strip()
+    description = str(data.get("description") or "").strip()
     if not title or not description:
         return jsonify({"success": False, "error": "Both title and description are required."}), 400
 
@@ -1809,11 +1809,11 @@ def api_suggestions():
     user_id = str(auth_user.get("user_id") or "") if auth_user else ""
     avatar_url = auth_user.get("avatar") or "" if auth_user else ""
 
-    discord_username = clean_text(
+    discord_username = str(
         data.get("discordUsername") or data.get("discord_username") or (auth_user.get("username") if auth_user else "") or ""
-    )
-    in_game_name = clean_text(data.get("inGameName") or data.get("in_game_name") or "")
-    island_name = clean_text(data.get("islandName") or data.get("island_name") or "")
+    ).strip()
+    in_game_name = str(data.get("inGameName") or data.get("in_game_name") or "").strip()
+    island_name = str(data.get("islandName") or data.get("island_name") or "").strip()
     page_url = str(data.get("pageUrl") or data.get("page_url") or "").strip()
 
     # Rate limiting: 15 seconds cooldown per IP / user
