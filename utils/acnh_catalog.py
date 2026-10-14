@@ -226,12 +226,12 @@ SPECIES_EMOJI: Dict[str, str] = {
 }
 
 POPULAR_DROP_PRESETS: List[Tuple[str, str, str, str]] = [
-    ("Royal Crown x40", "12M Bells max inventory drop", "Royal Crown 40", "👑"),
+    ("Royal Crown x40", "12M Bells max inventory drop", ", ".join(["Royal Crown"] * 40), "👑"),
     ("Gold Nuggets x30", "Full stack of 30 gold crafting nuggets", "Gold nugget 30", "🪙"),
     ("Nook Miles Tickets x30", "Full stack of 30 travel tickets", "Nook Miles Ticket 30", "🎫"),
-    ("Max Bells (3.96M)", "40 bags of 99,000 Bells", "99,000 Bells 40", "💰"),
+    ("Max Bells (3.96M)", "40 bags of 99,000 Bells", ", ".join(["1E33"] * 40), "💰"),
     ("Fish Bait x30", "Full stack of 30 fishing bait", "Fish bait 30", "🐟"),
-    ("Golden Tools Set", "All 6 tools (Axe, Shovel, Net, Rod, Can, Slingshot)", "Golden axe 1, Golden shovel 1, Golden net 1, Golden rod 1, Golden watering can 1, Golden slingshot 1", "🛠️"),
+    ("Golden Tools Set", "All 6 tools (Axe, Shovel, Net, Rod, Can, Slingshot)", "Golden axe, Golden shovel, Golden net, Golden rod, Golden watering can, Golden slingshot", "🛠️"),
     ("Wood Stacks (30 each)", "Normal Wood, Hardwood, Softwood (90 total)", "Wood 30, Hardwood 30, Softwood 30", "🪵"),
     ("Iron Nuggets x30", "Full stack of 30 iron nuggets", "Iron nugget 30", "🪨"),
     ("Clay x30", "Full stack of 30 crafting clay", "Clay 30", "🧱"),

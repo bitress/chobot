@@ -1985,37 +1985,28 @@ class DiscordCommandCog(commands.Cog):
 
 
     def _read_free_dodo_files(self) -> list[dict]:
-        """Fallback reader for free-island Dodo files when the API is unavailable."""
-        base_dir = Config.DIR_FREE
-        if not base_dir or not os.path.exists(base_dir):
+        """Fetch free-island Dodo data from SysBot telemetry instead of disk files."""
+        try:
+            from utils.sysbot_telemetry import get_all_cached_telemetry
+            items = []
+            known_free = {clean_text(name) for name in Config.FREE_ISLANDS}
+            for isl_name, telem in get_all_cached_telemetry(mask_sub_dodo=False).items():
+                uname = isl_name.upper()
+                if clean_text(uname) in known_free or clean_text(uname) in self.free_island_lookup:
+                    raw_dodo = telem.get("raw_dodo")
+                    is_valid = telem.get("is_dodo_valid")
+                    is_refreshing = telem.get("is_refreshing_dodo")
+                    status = "ONLINE" if is_valid else ("REFRESHING" if is_refreshing else ("ONLINE" if raw_dodo else "OFFLINE"))
+                    items.append({
+                        "name": uname,
+                        "dodo_code": raw_dodo if is_valid else None,
+                        "visitors": telem.get("visitors_count", 0),
+                        "status": status,
+                        "type": "Free",
+                    })
+            return sorted(items, key=lambda item: str(item.get("name", "")))
+        except Exception:
             return []
-
-        items = []
-        with os.scandir(base_dir) as entries:
-            for entry in entries:
-                if not entry.is_dir():
-                    continue
-
-                raw_dodo = self._read_first_line(os.path.join(entry.path, "Dodo.txt"))
-                raw_visitors = self._read_first_line(os.path.join(entry.path, "Visitors.txt"))
-                dodo_code = None
-                status = "OFFLINE"
-
-                if raw_dodo in ("00000", "-----", ""):
-                    status = "REFRESHING"
-                elif raw_dodo and DODO_CODE_PATTERN.fullmatch(raw_dodo.strip().upper()):
-                    dodo_code = raw_dodo.strip().upper()
-                    status = "ONLINE"
-
-                items.append({
-                    "name": entry.name.upper(),
-                    "dodo_code": dodo_code,
-                    "visitors": self._parse_visitor_count(raw_visitors),
-                    "status": status,
-                    "type": "Free",
-                })
-
-        return sorted(items, key=lambda item: str(item.get("name", "")))
 
     async def _fetch_free_dodo_board_data(self) -> tuple[list[dict], datetime | None]:
         """Return free-island data for the Dodo board."""
@@ -5130,24 +5121,23 @@ class DiscordCommandCog(commands.Cog):
             return bool(DODO_CODE_PATTERN.fullmatch(u))
 
         def _get_local_dodo():
-            candidates = [
-                Config.DIR_ORDER,
-                r"C:\Users\ChoPaeng\Documents\ACNH\Orders\Orders\SysBot-ACNH-Orders\Order Bot\SysBot-ACNH-Orders",
-                r"C:\Users\ChoPaeng\Documents\ACNH\Orders\Orders\SysBot-ACNH-Orders\Orders New ACNH General discord\sysbotacnhorders",
-            ]
-            for c_dir in candidates:
-                if c_dir and os.path.exists(c_dir):
-                    dodo_file = os.path.join(c_dir, "Dodo.txt")
-                    if os.path.exists(dodo_file):
-                        try:
-                            with open(dodo_file, "r", encoding="utf-8") as f:
-                                content = f.read().strip()
-                            if content and content not in ["00000", "-----", "GETTIN'"]:
-                                m = DODO_CODE_PATTERN.search(content)
-                                if m and _is_valid_dodo_code(m.group(0)):
-                                    return m.group(0).upper()
-                        except Exception:
-                            pass
+            try:
+                from utils.sysbot_telemetry import get_cached_island_telemetry
+                order_isl = getattr(Config, "ORDER_BOT_ISLAND", "Sinta") or "Sinta"
+                telem = get_cached_island_telemetry(order_isl, mask_sub_dodo=False)
+                if telem and telem.get("raw_dodo"):
+                    m = DODO_CODE_PATTERN.search(telem["raw_dodo"])
+                    if m and _is_valid_dodo_code(m.group(0)):
+                        return m.group(0).upper()
+                from utils.sysbot_api import get_island_sysbot_client
+                cl = get_island_sysbot_client(order_isl, timeout=2)
+                st = cl.get_bot_status_sync()
+                if st.get("dodo_code"):
+                    m = DODO_CODE_PATTERN.search(st["dodo_code"])
+                    if m and _is_valid_dodo_code(m.group(0)):
+                        return m.group(0).upper()
+            except Exception:
+                pass
             return None
 
         dodo_found = _get_local_dodo()

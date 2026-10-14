@@ -395,15 +395,10 @@ class DataManager:
         if self.refresh_thread.is_alive():
             self.refresh_thread.join(timeout=timeout)
 
-    def get_villagers(self, villagers_dirs):
-        """Scan villager text files from provided directories (cached for 5 min)"""
-        paths_to_scan = tuple(sorted(p for p in villagers_dirs if p and os.path.exists(p)))
-
-        if not paths_to_scan:
-            return {}
-
-        # Return cached data if still fresh.
-        # Use _villager_cache_time as sentinel so an empty-result scan is also cached.
+    def get_villagers(self, villagers_dirs=None):
+        """Fetch villager mapping directly from SysBot HTTP API (cached in memory).
+        Does NOT read Villagers.txt from disk to avoid file lock contention with SysBot.
+        """
         now = time.time()
         if (
             self._villager_cache_time is not None
@@ -412,60 +407,52 @@ class DataManager:
             return self._villager_cache
 
         data = {}
-
         try:
-            for base_dir in paths_to_scan:
-                for root, dirs, files in os.walk(base_dir):
-                    if "Villagers.txt" in files:
-                        location_name = os.path.basename(root)
-                        file_path = os.path.join(root, "Villagers.txt")
+            from concurrent.futures import ThreadPoolExecutor
+            from utils.config import Config
+            from utils.sysbot_api import get_island_sysbot_client
 
-                        raw_content = None
-                        for attempt in range(3):
-                            try:
-                                with open(file_path, 'rb') as f:
-                                    raw_content = f.read().decode('utf-8', errors='ignore')
-                                break
-                            except OSError as os_err:
-                                if attempt < 2:
-                                    time.sleep(0.05)
-                                else:
-                                    logger.error(f"Error reading villagers file at {location_name}: {os_err}")
-                            except Exception as file_err:
-                                logger.error(f"Error reading villagers file at {location_name}: {file_err}")
-                                break
+            islands = getattr(Config, "ALL_ISLAND_PORT_ORDER", []) or []
+            if not islands:
+                islands = getattr(Config, "SUB_ISLANDS", []) or [
+                    "Hiraya", "Tagumpay", "Bahaghari", "Alapaap", "Bituin",
+                    "Lakan", "Galak", "Aruga", "Likha", "Dalisay",
+                    "Marahuyo", "Diwa", "Bonita", "Gabay", "Dakila",
+                    "Kalangitan", "Malaya", "Pangarap", "Giliw", "Adhika"
+                ]
 
-                        if raw_content is None:
-                            logger.warning(f"Could not read Villagers.txt at {location_name}; skipping.")
+            def _fetch_island(isl_name):
+                try:
+                    client = get_island_sysbot_client(isl_name, timeout=2)
+                    resp = client.get_villagers_sync()
+                    if isinstance(resp, dict):
+                        raw = resp.get("villagers") or resp.get("data") or []
+                        if isinstance(raw, list):
+                            return isl_name, [str(v).strip() for v in raw if str(v).strip()]
+                except Exception:
+                    pass
+                return isl_name, []
+
+            with ThreadPoolExecutor(max_workers=min(16, max(len(islands), 1))) as executor:
+                for isl_name, v_list in executor.map(_fetch_island, islands):
+                    loc_clean = isl_name.strip().title()
+                    for v_name in v_list:
+                        clean_name = v_name.strip()
+                        if not clean_name or len(clean_name) > 30:
                             continue
-
-                        # Clean content
-                        raw_content = re.sub(r'Villagers\s+on\s+[^:]+:', '', raw_content, flags=re.IGNORECASE)
-                        names_list = re.split(r'[,\n\r]+', raw_content)
-
-                        for name in names_list:
-                            clean_name = name.strip()
-
-                            if not clean_name or len(clean_name) > 30:
-                                continue
-
-                            # Handle special cases
-                            if clean_name in ["Ren?E", "Ren?e"]:
-                                clean_name = "Renée"
-
-                            key = clean_name.lower()
-
-                            if key in data:
-                                current_locs = data[key].split(", ")
-                                if location_name not in current_locs:
-                                    data[key] += f", {location_name}"
-                            else:
-                                data[key] = location_name
+                        if clean_name in ["Ren?E", "Ren?e"]:
+                            clean_name = "Renée"
+                        key = clean_name.lower()
+                        if key in data:
+                            current_locs = [x.strip() for x in data[key].split(",")]
+                            if loc_clean not in current_locs:
+                                data[key] += f", {loc_clean}"
+                        else:
+                            data[key] = loc_clean
 
             self._villager_cache = data
             self._villager_cache_time = now
             return data
-
         except Exception as e:
-            logger.error(f"Villager scan failed: {e}")
+            logger.error(f"SysBot villager fetch failed: {e}")
             return self._villager_cache or {}

@@ -120,6 +120,71 @@ def parse_order_input(raw_input: str) -> Tuple[str, Optional[str]]:
     return cleaned, villager
 
 
+def sanitize_single_drop_item(token: str) -> List[str]:
+    """Sanitize a single item token for SysBot/NHSE.
+    Ensures non-stackable items (stack_size <= 1) or items with quantity 1
+    do not have a trailing quantity appended (e.g. 'tea set 1' -> 'tea set'),
+    which causes NHSE ItemParser to crash with 'Failed to convert item for Language en'.
+    For non-stackable items with qty > 1, expands them to repeated items (e.g. ['tea set', 'tea set']).
+    """
+    token = token.strip()
+    if not token:
+        return []
+    # If it is a hex code or raw code (4 to 16 hex digits)
+    if re.fullmatch(r"(?:0x)?[0-9a-fA-F]{4,16}", token):
+        return [token]
+
+    try:
+        from utils.acnh_catalog import ACNHCatalog
+        cat = ACNHCatalog.get_instance()
+    except Exception:
+        cat = None
+
+    if cat:
+        # Check if entire token is an exact item name (e.g. 'Marine Song 2001', 'Nintendo Switch 2')
+        exact_it = cat.get_item(token)
+        if exact_it and exact_it.name.lower() == token.lower():
+            return [exact_it.name]
+
+        # Match trailing count, e.g. 'tea set 1', 'Gold nugget 30', 'Royal crown x2'
+        m = re.match(r"^(.*?)(?:\s+[xX×*]?\s*(\d+))$", token)
+        if m:
+            base_name = m.group(1).strip()
+            qty = int(m.group(2))
+            base_it = cat.get_item(base_name)
+            if base_it:
+                stack_size = int(getattr(base_it, "stack_size", 1) or 1)
+                item_name = base_name if base_name.lower() == base_it.name.lower() else base_it.name
+                if stack_size > 1 and qty > 1:
+                    return [f"{item_name} {qty}"]
+                elif qty > 1:
+                    return [item_name] * qty
+                else:
+                    return [item_name]
+            else:
+                # Item not in catalog, but ends in 1: strip 1 as NHSE does not use ' 1'
+                if qty == 1:
+                    return [base_name]
+
+    return [token]
+
+
+def sanitize_drop_items(items: Union[str, List[str]]) -> Union[str, List[str]]:
+    """Sanitize drop items list or string to be compatible with SysBot/NHSE parser."""
+    if isinstance(items, list):
+        res: List[str] = []
+        for it in items:
+            res.extend(sanitize_single_drop_item(str(it)))
+        return res
+    elif isinstance(items, str):
+        parts = [p.strip() for p in re.split(r"[,;\n\r]+", items) if p.strip()]
+        res = []
+        for p in parts:
+            res.extend(sanitize_single_drop_item(p))
+        return ", ".join(res)
+    return items
+
+
 class SysBotClient:
     """HTTP Client for communicating with SysBot.ACNHOrders REST API and external bundles."""
 
@@ -227,9 +292,15 @@ class SysBotClient:
             else:
                 self._offline_until = 0.0
             try:
-                return resp.json(), resp.status_code
+                data = resp.json()
+                if isinstance(data, dict):
+                    return data, resp.status_code
+                return {"success": resp.status_code < 400, "data": data}, resp.status_code
             except Exception:
-                return {"success": False, "error": f"HTTP {resp.status_code}: non-JSON response"}, resp.status_code
+                err_text = resp.text.strip() if resp.text else f"HTTP {resp.status_code}: non-JSON response"
+                clean_err = re.sub(r"^HttpAPI:\s*(?:Error in API handler:\s*)?", "", err_text, flags=re.IGNORECASE).strip()
+                first_line = clean_err.split("\n")[0].strip() if clean_err else f"HTTP {resp.status_code}"
+                return {"success": False, "error": first_line}, resp.status_code
         except (requests.exceptions.ConnectionError, urllib3.exceptions.HTTPError, OSError):
             self._offline_until = time.monotonic() + self._offline_cooldown
             return {"success": False, "error": "SysBot API is unreachable or offline."}, 503
@@ -789,10 +860,11 @@ class SysBotClient:
     ) -> dict:
         """Request items or DIY recipes to be dropped on the ground via SysBot POST /api/drop."""
         payload: Dict[str, Any] = {"type": drop_type, "username": username}
-        if isinstance(items, list):
-            payload["items"] = items
+        cleaned_items = sanitize_drop_items(items)
+        if isinstance(cleaned_items, list):
+            payload["items"] = cleaned_items
         else:
-            payload["items"] = str(items)
+            payload["items"] = str(cleaned_items)
 
         if count is not None:
             payload["count"] = int(count)

@@ -508,8 +508,47 @@ def parse_drop_items(raw: str) -> tuple[list[tuple[str, int]] | None, str | None
     return parsed, None
 
 
+def _format_item_for_sysbot(item_name: str, qty: int) -> str:
+    """Format an item for SysBot/NHSE.
+    Non-stackable items (stack_size <= 1) or qty == 1 must NOT have a quantity appended,
+    otherwise NHSE fails with 'Failed to convert item (index 0: <name> 1) for Language en'.
+    If qty > 1 for a non-stackable item, repeat the item comma-separated.
+    """
+    clean = item_name.strip()
+    try:
+        from utils.sysbot_api import sanitize_single_drop_item
+        if qty <= 1:
+            sanitized = sanitize_single_drop_item(clean)
+            return ", ".join(sanitized) if sanitized else clean
+    except Exception:
+        pass
+
+    try:
+        from utils.acnh_catalog import ACNHCatalog
+        cat = ACNHCatalog.get_instance()
+        it_obj = cat.get_item(clean)
+        if not it_obj:
+            m = re.match(r"^(.*?)(?:\s+[xX×*]?\s*(\d+))$", clean)
+            if m:
+                base_name = m.group(1).strip()
+                base_it = cat.get_item(base_name)
+                if base_it:
+                    it_obj = base_it
+                    clean = base_it.name
+        stack_size = int(getattr(it_obj, "stack_size", 1) or 1) if it_obj else 1
+    except Exception:
+        stack_size = 1
+
+    if stack_size > 1 and qty > 1:
+        return f"{clean} {qty}"
+    elif qty > 1:
+        return ", ".join([clean] * qty)
+    else:
+        return clean
+
+
 def _normalize_items(entries: list[tuple[str, int]]) -> str:
-    return ", ".join(f"{item} {qty}" for item, qty in entries)
+    return ", ".join(_format_item_for_sysbot(item, qty) for item, qty in entries)
 
 
 # ─── Villager matching ─────────────────────────────────────────────────────────
@@ -955,13 +994,13 @@ async def _dodo_from_snapshot(island: str, client) -> Any:
 
 
 def _read_dodo_file(island: str) -> str | None:
-    for base_dir in (getattr(Config, "DIR_VIP", ""), getattr(Config, "DIR_FREE", "")):
-        if not base_dir or not os.path.exists(base_dir):
-            continue
-        path = os.path.join(base_dir, island, "Dodo.txt")
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read().strip()
+    try:
+        from utils.sysbot_telemetry import get_cached_island_telemetry
+        telem = get_cached_island_telemetry(island, mask_sub_dodo=False)
+        if telem and telem.get("raw_dodo"):
+            return telem["raw_dodo"]
+    except Exception:
+        pass
     return None
 
 
@@ -1004,13 +1043,12 @@ def _bullets(names: list[str], cap: int = 10) -> str:
 def _build_panel_embed(island_name: str, status_data: dict | None = None) -> discord.Embed:
     url = _island_url(island_name)
     embed = discord.Embed(
-        title=f"🏝️ {island_name} — Island Control Panel",
+        title=f"🏝️ {island_name}",
         url=url,
         description=(
-            "Welcome to your island's interactive control panel!\n"
+            f"Welcome to **{island_name}** interactive panel!\n"
             "Use the buttons below to interact with this island's SysBot. "
             "New here? Press **Guide**.\n\n"
-            "_Only people with access to this channel can use the controls._"
         ),
         color=PANEL_EMBED_COLOR,
         timestamp=datetime.now(timezone.utc),
@@ -1215,17 +1253,46 @@ async def _perform_drop(
     try:
         client = get_island_sysbot_client(island)
         result = await client.submit_drop(items=items_text, username=getattr(user, "display_name", user.name))
-    except Exception:
-        logger.exception("[DropBot] Drop failed island=%s user=%s", island, user.id)
-        await asyncio.to_thread(_log_drop, island, user.id, items_text, False, "bot did not respond")
-        return _err_embed("The island bot didn't respond. Check that it's online and try again."), False
+    except Exception as exc:
+        err_msg = str(exc) or "bot did not respond"
+        logger.exception("[DropBot] Drop failed island=%s user=%s: %s", island, user.id, err_msg)
+        await asyncio.to_thread(_log_drop, island, user.id, items_text, False, err_msg)
+
+        embed = discord.Embed(
+            title="⚠️ Drop Failed — Bot Offline",
+            description=f"The island bot for **[{island}]({_island_url(island)})** didn't respond.",
+            color=PANEL_EMBED_COLOR_ERR,
+        )
+        embed.add_field(name="Reason", value=f"```{err_msg[:300]}```", inline=False)
+        embed.add_field(name="Attempted Items", value=f"```{contents[:300]}```", inline=False)
+        embed.add_field(name="Status", value="Please make sure the island bot is running and connected.", inline=False)
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        return embed, False
 
     if _is_failure(result):
         err = (result or {}).get("error") if isinstance(result, dict) else None
         err = err or "unknown error"
         logger.warning("[DropBot] Drop rejected island=%s user=%s: %s", island, user.id, err)
         await asyncio.to_thread(_log_drop, island, user.id, items_text, False, str(err))
-        return _err_embed(f"The drop was rejected: **{err}**\nMake sure the island bot is online."), False
+
+        embed = discord.Embed(
+            title="⚠️ Drop Request Rejected",
+            description=f"Your drop request on **[{island}]({_island_url(island)})** was not accepted by the bot.",
+            color=PANEL_EMBED_COLOR_ERR,
+        )
+        embed.add_field(name="Error Details", value=f"```{str(err)[:300]}```", inline=False)
+        embed.add_field(name="Items", value=f"```{contents[:300]}```", inline=False)
+        embed.add_field(
+            name="💡 Troubleshooting",
+            value=(
+                "• Ensure item names match the in-game English name.\n"
+                "• For non-stackable items (furniture, tools, clothes), do not add a count.\n"
+                "• Check that the island drop area is not full."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        return embed, False
 
     await asyncio.to_thread(_log_drop, island, user.id, items_text, True, str(result.get("message") or "queued"))
 
@@ -1948,7 +2015,7 @@ class CatalogSearchView(discord.ui.View):
         try:
             await interaction.response.defer()   # silent ack; we edit the search message below
             entries = list(self.cart.values())
-            drop_text = ", ".join(f"{e.item.name} {e.qty}" for e in entries)
+            drop_text = ", ".join(_format_item_for_sysbot(e.item.name, e.qty) for e in entries)
             summary = ", ".join(f"{e.item.display_name} ×{e.qty}" for e in entries)
             embed, ok = await _perform_drop(
                 interaction.user,
@@ -3094,7 +3161,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
                 quantity = 1
 
         quantity = max(1, min(quantity, MAX_STACK))
-        drop_str = f"{clean_item} {quantity}"
+        drop_str = _format_item_for_sysbot(clean_item, quantity)
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         embed, _ = await _perform_drop(

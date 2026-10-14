@@ -329,41 +329,9 @@ def _get_item_cache() -> tuple[dict, datetime | None, float | None, str]:
     return cache, last_update, None, "disk_cache"
 
 
-def _scan_villager_dirs(villager_dirs) -> dict:
-    data = {}
-    paths_to_scan = tuple(sorted(p for p in villager_dirs if p and os.path.exists(p)))
-    if not paths_to_scan:
-        return data
-
-    for base_dir in paths_to_scan:
-        for root, _dirs, files in os.walk(base_dir):
-            if "Villagers.txt" not in files:
-                continue
-
-            location_name = os.path.basename(root)
-            file_path = os.path.join(root, "Villagers.txt")
-            try:
-                with open(file_path, "rb") as fh:
-                    raw_content = fh.read().decode("utf-8", errors="ignore")
-            except Exception as exc:
-                logger.warning("Could not read Villagers.txt at %s: %s", location_name, exc)
-                continue
-
-            raw_content = re.sub(r"Villagers\s+on\s+[^:]+:", "", raw_content, flags=re.IGNORECASE)
-            for name in re.split(r"[,\n\r]+", raw_content):
-                clean_name = name.strip()
-                if not clean_name or len(clean_name) > 30:
-                    continue
-                if clean_name in ["Ren?E", "Ren?e"]:
-                    clean_name = "Renee"
-                key = normalize_text(clean_name)
-                if key in data:
-                    current_locs = data[key].split(", ")
-                    if location_name not in current_locs:
-                        data[key] += f", {location_name}"
-                else:
-                    data[key] = location_name
-    return data
+def _scan_villager_dirs(villager_dirs=None) -> dict:
+    """Return empty dict; disk Villagers.txt scanning is disabled to prevent file lock contention with SysBot."""
+    return {}
 
 
 _SYSBOT_VILLAGERS_CACHE: dict[str, list[str]] = {}
@@ -428,30 +396,13 @@ def _get_sysbot_villagers_manifest(force_refresh: bool = False) -> tuple[dict[st
             except Exception:
                 pass
 
-    # Filesystem fallback scan for any island where SysBot is offline
-    disk_manifest: dict[str, list[str]] = {}
-    try:
-        raw_disk_map, _ = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR, Config.ORDER_BOT_DIR], skip_sysbot_merge=True)
-        for villager_name, locs in (raw_disk_map or {}).items():
-            for loc in locs.split(", "):
-                loc_clean = loc.strip().title()
-                if loc_clean not in disk_manifest:
-                    disk_manifest[loc_clean] = []
-                disk_manifest[loc_clean].append(villager_name.title())
-    except Exception:
-        pass
-
     final_manifest: dict[str, list[str]] = {}
     for isl in islands:
         isl_title = isl.strip().title()
         if isl in manifest and manifest[isl]:
             final_manifest[isl_title] = sorted(manifest[isl])
-        elif isl_title in disk_manifest and disk_manifest[isl_title]:
-            final_manifest[isl_title] = sorted(disk_manifest[isl_title])
-
-    for loc, v_list in disk_manifest.items():
-        if loc not in final_manifest and v_list:
-            final_manifest[loc] = sorted(v_list)
+        else:
+            final_manifest[isl_title] = []
 
     with _SYSBOT_VILLAGERS_LOCK:
         _SYSBOT_VILLAGERS_CACHE = final_manifest
@@ -460,46 +411,23 @@ def _get_sysbot_villagers_manifest(force_refresh: bool = False) -> tuple[dict[st
     return final_manifest.copy(), "sysbot_api"
 
 
-def _get_villager_map(villager_dirs, skip_sysbot_merge: bool = False) -> tuple[dict, str]:
-    global _fallback_villager_cache, _fallback_villager_cache_time
+def _get_villager_map(villager_dirs=None, skip_sysbot_merge: bool = False) -> tuple[dict, str]:
     if data_manager is not None:
-        disk_map = data_manager.get_villagers(villager_dirs)
-        source = "data_manager"
-    else:
-        now = time.time()
-        cache_key = tuple(sorted(p for p in villager_dirs if p))
-        with _fallback_villager_cache_lock:
-            cached = _fallback_villager_cache.get(cache_key)
-            if cached is not None and _fallback_villager_cache_time and now - _fallback_villager_cache_time < _FALLBACK_VILLAGER_CACHE_TTL:
-                disk_map = cached
-                source = "disk_scan"
+        return data_manager.get_villagers(), "data_manager"
+
+    manifest, _ = _get_sysbot_villagers_manifest()
+    merged = {}
+    for isl_name, v_list in manifest.items():
+        for v_name in v_list:
+            key = normalize_text(v_name)
+            if key in merged:
+                current_locs = [x.strip() for x in merged[key].split(",")]
+                if isl_name not in current_locs:
+                    merged[key] += f", {isl_name}"
             else:
-                disk_map = _scan_villager_dirs(villager_dirs)
-                _fallback_villager_cache[cache_key] = disk_map
-                _fallback_villager_cache_time = now
-                source = "disk_scan"
+                merged[key] = isl_name
 
-    if skip_sysbot_merge:
-        return disk_map, source
-
-    # Seamlessly merge villagers from live SysBot API
-    merged = dict(disk_map or {})
-    try:
-        manifest, _ = _get_sysbot_villagers_manifest()
-        for isl_name, v_list in manifest.items():
-            for v_name in v_list:
-                key = normalize_text(v_name)
-                if key in merged:
-                    current_locs = [x.strip() for x in merged[key].split(",")]
-                    if isl_name not in current_locs:
-                        merged[key] += f", {isl_name}"
-                else:
-                    merged[key] = isl_name
-        source = "sysbot_api"
-    except Exception:
-        pass
-
-    return merged, source
+    return merged, "sysbot_api"
 
 # ---------------------------------------------------------------------------
 # Auth â€” short-lived opaque tokens for Discord OAuth (website subscribers)
@@ -1103,12 +1031,28 @@ _FILE_CACHE_TTL = 3  # seconds
 
 
 def get_file_content(folder_path, filename):
-    """Read file content safely with caching and retry to reduce file-lock contention.
-
-    The C# SysBot writes to these files with exclusive access (FileShare.None).
-    Caching minimises how often the file is opened, and the retry handles the
-    brief window where C# holds an exclusive write lock.
+    """Fetch content from SysBot telemetry / API rather than reading disk files.
+    Dodo.txt, Visitors.txt, and Villagers.txt are resolved from SysBot to avoid
+    FileShare.None lock collisions.
     """
+    if filename in ("Dodo.txt", "Visitors.txt", "Villagers.txt"):
+        if filename == "Villagers.txt":
+            return None
+        isl_name = os.path.basename(str(folder_path or "").rstrip(r"\/"))
+        try:
+            from utils.sysbot_telemetry import get_cached_island_telemetry
+            telem = get_cached_island_telemetry(isl_name, mask_sub_dodo=False)
+            if telem and telem.get("is_online"):
+                if filename == "Dodo.txt":
+                    return telem.get("raw_dodo")
+                elif filename == "Visitors.txt":
+                    v_cnt = telem.get("visitors_count", 0)
+                    v_list = telem.get("visitor_list") or []
+                    return f"{v_cnt}\n" + "\n".join(v_list) if v_list else str(v_cnt)
+        except Exception:
+            pass
+        return None
+
     path = os.path.join(folder_path, filename)
 
     now = time.monotonic()
@@ -1144,11 +1088,18 @@ def get_file_content(folder_path, filename):
 
 
 def process_island(entry, island_type):
-    """Process island data for Dodo API"""
-    name = entry.name.upper()
+    """Process island data for Dodo API from SysBot telemetry"""
+    name = entry.name.upper() if hasattr(entry, "name") else str(entry).upper()
 
-    raw_dodo = get_file_content(entry.path, "Dodo.txt")
-    raw_visitors = _parse_visitor_value(get_file_content(entry.path, "Visitors.txt"))
+    live_telem = None
+    try:
+        from utils.sysbot_telemetry import get_cached_island_telemetry
+        live_telem = get_cached_island_telemetry(name, mask_sub_dodo=False)
+    except Exception:
+        pass
+
+    raw_dodo = live_telem.get("raw_dodo") if live_telem and live_telem.get("is_online") else None
+    raw_visitors = str(live_telem.get("visitors_count", 0)) if live_telem and live_telem.get("is_online") else "0"
 
     status = "ONLINE"
     display_dodo = raw_dodo
@@ -1242,24 +1193,15 @@ def _build_island_response(
         visitors = live_telemetry.get("visitors_count", 0)
         visitor_list = live_telemetry.get("visitor_list", [])
         raw_dodo = live_telemetry.get("raw_dodo")
+        dodo_code = raw_dodo if is_valid else ("GETTIN'" if is_refreshing else None)
         sysbot_online = True
     else:
-        # Fallback to filesystem if available
-        raw_dodo = get_file_content(path, "Dodo.txt") if path and os.path.exists(path) else None
-        visitors, visitor_list = _parse_visitor_list(get_file_content(path, "Visitors.txt")) if path and os.path.exists(path) else (0, [])
-
-        if raw_dodo is None:
-            status = "OFFLINE"
-            dodo_code = None
-            sysbot_online = False
-        elif (raw_dodo or "").strip().upper() in ["00000", "-----", "", "GETTIN'"]:
-            status = "REFRESHING"
-            dodo_code = "GETTIN'" if (raw_dodo or "").strip().upper() == "GETTIN'" else None
-            sysbot_online = True
-        else:
-            status = "ONLINE"
-            dodo_code = raw_dodo
-            sysbot_online = True
+        status = "OFFLINE"
+        dodo_code = None
+        visitors = 0
+        visitor_list = []
+        raw_dodo = None
+        sysbot_online = False
 
     # Access gating:
     #   Free islands  (public) → everyone sees the dodo code
@@ -2094,19 +2036,6 @@ def reveal_dodo(name):
         except Exception:
             pass
 
-    if not dodo_code:
-        for base_dir in [Config.DIR_FREE, Config.DIR_VIP]:
-            if not base_dir or not os.path.exists(base_dir):
-                continue
-            for candidate in [target, name]:
-                path = os.path.join(base_dir, candidate)
-                if os.path.isdir(path):
-                    raw = get_file_content(path, "Dodo.txt")
-                    if raw and raw not in ["00000", "-----", "", "GETTIN'"]:
-                        dodo_code = raw
-                    break
-            if dodo_code:
-                break
 
     if not dodo_code:
         _log_dodo_reveal_attempt(user, target, "failed", "dodo_unavailable", channel_id=channel_id)
@@ -2896,41 +2825,17 @@ def get_island_visitors(name):
             "timestamp": datetime.now().isoformat(),
         })
 
-    # Filesystem fallback: check Free, VIP, and Order directories
-    for base_dir, d_type in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP"), (Config.DIR_ORDER, "Order")]:
-        if not base_dir or not os.path.exists(base_dir):
-            continue
-        direct_files = [os.path.join(base_dir, "Visitors.txt")]
-        if any(os.path.exists(p) for p in direct_files) and clean_text(os.path.basename(base_dir)) == clean_text(target):
-            visitor_count, visitor_list = _parse_visitor_list(get_file_content(base_dir, "Visitors.txt"))
-            return jsonify({
-                "island": target,
-                "type": d_type,
-                "visitor_count": visitor_count,
-                "visitor_list": visitor_list,
-                "bot_online": False,
-                "discord_bot_online": False,
-                "source": "disk_fallback",
-                "timestamp": datetime.now().isoformat(),
-            })
-        try:
-            with os.scandir(base_dir) as entries:
-                for entry in entries:
-                    if entry.is_dir() and entry.name.upper() == target:
-                        raw_content = get_file_content(entry.path, "Visitors.txt")
-                        visitor_count, visitor_list = _parse_visitor_list(raw_content)
-                        return jsonify({
-                            "island": target,
-                            "type": d_type,
-                            "visitor_count": visitor_count,
-                            "visitor_list": visitor_list,
-                            "bot_online": False,
-                            "discord_bot_online": False,
-                            "source": "disk_fallback",
-                            "timestamp": datetime.now().isoformat(),
-                        })
-        except Exception:
-            pass
+    # If SysBot is offline, return offline state without touching filesystem
+    return jsonify({
+        "island": target,
+        "type": island_type,
+        "visitor_count": 0,
+        "visitor_list": [],
+        "bot_online": False,
+        "discord_bot_online": False,
+        "source": "sysbot_api",
+        "timestamp": datetime.now().isoformat(),
+    })
 
     # Check if target is among known 48 islands even if offline and no folder exists
     all_known = [s.strip().upper() for s in getattr(Config, "ALL_ISLAND_PORT_ORDER", [])]
@@ -3094,11 +2999,35 @@ def api_island_drop(name):
     succ_text = resp.get("message") or f"Drop request sent to {clean_name}!"
     status_code = 200 if is_success else (502 if any(w in str(err_text).lower() for w in ("unreachable", "offline", "timed out")) else 400)
 
+    # Persist drop history to island_drops_log
+    try:
+        with connect_db() as conn:
+            conn.execute(
+                """
+                INSERT INTO island_drops_log (island_name, items, requested_by_user_id, status, response_message)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (clean_name, str(items)[:500], str(user.get("user_id") or "web"), "queued" if is_success else "failed", (succ_text if is_success else err_text)[:500]),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.debug("Failed to write island_drops_log: %s", exc)
+
+    if not is_success:
+        _record_api_audit_event("island_drop_failed", clean_name.upper(), {
+            "user_id": user.get("user_id"),
+            "username": username,
+            "items": str(items)[:200],
+            "error": str(err_text)[:300],
+        })
+
     return jsonify({
         "success": is_success,
+        "alert": not is_success,
         "island": clean_name,
-        "message": succ_text if is_success else err_text,
+        "message": succ_text if is_success else f"Drop failed: {err_text}",
         "error": None if is_success else err_text,
+        "alert_title": None if is_success else "Drop Request Rejected",
         "sysbot_response": resp,
     }), status_code
 
@@ -4424,6 +4353,15 @@ def order_drop():
         drop_type = body.get("type") or "items"
         count = body.get("count")
         result = client.submit_drop_sync(items=items, drop_type=drop_type, username=username, count=count)
+        if not result.get("success"):
+            _record_api_audit_event("island_drop_failed", clean_name.upper(), {
+                "user_id": auth_user.get("user_id"),
+                "username": username,
+                "items": str(items)[:200],
+                "error": str(result.get("error") or "Drop failed")[:300],
+            })
+            result["alert"] = True
+            result["alert_title"] = "Drop Request Rejected"
         return jsonify(result), (200 if result.get("success") else 500 if "error" in result else 200)
 
     username = (
@@ -4438,7 +4376,38 @@ def order_drop():
     if body.get("count"):
         payload["count"] = body["count"]
     result, code = _sysbot_post("/api/drop", payload)
+    if not result.get("success"):
+        result["alert"] = True
+        result["alert_title"] = "Drop Request Rejected"
     return jsonify(result), code
+
+
+@app.route("/api/islands/<name>/drops/logs", methods=["GET"])
+@app.route("/api/drops/logs", methods=["GET"])
+def api_island_drops_logs(name=None):
+    """Fetch recent drop logs and failure alerts."""
+    limit = min(int(request.args.get("limit", 50)), 100)
+    status_filter = request.args.get("status")
+    try:
+        with connect_db() as conn:
+            query = "SELECT id, island_name, items, requested_by_user_id, status, response_message, created_at FROM island_drops_log"
+            params = []
+            clauses = []
+            if name:
+                clauses.append("LOWER(island_name) = LOWER(?)")
+                params.append(name.strip())
+            if status_filter:
+                clauses.append("LOWER(status) = LOWER(?)")
+                params.append(status_filter.strip())
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+            query += " ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(query, params).fetchall()
+            logs = [dict(r) for r in rows]
+            return jsonify({"success": True, "logs": logs, "count": len(logs)})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 # ── Presets ──────────────────────────────────────────────────────────────────

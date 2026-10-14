@@ -831,6 +831,23 @@ def _inject_user():
 # Filesystem helpers
 # ---------------------------------------------------------------------------
 def _read_file(folder_path, filename):
+    if filename in ("Dodo.txt", "Visitors.txt", "Villagers.txt"):
+        if filename == "Villagers.txt":
+            return None
+        isl_name = os.path.basename(str(folder_path or "").rstrip(r"\/"))
+        try:
+            from utils.sysbot_telemetry import get_cached_island_telemetry
+            telem = get_cached_island_telemetry(isl_name, mask_sub_dodo=False)
+            if telem and telem.get("is_online"):
+                if filename == "Dodo.txt":
+                    return telem.get("raw_dodo")
+                elif filename == "Visitors.txt":
+                    v_cnt = telem.get("visitors_count", 0)
+                    v_list = telem.get("visitor_list") or []
+                    return f"{v_cnt}\n" + "\n".join(v_list) if v_list else str(v_cnt)
+        except Exception:
+            pass
+        return None
     try:
         with open(os.path.join(folder_path, filename), "r", encoding="utf-8-sig") as fh:
             return fh.read().strip()
@@ -852,7 +869,7 @@ def _parse_visitor_value(raw):
     """
     if not raw:
         return raw
-    cleaned = re.sub(r'(?i)^\s*visitors\s*:\s*', '', raw).strip()
+    cleaned = re.sub(r'(?i)^\s*visitors\s*:\s*', '', str(raw)).strip()
     return cleaned if cleaned else None
 
 
@@ -904,44 +921,23 @@ def _parse_visitor_list(raw):
 
 
 def _collect_fs_islands():
-    """Return a dict keyed by uppercase island name with live filesystem data."""
+    """Return a dict keyed by uppercase island name with live SysBot telemetry."""
     result = {}
-
-    def _scan(directory, itype):
-        if not directory or not os.path.exists(directory):
-            return
-        if itype == "Order" and os.path.isdir(directory):
-            direct_files = [
-                os.path.join(directory, "Dodo.txt"),
-                os.path.join(directory, "Visitors.txt"),
-                os.path.join(directory, "Villagers.txt"),
-            ]
-            configured_name = getattr(Config, "ORDER_BOT_ISLAND", None) or os.path.basename(directory)
-            basename_matches = clean_text(os.path.basename(directory)) in {clean_text(configured_name), clean_text("SYSBOT-ACNH-ORDERS")}
-            if basename_matches or any(os.path.exists(path) for path in direct_files):
-                uname = configured_name.upper()
-                result[uname] = {
-                    "name":        uname,
-                    "fs_path":     directory,
-                    "fs_type":     itype,
-                    "fs_dodo":     _read_file(directory, "Dodo.txt"),
-                    "fs_visitors": _parse_visitor_value(_read_file(directory, "Visitors.txt")),
-                }
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                if entry.is_dir():
-                    uname = entry.name.upper()
-                    result[uname] = {
-                        "name":        uname,
-                        "fs_path":     entry.path,
-                        "fs_type":     itype,
-                        "fs_dodo":     _read_file(entry.path, "Dodo.txt"),
-                        "fs_visitors": _parse_visitor_value(_read_file(entry.path, "Visitors.txt")),
-                    }
-
-    _scan(Config.DIR_FREE, "Free")
-    _scan(Config.DIR_VIP,  "VIP")
-    _scan(getattr(Config, "DIR_ORDER", None), "Order")
+    try:
+        from utils.sysbot_telemetry import get_all_cached_telemetry
+        all_telem = get_all_cached_telemetry(mask_sub_dodo=False)
+        order_isl = (getattr(Config, "ORDER_BOT_ISLAND", "SINTA") or "SINTA").upper()
+        for isl_name, telem in all_telem.items():
+            uname = isl_name.upper()
+            result[uname] = {
+                "name":        uname,
+                "fs_path":     None,
+                "fs_type":     "Order" if uname == order_isl else "Live",
+                "fs_dodo":     telem.get("raw_dodo") if telem.get("is_online") else None,
+                "fs_visitors": telem.get("visitors_count", 0) if telem.get("is_online") else 0,
+            }
+    except Exception:
+        pass
     return result
 
 
