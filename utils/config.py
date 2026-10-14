@@ -242,11 +242,9 @@ class Config:
         if cls.SYSBOT_URL_TEMPLATE:
             return cls.SYSBOT_URL_TEMPLATE.format(island=cleaned.lower()).rstrip("/")
 
-        canonical_lower = {name.lower(): idx for idx, name in enumerate(cls.ALL_ISLAND_PORT_ORDER)}
-        idx = canonical_lower.get(cleaned.lower())
-        base_port = int(getattr(cls, "SYSBOT_BASE_PORT", 8201) or 8201)
-        if idx is not None:
-            return f"http://localhost:{base_port + idx}"
+        canonical_lower = {name.lower() for name in cls.ALL_ISLAND_PORT_ORDER}
+        if cleaned.lower() in canonical_lower:
+            return f"https://{cleaned.lower()}.chopaeng.com"
 
         return (getattr(cls, "SYSBOT_API_URL", "http://localhost:8248") or "http://localhost:8248").rstrip("/")
 
