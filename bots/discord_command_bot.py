@@ -5518,24 +5518,38 @@ class DiscordCommandCog(commands.Cog):
     @commands.hybrid_command(
         name="sub-rules",
         aliases=["subrules"],
-        description="Display Subscriber Rules with an interactive acceptance button"
+        description="Deploy the Subscriber Rules panel in this channel"
     )
     async def sub_rules(self, ctx: commands.Context):
-        """Display Subscriber Rules with a persistent Proceed button that anyone can interact with."""
+        """Deploy the Subscriber Rules panel without showing who invoked the command."""
         embed = build_sub_rules_embed(ctx.guild)
         view = SubRulesView()
-        await ctx.send(embed=embed, view=view)
+        if ctx.interaction:
+            await ctx.interaction.response.defer(ephemeral=True, thinking=True)
+            await ctx.channel.send(embed=embed, view=view)
+            await ctx.interaction.followup.send("✅ Subscriber Rules panel deployed to this channel!", ephemeral=True)
+        else:
+            with contextlib.suppress(Exception):
+                await ctx.message.delete()
+            await ctx.channel.send(embed=embed, view=view)
 
     @commands.hybrid_command(
         name="order-rule",
         aliases=["orderrule", "order-rules", "orderrules"],
-        description="Display Order Bot Rules with interactive Rules and Done buttons"
+        description="Deploy the Order Bot Rules panel in this channel"
     )
     async def order_rule(self, ctx: commands.Context):
-        """Display Order Bot Rules with persistent Rules and Done buttons that anyone can interact with."""
+        """Deploy the Order Bot Rules panel without showing who invoked the command."""
         embed = build_order_rules_embed(ctx.guild)
         view = OrderRulesView()
-        await ctx.send(embed=embed, view=view)
+        if ctx.interaction:
+            await ctx.interaction.response.defer(ephemeral=True, thinking=True)
+            await ctx.channel.send(embed=embed, view=view)
+            await ctx.interaction.followup.send("✅ Order Bot Rules panel deployed to this channel!", ephemeral=True)
+        else:
+            with contextlib.suppress(Exception):
+                await ctx.message.delete()
+            await ctx.channel.send(embed=embed, view=view)
 
 
 class DiscordCommandBot(commands.Bot):
