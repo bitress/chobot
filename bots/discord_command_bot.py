@@ -1326,6 +1326,136 @@ class SubRulesView(discord.ui.View):
             )
 
 
+def build_order_rules_embed(guild: Optional[discord.Guild] = None) -> discord.Embed:
+    """Build the rich embed containing the Order Bot Rules and guidelines."""
+    banner_url = getattr(Config, "ORDER_RULES_BANNER_URL", "") or "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
+
+    description = (
+        "<a:heartside:784055539881214002> Click the **`Rules!`** button below and read everything.\n\n"
+        "<a:CampWarning:1172346431542140961> **If you are caught using the orderbot and have not followed the rules, you might get a  mute/kick/ban.** <a:CampWarning:1172346431542140961>\n\n"
+        "> <:c1_:1097946537063088269> **You _MUST_ change your server nickname to Your ACNH Character Name | Your ACNH Island Name** before using the orderbot. You can change your nickname in the <#1081147108612124742> channel.\n\n"
+        "> <:c2_:1097946527751749643> **DO NOT share the code to a different person.** This might get you a permanent ban on the bot. Only you who placed the order can go to the island.\n\n"
+        "> <:c3_:1097946523440005250> **DO NOT litter on the island.** Just pick up what you need.\n\n"
+        "> <:c4_:1097946518943715440> **Order only what you need.**\n\n"
+        "> <:c5_:1097946515030425640> Make sure you have a good internet connection. **Must be atleast 15-25MBPS.**\n\n"
+        "> <:c6_:1097947277177393192> You **MUST** read everything on <#1516752902591615046> channel to avoid asking questions and spamming the Chorder-bot channel with the wrong commands.\n\n"
+        "> <:c7_:1097946510253113395> **DO NOT chat/lookup items in the Chorder-bot channel.** That channel is for Orders only!! Please head over to <#1175875039954993306> channel for your questions.\n\n"
+        "> <:c8_:1097946507757502558> **DO NOT order/chat in the <#1175771830510948442> channel.** That channel is for looking up the code for an item/DIY Only.\n\n"
+        "Click `Done!` if you have understood our rules. Then you will get access on our orderbot.\n\n"
+        "**If you are caught using the orderbot and have not followed the rules, the punishment will be a mute/kick/ban.**"
+    )
+
+    embed = discord.Embed(
+        title="📦 Order Bot Rules & Guidelines",
+        description=description,
+        color=0xF1C40F,
+    )
+    if banner_url:
+        embed.set_image(url=banner_url)
+    embed.set_footer(
+        text="ChoPaeng Camp",
+        icon_url="https://www.chopaeng.com/assets/logo-C5oO0bbj.webp",
+    )
+    return embed
+
+
+class OrderRulesView(discord.ui.View):
+    """Persistent interactive view for Order Bot Rules.
+
+    Anyone in the channel can click 'Rules!' to read the rules or click 'Done!'
+    to accept the rules and receive role 1176191811438510231 (Config.ORDER_RULES_ROLE_ID).
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Rules!",
+        style=discord.ButtonStyle.primary,
+        emoji="📜",
+        custom_id="order_rules:rules",
+        row=0,
+    )
+    async def btn_rules(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        embed = build_order_rules_embed(interaction.guild)
+        await interaction.response.send_message(
+            embed=embed,
+            content="Please read all the rules above carefully. Once you understand them, click **`Done!`** on the main message to get access!",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Done!",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id="order_rules:done",
+        row=0,
+    )
+    async def btn_done(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        role_id = getattr(Config, "ORDER_RULES_ROLE_ID", 1176191811438510231) or 1176191811438510231
+        guild = interaction.guild or (interaction.client.get_guild(Config.GUILD_ID) if interaction.client else None)
+        member = interaction.user
+        if guild and not isinstance(member, discord.Member):
+            member = guild.get_member(interaction.user.id) or member
+
+        already_has_role = False
+        if isinstance(member, discord.Member):
+            already_has_role = any(r.id == role_id for r in member.roles)
+
+        role_added = False
+        if not already_has_role:
+            if isinstance(member, discord.Member) and guild:
+                role = guild.get_role(role_id)
+                if role:
+                    try:
+                        await member.add_roles(role, reason="Accepted Order Rules via /order-rule")
+                        role_added = True
+                    except Exception as exc:
+                        logger.warning("[ORDER_RULES] Gateway add_roles failed for %s: %s", interaction.user.id, exc)
+            if not role_added:
+                from utils.discord_membership import add_guild_member_role
+                role_added = await asyncio.to_thread(add_guild_member_role, interaction.user.id, role_id)
+
+        # Record acceptance in SQLite user_order_rules_accepted table
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            from utils.database import connect_db
+
+            def _record_db():
+                with connect_db() as conn:
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS user_order_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)"
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO user_order_rules_accepted (user_id, accepted_at) VALUES (?, ?)",
+                        (str(interaction.user.id), now_iso),
+                    )
+                    conn.commit()
+
+            await asyncio.to_thread(_record_db)
+        except Exception as exc:
+            logger.warning("[ORDER_RULES] Failed to record acceptance in DB for %s: %s", interaction.user.id, exc)
+
+        if already_has_role:
+            await interaction.followup.send(
+                f"✅ You have already accepted the Order Bot Rules and have the <@&{role_id}> role! Happy ordering!",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                f"🎉 **Order Bot Access Granted!**\n\n"
+                f"Thank you for reading and agreeing to our Order Bot rules. You have been granted the <@&{role_id}> role!\n\n"
+                f"You now have access to our order bot channels. Please remember to follow all rules and happy ordering!",
+                ephemeral=True,
+            )
+
+
 class DiscordCommandCog(commands.Cog):
     """Cog for Discord treasure hunt commands"""
 
@@ -5396,6 +5526,17 @@ class DiscordCommandCog(commands.Cog):
         view = SubRulesView()
         await ctx.send(embed=embed, view=view)
 
+    @commands.hybrid_command(
+        name="order-rule",
+        aliases=["orderrule", "order-rules", "orderrules"],
+        description="Display Order Bot Rules with interactive Rules and Done buttons"
+    )
+    async def order_rule(self, ctx: commands.Context):
+        """Display Order Bot Rules with persistent Rules and Done buttons that anyone can interact with."""
+        embed = build_order_rules_embed(ctx.guild)
+        view = OrderRulesView()
+        await ctx.send(embed=embed, view=view)
+
 
 class DiscordCommandBot(commands.Bot):
     """Main Discord bot with command functionality"""
@@ -5492,6 +5633,7 @@ class DiscordCommandBot(commands.Bot):
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
             self.add_view(FindPanelView())
             self.add_view(SubRulesView())
+            self.add_view(OrderRulesView())
 
         # Register DropBot persistent panels and slash-command group
         drop_bot_cog = DropBotCog(self)
@@ -5536,6 +5678,10 @@ class DiscordCommandBot(commands.Bot):
                     'controlpanel',
                     'sub-rules',
                     'subrules',
+                    'order-rule',
+                    'orderrule',
+                    'order-rules',
+                    'orderrules',
                 }
                 
                 # Get the command name and root group name
