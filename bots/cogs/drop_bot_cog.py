@@ -78,6 +78,45 @@ MAX_ITEM_NAME  = 40
 PLOT_MIN = 1
 PLOT_MAX = 10
 
+# Sanrio / Amiibo villager injection
+SANRIO_EMBED_COLOR = 0xF06292
+SANRIO_VILLAGERS: list[tuple[str, str, str]] = [
+    ("Chai", "Cinnamoroll • Peppy Elephant", "☕"),
+    ("Chelsea", "My Melody • Sweet Deer", "🌸"),
+    ("Étoile", "Little Twin Stars • Normal Sheep", "⭐"),
+    ("Marty", "Pompompurin • Lazy Bear Cub", "🍮"),
+    ("Rilla", "Hello Kitty • Peppy Gorilla", "🎀"),
+    ("Toby", "Kerokerokeroppi • Smug Rabbit", "🍵"),
+]
+SANRIO_NAMES_MAP: dict[str, str] = {
+    "chai": "Chai",
+    "chelsea": "Chelsea",
+    "etoile": "Étoile",
+    "étoile": "Étoile",
+    "marty": "Marty",
+    "rilla": "Rilla",
+    "toby": "Toby",
+}
+PLACEHOLDER_VILLAGERS: list[tuple[str, str, str]] = [
+    ("Raymond", "Smug • Cat (Recommended)", "🐱"),
+    ("Marshal", "Smug • Squirrel", "🐿️"),
+    ("Shino", "Peppy • Deer", "🦌"),
+    ("Sasha", "Lazy • Rabbit", "🐰"),
+    ("Judy", "Snooty • Bear cub", "🧸"),
+    ("Ankha", "Snooty • Cat", "🐱"),
+    ("Lucky", "Lazy • Dog", "🐶"),
+]
+
+
+def is_sanrio_villager(name: str) -> bool:
+    """True if name matches one of the Sanrio amiibo characters."""
+    return (name or "").strip().lower() in SANRIO_NAMES_MAP
+
+
+def get_canonical_sanrio_name(name: str) -> str:
+    """Returns canonical name for Sanrio character (e.g. 'etoile' -> 'Étoile')."""
+    return SANRIO_NAMES_MAP.get((name or "").strip().lower(), (name or "").strip().title())
+
 # Access gates (see _check_access)
 ENFORCE_BLOCKLIST = True
 # Flip to True once _has_registered_character() is implemented against the real table.
@@ -86,6 +125,11 @@ SUB_RULES_ROLE_ID = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or
 SUB_RULES_MSG = (
     "You need to **accept the sub rules** first before you can use the islands. "
     "Once you've accepted them, come back and try again."
+)
+ORDER_RULES_ROLE_ID = getattr(Config, "ORDER_RULES_ROLE_ID", 1176191811438510231) or 1176191811438510231
+ORDER_RULES_MSG = (
+    "You need to **accept the Order Bot rules** first before you can drop items or inject villagers. "
+    "Use `/rules` or review and accept them on the website, then come back and try again."
 )
 
 # Timings
@@ -475,14 +519,45 @@ async def _denied_reason(discord_user_id: int) -> str | None:
 
 
 def _has_sub_role(user: discord.abc.User) -> bool:
-    """True if the user is a guild member holding the sub-rules role."""
-    return isinstance(user, discord.Member) and any(r.id == SUB_RULES_ROLE_ID for r in user.roles)
+    """True if the user is a guild member holding the sub-rules role or accepted in DB."""
+    if isinstance(user, discord.Member) and any(getattr(r, "id", None) == SUB_RULES_ROLE_ID for r in getattr(user, "roles", [])):
+        return True
+    try:
+        with connect_db() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM user_sub_rules_accepted WHERE user_id = ? LIMIT 1",
+                (str(getattr(user, "id", "")),),
+            ).fetchone()
+            if row:
+                return True
+    except Exception:
+        pass
+    return False
 
 
-async def _access_denied(user: discord.abc.User) -> str | None:
-    """Role check first (cheap, no DB), then the blocklist/registration checks."""
+def _has_order_role(user: discord.abc.User) -> bool:
+    """True if the user is a guild member holding the order-rules role or accepted in DB."""
+    if isinstance(user, discord.Member) and any(getattr(r, "id", None) == ORDER_RULES_ROLE_ID for r in getattr(user, "roles", [])):
+        return True
+    try:
+        with connect_db() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM user_order_rules_accepted WHERE user_id = ? LIMIT 1",
+                (str(getattr(user, "id", "")),),
+            ).fetchone()
+            if row:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+async def _access_denied(user: discord.abc.User, *, require_order_rules: bool = False) -> str | None:
+    """Role check first (cheap, no DB), then order rules if required, then the blocklist/registration checks."""
     if not _has_sub_role(user):
         return SUB_RULES_MSG
+    if require_order_rules and not _has_order_role(user):
+        return ORDER_RULES_MSG
     return await _denied_reason(user.id)
 
 
@@ -1256,7 +1331,7 @@ async def _perform_drop(
     contents: str,
 ) -> tuple[discord.Embed, bool]:
     """Returns (embed to show, whether the drop was queued)."""
-    denied = await _access_denied(user)
+    denied = await _access_denied(user, require_order_rules=True)
     if denied:
         return _err_embed(denied), False
     island = _canonical_island(island_raw)
@@ -1330,7 +1405,7 @@ async def _perform_injection(
     plot: int | None,
 ) -> tuple[discord.Embed, bool]:
     """Returns (embed to show, whether the injection was queued)."""
-    denied = await _access_denied(user)
+    denied = await _access_denied(user, require_order_rules=True)
     if denied:
         return _err_embed(denied), False
     island = _canonical_island(island_raw)
@@ -1412,6 +1487,363 @@ class CustomDropModal(discord.ui.Modal, title="📦 Custom Item Drop"):
         await _reply(interaction, "❌ Something went wrong. Please try again.")
 
 
+class CustomAmiiboModal(discord.ui.Modal, title="✏️ Custom Amiibo / Villager"):
+    name_input = discord.ui.TextInput(
+        label="Target Amiibo / Villager Name",
+        placeholder="e.g. Chai, Chelsea, Cece, Viché, W. Link",
+        min_length=2,
+        max_length=40,
+        required=True,
+    )
+
+    def __init__(self, wizard_view: "SanrioInjectionWizardView"):
+        super().__init__()
+        self.wizard_view = wizard_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw_name = self.name_input.value.strip()
+        exact, _ = _match_villagers(raw_name)
+        target = exact or raw_name.title()
+        if is_sanrio_villager(target):
+            target = get_canonical_sanrio_name(target)
+        self.wizard_view.target_villager = target
+        self.wizard_view._rebuild_items()
+        await interaction.response.edit_message(
+            embed=self.wizard_view.build_embed(),
+            view=self.wizard_view,
+        )
+
+
+class CustomPlaceholderModal(discord.ui.Modal, title="✏️ Custom Plot 1 Placeholder"):
+    name_input = discord.ui.TextInput(
+        label="Placeholder Villager Name (Plot 1)",
+        placeholder="e.g. Raymond, Marshal, Shino, Sasha",
+        min_length=2,
+        max_length=40,
+        required=True,
+    )
+
+    def __init__(self, wizard_view: "SanrioInjectionWizardView"):
+        super().__init__()
+        self.wizard_view = wizard_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw_name = self.name_input.value.strip()
+        exact, _ = _match_villagers(raw_name)
+        self.wizard_view.placeholder_villager = exact or raw_name.title()
+        self.wizard_view._rebuild_items()
+        await interaction.response.edit_message(
+            embed=self.wizard_view.build_embed(),
+            view=self.wizard_view,
+        )
+
+
+class SanrioInjectionWizardView(discord.ui.View):
+    """
+    Interactive 2-step live hot-swap wizard for Sanrio and Amiibo villagers.
+    Solves the ACNH engine limitation where Sanrio/Amiibo characters injected before
+    flying cannot move in.
+    """
+
+    def __init__(
+        self,
+        island_name: str,
+        user_id: int,
+        target_villager: str = "Chai",
+        placeholder_villager: str = "Raymond",
+    ):
+        super().__init__(timeout=300)
+        self.island_name = island_name
+        self.user_id = user_id
+        self.target_villager = get_canonical_sanrio_name(target_villager) if is_sanrio_villager(target_villager) else target_villager.title()
+        self.placeholder_villager = placeholder_villager.title()
+        self.step1_done = False
+        self.step2_done = False
+        self.last_status: str | None = None
+        self._rebuild_items()
+
+    def _rebuild_items(self) -> None:
+        self.clear_items()
+
+        # Row 0: Target Sanrio / Amiibo Select
+        target_opts: list[discord.SelectOption] = []
+        in_presets = False
+        for name, desc, emoji in SANRIO_VILLAGERS:
+            is_def = (name.lower() == self.target_villager.lower())
+            if is_def:
+                in_presets = True
+            target_opts.append(
+                discord.SelectOption(
+                    label=name,
+                    description=desc[:100],
+                    emoji=emoji,
+                    value=name,
+                    default=is_def,
+                )
+            )
+        if not in_presets:
+            target_opts.insert(
+                0,
+                discord.SelectOption(
+                    label=self.target_villager[:100],
+                    description="Custom target character"[:100],
+                    emoji="✨",
+                    value=self.target_villager[:100],
+                    default=True,
+                ),
+            )
+        target_opts.append(
+            discord.SelectOption(
+                label="Type Custom Amiibo Name…",
+                description="Enter any custom amiibo character"[:100],
+                emoji="✏️",
+                value="custom",
+            )
+        )
+        target_select = discord.ui.Select(
+            placeholder=f"🎯 Target: {self.target_villager} (Plot 1)",
+            options=target_opts[:25],
+            row=0,
+        )
+        target_select.callback = self._on_target_select
+        self.add_item(target_select)
+
+        # Row 1: Placeholder Select (Plot 1)
+        ph_opts: list[discord.SelectOption] = []
+        ph_in_presets = False
+        for name, desc, emoji in PLACEHOLDER_VILLAGERS:
+            is_def = (name.lower() == self.placeholder_villager.lower())
+            if is_def:
+                ph_in_presets = True
+            ph_opts.append(
+                discord.SelectOption(
+                    label=name,
+                    description=desc[:100],
+                    emoji=emoji,
+                    value=name,
+                    default=is_def,
+                )
+            )
+        if not ph_in_presets:
+            ph_opts.insert(
+                0,
+                discord.SelectOption(
+                    label=self.placeholder_villager[:100],
+                    description="Custom placeholder for Plot 1"[:100],
+                    emoji="🐱",
+                    value=self.placeholder_villager[:100],
+                    default=True,
+                ),
+            )
+        ph_opts.append(
+            discord.SelectOption(
+                label="Type Custom Placeholder…",
+                description="Enter any villager to hold Plot 1"[:100],
+                emoji="✏️",
+                value="custom",
+            )
+        )
+        placeholder_select = discord.ui.Select(
+            placeholder=f"📦 Placeholder: {self.placeholder_villager} (Plot 1)",
+            options=ph_opts[:25],
+            row=1,
+        )
+        placeholder_select.callback = self._on_placeholder_select
+        self.add_item(placeholder_select)
+
+        # Row 2: Step 1 and Step 2 Action Buttons
+        step1_label = f"1️⃣ Inject {self.placeholder_villager} (Plot 1)"[:80]
+        step1_btn = discord.ui.Button(
+            label=step1_label,
+            style=discord.ButtonStyle.primary if not self.step1_done else discord.ButtonStyle.secondary,
+            row=2,
+        )
+        step1_btn.callback = self._on_step1
+        self.add_item(step1_btn)
+
+        step2_label = f"2️⃣ Inject {self.target_villager} (Live on Island)"[:80]
+        step2_btn = discord.ui.Button(
+            label=step2_label,
+            style=discord.ButtonStyle.success if self.step1_done else discord.ButtonStyle.secondary,
+            row=2,
+        )
+        step2_btn.callback = self._on_step2
+        self.add_item(step2_btn)
+
+        # Row 3: Navigation Buttons
+        back_btn = discord.ui.Button(
+            label="Regular Villagers",
+            emoji="🔙",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+        )
+        back_btn.callback = self._on_back
+        self.add_item(back_btn)
+
+        close_btn = discord.ui.Button(
+            label="Close",
+            emoji="✖",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+        )
+        close_btn.callback = self._on_close
+        self.add_item(close_btn)
+
+    def build_embed(self) -> discord.Embed:
+        target_emoji = "🎀"
+        for name, _, emoji in SANRIO_VILLAGERS:
+            if name.lower() == self.target_villager.lower():
+                target_emoji = emoji
+                break
+
+        embed = discord.Embed(
+            title=f"🎀 Sanrio & Amiibo Injection Wizard — {self.island_name}",
+            description=(
+                "**Why do Sanrio & Amiibo villagers need this special method?**\n"
+                "In ACNH, Sanrio/Amiibo characters **will NOT move to your island** if injected before you fly.\n"
+                "To adopt them successfully, follow this **4-Step Live Swap**:\n\n"
+                "**1️⃣ Step 1 (Pre-Flight):** Inject your placeholder villager into **Plot 1** (*before flying*).\n"
+                f"**2️⃣ Step 2 (Fly):** Fly to **[{self.island_name}]({_island_url(self.island_name)})** via the airport and land.\n"
+                f"**3️⃣ Step 3 (Live Swap):** While standing on the island, inject **{self.target_villager}** into Plot 1.\n"
+                f"**4️⃣ Step 4 (Move-In):** Walk into Plot 1's house. Talk to the resident inside *(they'll look like {self.placeholder_villager})* and invite them!\n"
+            ),
+            color=SANRIO_EMBED_COLOR,
+        )
+
+        embed.add_field(
+            name="🎯 Target Amiibo Villager",
+            value=f"{target_emoji} **{self.target_villager}** *(swapped into Plot 1)*",
+            inline=True,
+        )
+        embed.add_field(
+            name="📦 Pre-Flight Placeholder",
+            value=f"🐱 **{self.placeholder_villager}** *(Plot 1 resident)*",
+            inline=True,
+        )
+
+        # Progress / Next action field
+        if not self.step1_done and not self.step2_done:
+            progress = (
+                f"1️⃣ **Pre-Flight Step:** Click **1️⃣ Inject {self.placeholder_villager}** below *before* boarding your flight."
+            )
+        elif self.step1_done and not self.step2_done:
+            progress = (
+                f"✈️ **Step 1 Complete!** `{self.placeholder_villager}` is injected in Plot 1.\n"
+                f"👉 **Fly to [{self.island_name}]({_island_url(self.island_name)}) now!**\n"
+                f"Once you land on the island, click **2️⃣ Inject {self.target_villager}** below."
+            )
+        else:
+            progress = (
+                f"🎉 **VILLAGER INJECTED!**\n"
+                f"👉 **Walk to Plot 1's house on the island!**\n"
+                f"Enter the house and talk to the villager inside *(they will look like {self.placeholder_villager}, but have {self.target_villager}'s dialogue)*. Ask them to move in!"
+            )
+        embed.add_field(name="📌 Current Step", value=progress, inline=False)
+
+        if self.last_status:
+            embed.add_field(name="📢 Latest Update", value=self.last_status[:1024], inline=False)
+
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This menu isn't yours.", ephemeral=True)
+            return False
+        return True
+
+    async def _on_target_select(self, interaction: discord.Interaction) -> None:
+        vals = getattr(interaction.data, "get", lambda k, d: d)("values", [""])
+        val = vals[0] if vals else ""
+        if not val:
+            return
+        if val == "custom":
+            await interaction.response.send_modal(CustomAmiiboModal(self))
+            return
+        self.target_villager = val
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_placeholder_select(self, interaction: discord.Interaction) -> None:
+        vals = getattr(interaction.data, "get", lambda k, d: d)("values", [""])
+        val = vals[0] if vals else ""
+        if not val:
+            return
+        if val == "custom":
+            await interaction.response.send_modal(CustomPlaceholderModal(self))
+            return
+        self.placeholder_villager = val
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_step1(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        embed_res, ok = await _perform_injection(
+            interaction.user,
+            self.island_name,
+            self.placeholder_villager,
+            plot=1,
+        )
+        if ok:
+            self.step1_done = True
+            self.last_status = (
+                f"✅ **Placeholder Injected!** `{self.placeholder_villager}` is queued in Plot 1.\n"
+                f"🛫 **Take flight to [{self.island_name}]({_island_url(self.island_name)}) now!**\n"
+                f"Once you land on the island, click **Step 2** below."
+            )
+        else:
+            reason = embed_res.description or "Bot did not respond"
+            self.last_status = f"⚠️ **Step 1 Error:** {reason}"
+
+        self._rebuild_items()
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+
+    async def _on_step2(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        embed_res, ok = await _perform_injection(
+            interaction.user,
+            self.island_name,
+            self.target_villager,
+            plot=1,
+        )
+        if ok:
+            self.step2_done = True
+            self.last_status = (
+                f"🎉 **VILLAGER INJECTED!**\n\n"
+                f"🏠 **Go to Plot 1's house now!**\n"
+                f"• Enter Plot 1's house on the island.\n"
+                f"• Talk to the resident inside *(they will visually look like `{self.placeholder_villager}`)*.\n"
+                f"• Invite them to move to your island! 🎀"
+            )
+        else:
+            reason = embed_res.description or "Bot did not respond"
+            self.last_status = f"⚠️ **Step 2 Error:** {reason}"
+
+        self._rebuild_items()
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        picker = InteractiveVillagerPickerView(self.island_name, self.user_id)
+        embed = discord.Embed(
+            title=f"🐱 Inject Villager — {self.island_name}",
+            description=(
+                f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
+                f"🏝️ **Target Island:** [{self.island_name}]({_island_url(self.island_name)})\n"
+                f"• Choose a villager from the menu to inject\n"
+                f"• Use **🔍 Search Villager** to search by name or species\n"
+                f"• Use **🎀 Sanrio / Amiibo** for special Sanrio villager injections\n"
+                f"• Use **✏️ Type Any Name** to enter any name manually"
+            ),
+            color=PANEL_EMBED_COLOR,
+        )
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        await interaction.response.edit_message(embed=embed, view=picker)
+
+    async def _on_close(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content="Sanrio Wizard closed.", embed=None, view=None)
+        self.stop()
+
+
 class InjectVillagerModal(discord.ui.Modal, title="🐱 Inject Villager"):
     villager_input = discord.ui.TextInput(
         label="Villager name",
@@ -1451,6 +1883,16 @@ class InjectVillagerModal(discord.ui.Modal, title="🐱 Inject Villager"):
         exact, candidates = await asyncio.to_thread(_match_villagers, raw_name)
 
         if exact:
+            if is_sanrio_villager(exact):
+                canonical = get_canonical_sanrio_name(exact)
+                wizard = SanrioInjectionWizardView(
+                    island_name=self.island_name,
+                    user_id=interaction.user.id,
+                    target_villager=canonical,
+                )
+                await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+                return
+
             embed, _ = await _perform_injection(interaction.user, self.island_name, exact, plot)
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -2289,6 +2731,16 @@ class VillagerSearchModal(discord.ui.Modal, title="🔍 Search Villager"):
 
         exact, candidates = await asyncio.to_thread(_match_villagers, raw_name, 15)
         if exact:
+            if is_sanrio_villager(exact):
+                canonical = get_canonical_sanrio_name(exact)
+                wizard = SanrioInjectionWizardView(
+                    island_name=self.island_name,
+                    user_id=interaction.user.id,
+                    target_villager=canonical,
+                )
+                await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+                return
+
             view = VillagerPlotPickView(
                 user_id=interaction.user.id,
                 island_name=self.island_name,
@@ -2374,6 +2826,10 @@ class InteractiveVillagerPickerView(discord.ui.View):
         search_btn.callback = self._on_search_villager
         self.add_item(search_btn)
 
+        sanrio_btn = discord.ui.Button(label="Sanrio / Amiibo", emoji="🎀", style=discord.ButtonStyle.success, row=1)
+        sanrio_btn.callback = self._on_sanrio_wizard
+        self.add_item(sanrio_btn)
+
         type_btn = discord.ui.Button(label="Type Any Name", emoji="✏️", style=discord.ButtonStyle.secondary, row=1)
         type_btn.callback = self._on_type_modal
         self.add_item(type_btn)
@@ -2393,6 +2849,16 @@ class InteractiveVillagerPickerView(discord.ui.View):
         selected_name = vals[0] if vals else ""
         if not selected_name:
             return
+        if is_sanrio_villager(selected_name):
+            canonical = get_canonical_sanrio_name(selected_name)
+            wizard = SanrioInjectionWizardView(
+                island_name=self.island_name,
+                user_id=self.user_id,
+                target_villager=canonical,
+            )
+            await interaction.response.edit_message(embed=wizard.build_embed(), view=wizard)
+            return
+
         view = VillagerPlotPickView(
             user_id=self.user_id,
             island_name=self.island_name,
@@ -2409,6 +2875,10 @@ class InteractiveVillagerPickerView(discord.ui.View):
         )
         embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         await interaction.response.edit_message(embed=embed, view=view)
+
+    async def _on_sanrio_wizard(self, interaction: discord.Interaction) -> None:
+        wizard = SanrioInjectionWizardView(island_name=self.island_name, user_id=self.user_id)
+        await interaction.response.edit_message(embed=wizard.build_embed(), view=wizard)
 
     async def _on_search_villager(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(VillagerSearchModal(island_name=self.island_name))
@@ -2457,9 +2927,9 @@ class _IslandButton:
     async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match: re.Match[str], /):
         return cls(urllib.parse.unquote(match["island"]))
 
-    async def _gate(self, interaction: discord.Interaction) -> str | None:
+    async def _gate(self, interaction: discord.Interaction, *, require_order_rules: bool = False) -> str | None:
         """Canonical island if the click may proceed; otherwise replies with the reason and returns None."""
-        denied = await _access_denied(interaction.user)
+        denied = await _access_denied(interaction.user, require_order_rules=require_order_rules)
         if denied:
             await _reply(interaction, embed=_err_embed(denied))
             return None
@@ -2571,7 +3041,7 @@ class DropItemsButton(
 
     async def callback(self, interaction: discord.Interaction) -> None:
         try:
-            if island := await self._gate(interaction):
+            if island := await self._gate(interaction, require_order_rules=True):
                 embed = discord.Embed(
                     title=f"📦 Drop Items — {island}",
                     description=(
@@ -2602,7 +3072,7 @@ class SearchCatalogButton(
     _btn_action, _btn_label, _btn_emoji = "search", "Search Catalog", "🔍"
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if island := await self._gate(interaction):
+        if island := await self._gate(interaction, require_order_rules=True):
             await interaction.response.send_modal(CatalogSearchModal(island_name=island))
 
 
@@ -2615,7 +3085,7 @@ class InjectVillagerButton(
 
     async def callback(self, interaction: discord.Interaction) -> None:
         try:
-            if island := await self._gate(interaction):
+            if island := await self._gate(interaction, require_order_rules=True):
                 embed = discord.Embed(
                     title=f"🐱 Inject Villager — {island}",
                     description=(
@@ -2623,6 +3093,7 @@ class InjectVillagerButton(
                         f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
                         f"• Choose a villager from the menu to inject\n"
                         f"• Use **🔍 Search Villager** to search by name or species\n"
+                        f"• Use **🎀 Sanrio / Amiibo** for special Sanrio villager injections\n"
                         f"• Use **✏️ Type Any Name** to enter any name manually"
                     ),
                     color=PANEL_EMBED_COLOR,
@@ -3059,7 +3530,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
     # ── /dropbot catalog & /catalog ────────────────────────────────────────────
 
     async def _handle_catalog_search(self, interaction: discord.Interaction, query: str, island: str | None) -> None:
-        denied = await _access_denied(interaction.user)
+        denied = await _access_denied(interaction.user, require_order_rules=True)
         if denied:
             await _reply(interaction, embed=_err_embed(denied))
             return
@@ -3132,7 +3603,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
         quantity: int | None,
         island: str | None,
     ) -> None:
-        denied = await _access_denied(interaction.user)
+        denied = await _access_denied(interaction.user, require_order_rules=True)
         if denied:
             await _reply(interaction, embed=_err_embed(denied))
             return
@@ -3251,7 +3722,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
         plot: int | None,
         island: str | None,
     ) -> None:
-        denied = await _access_denied(interaction.user)
+        denied = await _access_denied(interaction.user, require_order_rules=True)
         if denied:
             await _reply(interaction, embed=_err_embed(denied))
             return
@@ -3287,6 +3758,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
                     f"🏝️ **Target Island:** [{target_island}]({_island_url(target_island)})\n"
                     f"• Choose a villager from the menu to inject\n"
                     f"• Use **🔍 Search Villager** to search by name or species\n"
+                    f"• Use **🎀 Sanrio / Amiibo** for special Sanrio villager injections\n"
                     f"• Use **✏️ Type Any Name** to enter any name manually"
                 ),
                 color=PANEL_EMBED_COLOR,
@@ -3310,6 +3782,16 @@ class DropBotCog(commands.Cog, name="DropBot"):
         exact, candidates = await asyncio.to_thread(_match_villagers, clean_v)
 
         if exact:
+            if is_sanrio_villager(exact):
+                canonical = get_canonical_sanrio_name(exact)
+                wizard = SanrioInjectionWizardView(
+                    island_name=target_island,
+                    user_id=interaction.user.id,
+                    target_villager=canonical,
+                )
+                await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+                return
+
             embed, _ = await _perform_injection(interaction.user, target_island, exact, plot)
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -3374,3 +3856,89 @@ class DropBotCog(commands.Cog, name="DropBot"):
         island: str | None = None,
     ) -> None:
         await self._handle_inject_cmd(interaction, villager, plot, island)
+
+    # ── /dropbot sanrio & /sanrio ──────────────────────────────────────────────
+
+    async def _handle_sanrio_cmd(
+        self,
+        interaction: discord.Interaction,
+        island: str | None,
+        villager: str | None,
+    ) -> None:
+        denied = await _access_denied(interaction.user, require_order_rules=True)
+        if denied:
+            await _reply(interaction, embed=_err_embed(denied))
+            return
+
+        if island:
+            target_island = _canonical_island(island)
+            if not target_island:
+                await _reply(interaction, embed=_err_embed(f"**{island[:50]}** isn't a sub island."))
+                return
+        else:
+            target_island = await _infer_island(interaction.channel)
+
+        if not target_island:
+            await _reply(
+                interaction,
+                embed=_err_embed("Please specify a target island or use this command inside a sub-island channel."),
+            )
+            return
+
+        if not await _user_can_target(interaction, target_island):
+            await _reply(
+                interaction,
+                embed=_err_embed(f"You don't have access to **{target_island}**. Use the command in that island's channel."),
+            )
+            return
+
+        target_v = "Chai"
+        if villager and villager.strip():
+            clean_v = villager.strip()
+            if clean_v.startswith("🐱 "):
+                clean_v = clean_v[2:].strip()
+            if " • " in clean_v:
+                clean_v = clean_v.split(" • ")[0].strip()
+            exact, _ = await asyncio.to_thread(_match_villagers, clean_v)
+            target_v = exact or clean_v
+
+        wizard = SanrioInjectionWizardView(
+            island_name=target_island,
+            user_id=interaction.user.id,
+            target_villager=target_v,
+        )
+        await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+
+    @dropbot_group.command(
+        name="sanrio",
+        description="Interactive 2-step wizard to inject Sanrio or Amiibo villagers",
+    )
+    @app_commands.describe(
+        villager="Target Sanrio/Amiibo villager (e.g. Chai, Chelsea, Marty, Étoile)",
+        island="Target island (auto-detected from channel if omitted)",
+    )
+    @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
+    async def dropbot_sanrio(
+        self,
+        interaction: discord.Interaction,
+        villager: str | None = None,
+        island: str | None = None,
+    ) -> None:
+        await self._handle_sanrio_cmd(interaction, island, villager)
+
+    @app_commands.command(
+        name="sanrio",
+        description="Interactive 2-step wizard to inject Sanrio or Amiibo villagers",
+    )
+    @app_commands.describe(
+        villager="Target Sanrio/Amiibo villager (e.g. Chai, Chelsea, Marty, Étoile)",
+        island="Target island (auto-detected from channel if omitted)",
+    )
+    @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
+    async def slash_sanrio(
+        self,
+        interaction: discord.Interaction,
+        villager: str | None = None,
+        island: str | None = None,
+    ) -> None:
+        await self._handle_sanrio_cmd(interaction, island, villager)

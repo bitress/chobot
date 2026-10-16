@@ -553,6 +553,137 @@ def _iso_to_unix(value: str | None) -> int | None:
         return None
 
 
+def _user_has_sub_rules(user: dict | None) -> bool:
+    """True if user has accepted sub rules (DB table or holds Discord role)."""
+    if not user:
+        return False
+    if user.get("is_admin"):
+        return True
+
+    from utils.unified_auth import resolve_all_user_ids
+    cand_ids = resolve_all_user_ids(user)
+    sub_role_str = str(getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398)
+    island_access_role_str = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else sub_role_str
+    user_roles = {str(r) for r in user.get("roles", [])}
+    has_role = (sub_role_str in user_roles) or (island_access_role_str in user_roles)
+
+    in_db = False
+    if cand_ids:
+        try:
+            conn = get_db()
+            try:
+                conn.execute("CREATE TABLE IF NOT EXISTS user_sub_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)")
+                rule_ph = ",".join("?" for _ in cand_ids)
+                row = conn.execute(
+                    f"SELECT accepted_at FROM user_sub_rules_accepted WHERE user_id IN ({rule_ph}) LIMIT 1",
+                    cand_ids,
+                ).fetchone()
+                in_db = bool(row)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug("Failed to query user_sub_rules_accepted: %s", exc)
+
+    if has_role and not in_db and cand_ids:
+        now_iso = datetime.utcnow().isoformat()
+        try:
+            with connect_db() as c_sync:
+                for uid in set(cand_ids):
+                    c_sync.execute(
+                        "INSERT OR REPLACE INTO user_sub_rules_accepted (user_id, accepted_at) VALUES (?, ?)",
+                        (uid, now_iso),
+                    )
+                c_sync.commit()
+            in_db = True
+        except Exception:
+            pass
+
+    if in_db and not has_role:
+        from utils.discord_membership import add_guild_member_role
+        discord_uids = [str(uid) for uid in cand_ids if str(uid).isdigit()]
+        d_uid = str(user.get("discord_id") or user.get("user_id") or "").strip()
+        if d_uid.isdigit() and d_uid not in discord_uids:
+            discord_uids.append(d_uid)
+        conn_accs = user.get("connected_accounts") or {}
+        if isinstance(conn_accs, dict) and "discord" in conn_accs:
+            disc_acc = conn_accs["discord"]
+            if isinstance(disc_acc, dict) and disc_acc.get("id"):
+                disc_id = str(disc_acc["id"]).strip()
+                if disc_id.isdigit() and disc_id not in discord_uids:
+                    discord_uids.append(disc_id)
+        for du in discord_uids:
+            if add_guild_member_role(du, sub_role_str):
+                user.setdefault("roles", []).append(sub_role_str)
+                has_role = True
+
+    return in_db or has_role
+
+
+def _user_has_order_rules(user: dict | None) -> bool:
+    """True if user has accepted order rules (DB table or holds Discord role)."""
+    if not user:
+        return False
+    if user.get("is_admin"):
+        return True
+
+    from utils.unified_auth import resolve_all_user_ids
+    cand_ids = resolve_all_user_ids(user)
+    order_role_str = str(getattr(Config, "ORDER_RULES_ROLE_ID", 1176191811438510231) or 1176191811438510231)
+    user_roles = {str(r) for r in user.get("roles", [])}
+    has_role = order_role_str in user_roles
+
+    in_db = False
+    if cand_ids:
+        try:
+            conn = get_db()
+            try:
+                conn.execute("CREATE TABLE IF NOT EXISTS user_order_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)")
+                rule_ph = ",".join("?" for _ in cand_ids)
+                row = conn.execute(
+                    f"SELECT accepted_at FROM user_order_rules_accepted WHERE user_id IN ({rule_ph}) LIMIT 1",
+                    cand_ids,
+                ).fetchone()
+                in_db = bool(row)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug("Failed to query user_order_rules_accepted: %s", exc)
+
+    if has_role and not in_db and cand_ids:
+        now_iso = datetime.utcnow().isoformat()
+        try:
+            with connect_db() as c_sync:
+                for uid in set(cand_ids):
+                    c_sync.execute(
+                        "INSERT OR REPLACE INTO user_order_rules_accepted (user_id, accepted_at) VALUES (?, ?)",
+                        (uid, now_iso),
+                    )
+                c_sync.commit()
+            in_db = True
+        except Exception:
+            pass
+
+    if in_db and not has_role:
+        from utils.discord_membership import add_guild_member_role
+        discord_uids = [str(uid) for uid in cand_ids if str(uid).isdigit()]
+        d_uid = str(user.get("discord_id") or user.get("user_id") or "").strip()
+        if d_uid.isdigit() and d_uid not in discord_uids:
+            discord_uids.append(d_uid)
+        conn_accs = user.get("connected_accounts") or {}
+        if isinstance(conn_accs, dict) and "discord" in conn_accs:
+            disc_acc = conn_accs["discord"]
+            if isinstance(disc_acc, dict) and disc_acc.get("id"):
+                disc_id = str(disc_acc["id"]).strip()
+                if disc_id.isdigit() and disc_id not in discord_uids:
+                    discord_uids.append(disc_id)
+        for du in discord_uids:
+            if add_guild_member_role(du, order_role_str):
+                user.setdefault("roles", []).append(order_role_str)
+                has_role = True
+
+    return in_db or has_role
+
+
 def _user_id_param(user_id: str) -> int | str:
     """Use integer IDs for SQLite INTEGER comparisons, falling back to text."""
     return int(user_id) if str(user_id).isdigit() else str(user_id)
@@ -1544,20 +1675,8 @@ def auth_me():
     if provider and provider != "unified" and provider not in connected:
         connected.append(provider)
 
-    sub_rules_accepted = False
-    try:
-        conn = get_db()
-        try:
-            conn.execute("CREATE TABLE IF NOT EXISTS user_sub_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)")
-            from utils.unified_auth import resolve_all_user_ids
-            cand_uids = resolve_all_user_ids(user)
-            placeholders = ",".join("?" for _ in cand_uids)
-            sub_rules_row = conn.execute(f"SELECT accepted_at FROM user_sub_rules_accepted WHERE user_id IN ({placeholders}) LIMIT 1", cand_uids).fetchone()
-            sub_rules_accepted = bool(sub_rules_row)
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    sub_rules_accepted = _user_has_sub_rules(user)
+    order_rules_accepted = _user_has_order_rules(user)
 
     moderation_data = {
         "has_active_restriction": False,
@@ -1590,6 +1709,7 @@ def auth_me():
         "has_password": bool(user.get("has_password", False)),
         "is_subscriber": bool(user.get("is_subscriber", False)),
         "sub_rules_accepted": sub_rules_accepted,
+        "order_rules_accepted": order_rules_accepted,
         "moderation": moderation_data,
     })
 
@@ -1947,19 +2067,7 @@ def reveal_dodo(name):
 
     # Enforce one-time Sub Rules acceptance for member islands
     if _is_member_island(island_cat, island_type) and not is_viewer_admin:
-        sub_rules_ok = False
-        if cand_user_ids:
-            rule_db = get_db()
-            try:
-                rule_ph = ",".join("?" for _ in cand_user_ids)
-                rule_row = rule_db.execute(
-                    f"SELECT accepted_at FROM user_sub_rules_accepted WHERE user_id IN ({rule_ph}) LIMIT 1",
-                    cand_user_ids,
-                ).fetchone()
-                sub_rules_ok = bool(rule_row)
-            finally:
-                rule_db.close()
-        if not sub_rules_ok:
+        if not _user_has_sub_rules(user):
             _log_dodo_reveal_attempt(user, target, "denied", "missing_sub_rules_acceptance", channel_id=channel_id)
             _record_api_audit_event("dodo_reveal_denied", target, {"reason": "missing_sub_rules_acceptance", "channel_id": channel_id})
             return jsonify({
@@ -1968,13 +2076,12 @@ def reveal_dodo(name):
                 "requires_sub_rules": True,
             }), 403
 
-    # Check for general island access role first
+    # Check for general island access role
     island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
     is_discord_auth = bool(user.get("provider") == "discord" or "discord" in user.get("connected_providers", []))
-    user_roles_set = set(user.get("roles", []))
-    has_sub_tier = bool(user.get("sub_tier") or any(t in user_roles_set for t in island_access.TIER_NAME_TO_ROLE_ID))
-    if island_access_role and not is_viewer_admin and getattr(Config, "DISCORD_LOGIN_ENABLED", True) and is_discord_auth and not has_sub_tier:
-        if island_access_role not in user_roles_set:
+    user_roles_set = set(str(r) for r in user.get("roles", []))
+    if island_access_role and not is_viewer_admin and getattr(Config, "DISCORD_LOGIN_ENABLED", True) and is_discord_auth:
+        if island_access_role not in user_roles_set and not _user_has_sub_rules(user):
             _log_dodo_reveal_attempt(
                 user,
                 target,
@@ -1991,6 +2098,7 @@ def reveal_dodo(name):
             return jsonify({
                 "error": "You need the Discord island access role to reveal this Dodo code. Please accept the rules in the sub-rules channel first: <a href=\"https://discord.com/channels/729590421478703135/783677194576330792\" target=\"_blank\">#sub-rules</a>.",
                 "code": "missing_global_island_access_role",
+                "requires_sub_rules": True,
             }), 403
 
     if not _has_island_access(user.get("roles", []), effective_required_roles, is_viewer_mod, island_name=target, user=user):
@@ -2046,10 +2154,10 @@ def reveal_dodo(name):
     threading.Thread(
         target=_fire_dodo_webhook,
         args=(
-            user["username"],
+            user.get("username", ""),
             user.get("nickname", ""),
             user.get("user_id", ""),
-            user["avatar"],
+            user.get("avatar", ""),
             target,
             dodo_code,
             channel_id,
@@ -4016,8 +4124,16 @@ def submit_order_to_bot():
     except Exception as rest_err:
         logger.warning("[OrderSubmit] Moderation check error: %s", rest_err)
 
-    # Require user to setup their server nickname or register their In-Game Character before ordering
+    # Require user to accept order rules and setup their server nickname or register their In-Game Character before ordering
     if not auth_user.get("is_admin") and user_id not in ("bot_system", ""):
+        if not _user_has_order_rules(auth_user):
+            return jsonify({
+                "success": False,
+                "error": "You must review and accept the Order Bot Rules first before using the order bot.",
+                "code": "missing_order_rules_acceptance",
+                "requires_order_rules": True,
+            }), 403
+
         current_nick = str(auth_user.get("nickname") or "").strip()
         candidate_nick = str(data.get("username") or data.get("display_name") or current_nick).strip()
 
@@ -4321,6 +4437,15 @@ def get_order_dodo():
 
     order_id = request.args.get("order_id") or request.args.get("id")
     user_id = request.args.get("user_id") or str(auth_user.get("user_id") or auth_user.get("id") or "")
+    if not auth_user.get("is_admin") and user_id not in ("bot_system", ""):
+        if not _user_has_order_rules(auth_user):
+            return jsonify({
+                "success": False,
+                "error": "You must review and accept the Order Bot Rules first before accessing order Dodo codes.",
+                "code": "missing_order_rules_acceptance",
+                "requires_order_rules": True,
+            }), 403
+
     data, code = _sysbot_get("/api/dodo", order_id=order_id, user_id=user_id)
     return jsonify(data), code
 
@@ -4336,6 +4461,15 @@ def order_drop():
     auth_user = _current_auth_user()
     if not auth_user:
         return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+
+    if not auth_user.get("is_admin"):
+        if not _user_has_order_rules(auth_user):
+            return jsonify({
+                "success": False,
+                "error": "You must review and accept the Order Bot Rules first before dropping items.",
+                "code": "missing_order_rules_acceptance",
+                "requires_order_rules": True,
+            }), 403
 
     body = request.get_json(silent=True) or {}
     island_target = body.get("island") or body.get("island_name")
@@ -4511,6 +4645,15 @@ def order_villagers():
         return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
 
     if request.method == "POST":
+        if not auth_user.get("is_admin"):
+            if not _user_has_order_rules(auth_user):
+                return jsonify({
+                    "success": False,
+                    "error": "You must review and accept the Order Bot Rules first before injecting villagers.",
+                    "code": "missing_order_rules_acceptance",
+                    "requires_order_rules": True,
+                }), 403
+
         body = request.get_json(silent=True)
         if body is None:
             raw_text = request.get_data(as_text=True).strip()
@@ -5231,36 +5374,117 @@ def api_user_sub_rules():
                 )
             conn.commit()
 
-            # If they accepted the sub rules, add role 1077997850165772398 (this is only for sub members)
             role_added = False
-            is_sub = bool(auth_user.get("is_subscriber"))
-            if is_sub:
-                discord_uids = [uid for uid in cand_ids if str(uid).isdigit()]
-                if not discord_uids:
-                    d_uid = str(auth_user.get("discord_id") or "").strip()
-                    if d_uid.isdigit():
-                        discord_uids = [d_uid]
+            discord_uids = [str(uid) for uid in cand_ids if str(uid).isdigit()]
+            d_uid = str(auth_user.get("discord_id") or auth_user.get("user_id") or "").strip()
+            if d_uid.isdigit() and d_uid not in discord_uids:
+                discord_uids.append(d_uid)
+            conn_accs = auth_user.get("connected_accounts") or {}
+            if isinstance(conn_accs, dict) and "discord" in conn_accs:
+                disc_acc = conn_accs["discord"]
+                if isinstance(disc_acc, dict) and disc_acc.get("id"):
+                    disc_id = str(disc_acc["id"]).strip()
+                    if disc_id.isdigit() and disc_id not in discord_uids:
+                        discord_uids.append(disc_id)
 
-                from utils.discord_membership import add_guild_member_role
-                role_id = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
-                for d_uid in discord_uids:
-                    if add_guild_member_role(d_uid, role_id):
-                        role_added = True
+            from utils.discord_membership import add_guild_member_role
+            role_id = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
+            role_str = str(role_id)
+            for du in discord_uids:
+                if add_guild_member_role(du, role_id):
+                    role_added = True
+
+            current_roles = auth_user.setdefault("roles", [])
+            if role_str not in [str(r) for r in current_roles]:
+                current_roles.append(role_str)
 
             return jsonify({"ok": True, "accepted": True, "accepted_at": now_iso, "role_added": role_added})
 
-        placeholders = ",".join("?" for _ in cand_ids)
-        row = conn.execute(
-            f"SELECT accepted_at FROM user_sub_rules_accepted WHERE user_id IN ({placeholders}) LIMIT 1",
-            cand_ids,
-        ).fetchone()
+        accepted = _user_has_sub_rules(auth_user)
+        row = None
+        if cand_ids:
+            placeholders = ",".join("?" for _ in cand_ids)
+            row = conn.execute(
+                f"SELECT accepted_at FROM user_sub_rules_accepted WHERE user_id IN ({placeholders}) LIMIT 1",
+                cand_ids,
+            ).fetchone()
         return jsonify({
             "ok": True,
-            "accepted": bool(row),
-            "accepted_at": row["accepted_at"] if row else None,
+            "accepted": accepted,
+            "accepted_at": row["accepted_at"] if row else (datetime.utcnow().isoformat() if accepted else None),
         })
     except Exception as exc:
         logger.warning("Error in api_user_sub_rules: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/user/order-rules", methods=["GET", "POST"])
+@app.route("/api/profile/order-rules", methods=["GET", "POST"])
+@app.route("/api/order/rules", methods=["GET", "POST"])
+def api_user_order_rules():
+    """Check or mark the one-time acceptance of Order Bot Rules."""
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"ok": False, "error": "Authentication required"}), 401
+
+    from utils.unified_auth import resolve_all_user_ids
+    cand_ids = resolve_all_user_ids(auth_user)
+
+    conn = get_db()
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS user_order_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)")
+        if request.method == "POST":
+            now_iso = datetime.utcnow().isoformat()
+            for uid in set(cand_ids):
+                conn.execute(
+                    "INSERT OR REPLACE INTO user_order_rules_accepted (user_id, accepted_at) VALUES (?, ?)",
+                    (uid, now_iso),
+                )
+            conn.commit()
+
+            role_added = False
+            discord_uids = [str(uid) for uid in cand_ids if str(uid).isdigit()]
+            d_uid = str(auth_user.get("discord_id") or auth_user.get("user_id") or "").strip()
+            if d_uid.isdigit() and d_uid not in discord_uids:
+                discord_uids.append(d_uid)
+            conn_accs = auth_user.get("connected_accounts") or {}
+            if isinstance(conn_accs, dict) and "discord" in conn_accs:
+                disc_acc = conn_accs["discord"]
+                if isinstance(disc_acc, dict) and disc_acc.get("id"):
+                    disc_id = str(disc_acc["id"]).strip()
+                    if disc_id.isdigit() and disc_id not in discord_uids:
+                        discord_uids.append(disc_id)
+
+            from utils.discord_membership import add_guild_member_role
+            role_id = getattr(Config, "ORDER_RULES_ROLE_ID", 1176191811438510231) or 1176191811438510231
+            role_str = str(role_id)
+            for du in discord_uids:
+                if add_guild_member_role(du, role_id):
+                    role_added = True
+
+            current_roles = auth_user.setdefault("roles", [])
+            if role_str not in [str(r) for r in current_roles]:
+                current_roles.append(role_str)
+
+            return jsonify({"ok": True, "accepted": True, "accepted_at": now_iso, "role_added": role_added})
+
+        accepted = _user_has_order_rules(auth_user)
+        row = None
+        if cand_ids:
+            placeholders = ",".join("?" for _ in cand_ids)
+            row = conn.execute(
+                f"SELECT accepted_at FROM user_order_rules_accepted WHERE user_id IN ({placeholders}) LIMIT 1",
+                cand_ids,
+            ).fetchone()
+        return jsonify({
+            "ok": True,
+            "accepted": accepted,
+            "accepted_at": row["accepted_at"] if row else (datetime.utcnow().isoformat() if accepted else None),
+        })
+    except Exception as exc:
+        logger.warning("Error in api_user_order_rules: %s", exc)
         return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
         conn.close()
