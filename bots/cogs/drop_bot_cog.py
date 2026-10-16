@@ -82,6 +82,11 @@ PLOT_MAX = 10
 ENFORCE_BLOCKLIST = True
 # Flip to True once _has_registered_character() is implemented against the real table.
 REQUIRE_REGISTERED_CHARACTER = False
+SUB_RULES_ROLE_ID = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
+SUB_RULES_MSG = (
+    "You need to **accept the sub rules** first before you can use the islands. "
+    "Once you've accepted them, come back and try again."
+)
 
 # Timings
 ACTION_COOLDOWN       = 10.0   # seconds between drops / injections per user+island
@@ -467,6 +472,18 @@ async def _denied_reason(discord_user_id: int) -> str | None:
             del _ACCESS_CACHE[k]
     _ACCESS_CACHE[discord_user_id] = (now, result)
     return result
+
+
+def _has_sub_role(user: discord.abc.User) -> bool:
+    """True if the user is a guild member holding the sub-rules role."""
+    return isinstance(user, discord.Member) and any(r.id == SUB_RULES_ROLE_ID for r in user.roles)
+
+
+async def _access_denied(user: discord.abc.User) -> str | None:
+    """Role check first (cheap, no DB), then the blocklist/registration checks."""
+    if not _has_sub_role(user):
+        return SUB_RULES_MSG
+    return await _denied_reason(user.id)
 
 
 # ─── Drop input parsing ────────────────────────────────────────────────────────
@@ -1239,7 +1256,7 @@ async def _perform_drop(
     contents: str,
 ) -> tuple[discord.Embed, bool]:
     """Returns (embed to show, whether the drop was queued)."""
-    denied = await _denied_reason(user.id)
+    denied = await _access_denied(user)
     if denied:
         return _err_embed(denied), False
     island = _canonical_island(island_raw)
@@ -1313,7 +1330,7 @@ async def _perform_injection(
     plot: int | None,
 ) -> tuple[discord.Embed, bool]:
     """Returns (embed to show, whether the injection was queued)."""
-    denied = await _denied_reason(user.id)
+    denied = await _access_denied(user)
     if denied:
         return _err_embed(denied), False
     island = _canonical_island(island_raw)
@@ -2442,13 +2459,13 @@ class _IslandButton:
 
     async def _gate(self, interaction: discord.Interaction) -> str | None:
         """Canonical island if the click may proceed; otherwise replies with the reason and returns None."""
+        denied = await _access_denied(interaction.user)
+        if denied:
+            await _reply(interaction, embed=_err_embed(denied))
+            return None
         island = _canonical_island(self.island)
         if not island:
             await _reply(interaction, embed=_err_embed(UNKNOWN_ISLAND_MSG))
-            return None
-        denied = await _denied_reason(interaction.user.id)
-        if denied:
-            await _reply(interaction, embed=_err_embed(denied))
             return None
         return island
 
@@ -2473,7 +2490,7 @@ class GetDodoButton(
             return
         island, client = resolved
 
-        denied = await _denied_reason(interaction.user.id)
+        denied = await _access_denied(interaction.user)
         if denied:
             await _reply(interaction, embed=_err_embed(denied))
             return
@@ -2630,6 +2647,10 @@ class GuideButton(
     _btn_row = 1
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        denied = await _access_denied(interaction.user)
+        if denied:
+            await _reply(interaction, embed=_err_embed(denied))
+            return
         island = _canonical_island(self.island)
         if not island:
             await _reply(interaction, embed=_err_embed(UNKNOWN_ISLAND_MSG))
@@ -3038,6 +3059,11 @@ class DropBotCog(commands.Cog, name="DropBot"):
     # ── /dropbot catalog & /catalog ────────────────────────────────────────────
 
     async def _handle_catalog_search(self, interaction: discord.Interaction, query: str, island: str | None) -> None:
+        denied = await _access_denied(interaction.user)
+        if denied:
+            await _reply(interaction, embed=_err_embed(denied))
+            return
+
         if island:
             target_island = _canonical_island(island)
             if not target_island:
@@ -3106,6 +3132,11 @@ class DropBotCog(commands.Cog, name="DropBot"):
         quantity: int | None,
         island: str | None,
     ) -> None:
+        denied = await _access_denied(interaction.user)
+        if denied:
+            await _reply(interaction, embed=_err_embed(denied))
+            return
+
         if island:
             target_island = _canonical_island(island)
             if not target_island:
@@ -3220,6 +3251,11 @@ class DropBotCog(commands.Cog, name="DropBot"):
         plot: int | None,
         island: str | None,
     ) -> None:
+        denied = await _access_denied(interaction.user)
+        if denied:
+            await _reply(interaction, embed=_err_embed(denied))
+            return
+
         if island:
             target_island = _canonical_island(island)
             if not target_island:

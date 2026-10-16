@@ -1169,6 +1169,163 @@ def _find_git_executable() -> str | None:
     return None
 
 
+def build_sub_rules_embed(guild: Optional[discord.Guild] = None) -> discord.Embed:
+    """Build the rich embed containing all Subscriber Rules and guidelines."""
+    # Resolve server custom emojis if present, fallback to clean standard icons
+    def _emo(name: str, fallback: str) -> str:
+        if guild:
+            match = discord.utils.get(guild.emojis, name=name)
+            if match:
+                return str(match)
+        return fallback
+
+    c1 = _emo("c1_", ":c1_:")
+    c2 = _emo("c2_", ":c2_:")
+    c3 = _emo("c3_", ":c3_:")
+    c4 = _emo("c4_", ":c4_:")
+    c5 = _emo("c5_", ":c5_:")
+    c6 = _emo("c6_", ":c6_:")
+    c7 = _emo("c7_", ":c7_:")
+    c8 = _emo("c8_", ":c8_:")
+    alert = _emo("Cho_Alert", ":Cho_Alert:")
+
+    # Resolve channel mentions if they exist in the server
+    def _ch(name_kw: str, fallback: str) -> str:
+        if guild:
+            for ch in guild.text_channels:
+                if name_kw.lower() in ch.name.lower():
+                    return ch.mention
+        return fallback
+
+    ch_rules = _ch("rules", "👑┋rules")
+    ch_nick = _ch("set-nick", "👑┋set-nick")
+    ch_how = _ch("chobot-how", "🍄┋chobot-how")
+    ch_support = _ch("camp-support", "🌼┋camp-support")
+
+    banner_url = getattr(Config, "SUB_RULES_BANNER_URL", "") or "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
+
+    description = (
+        f"These rules are an extension of the {ch_rules} which subscribers must follow!\n\n"
+        f"· • —– ٠ ✤ ٠ —– • ·\n\n"
+        f"**Keep these Sub Rules in mind when using any of the treasure islands:**\n\n"
+        f"{c1} **Do not share the Dodo Code with anyone.** The Dodo Code is a unique code that allows people to visit our island. "
+        f"It is to be kept strictly confidential. There will be No sharing the code with anyone including your other account, "
+        f"friends, family, or online acquaintances. You are only allowed 1 Character/Island per membership.\n\n"
+        f"{c2} **Change your nickname in this server to match the following format:** `ACNH Character Name | Your ACNH Island Name`. "
+        f"This will help us to identify you and your island more easily. You can change your nickname in the {ch_nick} channel.\n\n"
+        f"{c3} **Always leave via the airport. And NO AFK!.** Do not use the \"-\" button to leave the island. Leaving via the airport "
+        f"will ensure that your progress is saved. If you use the \"-\" button, your progress may not be saved, and you may lose items or progress.\n\n"
+        f"{c4} **Check your Internet Connection before flying in.** Must be NAT Type A or B. These NAT Types are required for smooth online play.\n\n"
+        f"If you have NAT Type C or D, you may experience connection problems, so please do not join our islands if this is the case.\n\n"
+        f"{c5} **Check/Read the pinned section on each channel before asking any questions.** Most likely you will find your answer here. "
+        f"The pinned section in each channel contains important information, such as rules, tutorials, and announcements. "
+        f"Before asking a question, please take a look at the pinned section to see if your answer is already there.\n\n"
+        f"{c6} **Do not litter on the islands!** We have trash bins all over the place. Litter can be unsightly and can affect the island "
+        f"refreshing its items. If you have anything that you do not want, please dispose of it in a trash bin.\n\n"
+        f"{c7} **Tutorials for @ChoBot (our drop bot) can be found on the {ch_how}.** @ChoBot is a bot that can be used to drop items on islands. "
+        f"If you need help using our bot, please check out the tutorials in the {ch_how} channel.\n\n"
+        f"{c8} **Do not request any item using @ChoBot unless you are already on the island.** And make sure to pick up all the items you have requested. "
+        f"Please make sure that you are on the island and that you are able to pick up the item before requesting it.\n\n"
+        f"{alert} **Anyone caught not following any of the sub-rules will be kicked or worst, banned from our server. Each member will get up to two warnings before being kicked/banned!** {alert}\n\n"
+        f"You can open a ticket on our {ch_support} channel if you have any questions or concerns about our rules and someone will assist you.\n\n"
+        f"· • —– ٠ ✤ ٠ —– • ·\n\n"
+        f"Please click \"Proceed\" below to go to our next step."
+    )
+
+    embed = discord.Embed(
+        title="👑 Subscriber Rules & Guidelines",
+        description=description,
+        color=0x2ECC71,
+    )
+    if banner_url:
+        embed.set_image(url=banner_url)
+    embed.set_footer(
+        text="ChoPaeng Camp",
+        icon_url="https://www.chopaeng.com/assets/logo-C5oO0bbj.webp",
+    )
+    return embed
+
+
+class SubRulesView(discord.ui.View):
+    """Persistent interactive view for Subscriber Rules.
+
+    Anyone in the channel can click 'Proceed' to accept the rules and receive
+    role 1077997850165772398 (Config.SUB_RULES_ROLE_ID).
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Proceed",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id="sub_rules:proceed",
+        row=0,
+    )
+    async def btn_proceed(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        role_id = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
+        guild = interaction.guild or (interaction.client.get_guild(Config.GUILD_ID) if interaction.client else None)
+        member = interaction.user
+        if guild and not isinstance(member, discord.Member):
+            member = guild.get_member(interaction.user.id) or member
+
+        already_has_role = False
+        if isinstance(member, discord.Member):
+            already_has_role = any(r.id == role_id for r in member.roles)
+
+        role_added = False
+        if not already_has_role:
+            if isinstance(member, discord.Member) and guild:
+                role = guild.get_role(role_id)
+                if role:
+                    try:
+                        await member.add_roles(role, reason="Accepted Sub Rules via /sub-rules")
+                        role_added = True
+                    except Exception as exc:
+                        logger.warning("[SUB_RULES] Gateway add_roles failed for %s: %s", interaction.user.id, exc)
+            if not role_added:
+                from utils.discord_membership import add_guild_member_role
+                role_added = await asyncio.to_thread(add_guild_member_role, interaction.user.id, role_id)
+
+        # Record acceptance in SQLite user_sub_rules_accepted table
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            from utils.database import connect_db
+
+            def _record_db():
+                with connect_db() as conn:
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS user_sub_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)"
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO user_sub_rules_accepted (user_id, accepted_at) VALUES (?, ?)",
+                        (str(interaction.user.id), now_iso),
+                    )
+                    conn.commit()
+
+            await asyncio.to_thread(_record_db)
+        except Exception as exc:
+            logger.warning("[SUB_RULES] Failed to record acceptance in DB for %s: %s", interaction.user.id, exc)
+
+        if already_has_role:
+            await interaction.followup.send(
+                f"✅ You have already accepted the Sub Rules and already have the <@&{role_id}> role! Welcome to our subscriber islands!",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                f"🎉 **Sub Rules Accepted!**\n\n"
+                f"Thank you for reading and agreeing to our Sub Rules. You have been granted the <@&{role_id}> role!\n\n"
+                f"You now have access to our subscriber treasure islands. Please remember to always leave via the airport and have fun!",
+                ephemeral=True,
+            )
+
+
 class DiscordCommandCog(commands.Cog):
     """Cog for Discord treasure hunt commands"""
 
@@ -5228,6 +5385,17 @@ class DiscordCommandCog(commands.Cog):
             else:
                 await ctx.reply(msg, ephemeral=True)
 
+    @commands.hybrid_command(
+        name="sub-rules",
+        aliases=["subrules"],
+        description="Display Subscriber Rules with an interactive acceptance button"
+    )
+    async def sub_rules(self, ctx: commands.Context):
+        """Display Subscriber Rules with a persistent Proceed button that anyone can interact with."""
+        embed = build_sub_rules_embed(ctx.guild)
+        view = SubRulesView()
+        await ctx.send(embed=embed, view=view)
+
 
 class DiscordCommandBot(commands.Bot):
     """Main Discord bot with command functionality"""
@@ -5323,6 +5491,7 @@ class DiscordCommandBot(commands.Bot):
         if self._load_command_cog:
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
             self.add_view(FindPanelView())
+            self.add_view(SubRulesView())
 
         # Register DropBot persistent panels and slash-command group
         drop_bot_cog = DropBotCog(self)
@@ -5365,6 +5534,8 @@ class DiscordCommandBot(commands.Bot):
                     'dropbot',
                     'control-panel',
                     'controlpanel',
+                    'sub-rules',
+                    'subrules',
                 }
                 
                 # Get the command name and root group name
@@ -5681,4 +5852,4 @@ class DiscordCommandBot(commands.Bot):
                     await message.reply(f"{answer}")
                     logger.info(f"[DISCORD] Reply-ask by {message.author.name}: {question[:80]}")
                     return
-        await self.process_commands(message)
+        await self.process_commands(message)
