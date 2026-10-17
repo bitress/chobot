@@ -3670,6 +3670,11 @@ class DiscordCommandCog(commands.Cog):
 
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
+        if ctx.interaction:
+            from utils.data_manager import resolve_villager_code
+            resolved_code = resolve_villager_code(villager_name)
+            await ctx.channel.send(f"!injectvillager {resolved_code}")
+
         # First check for the queued message
         def inject_queued_check(msg):
             return (
@@ -3728,8 +3733,9 @@ class DiscordCommandCog(commands.Cog):
 
         island_bot = self._get_island_bot_for_channel(guild, ctx.channel) if guild else None
 
-        # 🔥 SEND COMMAND TO ISLAND BOT (missing in your code)
-        command_str = f"!mvi {' '.join(villager_names)}"
+        from utils.data_manager import resolve_villager_code
+        resolved_villagers = [resolve_villager_code(name) for name in villager_names]
+        command_str = f"!mvi {' '.join(resolved_villagers)}"
         await ctx.send(command_str)
 
         def multi_inject_queued_check(msg):

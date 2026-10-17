@@ -1401,7 +1401,7 @@ class ProfileTimelineView(discord.ui.View):
 
 # Compiled once at module level; shared by all flight-monitoring cogs.
 JOIN_PATTERN = re.compile(
-    r"\[.*?\]\s*.*?\s+(.*?)\s+from\s+(.*?)\s+is joining\s+(.*?)(?:\.|$)",
+    r"(?:^>|\b)?(?:\[.*?\])?\s*[\U0001f6ec\U0001f6eb]?\s*(.*?)(?:\s+from\s+(.*?))?\s+is joining\s+(.*?)(?:\.|$)",
     re.IGNORECASE
 )
 
@@ -2904,9 +2904,10 @@ class FlightLoggerCog(commands.Cog):
                     break
         match = self.join_pattern.search(content)
         if match:
-            ign_raw    = match.group(1).strip()
-            island_raw = match.group(2).strip()
-            dest_raw   = match.group(3).strip()
+            raw_ign    = (match.group(1) or "").strip()
+            ign_raw    = re.sub(r"^>|^\s*\[.*?\]|[\U0001f6ec\U0001f6eb]", "", raw_ign).strip()
+            island_raw = (match.group(2) or "").strip() if match.group(2) else ""
+            dest_raw   = (match.group(3) or "").strip()
             ign_norm = self.normalize_identity_text(ign_raw)
             isl_norm = self.normalize_identity_text(island_raw)
             self.last_processed = discord.utils.utcnow()
@@ -4276,9 +4277,10 @@ class FreeFlightCog(commands.Cog, name="FreeFlightLogger"):
         if not match:
             return
 
-        ign_raw    = match.group(1).strip()
-        island_raw = match.group(2).strip()
-        dest_raw   = match.group(3).strip()
+        raw_ign    = (match.group(1) or "").strip()
+        ign_raw    = re.sub(r"^>|^\s*\[.*?\]|[\U0001f6ec\U0001f6eb]", "", raw_ign).strip()
+        island_raw = (match.group(2) or "").strip() if match.group(2) else ""
+        dest_raw   = (match.group(3) or "").strip()
         visit_ts   = int(message.created_at.timestamp())
         guild      = self.bot.get_guild(Config.GUILD_ID)
         guild_id   = guild.id if guild else None

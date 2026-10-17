@@ -31,7 +31,41 @@ _TELEMETRY_CACHE: Dict[str, Dict[str, Any]] = {}
 _GAMETIME_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
 _LAST_EVENT_IDS: Dict[str, int] = {}
 _SENT_WEBHOOK_EVENT_IDS: set[tuple[str, int]] = set()
+_PREV_ISLAND_VISITORS: Dict[str, list[str]] = {}
+_NOTIFIED_ARRIVALS: Dict[tuple[str, str], float] = {}  # (island_lower, player_lower) -> timestamp
 _CACHE_LOCK = threading.Lock()
+
+_JOIN_REGEX = re.compile(
+    r"(?:^>|\b)?(?:\[.*?\])?\s*[\U0001f6ec\U0001f6eb]?\s*(.*?)(?:\s+from\s+(.*?))?\s+is joining\s+(.*?)(?:\.|$)",
+    re.IGNORECASE,
+)
+_DEPART_REGEX = re.compile(
+    r"(?:^>|\b)?(?:\[.*?\])?\s*[\U0001f6ec\U0001f6eb]?\s*(.*?)\s+has departed from\s+(.*?)(?:\.|$)",
+    re.IGNORECASE,
+)
+
+
+def _extract_flight_info_from_message(msg: str) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Extract (evt_type, player, origin, destination) from freeform flight message text."""
+    if not msg:
+        return None, None, None, None
+
+    join_m = _JOIN_REGEX.search(msg)
+    if join_m:
+        raw_p = (join_m.group(1) or "").strip()
+        player = re.sub(r"^>|^\s*\[.*?\]|[\U0001f6ec\U0001f6eb]", "", raw_p).strip()
+        origin = (join_m.group(2) or "").strip() if join_m.group(2) else ""
+        dest = (join_m.group(3) or "").strip() if join_m.group(3) else ""
+        return "arrival", player, origin, dest
+
+    dep_m = _DEPART_REGEX.search(msg)
+    if dep_m:
+        raw_p = (dep_m.group(1) or "").strip()
+        player = re.sub(r"^>|^\s*\[.*?\]|[\U0001f6ec\U0001f6eb]", "", raw_p).strip()
+        dest = (dep_m.group(2) or "").strip() if dep_m.group(2) else ""
+        return "departure", player, "", dest
+
+    return None, None, None, None
 
 _FLIGHT_LISTENERS: list[Any] = []
 _FLIGHT_LISTENERS_LOCK = threading.Lock()
@@ -417,25 +451,52 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
 
     # If island is online, fetch new activity events incrementally
     if is_online:
+        new_events_to_insert = []
+        visits_to_insert = []
+        seen_arrival_players_this_cycle: set[str] = set()
+        seen_departure_players_this_cycle: set[str] = set()
+
         events_resp = client.get_events_sync(since_id=last_seen_id, limit=50)
         events = events_resp.get("events") or []
-        if isinstance(events, list) and events:
-            new_last_id = last_seen_id or 0
-            new_events_to_insert = []
-            visits_to_insert = []
+        new_last_id = last_seen_id or 0
 
+        if isinstance(events, list) and events:
             for evt in events:
                 evt_id = evt.get("id") or 0
                 if evt_id > new_last_id:
                     new_last_id = evt_id
 
-                evt_type = (evt.get("type") or "system").lower()
+                raw_type = (evt.get("type") or "system").lower()
                 msg = evt.get("message") or ""
                 player = evt.get("player")
                 origin = evt.get("island")
                 evt_dodo = evt.get("dodoCode")
                 nid = str(evt.get("nid") or evt.get("networkId") or "")
                 evt_time = evt.get("timestamp") or datetime.now(timezone.utc).isoformat()
+
+                # Normalize event type and extract player/origin if missing from message
+                evt_type = raw_type
+                if evt_type not in ("arrival", "departure"):
+                    msg_type, p_extr, orig_extr, _ = _extract_flight_info_from_message(msg)
+                    if msg_type:
+                        evt_type = msg_type
+                        if not player and p_extr:
+                            player = p_extr
+                        if not origin and orig_extr:
+                            origin = orig_extr
+
+                if not player and msg:
+                    _, p_extr, orig_extr, _ = _extract_flight_info_from_message(msg)
+                    if p_extr:
+                        player = p_extr
+                    if not origin and orig_extr:
+                        origin = orig_extr
+
+                if player:
+                    if evt_type == "arrival":
+                        seen_arrival_players_this_cycle.add(player.lower().strip())
+                    elif evt_type == "departure":
+                        seen_departure_players_this_cycle.add(player.lower().strip())
 
                 new_events_to_insert.append((
                     evt_id,
@@ -482,6 +543,8 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                                 if len(_SENT_WEBHOOK_EVENT_IDS) > 2000:
                                     _SENT_WEBHOOK_EVENT_IDS.clear()
                                     _SENT_WEBHOOK_EVENT_IDS.add(dedupe_key)
+                                if evt_type == "arrival" and player:
+                                    _NOTIFIED_ARRIVALS[(clean_name.lower(), player.lower().strip())] = time.time()
 
                         if not already_sent:
                             formatted_time = _format_flight_timestamp(evt_time)
@@ -526,28 +589,110 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
 
             with _CACHE_LOCK:
                 _LAST_EVENT_IDS[clean_name.lower()] = new_last_id
-
-            try:
-                with connect_db() as conn:
-                    if new_events_to_insert:
-                        conn.executemany("""
-                            INSERT OR IGNORE INTO island_events_log
-                            (event_id, island_name, event_type, message, player, origin_island, dodo_code, network_id, timestamp)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, new_events_to_insert)
-
-                    if visits_to_insert:
-                        conn.executemany("""
-                            INSERT INTO island_visits
-                            (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_island_access)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, visits_to_insert)
-            except Exception as exc:
-                logger.debug(f"[SysBotTelemetry] Ingest error for {clean_name}: {exc}")
         else:
             if last_seen_id is None:
                 with _CACHE_LOCK:
                     _LAST_EVENT_IDS[clean_name.lower()] = 0
+
+        # ====================================================================
+        # DUAL-LAYER ARRIVAL DETECTION: Visitor List Delta Tracking
+        # Catches arrivals even if SysBot's ring buffer or memory hook missed them.
+        # ====================================================================
+        with _CACHE_LOCK:
+            prev_visitors = _PREV_ISLAND_VISITORS.get(clean_name.lower())
+            _PREV_ISLAND_VISITORS[clean_name.lower()] = list(visitor_list)
+
+        if prev_visitors is not None:
+            new_arrived_players = [p for p in visitor_list if p not in prev_visitors]
+            for p_raw in new_arrived_players:
+                p_clean = p_raw.strip()
+                if not p_clean or p_clean.lower() in seen_arrival_players_this_cycle:
+                    continue
+
+                now_ts_arrival = time.time()
+                with _CACHE_LOCK:
+                    last_arr_ts = _NOTIFIED_ARRIVALS.get((clean_name.lower(), p_clean.lower()), 0)
+                    if (now_ts_arrival - last_arr_ts) < 90:
+                        continue
+                    _NOTIFIED_ARRIVALS[(clean_name.lower(), p_clean.lower())] = now_ts_arrival
+
+                # Look up origin island from SysBot last_arrival if available
+                origin_clean = ""
+                last_arr_obj = status_data.get("last_arrival")
+                if isinstance(last_arr_obj, dict):
+                    la_p = (last_arr_obj.get("player") or "").strip()
+                    if la_p.lower() == p_clean.lower():
+                        origin_clean = (last_arr_obj.get("island") or "").strip()
+                        if origin_clean.lower() in ("none", "null", "unknown"):
+                            origin_clean = ""
+
+                synth_evt_time = datetime.now(timezone.utc).isoformat()
+                formatted_time = _format_flight_timestamp(synth_evt_time)
+                synth_id = int(now_ts_arrival * 1000) % 1000000000
+
+                if origin_clean:
+                    flight_msg = f"{p_clean} from {origin_clean} is joining {clean_name}."
+                else:
+                    flight_msg = f"{p_clean} is joining {clean_name}."
+
+                logger.info("[SysBotTelemetry] Detected arrival via visitor delta on %s: %s", clean_name, flight_msg)
+
+                if is_sub:
+                    send_sub_flight_message(f"> [{formatted_time}] 🛬 {flight_msg}")
+
+                dispatch_flight_event({
+                    "event_id": synth_id,
+                    "event_type": "arrival",
+                    "island_name": clean_name,
+                    "island_type": "sub" if is_sub else "free",
+                    "player": p_clean,
+                    "origin": origin_clean,
+                    "message": flight_msg,
+                    "timestamp": synth_evt_time,
+                    "formatted_time": formatted_time,
+                })
+
+                visits_to_insert.append((
+                    p_clean,
+                    origin_clean,
+                    clean_name,
+                    None,
+                    None,
+                    1 if not is_sub else 1,
+                    int(time.time()),
+                    "sub" if is_sub else "free",
+                    1,
+                ))
+
+                new_events_to_insert.append((
+                    synth_id,
+                    clean_name,
+                    "arrival",
+                    flight_msg,
+                    p_clean,
+                    origin_clean,
+                    dodo_code,
+                    "",
+                    synth_evt_time,
+                ))
+
+        try:
+            with connect_db() as conn:
+                if new_events_to_insert:
+                    conn.executemany("""
+                        INSERT OR IGNORE INTO island_events_log
+                        (event_id, island_name, event_type, message, player, origin_island, dodo_code, network_id, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, new_events_to_insert)
+
+                if visits_to_insert:
+                    conn.executemany("""
+                        INSERT INTO island_visits
+                        (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_island_access)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, visits_to_insert)
+        except Exception as exc:
+            logger.debug(f"[SysBotTelemetry] Ingest error for {clean_name}: {exc}")
 
     return cached_entry
 

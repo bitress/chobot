@@ -601,46 +601,45 @@ def parse_drop_items(raw: str) -> tuple[list[tuple[str, int]] | None, str | None
 
 
 def _format_item_for_sysbot(item_name: str, qty: int) -> str:
-    """Format an item for SysBot/NHSE.
-    Non-stackable items (stack_size <= 1) or qty == 1 must NOT have a quantity appended,
-    otherwise NHSE fails with 'Failed to convert item (index 0: <name> 1) for Language en'.
-    If qty > 1 for a non-stackable item, repeat the item comma-separated.
+    """Format an item for SysBot/NHSE using hex codes.
+    Repeats the hex code for quantity, space-separated with NO commas.
     """
     clean = item_name.strip()
     try:
-        from utils.sysbot_api import sanitize_single_drop_item
-        if qty <= 1:
-            sanitized = sanitize_single_drop_item(clean)
-            return ", ".join(sanitized) if sanitized else clean
+        from utils.data_manager import resolve_drop_items
+        hex_str, _ = resolve_drop_items(f"{clean} {qty}" if qty > 1 else clean)
+        if hex_str:
+            return hex_str
     except Exception:
         pass
 
     try:
-        from utils.acnh_catalog import ACNHCatalog
-        cat = ACNHCatalog.get_instance()
-        it_obj = cat.get_item(clean)
-        if not it_obj:
-            m = re.match(r"^(.*?)(?:\s+[xX×*]?\s*(\d+))$", clean)
-            if m:
-                base_name = m.group(1).strip()
-                base_it = cat.get_item(base_name)
-                if base_it:
-                    it_obj = base_it
-                    clean = base_it.name
-        stack_size = int(getattr(it_obj, "stack_size", 1) or 1) if it_obj else 1
+        from utils.sysbot_api import sanitize_single_drop_item
+        sanitized = sanitize_single_drop_item(clean)
+        if sanitized:
+            return " ".join(sanitized * qty)
     except Exception:
-        stack_size = 1
+        pass
 
-    if stack_size > 1 and qty > 1:
-        return f"{clean} {qty}"
-    elif qty > 1:
-        return ", ".join([clean] * qty)
-    else:
-        return clean
+    return " ".join([clean] * qty)
 
 
 def _normalize_items(entries: list[tuple[str, int]]) -> str:
-    return ", ".join(_format_item_for_sysbot(item, qty) for item, qty in entries)
+    """Normalize drop items into space-separated hex codes with NO COMMAS."""
+    try:
+        from utils.data_manager import resolve_drop_items
+        formatted_entries = []
+        for item, qty in entries:
+            if qty > 1:
+                formatted_entries.append(f"{item} {qty}")
+            else:
+                formatted_entries.append(item)
+        hex_str, _ = resolve_drop_items(formatted_entries)
+        if hex_str:
+            return hex_str
+    except Exception:
+        pass
+    return " ".join(_format_item_for_sysbot(item, qty) for item, qty in entries)
 
 
 # ─── Villager matching ─────────────────────────────────────────────────────────
@@ -1343,6 +1342,14 @@ async def _perform_drop(
         return _err_embed(f"Slow down — you can drop again in **{math.ceil(wait)}s**."), False
 
     try:
+        from utils.data_manager import resolve_drop_items
+        hex_items, _ = resolve_drop_items(items_text)
+        if hex_items:
+            items_text = hex_items
+    except Exception:
+        pass
+
+    try:
         client = get_island_sysbot_client(island)
         result = await client.submit_drop(items=items_text, username=getattr(user, "display_name", user.name))
     except Exception as exc:
@@ -1415,6 +1422,12 @@ async def _perform_injection(
     wait = _cooldown_left(user.id, island, "inject")
     if wait:
         return _err_embed(f"Slow down — you can inject again in **{math.ceil(wait)}s**."), False
+
+    try:
+        from utils.data_manager import resolve_villager_code
+        villager = resolve_villager_code(villager)
+    except Exception:
+        pass
 
     try:
         client = get_island_sysbot_client(island)

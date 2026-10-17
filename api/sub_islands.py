@@ -335,9 +335,10 @@ def drop_sub_island():
 
     if command.startswith("!drop"):
         items_part = command[5:].strip()
-        items = [x.strip() for x in items_part.split(",") if x.strip()]
-        item_count = len(items) if items else 1
-        resp = client.submit_drop_sync(items_part, username=auth_user.get("username", "WebUser"))
+        from utils.data_manager import resolve_drop_items
+        hex_str, hex_list = resolve_drop_items(items_part)
+        item_count = len(hex_list) if hex_list else 1
+        resp = client.submit_drop_sync(hex_str or items_part, username=auth_user.get("username", "WebUser"))
         is_success = bool(resp.get("success"))
         err_text = resp.get("error") or resp.get("message") or f"Drop command failed on {clean}."
         succ_text = resp.get("message") or f"Drop command dispatched silently to {clean}."
@@ -356,7 +357,9 @@ def drop_sub_island():
         if plot_num is None and len(parts) > 1 and parts[1].isdigit():
             plot_num = int(parts[1])
 
-        resp = client.inject_villagers_sync(villager_name, plot=plot_num)
+        from utils.data_manager import resolve_villager_code
+        villager_code = resolve_villager_code(villager_name)
+        resp = client.inject_villagers_sync(villager_code, plot=plot_num)
 
         if plot_num is not None:
             try:

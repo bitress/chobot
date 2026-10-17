@@ -169,20 +169,28 @@ def sanitize_single_drop_item(token: str) -> List[str]:
     return [token]
 
 
-def sanitize_drop_items(items: Union[str, List[str]]) -> Union[str, List[str]]:
-    """Sanitize drop items list or string to be compatible with SysBot/NHSE parser."""
+def sanitize_drop_items(items: Union[str, List[str]]) -> str:
+    """Sanitize drop items list or string to space-delimited hex codes with NO commas."""
+    try:
+        from utils.data_manager import resolve_drop_items
+        hex_str, _ = resolve_drop_items(items)
+        if hex_str:
+            return hex_str
+    except Exception:
+        pass
+
     if isinstance(items, list):
         res: List[str] = []
         for it in items:
             res.extend(sanitize_single_drop_item(str(it)))
-        return res
+        return " ".join(res)
     elif isinstance(items, str):
         parts = [p.strip() for p in re.split(r"[,;\n\r]+", items) if p.strip()]
         res = []
         for p in parts:
             res.extend(sanitize_single_drop_item(p))
-        return ", ".join(res)
-    return items
+        return " ".join(res)
+    return str(items)
 
 
 class SysBotClient:
@@ -773,17 +781,57 @@ class SysBotClient:
         if not villagers:
             return {"success": False, "error": "No villager specified for injection."}
 
+        try:
+            from utils.data_manager import resolve_villager_code
+        except Exception:
+            resolve_villager_code = None
+
         payload: Any
         if isinstance(villagers, str):
             v_str = villagers.strip()
-            if v_str.startswith("!inject "):
-                payload = {"command": v_str}
-            elif plot is not None:
-                payload = {"villager": v_str, "plot": int(plot)}
+            if v_str.startswith("!inject"):
+                parts = v_str.split(None, 2)
+                target_plot = None
+                target_v = ""
+                if len(parts) >= 3 and parts[1].isdigit():
+                    target_plot = int(parts[1])
+                    target_v = parts[2]
+                elif len(parts) >= 2:
+                    target_v = parts[1]
+                resolved_v = resolve_villager_code(target_v) if (resolve_villager_code and target_v) else (target_v or v_str)
+                p = target_plot if target_plot is not None else plot
+                if p is not None:
+                    payload = {"villager": resolved_v, "plot": int(p)}
+                else:
+                    payload = {"villager": resolved_v}
             else:
-                payload = {"villager": v_str}
-        elif isinstance(villagers, (dict, list)):
-            payload = villagers
+                resolved_v = resolve_villager_code(v_str) if resolve_villager_code else v_str
+                if plot is not None:
+                    payload = {"villager": resolved_v, "plot": int(plot)}
+                else:
+                    payload = {"villager": resolved_v}
+        elif isinstance(villagers, dict):
+            payload = dict(villagers)
+            if "villager" in payload and resolve_villager_code:
+                payload["villager"] = resolve_villager_code(str(payload["villager"]))
+            elif "villager_name" in payload and resolve_villager_code:
+                payload["villager_name"] = resolve_villager_code(str(payload["villager_name"]))
+            if plot is not None and "plot" not in payload:
+                payload["plot"] = int(plot)
+        elif isinstance(villagers, list):
+            payload = []
+            for item in villagers:
+                if isinstance(item, dict):
+                    item_copy = dict(item)
+                    if "villager" in item_copy and resolve_villager_code:
+                        item_copy["villager"] = resolve_villager_code(str(item_copy["villager"]))
+                    elif "villager_name" in item_copy and resolve_villager_code:
+                        item_copy["villager_name"] = resolve_villager_code(str(item_copy["villager_name"]))
+                    payload.append(item_copy)
+                elif isinstance(item, str) and resolve_villager_code:
+                    payload.append({"villager": resolve_villager_code(item)})
+                else:
+                    payload.append(item)
         else:
             payload = str(villagers)
 

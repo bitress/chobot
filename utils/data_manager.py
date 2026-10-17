@@ -11,6 +11,7 @@ import threading
 import re
 import json
 from datetime import datetime
+from typing import Optional, Union, List, Dict, Any, Tuple
 try:
     import gspread
 except ImportError:
@@ -456,3 +457,473 @@ class DataManager:
         except Exception as e:
             logger.error(f"SysBot villager fetch failed: {e}")
             return self._villager_cache or {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Item & Villager Hex Resolution Support (matching Command Builder & SysBot)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_items_catalog_lock = threading.Lock()
+_villagers_catalog_lock = threading.Lock()
+_cached_items_catalog = None
+_cached_villagers_catalog = None
+
+
+def _find_catalog_file(filename: str) -> Optional[str]:
+    """Search for catalog file across project root, current directory, and data dir."""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+    candidates = [
+        os.path.join(project_root, filename),
+        os.path.join(project_root, "data", filename),
+        os.path.join(os.getcwd(), filename),
+        os.path.join(os.getcwd(), "data", filename),
+        os.path.join(current_dir, filename),
+    ]
+    for path in candidates:
+        if os.path.exists(path) and os.path.isfile(path):
+            return path
+    return None
+
+
+def _to_hex4(val: Any) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, int):
+        return f"{val:04X}"
+    s = str(val).strip()
+    if s.isdigit():
+        return f"{int(s):04X}"
+    if re.fullmatch(r"[0-9a-fA-F]{1,4}", s):
+        return s.upper().zfill(4)
+    return s.upper()
+
+
+def load_items_catalog() -> dict:
+    """Load and index acnh.min.json (and fallback items_detail.json) for fast O(1) hex lookups."""
+    global _cached_items_catalog
+    if _cached_items_catalog is not None:
+        return _cached_items_catalog
+
+    with _items_catalog_lock:
+        if _cached_items_catalog is not None:
+            return _cached_items_catalog
+
+        items_by_name = {}
+        items_by_norm = {}
+        items_list = []
+
+        # 1. Primary: Load data/acnh.min.json
+        min_path = _find_catalog_file("acnh.min.json")
+        if min_path:
+            try:
+                with open(min_path, "r", encoding="utf-8") as f:
+                    min_data = json.load(f)
+                raw_items = min_data.get("items", []) if isinstance(min_data, dict) else min_data
+                for it in raw_items:
+                    name = (it.get("name") or "").strip()
+                    if not name:
+                        continue
+                    norm = re.sub(r"[^a-z0-9]", "", name.lower())
+                    cat = it.get("sourceSheet") or ""
+
+                    vars_list = []
+                    if it.get("variations"):
+                        for v in it["variations"]:
+                            iid = v.get("internalId") or it.get("internalId")
+                            var_id = v.get("variantId")
+                            raw_id = str(var_id) if var_id is not None else "NA"
+                            vars_list.append({
+                                "Variation": v.get("variation") or "NA",
+                                "Pattern": v.get("pattern") or "NA",
+                                "id": raw_id,
+                                "pokerId": _to_hex4(iid),
+                            })
+                    else:
+                        iid = it.get("internalId")
+                        var_id = it.get("variantId")
+                        raw_id = str(var_id) if var_id is not None else "NA"
+                        vars_list.append({
+                            "Variation": it.get("variation") or "NA",
+                            "Pattern": it.get("pattern") or "NA",
+                            "id": raw_id,
+                            "pokerId": _to_hex4(iid),
+                        })
+
+                    base_hex = vars_list[0]["pokerId"] if vars_list else ""
+                    entry = {
+                        "Name": name,
+                        "Category": cat,
+                        "Internal ID": base_hex,
+                        "Variations": vars_list,
+                    }
+                    items_list.append(entry)
+                    items_by_name[name.lower()] = entry
+                    if norm not in items_by_norm:
+                        items_by_norm[norm] = entry
+                logger.info(f"[DataManager] Loaded {len(items_list)} items from {min_path}")
+            except Exception as exc:
+                logger.error(f"[DataManager] Failed to load acnh.min.json: {exc}")
+
+        # 2. Fallback / Merge: items_detail.json
+        catalog_path = _find_catalog_file("items_detail.json")
+        if catalog_path:
+            try:
+                with open(catalog_path, "r", encoding="utf-8") as f:
+                    raw_data = json.load(f)
+                dt_items = raw_data.get("items", []) if isinstance(raw_data, dict) else raw_data
+                for it in dt_items:
+                    name = (it.get("Name") or "").strip()
+                    if not name:
+                        continue
+                    norm = re.sub(r"[^a-z0-9]", "", name.lower())
+                    if name.lower() not in items_by_name:
+                        items_by_name[name.lower()] = it
+                        items_list.append(it)
+                    if norm not in items_by_norm:
+                        items_by_norm[norm] = it
+                logger.info(f"[DataManager] Merged items from {catalog_path}")
+            except Exception as exc:
+                logger.error(f"[DataManager] Failed to merge items_detail.json: {exc}")
+
+        _cached_items_catalog = {
+            "items": items_list,
+            "by_name": items_by_name,
+            "by_norm": items_by_norm,
+        }
+        return _cached_items_catalog
+
+
+def load_villagers_catalog() -> dict:
+    """Load and index villagers from acnh.min.json and villagers.json."""
+    global _cached_villagers_catalog
+    if _cached_villagers_catalog is not None:
+        return _cached_villagers_catalog
+
+    with _villagers_catalog_lock:
+        if _cached_villagers_catalog is not None:
+            return _cached_villagers_catalog
+
+        villagers_by_name = {}
+        villagers_by_id = {}
+
+        # 1. Primary: Load villagers from data/acnh.min.json
+        min_path = _find_catalog_file("acnh.min.json")
+        if min_path:
+            try:
+                with open(min_path, "r", encoding="utf-8") as f:
+                    min_data = json.load(f)
+                for v in min_data.get("villagers", []):
+                    v_name = (v.get("name") or "").strip()
+                    code = (v.get("filename") or "").strip().lower()
+                    if code:
+                        villagers_by_id[code] = {"id": code, "name": v_name}
+                    if v_name:
+                        villagers_by_name[v_name.lower()] = {"id": code, "name": v_name}
+                        villagers_by_name[re.sub(r"[^a-z0-9]", "", v_name.lower())] = {"id": code, "name": v_name}
+                logger.info(f"[DataManager] Loaded {len(villagers_by_id)} villagers from {min_path}")
+            except Exception as exc:
+                logger.error(f"[DataManager] Failed to load villagers from acnh.min.json: {exc}")
+
+        # 2. Fallback / Merge: villagers.json
+        v_path = _find_catalog_file("villagers.json")
+        if v_path:
+            try:
+                with open(v_path, "r", encoding="utf-8") as f:
+                    raw_v = json.load(f)
+                if isinstance(raw_v, dict):
+                    for k, v in raw_v.items():
+                        v_id = str(v.get("id") or "").strip().lower()
+                        v_name = str(v.get("name") or k).strip().lower()
+                        if v_id and v_id not in villagers_by_id:
+                            villagers_by_id[v_id] = v
+                        if v_name and v_name not in villagers_by_name:
+                            villagers_by_name[v_name] = v
+                            norm_name = re.sub(r"[^a-z0-9]", "", v_name)
+                            villagers_by_name[norm_name] = v
+                logger.info(f"[DataManager] Merged villagers from {v_path}")
+            except Exception as exc:
+                logger.error(f"[DataManager] Failed to merge villagers.json: {exc}")
+
+        _cached_villagers_catalog = {
+            "by_name": villagers_by_name,
+            "by_id": villagers_by_id,
+        }
+        return _cached_villagers_catalog
+
+
+def generate_full_item_hex(
+    base_id: Union[str, int, None],
+    variant_string: Optional[Union[str, int]] = None,
+    category: str = "",
+) -> str:
+    """
+    Build the final order hex for SysBot / Discord order & drop commands.
+    Direct Python implementation of chopaeng's commandBuilderHex.ts.
+    - If base_id or variant_string is already 16-character hex, returns as-is.
+    - For customizable furniture, encodes variant info (primary/secondary) into a 16-char hex: 0000<variantHex>0000<baseId>.
+    - For Fencing, uses fencing layout: <countHex>00310000<baseId>.
+    - For standalone items or items with distinct color internal IDs, returns the 4-char hex ID.
+    """
+    clean_base = str(base_id or "").strip().upper()
+    clean_var = str(variant_string).strip() if variant_string is not None else ""
+
+    # Handle compound id like '116F:2B0C' or '38EF:1_0' if passed as base_id
+    if ":" in clean_base:
+        parts = clean_base.split(":", 1)
+        parent, v_key = parts[0], parts[1]
+        if re.match(r"^\d+_\d+$", v_key):
+            clean_base = parent
+            if not clean_var or clean_var == "NA":
+                clean_var = v_key
+        elif re.match(r"^[0-9A-F]{2,6}$", v_key, re.IGNORECASE):
+            clean_base = v_key
+            if clean_var == v_key:
+                clean_var = "NA"
+        else:
+            clean_base = parent
+
+    if len(clean_base) == 16:
+        return clean_base
+    if clean_var and len(clean_var) == 16:
+        return clean_var.upper()
+
+    # If no variant or variant is NA / empty / DIY:
+    if not clean_var or clean_var in ("NA", "", "DIY"):
+        return clean_base.zfill(4)
+
+    # Pattern variations (customizable items like furniture) use "primary_secondary" (e.g. "0_0", "1_0")
+    var_parts = clean_var.split("_")
+    if len(var_parts) == 2 and var_parts[0].isdigit() and var_parts[1].isdigit():
+        primary = int(var_parts[0])
+        secondary = int(var_parts[1])
+        padded_base = clean_base.zfill(4)
+
+        if category == "Fencing":
+            return f"{primary:X}00310000{padded_base}"
+
+        variant_int = primary + (secondary * 32)
+        variant_hex = f"{variant_int:04X}"
+        return f"0000{variant_hex}0000{padded_base}"
+
+    # If clean_var was passed a hex ID (like '2B0C')
+    if re.match(r"^[0-9A-F]{2,6}$", clean_var, re.IGNORECASE):
+        return clean_var.zfill(4).upper()
+
+    return clean_base.zfill(4)
+
+
+def resolve_item_hex(item_query: str) -> Optional[str]:
+    """
+    Resolve any item name or variant or raw code to its 4-character or 16-character hex code.
+    Examples:
+      - '2154' -> '2154'
+      - '00000001000038EF' -> '00000001000038EF'
+      - 'ABD' -> '00000000000038EF' (or '38EF')
+      - 'Blue ABD' or 'ABD (Blue)' -> '00000001000038EF'
+      - 'Faux-shearling boots' -> '2D1E'
+      - 'Faux-shearling boots (Beige)' -> '1271'
+    """
+    query = str(item_query or "").strip()
+    if not query:
+        return None
+
+    # Check if raw hex code (4 hex or 16 hex digits, optional 0x prefix)
+    clean_hex = re.sub(r"^0x", "", query, flags=re.IGNORECASE).strip()
+    if re.fullmatch(r"[0-9a-fA-F]{4}|[0-9a-fA-F]{16}", clean_hex):
+        return clean_hex.upper()
+
+    # Strip common prefixes like 'regular ', 'default ', 'normal '
+    clean_prefix = re.sub(r"^(?:regular|normal|default)\s+", "", query, flags=re.IGNORECASE).strip()
+    if clean_prefix and clean_prefix != query:
+        res = resolve_item_hex(clean_prefix)
+        if res:
+            return res
+
+    cat_data = load_items_catalog()
+    items_by_name = cat_data.get("by_name", {})
+    items_by_norm = cat_data.get("by_norm", {})
+    all_items = cat_data.get("items", [])
+
+    # Check for parentheses: 'ABD (Blue)' or 'Faux-shearling boots (Beige)'
+    m_paren = re.match(r"^(.*?)\s*\((.*?)\)$", query)
+    base_name = None
+    var_name = None
+    if m_paren:
+        base_name = m_paren.group(1).strip()
+        var_name = m_paren.group(2).strip()
+
+    target_item = items_by_name.get(query.lower()) or items_by_norm.get(re.sub(r"[^a-z0-9]", "", query.lower()))
+
+    # If direct query didn't match and no parens, check variation prefix or suffix, e.g. 'Blue ABD' or 'ABD Blue'
+    if not target_item and not base_name:
+        for it in all_items:
+            it_name_lower = (it.get("Name") or "").lower()
+            variations = it.get("Variations") or []
+            for v in variations:
+                v_name = str(v.get("Variation") or "").lower().strip()
+                if v_name and v_name != "na":
+                    if query.lower() in (f"{v_name} {it_name_lower}", f"{it_name_lower} {v_name}"):
+                        target_item = it
+                        var_name = str(v.get("Variation"))
+                        break
+            if target_item:
+                break
+
+    if base_name and not target_item:
+        target_item = items_by_name.get(base_name.lower()) or items_by_norm.get(re.sub(r"[^a-z0-9]", "", base_name.lower()))
+
+    if not target_item:
+        return None
+
+    variations = target_item.get("Variations") or []
+    cat = target_item.get("Category", "")
+    base_id = str(target_item.get("Internal ID") or "").strip().upper()
+
+    matched_var = None
+    if var_name and variations:
+        var_norm = var_name.lower().strip()
+        for v in variations:
+            v_val = str(v.get("Variation") or "").strip().lower()
+            p_val = str(v.get("Pattern") or "").strip().lower()
+            if v_val == var_norm or p_val == var_norm:
+                matched_var = v
+                break
+
+    if not matched_var and variations:
+        # If no specific variant was found or asked, use first variation
+        matched_var = variations[0]
+
+    if matched_var:
+        raw_id = str(matched_var.get("id") or "").strip()
+        is_pattern = bool(re.match(r"^\d+_\d+$", raw_id))
+        if is_pattern:
+            return generate_full_item_hex(matched_var.get("pokerId") or base_id, raw_id, cat)
+        else:
+            hex_id = matched_var.get("pokerId") or (matched_var.get("id") if matched_var.get("id") != "NA" else None) or base_id
+            return str(hex_id).upper().zfill(4)
+
+    return base_id.upper().zfill(4)
+
+
+def resolve_villager_code(villager_query: str) -> str:
+    """
+    Resolve any villager name, code, or injection command to the standard 'villager:<internal_id>' format.
+    Examples:
+      - 'Agent S' -> 'villager:squ05'
+      - 'agent s' -> 'villager:squ05'
+      - 'squ05' -> 'villager:squ05'
+      - 'villager:squ05' -> 'villager:squ05'
+      - '!injectvillager squ05' -> 'villager:squ05'
+    """
+    query = str(villager_query or "").strip()
+    query = re.sub(r"^!(?:injectvillager|inject|mvi)\s*", "", query, flags=re.IGNORECASE).strip()
+
+    if query.lower().startswith("villager:"):
+        raw_code = query[9:].strip().lower()
+        query = raw_code
+
+    v_cat = load_villagers_catalog()
+    villagers_by_id = v_cat.get("by_id", {})
+    villagers_by_name = v_cat.get("by_name", {})
+
+    # Check direct ID match
+    if query.lower() in villagers_by_id:
+        return f"villager:{query.lower()}"
+
+    # Check name match
+    norm = re.sub(r"[^a-z0-9]", "", query.lower())
+    found = villagers_by_name.get(query.lower()) or villagers_by_name.get(norm)
+    if found:
+        return f"villager:{str(found.get('id') or '').lower()}"
+
+    # Return as villager:<query> if unmapped
+    return f"villager:{query.lower()}"
+
+
+def resolve_drop_items(
+    raw_items: Union[str, List[str]],
+    max_slots: int = 40,
+) -> tuple[str, list[str]]:
+    """
+    Parse and convert drop items into space-delimited hex codes with NO COMMAS.
+    Repeats items for multiple counts or variants (e.g. regular abd, blue abd, Faux-shearling boots 10x).
+    Returns (space_separated_string, list_of_hexes).
+    """
+    if not raw_items:
+        return "", []
+
+    entries: list[str] = []
+    if isinstance(raw_items, str):
+        clean_text = raw_items.strip()
+        if clean_text.lower().startswith("!drop"):
+            clean_text = re.sub(r"^!drop\s*", "", clean_text, flags=re.IGNORECASE).strip()
+
+        # Check if already a space-delimited sequence of raw hex codes
+        tokens = [t.strip() for t in clean_text.split() if t.strip()]
+        if tokens and all(re.fullmatch(r"[0-9a-fA-F]{4}(?:[0-9a-fA-F]{12})?", t) for t in tokens):
+            entries = tokens
+        elif any(sep in clean_text for sep in [",", "\n", ";", "\r"]):
+            entries = [e.strip() for e in re.split(r"[,;\n\r]+", clean_text) if e.strip()]
+        else:
+            entries = [clean_text]
+    elif isinstance(raw_items, list):
+        entries = [str(x).strip() for x in raw_items if str(x).strip()]
+
+    result_hexes: list[str] = []
+
+    for entry in entries:
+        if not entry:
+            continue
+
+        # Check if token is already pure hex
+        if re.fullmatch(r"[0-9a-fA-F]{4}|[0-9a-fA-F]{16}", entry):
+            result_hexes.append(entry.upper())
+            continue
+
+        # Extract name and quantity
+        # e.g. 'Faux-shearling boots 10x', 'Gold nugget 30', 'ABD x2'
+        name = entry
+        qty = 1
+
+        m_x = re.match(r"^(.*?)(?:\s*[xX×]\s*(\d+)|\s+(\d+)[xX×])$", entry)
+        if m_x:
+            name = m_x.group(1).strip()
+            qty = int(m_x.group(2) or m_x.group(3) or 1)
+        else:
+            m_num = re.match(r"^(.*?)\s+(\d+)$", entry)
+            if m_num:
+                cand_name = m_num.group(1).strip()
+                cand_qty = int(m_num.group(2))
+                resolved_cand = resolve_item_hex(cand_name)
+                if resolved_cand or cand_qty <= 40:
+                    name = cand_name
+                    qty = cand_qty
+
+        qty = max(1, min(qty, max_slots))
+        hex_code = resolve_item_hex(name)
+        if not hex_code:
+            clean_name = re.sub(r"[^0-9a-fA-F]", "", name)
+            if len(clean_name) in (4, 16):
+                hex_code = clean_name.upper()
+            else:
+                hex_code = name
+
+        for _ in range(qty):
+            result_hexes.append(hex_code)
+            if len(result_hexes) >= max_slots:
+                break
+
+        if len(result_hexes) >= max_slots:
+            break
+
+    result_str = " ".join(result_hexes)
+    return result_str, result_hexes
+
+
+# Attach static methods to DataManager class for object-level access
+DataManager.generate_full_item_hex = staticmethod(generate_full_item_hex)
+DataManager.resolve_item_hex = staticmethod(resolve_item_hex)
+DataManager.resolve_villager_code = staticmethod(resolve_villager_code)
+DataManager.resolve_drop_items = staticmethod(resolve_drop_items)
+

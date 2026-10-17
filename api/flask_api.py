@@ -3091,6 +3091,11 @@ def api_island_drop(name):
     drop_type = body.get("type") or "items"
     count = body.get("count")
 
+    from utils.data_manager import resolve_drop_items
+    hex_items, _ = resolve_drop_items(items)
+    if hex_items:
+        items = hex_items
+
     from utils.sysbot_api import get_island_sysbot_client
     client = get_island_sysbot_client(clean_name, timeout=5)
     resp = client.submit_drop_sync(items=items, drop_type=drop_type, username=username, count=count)
@@ -3182,6 +3187,12 @@ def api_island_villager_inject(name):
 
     if not villager and not command:
         return jsonify({"success": False, "error": "Villager or injection command is required."}), 400
+
+    from utils.data_manager import resolve_villager_code
+    if villager:
+        villager = resolve_villager_code(str(villager))
+    if command:
+        command = resolve_villager_code(command)
 
     from utils.sysbot_api import get_island_sysbot_client
     client = get_island_sysbot_client(clean_name, timeout=5)

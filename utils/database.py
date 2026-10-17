@@ -136,6 +136,16 @@ class Connection:
                         continue
                 raise
 
+    def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]):
+        rows = list(seq_of_params)
+        if not rows:
+            return StaticCursor([], [])
+
+        last_cur = None
+        for p in rows:
+            last_cur = self.execute(sql, p)
+        return last_cur
+
     def commit(self):
         self._conn.commit()
 
