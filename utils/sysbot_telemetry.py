@@ -33,6 +33,7 @@ _LAST_EVENT_IDS: Dict[str, int] = {}
 _SENT_WEBHOOK_EVENT_IDS: set[tuple[str, int]] = set()
 _PREV_ISLAND_VISITORS: Dict[str, list[str]] = {}
 _NOTIFIED_ARRIVALS: Dict[tuple[str, str], float] = {}  # (island_lower, player_lower) -> timestamp
+_CONSECUTIVE_ERRORS: Dict[str, int] = {}
 _CACHE_LOCK = threading.Lock()
 
 _JOIN_REGEX = re.compile(
@@ -387,17 +388,50 @@ def parse_sysbot_visitors(status_data: Dict[str, Any]) -> tuple[int, list[str]]:
 
 
 def poll_single_island(island_name: str) -> Dict[str, Any]:
-    """Poll a single island's SysBot HTTP port for status and new events."""
-    client = get_island_sysbot_client(island_name, timeout=2)
-    status_data = client.get_bot_status_sync()
-
-    now_ts = time.time()
+    """Poll a single island's SysBot HTTP port for status and new events, tracking load and health."""
     clean_name = island_name.strip().title()
+    clean_lower = clean_name.lower()
     is_sub = _is_sub_island(clean_name)
 
+    t0 = time.perf_counter()
+    client = get_island_sysbot_client(island_name, timeout=2)
+    status_data = client.get_bot_status_sync()
+    latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    now_ts = time.time()
     is_online = bool(status_data.get("is_running") and status_data.get("is_connected"))
     dodo_code = status_data.get("dodo_code")
     visitors_count, visitor_list = parse_sysbot_visitors(status_data)
+
+    # Queue depth & consecutive error tracking
+    raw_queue = status_data.get("queue_count") or status_data.get("queue_length") or 0
+    try:
+        queue_count = max(0, int(raw_queue))
+    except (ValueError, TypeError):
+        queue_count = 0
+
+    with _CACHE_LOCK:
+        if is_online:
+            _CONSECUTIVE_ERRORS[clean_lower] = 0
+        else:
+            _CONSECUTIVE_ERRORS[clean_lower] = _CONSECUTIVE_ERRORS.get(clean_lower, 0) + 1
+        consecutive_errors = _CONSECUTIVE_ERRORS[clean_lower]
+
+    # Load balancing metrics
+    headroom = max(0, 7 - visitors_count)
+    if not is_online:
+        load_score = 1.0
+        health_score = 0.0
+    else:
+        # Load score: 0.0 (idle) to 1.0 (saturated)
+        visitor_load = min(1.0, visitors_count / 7.0) * 0.55
+        queue_load = min(1.0, queue_count / 10.0) * 0.35
+        lat_load = min(1.0, latency_ms / 1500.0) * 0.10
+        load_score = round(min(1.0, max(0.0, visitor_load + queue_load + lat_load)), 3)
+        if consecutive_errors > 2:
+            health_score = 0.0
+        else:
+            health_score = round(max(0.0, (1.0 - load_score) * 100.0), 1)
 
     # Ingest /api/gametime incrementally (every 30s) if island is online
     gametime_data: Optional[Dict[str, Any]] = None
@@ -435,6 +469,12 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
         "is_refreshing_dodo": bool(status_data.get("is_refreshing_dodo")),
         "visitors_count": visitors_count,
         "visitor_list": visitor_list,
+        "queue_count": queue_count,
+        "latency_ms": latency_ms,
+        "headroom": headroom,
+        "load_score": load_score,
+        "health_score": health_score,
+        "consecutive_errors": consecutive_errors,
         "last_arrival": status_data.get("last_arrival"),
         "last_departure": status_data.get("last_departure"),
         "last_updated": now_ts,
@@ -890,4 +930,160 @@ def get_live_visitor_overview() -> Dict[str, Any]:
         "total_visitors": total_visitors,
         "active_islands_count": len(active_islands),
         "islands": active_islands,
+    }
+
+
+def get_island_health(island_name: str) -> Optional[Dict[str, Any]]:
+    """Get the current load balancing health metrics for a specific island."""
+    clean_lower = (island_name or "").strip().lower()
+    with _CACHE_LOCK:
+        entry = _TELEMETRY_CACHE.get(clean_lower)
+        if not entry:
+            return None
+        return {
+            "island": entry.get("island"),
+            "is_online": bool(entry.get("is_online")),
+            "is_connected": bool(entry.get("is_connected")),
+            "console_stage": entry.get("console_stage"),
+            "visitors_count": entry.get("visitors_count", 0),
+            "headroom": entry.get("headroom", 7),
+            "queue_count": entry.get("queue_count", 0),
+            "latency_ms": entry.get("latency_ms", 0.0),
+            "load_score": entry.get("load_score", 1.0),
+            "health_score": entry.get("health_score", 0.0),
+            "consecutive_errors": entry.get("consecutive_errors", 0),
+            "last_updated": entry.get("last_updated"),
+        }
+
+
+def get_all_islands_health() -> Dict[str, Dict[str, Any]]:
+    """Retrieve load balancing health metrics for all cached islands."""
+    with _CACHE_LOCK:
+        items = list(_TELEMETRY_CACHE.items())
+
+    results = {}
+    for isl_lower, entry in items:
+        results[isl_lower] = {
+            "island": entry.get("island"),
+            "is_online": bool(entry.get("is_online")),
+            "is_connected": bool(entry.get("is_connected")),
+            "console_stage": entry.get("console_stage"),
+            "visitors_count": entry.get("visitors_count", 0),
+            "headroom": entry.get("headroom", 7),
+            "queue_count": entry.get("queue_count", 0),
+            "latency_ms": entry.get("latency_ms", 0.0),
+            "load_score": entry.get("load_score", 1.0),
+            "health_score": entry.get("health_score", 0.0),
+            "consecutive_errors": entry.get("consecutive_errors", 0),
+            "last_updated": entry.get("last_updated"),
+        }
+    return results
+
+
+def get_healthy_islands(group: str = "all", max_visitors: int = 7) -> List[str]:
+    """
+    Get list of currently healthy and available islands filtered by tier group.
+    Groups: 'sub' (20 Sub Islands), 'free' (27 Free Islands), 'order' (Sinta), 'all' (all 48).
+    """
+    group_norm = (group or "all").strip().lower()
+    all_health = get_all_islands_health()
+
+    candidates: List[str] = []
+    if group_norm == "sub":
+        canonical_sub = [str(n).strip() for n in (getattr(Config, "SUB_ISLANDS", []) or [])]
+        candidates = canonical_sub
+    elif group_norm == "free":
+        all_ordered = [str(n).strip() for n in (getattr(Config, "ALL_ISLAND_PORT_ORDER", []) or [])]
+        sub_set = {str(n).strip().lower() for n in (getattr(Config, "SUB_ISLANDS", []) or [])}
+        candidates = [n for n in all_ordered if n.lower() not in sub_set and n.lower() != "sinta"]
+    elif group_norm == "order":
+        candidates = [getattr(Config, "ORDER_BOT_ISLAND", "Sinta")]
+    else:
+        candidates = [str(n).strip() for n in (getattr(Config, "ALL_ISLAND_PORT_ORDER", []) or [])]
+
+    healthy: List[str] = []
+    for cand in candidates:
+        metrics = all_health.get(cand.lower())
+        if not metrics:
+            continue
+        if metrics["is_online"] and metrics["health_score"] > 0:
+            if metrics["visitors_count"] <= max_visitors:
+                healthy.append(metrics["island"] or cand)
+
+    return healthy
+
+
+def get_least_loaded_island(
+    group: str = "all",
+    candidates: Optional[List[str]] = None,
+) -> Optional[str]:
+    """
+    Select the least-loaded island from a group or custom candidate list.
+    Evaluates real-time load score based on visitor count, queue depth, and latency.
+    """
+    all_health = get_all_islands_health()
+
+    if candidates is not None:
+        target_names = [str(c).strip() for c in candidates if str(c).strip()]
+    else:
+        target_names = get_healthy_islands(group=group)
+
+    if not target_names:
+        return None
+
+    best_island = None
+    best_load = 999.0
+    best_health = -1.0
+
+    for name in target_names:
+        metrics = all_health.get(name.lower())
+        if not metrics or not metrics.get("is_online"):
+            continue
+        load = metrics.get("load_score", 1.0)
+        health = metrics.get("health_score", 0.0)
+
+        # Prioritize lower load score, breaking ties with higher health score
+        if load < best_load or (abs(load - best_load) < 0.001 and health > best_health):
+            best_load = load
+            best_health = health
+            best_island = metrics.get("island") or name
+
+    return best_island
+
+
+def get_island_load_overview() -> Dict[str, Any]:
+    """Provide a cluster-wide load balancing overview across all tiers."""
+    health_map = get_all_islands_health()
+    all_islands = list(health_map.values())
+
+    online_count = sum(1 for m in all_islands if m["is_online"])
+    total_count = len(all_islands) or len(getattr(Config, "ALL_ISLAND_PORT_ORDER", []))
+    total_visitors = sum(m.get("visitors_count", 0) for m in all_islands if m["is_online"])
+    total_queue = sum(m.get("queue_count", 0) for m in all_islands if m["is_online"])
+
+    loads = [m["load_score"] for m in all_islands if m["is_online"]]
+    avg_load = round(sum(loads) / len(loads), 3) if loads else 0.0
+
+    sub_healthy = get_healthy_islands(group="sub")
+    free_healthy = get_healthy_islands(group="free")
+
+    return {
+        "success": True,
+        "total_islands": total_count,
+        "online_islands": online_count,
+        "offline_islands": max(0, total_count - online_count),
+        "total_visitors": total_visitors,
+        "total_queued_orders": total_queue,
+        "cluster_average_load": avg_load,
+        "sub_islands": {
+            "total": len(getattr(Config, "SUB_ISLANDS", [])),
+            "healthy_count": len(sub_healthy),
+            "least_loaded": get_least_loaded_island(group="sub"),
+        },
+        "free_islands": {
+            "total": 27,
+            "healthy_count": len(free_healthy),
+            "least_loaded": get_least_loaded_island(group="free"),
+        },
+        "islands": health_map,
     }

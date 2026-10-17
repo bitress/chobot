@@ -2964,6 +2964,15 @@ def get_island_visitors(name):
 
 # --- FLIGHT & ACTIVITY LOGGING ROUTES (NO DISCORD) ---
 
+@app.route('/api/islands/load-balancer', methods=['GET'])
+@app.route('/api/islands/load-balancer/status', methods=['GET'])
+def api_load_balancer_status():
+    """Real-time cluster load balancing metrics and telemetry across all 48 islands."""
+    from utils.sysbot_api import get_sysbot_load_balancer
+    lb = get_sysbot_load_balancer()
+    return jsonify(lb.get_stats())
+
+
 @app.route('/api/flights/live', methods=['GET'])
 def api_live_flights():
     """Real-time visitor overview across all 48 islands without Discord."""

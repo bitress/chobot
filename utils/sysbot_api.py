@@ -1082,3 +1082,326 @@ def get_island_sysbot_client(island_name: str, timeout: int = 5) -> SysBotClient
     return _GLOBAL_CLIENT_POOL.get_client(island_name, timeout=timeout)
 
 
+# ============================================================================
+# MULTI-ISLAND LOAD BALANCER & FAILOVER ROUTER
+# ============================================================================
+
+class SysBotLoadBalancer:
+    """
+    Intelligent Load Balancer for the 48-island SysBot fleet.
+    Distributes drops, villager injections, and orders across healthy online islands.
+
+    Supported Strategies:
+      - 'least_loaded' (default): Picks the island with the lowest load score
+        combining visitor saturation (55%), queue depth (35%), and latency (10%).
+      - 'round_robin': Stateful round-robin cycle advancing across healthy islands.
+      - 'least_queue': Picks the island with the shortest pending command queue.
+      - 'lowest_latency': Selects the fastest responding SysBot instance.
+      - 'random_weighted': Weighted selection inversely proportional to load score.
+    """
+
+    def __init__(self, pool: Optional[SysBotClientPool] = None):
+        self._pool = pool or _GLOBAL_CLIENT_POOL
+        self._round_robin_indices: Dict[str, int] = {}
+        self._lock = threading.Lock()
+        self._stats: Dict[str, int] = {
+            "routes_least_loaded": 0,
+            "routes_round_robin": 0,
+            "routes_least_queue": 0,
+            "routes_lowest_latency": 0,
+            "failovers_executed": 0,
+        }
+
+    def select_island(
+        self,
+        group: str = "all",
+        strategy: str = "least_loaded",
+        candidates: Optional[List[str]] = None,
+        max_visitors: int = 7,
+    ) -> Optional[str]:
+        """
+        Select the best island name using the specified strategy.
+        Returns None if no eligible island is online.
+        """
+        from utils.sysbot_telemetry import get_all_islands_health, get_healthy_islands
+
+        strat = (strategy or "least_loaded").strip().lower()
+
+        # Resolve candidate pool
+        if candidates is not None and len(candidates) > 0:
+            target_candidates = [str(c).strip() for c in candidates if str(c).strip()]
+        else:
+            target_candidates = get_healthy_islands(group=group, max_visitors=max_visitors)
+
+        if not target_candidates:
+            # Fallback: if all max_visitors exceeded, try any online island
+            all_health = get_all_islands_health()
+            all_online = [
+                m["island"] for m in all_health.values()
+                if m.get("is_online") and (candidates is None or m["island"] in candidates)
+            ]
+            if not all_online:
+                return None
+            target_candidates = all_online
+
+        all_health = get_all_islands_health()
+        valid_nodes: List[Dict[str, Any]] = []
+        for name in target_candidates:
+            metrics = all_health.get(name.lower())
+            if metrics and metrics.get("is_online"):
+                valid_nodes.append(metrics)
+            elif not all_health:  # Telemetry cache might still be cold on startup
+                valid_nodes.append({"island": name, "load_score": 0.5, "latency_ms": 50.0, "queue_count": 0})
+
+        if not valid_nodes:
+            return target_candidates[0] if target_candidates else None
+
+        # Strategy 1: Round Robin
+        if strat == "round_robin":
+            with self._lock:
+                idx = self._round_robin_indices.get(group.lower(), 0)
+                selected = valid_nodes[idx % len(valid_nodes)]["island"]
+                self._round_robin_indices[group.lower()] = (idx + 1) % len(valid_nodes)
+                self._stats["routes_round_robin"] += 1
+            return selected
+
+        # Strategy 2: Least Queue
+        if strat == "least_queue":
+            sorted_nodes = sorted(valid_nodes, key=lambda n: (n.get("queue_count", 0), n.get("load_score", 1.0)))
+            with self._lock:
+                self._stats["routes_least_queue"] += 1
+            return sorted_nodes[0]["island"]
+
+        # Strategy 3: Lowest Latency
+        if strat == "lowest_latency":
+            sorted_nodes = sorted(valid_nodes, key=lambda n: n.get("latency_ms", 9999.0))
+            with self._lock:
+                self._stats["routes_lowest_latency"] += 1
+            return sorted_nodes[0]["island"]
+
+        # Strategy 4: Random Weighted
+        if strat in ("random", "random_weighted"):
+            import random
+            weights = [max(0.01, 1.05 - n.get("load_score", 0.5)) for n in valid_nodes]
+            chosen = random.choices(valid_nodes, weights=weights, k=1)[0]
+            return chosen["island"]
+
+        # Default Strategy: Least Loaded
+        sorted_nodes = sorted(
+            valid_nodes,
+            key=lambda n: (
+                n.get("load_score", 1.0),
+                -n.get("health_score", 0.0),
+                n.get("queue_count", 0),
+            )
+        )
+        with self._lock:
+            self._stats["routes_least_loaded"] += 1
+        return sorted_nodes[0]["island"]
+
+    def get_client(
+        self,
+        group: str = "all",
+        strategy: str = "least_loaded",
+        candidates: Optional[List[str]] = None,
+        timeout: int = 5,
+    ) -> Tuple[SysBotClient, str]:
+        """
+        Select an island and return its pooled SysBotClient instance and island name.
+        """
+        chosen_island = self.select_island(group=group, strategy=strategy, candidates=candidates)
+        if not chosen_island:
+            # Fallback to configured default island
+            chosen_island = getattr(Config, "ORDER_BOT_ISLAND", "Sinta") or "Sinta"
+
+        client = self._pool.get_client(chosen_island, timeout=timeout)
+        return client, chosen_island
+
+    def execute_with_failover(
+        self,
+        action_callable,
+        group: str = "all",
+        strategy: str = "least_loaded",
+        candidates: Optional[List[str]] = None,
+        max_attempts: int = 3,
+        timeout: int = 5,
+    ) -> Tuple[Dict[str, Any], str]:
+        """
+        Execute an operation against the cluster with automatic failover.
+        If the primary candidate fails (HTTP 502/503/504, timeout, or offline),
+        the load balancer immediately routes to the next healthiest candidate.
+
+        action_callable signature: (client: SysBotClient, island_name: str) -> dict
+        """
+        from utils.sysbot_telemetry import get_healthy_islands
+
+        pool_candidates = list(candidates) if candidates else get_healthy_islands(group=group)
+        if not pool_candidates:
+            fallback = getattr(Config, "ORDER_BOT_ISLAND", "Sinta") or "Sinta"
+            pool_candidates = [fallback]
+
+        attempted: set[str] = set()
+        last_resp: Dict[str, Any] = {"success": False, "error": "No healthy islands available."}
+        last_island = pool_candidates[0]
+
+        attempts = min(max_attempts, len(pool_candidates))
+        for _ in range(attempts):
+            remaining = [c for c in pool_candidates if c.lower() not in attempted]
+            if not remaining:
+                break
+
+            chosen = self.select_island(group=group, strategy=strategy, candidates=remaining)
+            if not chosen:
+                chosen = remaining[0]
+
+            attempted.add(chosen.lower())
+            last_island = chosen
+            client = self._pool.get_client(chosen, timeout=timeout)
+
+            try:
+                resp = action_callable(client, chosen)
+                if isinstance(resp, dict):
+                    # Check if connection refused or offline
+                    if not resp.get("success") and resp.get("error") and (
+                        "unreachable" in str(resp.get("error")).lower()
+                        or "offline" in str(resp.get("error")).lower()
+                        or "timed out" in str(resp.get("error")).lower()
+                    ):
+                        with self._lock:
+                            self._stats["failovers_executed"] += 1
+                        logger.warning(
+                            f"[SysBotLoadBalancer] Request failed on {chosen} ({resp.get('error')}); failing over..."
+                        )
+                        last_resp = resp
+                        continue
+                    return resp, chosen
+                return {"success": True, "data": resp}, chosen
+            except Exception as exc:
+                with self._lock:
+                    self._stats["failovers_executed"] += 1
+                logger.warning(f"[SysBotLoadBalancer] Exception on {chosen}: {exc}; failing over...")
+                last_resp = {"success": False, "error": str(exc)}
+
+        return last_resp, last_island
+
+    def submit_drop_balanced(
+        self,
+        items: Union[str, List[str]],
+        group: str = "sub",
+        username: str = "WebUser",
+        candidates: Optional[List[str]] = None,
+        strategy: str = "least_loaded",
+    ) -> Dict[str, Any]:
+        """
+        Load-balanced drop execution with automatic failover across candidate islands.
+        """
+        def _do_drop(client: SysBotClient, isl: str) -> dict:
+            return client.submit_drop_sync(items=items, username=username)
+
+        resp, island = self.execute_with_failover(
+            _do_drop, group=group, strategy=strategy, candidates=candidates
+        )
+        if isinstance(resp, dict):
+            resp["dispatched_island"] = island
+        return resp
+
+    def inject_villagers_balanced(
+        self,
+        villagers: Union[str, Dict[str, Any], List[Union[str, Dict[str, Any]]]],
+        group: str = "sub",
+        plot: Optional[int] = None,
+        candidates: Optional[List[str]] = None,
+        strategy: str = "least_loaded",
+    ) -> Dict[str, Any]:
+        """
+        Load-balanced villager injection with automatic failover.
+        """
+        def _do_inject(client: SysBotClient, isl: str) -> dict:
+            return client.inject_villagers_sync(villagers=villagers, plot=plot)
+
+        resp, island = self.execute_with_failover(
+            _do_inject, group=group, strategy=strategy, candidates=candidates
+        )
+        if isinstance(resp, dict):
+            resp["dispatched_island"] = island
+        return resp
+
+    def submit_order_balanced(
+        self,
+        username: str,
+        order_text: str = "",
+        items: Optional[List[str]] = None,
+        villager: Optional[str] = None,
+        user_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        group: str = "all",
+        strategy: str = "least_loaded",
+    ) -> Dict[str, Any]:
+        """
+        Load-balanced order placement with automatic failover.
+        """
+        def _do_order(client: SysBotClient, isl: str) -> dict:
+            parsed_order, parsed_villager = parse_order_input(order_text)
+            payload: Dict[str, Any] = {"username": username}
+            if parsed_order:
+                payload["order"] = parsed_order
+            elif items:
+                payload["items"] = items
+            if villager or parsed_villager:
+                payload["villager"] = villager or parsed_villager
+            if user_id:
+                payload["user_id"] = str(user_id)
+            if order_id:
+                payload["order_id"] = str(order_id)
+            data, code = client._post("/api/order", payload)
+            if not isinstance(data, dict):
+                return {"success": False, "error": f"HTTP {code}"}
+            return data
+
+        resp, island = self.execute_with_failover(
+            _do_order, group=group, strategy=strategy
+        )
+        if isinstance(resp, dict):
+            resp["dispatched_island"] = island
+        return resp
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return load balancer metrics and counters."""
+        with self._lock:
+            stats_copy = dict(self._stats)
+        from utils.sysbot_telemetry import get_island_load_overview
+        overview = get_island_load_overview()
+        return {
+            "load_balancer": stats_copy,
+            "cluster": overview,
+        }
+
+
+_GLOBAL_LOAD_BALANCER = SysBotLoadBalancer()
+
+
+def get_sysbot_load_balancer() -> SysBotLoadBalancer:
+    """Return the global SysBotLoadBalancer instance."""
+    return _GLOBAL_LOAD_BALANCER
+
+
+def select_best_island(
+    group: str = "all",
+    strategy: str = "least_loaded",
+    candidates: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Select the best island from the cluster using real-time telemetry."""
+    return _GLOBAL_LOAD_BALANCER.select_island(group=group, strategy=strategy, candidates=candidates)
+
+
+def get_balanced_sysbot_client(
+    group: str = "all",
+    strategy: str = "least_loaded",
+    candidates: Optional[List[str]] = None,
+    timeout: int = 5,
+) -> Tuple[SysBotClient, str]:
+    """Get a pooled SysBotClient connected to the best available island in the fleet."""
+    return _GLOBAL_LOAD_BALANCER.get_client(group=group, strategy=strategy, candidates=candidates, timeout=timeout)
+
+
+

@@ -324,8 +324,20 @@ def drop_sub_island():
     island_name = data.get("island_name") or data.get("island_id") or ""
     clean = _clean_island_name(island_name)
 
-    if not _user_has_island_access(auth_user, clean):
-        return jsonify({"success": False, "error": f"You do not have access to {clean}."}), 403
+    if not clean or clean.lower() in ("auto", "any", "best"):
+        from utils.sysbot_api import select_best_island
+        allowed_islands = [
+            isl for isl in (getattr(Config, "SUB_ISLANDS", []) or [])
+            if _user_has_island_access(auth_user, isl)
+        ]
+        best_candidate = select_best_island(group="sub", candidates=allowed_islands)
+        if best_candidate:
+            clean = best_candidate
+        elif allowed_islands:
+            clean = allowed_islands[0]
+
+    if not clean or not _user_has_island_access(auth_user, clean):
+        return jsonify({"success": False, "error": f"You do not have access to {clean or 'the requested island'}."}), 403
 
     command = (data.get("command") or "").strip()
     state = _get_island_state(clean)
