@@ -261,113 +261,6 @@ def set_telemetry_discord_bot(bot: Any) -> None:
     _TELEMETRY_DISCORD_BOT = bot
 
 
-def send_sub_flight_message(content: str) -> None:
-    """Send sub island flight notification directly to Discord channel 809295405128089611.
-
-    Dispatches directly using:
-    1. Active Discord bot instance (channel.send) via threadsafe async call if available and ready.
-    2. Direct Discord REST API POST https://discord.com/api/v10/channels/{channel_id}/messages using Bot token.
-    3. Fallback to configured webhook if channel dispatch fails.
-    """
-    channel_id = int(getattr(Config, "SUB_FLIGHT_CHANNEL_ID", 809295405128089611) or 809295405128089611)
-
-    def _worker() -> None:
-        sent = False
-        global _TELEMETRY_DISCORD_BOT
-        bot = _TELEMETRY_DISCORD_BOT
-        if bot is not None:
-            try:
-                loop = getattr(bot, "loop", None)
-                if loop and loop.is_running() and not bot.is_closed():
-                    channel = bot.get_channel(channel_id)
-                    if channel is not None:
-                        asyncio.run_coroutine_threadsafe(channel.send(content), loop)
-                        sent = True
-                        logger.info("[SysBotTelemetry] Sub flight message sent via bot to channel %s: %s", channel_id, content)
-                    else:
-                        async def _fetch_and_send():
-                            try:
-                                ch = await bot.fetch_channel(channel_id)
-                                if ch:
-                                    await ch.send(content)
-                                    logger.info("[SysBotTelemetry] Sub flight message sent via bot fetch_channel to %s: %s", channel_id, content)
-                            except Exception as f_err:
-                                logger.warning("[SysBotTelemetry] Bot fetch_channel failed: %s; falling back to REST", f_err)
-                                _post_via_rest(channel_id, content)
-
-                        asyncio.run_coroutine_threadsafe(_fetch_and_send(), loop)
-                        sent = True
-            except Exception as b_err:
-                logger.warning("[SysBotTelemetry] Failed dispatch via in-process bot: %s", b_err)
-                sent = False
-
-        if not sent:
-            _post_via_rest(channel_id, content)
-
-    def _post_via_rest(ch_id: int, msg_content: str) -> None:
-        token = getattr(Config, "DISCORD_TOKEN", "") or os.getenv("DISCORD_TOKEN", "")
-        if token:
-            try:
-                api_url = f"https://discord.com/api/v10/channels/{ch_id}/messages"
-                payload = json.dumps({"content": msg_content}).encode("utf-8")
-                req = urllib.request.Request(
-                    api_url,
-                    data=payload,
-                    headers={
-                        "Authorization": f"Bot {token}",
-                        "Content-Type": "application/json",
-                        "User-Agent": "ChoBot-TelemetryFlight/1.0",
-                    },
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    if resp.status in (200, 201):
-                        logger.info("[SysBotTelemetry] Flight message sent directly to channel %s via REST: %s", ch_id, msg_content)
-                        return
-                    else:
-                        logger.warning("[SysBotTelemetry] Discord REST API returned HTTP %s for channel %s", resp.status, ch_id)
-            except urllib.error.HTTPError as exc:
-                err_body = ""
-                try:
-                    err_body = exc.read().decode("utf-8", errors="replace")
-                except Exception:
-                    pass
-                logger.warning("[SysBotTelemetry] REST HTTPError %s posting to channel %s: %s", exc.code, ch_id, err_body)
-            except Exception as exc:
-                logger.warning("[SysBotTelemetry] Error posting directly to channel %s: %s", ch_id, exc)
-
-        # Fallback to webhook if direct channel failed or no bot token
-        webhook_url = (
-            getattr(Config, "SUB_FLIGHT_WEBHOOK_URL", "")
-            or os.getenv("SUB_FLIGHT_WEBHOOK_URL", "")
-            or getattr(Config, "DODO_LOG_WEBHOOK_URL", "")
-        )
-        if webhook_url:
-            try:
-                payload = json.dumps({"content": msg_content}).encode("utf-8")
-                req = urllib.request.Request(
-                    webhook_url,
-                    data=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "User-Agent": "ChoBot-FlightWebhook/1.0",
-                    },
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    if resp.status in (200, 204):
-                        logger.info("[SysBotTelemetry] Fallback webhook posted: %s", msg_content)
-            except Exception as exc:
-                logger.warning("[SysBotTelemetry] Fallback webhook error: %s", exc)
-
-    t = threading.Thread(target=_worker, daemon=True, name="sub_flight_message_sender")
-    t.start()
-
-
-# Backward-compatibility alias
-send_sub_flight_webhook = send_sub_flight_message
-
-
 def parse_sysbot_visitors(status_data: Dict[str, Any]) -> tuple[int, list[str]]:
     """
     Extract clean visitor count and actual player visitor names from SysBot status payload.
@@ -620,22 +513,7 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                         if not already_sent:
                             formatted_time = _format_flight_timestamp(evt_time)
 
-                            # 1. Post flight notification directly to Sub flight channel (809295405128089611) if sub island
-                            if is_sub:
-                                if evt_type == "arrival":
-                                    flight_msg = f"{player} from {origin_clean} is joining {clean_name}."
-                                    send_sub_flight_message(f"> [{formatted_time}] 🛬 {flight_msg}")
-
-                                elif evt_type == "departure":
-                                    if player:
-                                        flight_msg = f"{player} has departed from {clean_name}"
-                                    elif msg:
-                                        flight_msg = msg.strip().rstrip(".")
-                                    else:
-                                        flight_msg = f"A visitor has departed from {clean_name}"
-                                    send_sub_flight_message(f"> [{formatted_time}] 🛫 {flight_msg}")
-
-                            # 2. Direct in-process dispatch to flight loggers (FlightLoggerCog, etc.)
+                            # Direct in-process dispatch to flight loggers (FlightLoggerCog, etc.)
                             dispatch_flight_event({
                                 "event_id": evt_id,
                                 "event_type": evt_type,
@@ -704,9 +582,6 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                 flight_msg = f"{p_clean} from {origin_clean} is joining {clean_name}."
 
                 logger.info("[SysBotTelemetry] Detected arrival via visitor delta on %s: %s", clean_name, flight_msg)
-
-                if is_sub:
-                    send_sub_flight_message(f"> [{formatted_time}] 🛬 {flight_msg}")
 
                 dispatch_flight_event({
                     "event_id": synth_id,
