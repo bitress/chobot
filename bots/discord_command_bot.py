@@ -409,6 +409,35 @@ def is_admin_or_senior_mod():
 
     return commands.check(predicate)
 
+
+def is_admin_member(member_or_user) -> bool:
+    """True if user has Administrator or Manage Guild permission, is server owner, or holds ADMIN_ROLE_ID."""
+    if not member_or_user:
+        return False
+    perms = getattr(member_or_user, "guild_permissions", None)
+    if perms and (perms.administrator or perms.manage_guild):
+        return True
+    guild = getattr(member_or_user, "guild", None)
+    if guild and getattr(guild, "owner_id", None) == member_or_user.id:
+        return True
+    roles = getattr(member_or_user, "roles", [])
+    admin_id = getattr(Config, "ADMIN_ROLE_ID", None)
+    if admin_id and any(getattr(r, "id", None) == admin_id for r in roles):
+        return True
+    return False
+
+
+def is_admin_only():
+    """Restricts command execution strictly to guild administrators and bot owners."""
+    async def predicate(ctx: commands.Context):
+        if is_admin_member(ctx.author):
+            return True
+        if ctx.bot and getattr(ctx.bot, "owner_id", None) and ctx.author.id == ctx.bot.owner_id:
+            return True
+        raise commands.CheckFailure("You must be an administrator to use this command.")
+
+    return commands.check(predicate)
+
 class SuggestionSelect(discord.ui.Select):
     """Dropdown select for choosing from suggestions"""
 
@@ -5524,10 +5553,23 @@ class DiscordCommandCog(commands.Cog):
     @commands.hybrid_command(
         name="sub-rules",
         aliases=["subrules"],
-        description="Deploy the Subscriber Rules panel in this channel"
+        description="[Admin Only] Deploy the Subscriber Rules panel in this channel"
     )
+    @app_commands.default_permissions(administrator=True)
+    @is_admin_only()
     async def sub_rules(self, ctx: commands.Context):
-        """Deploy the Subscriber Rules panel without showing who invoked the command."""
+        """Deploy the Subscriber Rules panel without showing who invoked the command (Admin only)."""
+        if not is_admin_member(ctx.author) and not (ctx.bot and getattr(ctx.bot, "owner_id", None) and ctx.author.id == ctx.bot.owner_id):
+            msg = "⛔ **Access Denied:** `/sub-rules` is restricted to Admins only."
+            if ctx.interaction:
+                if not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await ctx.interaction.followup.send(msg, ephemeral=True)
+            else:
+                await ctx.reply(msg, ephemeral=True)
+            return
+
         embed = build_sub_rules_embed(ctx.guild)
         view = SubRulesView()
         if ctx.interaction:
@@ -5539,13 +5581,39 @@ class DiscordCommandCog(commands.Cog):
                 await ctx.message.delete()
             await ctx.channel.send(embed=embed, view=view)
 
+    @sub_rules.error
+    async def sub_rules_error(self, ctx: commands.Context, error: Exception):
+        """Handle permission errors for sub-rules cleanly and ephemerally."""
+        if isinstance(error, (commands.CheckFailure, commands.MissingPermissions)):
+            msg = "⛔ **Access Denied:** `/sub-rules` is restricted to Admins only."
+            if ctx.interaction:
+                if not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await ctx.interaction.followup.send(msg, ephemeral=True)
+            else:
+                await ctx.reply(msg, ephemeral=True)
+
     @commands.hybrid_command(
         name="order-rule",
         aliases=["orderrule", "order-rules", "orderrules"],
-        description="Deploy the Order Bot Rules panel in this channel"
+        description="[Admin Only] Deploy the Order Bot Rules panel in this channel"
     )
+    @app_commands.default_permissions(administrator=True)
+    @is_admin_only()
     async def order_rule(self, ctx: commands.Context):
-        """Deploy the Order Bot Rules panel without showing who invoked the command."""
+        """Deploy the Order Bot Rules panel without showing who invoked the command (Admin only)."""
+        if not is_admin_member(ctx.author) and not (ctx.bot and getattr(ctx.bot, "owner_id", None) and ctx.author.id == ctx.bot.owner_id):
+            msg = "⛔ **Access Denied:** `/order-rule` is restricted to Admins only."
+            if ctx.interaction:
+                if not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await ctx.interaction.followup.send(msg, ephemeral=True)
+            else:
+                await ctx.reply(msg, ephemeral=True)
+            return
+
         embed = build_order_rules_embed(ctx.guild)
         view = OrderRulesView()
         if ctx.interaction:
@@ -5556,6 +5624,19 @@ class DiscordCommandCog(commands.Cog):
             with contextlib.suppress(Exception):
                 await ctx.message.delete()
             await ctx.channel.send(embed=embed, view=view)
+
+    @order_rule.error
+    async def order_rule_error(self, ctx: commands.Context, error: Exception):
+        """Handle permission errors for order-rule cleanly and ephemerally."""
+        if isinstance(error, (commands.CheckFailure, commands.MissingPermissions)):
+            msg = "⛔ **Access Denied:** `/order-rule` is restricted to Admins only."
+            if ctx.interaction:
+                if not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await ctx.interaction.followup.send(msg, ephemeral=True)
+            else:
+                await ctx.reply(msg, ephemeral=True)
 
 
 class DiscordCommandBot(commands.Bot):

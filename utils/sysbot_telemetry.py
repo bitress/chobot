@@ -68,6 +68,28 @@ def _extract_flight_info_from_message(msg: str) -> tuple[Optional[str], Optional
 
     return None, None, None, None
 
+
+IGNORED_FLIGHT_PLAYERS = frozenset({"chopaeng", "cho paeng"})
+
+
+def is_ignored_flight_player(player_name: Optional[str]) -> bool:
+    """Check if the player name matches an internal host/bot account (e.g. 'chopaeng') that shouldn't be tracked."""
+    if not player_name:
+        return False
+    norm = re.sub(r"[^a-z0-9]", "", str(player_name).lower())
+    return norm in ("chopaeng",)
+
+
+def is_valid_origin_island(origin: Optional[str]) -> bool:
+    """Check if origin island name is present and valid (not empty, whitespace, or sentinel values)."""
+    if not origin:
+        return False
+    clean = str(origin).strip()
+    if not clean:
+        return False
+    return clean.lower() not in ("none", "null", "unknown", "undefined", "n/a", "-")
+
+
 _FLIGHT_LISTENERS: list[Any] = []
 _FLIGHT_LISTENERS_LOCK = threading.Lock()
 
@@ -532,6 +554,10 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                     if not origin and orig_extr:
                         origin = orig_extr
 
+                origin_clean = (origin or "").strip()
+                if not is_valid_origin_island(origin_clean):
+                    origin_clean = ""
+
                 if player:
                     if evt_type == "arrival":
                         seen_arrival_players_this_cycle.add(player.lower().strip())
@@ -550,10 +576,11 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                     evt_time,
                 ))
 
-                if evt_type == "arrival" and player:
+                # Arrivals without an origin island or from ignored host accounts are never tracked as visits
+                if evt_type == "arrival" and player and origin_clean and not is_ignored_flight_player(player):
                     visits_to_insert.append((
                         player,
-                        origin or "",
+                        origin_clean,
                         clean_name,
                         None,  # user_id resolved later
                         None,  # guild_id
@@ -564,15 +591,19 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                     ))
 
                 # Flight event notification and dispatch (arrivals and departures)
+                # Any arrival with no origin island name is ignored completely
                 if evt_type in ("arrival", "departure"):
-                    should_notify = False
-                    if last_seen_id is not None:
-                        if evt_id > last_seen_id:
-                            should_notify = True
+                    if evt_type == "arrival" and (is_ignored_flight_player(player) or not origin_clean):
+                        should_notify = False
                     else:
-                        # Cold bootstrap: only notify if the event is very fresh (< 120s)
-                        if _is_recent_event(evt_time, max_age_seconds=120):
-                            should_notify = True
+                        should_notify = False
+                        if last_seen_id is not None:
+                            if evt_id > last_seen_id:
+                                should_notify = True
+                        else:
+                            # Cold bootstrap: only notify if the event is very fresh (< 120s)
+                            if _is_recent_event(evt_time, max_age_seconds=120):
+                                should_notify = True
 
                     if should_notify:
                         dedupe_key = (clean_name.lower(), evt_id)
@@ -588,21 +619,11 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
 
                         if not already_sent:
                             formatted_time = _format_flight_timestamp(evt_time)
-                            origin_clean = (origin or "").strip()
-                            if origin_clean.lower() in ("none", "null", "unknown"):
-                                origin_clean = ""
 
                             # 1. Post flight notification directly to Sub flight channel (809295405128089611) if sub island
                             if is_sub:
                                 if evt_type == "arrival":
-                                    if player and origin_clean:
-                                        flight_msg = f"{player} from {origin_clean} is joining {clean_name}."
-                                    elif player:
-                                        flight_msg = f"{player} is joining {clean_name}."
-                                    elif msg:
-                                        flight_msg = msg.strip() if msg.strip().endswith(".") else f"{msg.strip()}."
-                                    else:
-                                        flight_msg = f"A visitor is joining {clean_name}."
+                                    flight_msg = f"{player} from {origin_clean} is joining {clean_name}."
                                     send_sub_flight_message(f"> [{formatted_time}] 🛬 {flight_msg}")
 
                                 elif evt_type == "departure":
@@ -648,6 +669,8 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                 p_clean = p_raw.strip()
                 if not p_clean or p_clean.lower() in seen_arrival_players_this_cycle:
                     continue
+                if is_ignored_flight_player(p_clean):
+                    continue
 
                 now_ts_arrival = time.time()
                 with _CACHE_LOCK:
@@ -662,18 +685,23 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                 if isinstance(last_arr_obj, dict):
                     la_p = (last_arr_obj.get("player") or "").strip()
                     if la_p.lower() == p_clean.lower():
-                        origin_clean = (last_arr_obj.get("island") or "").strip()
-                        if origin_clean.lower() in ("none", "null", "unknown"):
-                            origin_clean = ""
+                        raw_isl = (last_arr_obj.get("island") or "").strip()
+                        if is_valid_origin_island(raw_isl):
+                            origin_clean = raw_isl
+
+                # Anyone joining with no island name should be ignored
+                if not origin_clean:
+                    logger.debug(
+                        "[SysBotTelemetry] Ignoring visitor delta arrival with no island name on %s: %s",
+                        clean_name,
+                        p_clean,
+                    )
+                    continue
 
                 synth_evt_time = datetime.now(timezone.utc).isoformat()
                 formatted_time = _format_flight_timestamp(synth_evt_time)
                 synth_id = int(now_ts_arrival * 1000) % 1000000000
-
-                if origin_clean:
-                    flight_msg = f"{p_clean} from {origin_clean} is joining {clean_name}."
-                else:
-                    flight_msg = f"{p_clean} is joining {clean_name}."
+                flight_msg = f"{p_clean} from {origin_clean} is joining {clean_name}."
 
                 logger.info("[SysBotTelemetry] Detected arrival via visitor delta on %s: %s", clean_name, flight_msg)
 

@@ -1994,35 +1994,6 @@ def reveal_dodo(name):
     is_viewer_admin = bool(user.get("is_admin"))
     is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
 
-    # Check that user has saved at least one In-Game Character (IGN & Island Name)
-    from utils.unified_auth import resolve_all_user_ids
-    cand_user_ids = resolve_all_user_ids(user)
-
-    saved_char = None
-    if cand_user_ids:
-        char_db = get_db()
-        try:
-            placeholders = ",".join("?" for _ in cand_user_ids)
-            saved_char = char_db.execute(
-                f"""
-                SELECT ign, island_name FROM user_saved_characters
-                WHERE user_id IN ({placeholders}) AND TRIM(ign) != ''
-                ORDER BY is_default DESC, updated_at DESC LIMIT 1
-                """,
-                cand_user_ids,
-            ).fetchone()
-        finally:
-            char_db.close()
-
-    if not saved_char or not (saved_char["ign"] or "").strip():
-        _log_dodo_reveal_attempt(user, target, "denied", "missing_saved_character", channel_id=channel_id)
-        _record_api_audit_event("dodo_reveal_denied", target, {"reason": "missing_saved_character", "channel_id": channel_id})
-        return jsonify({
-            "error": "You must save your In-Game Character (IGN & Island Name) first before you can reveal Dodo codes. Please add your character in your <a href=\"/profile\">Profile Settings</a>.",
-            "code": "missing_saved_character",
-            "requires_character": True,
-        }), 403
-
     # Check for active moderation suspension (Ban or Timeout from Control Panel)
     try:
         from api.control_panel import check_user_active_restriction
@@ -2060,13 +2031,8 @@ def reveal_dodo(name):
     except Exception as rest_err:
         logger.warning("[DodoReveal] Moderation check error: %s", rest_err)
 
-    if _is_member_island(island_cat, island_type) and not effective_required_roles and not is_viewer_mod:
-        _log_dodo_reveal_attempt(user, target, "denied", "no_member_roles_configured", channel_id=channel_id)
-        _record_api_audit_event("dodo_reveal_denied", target, {"reason": "no_member_roles_configured", "channel_id": channel_id})
-        return jsonify({"error": "Subscriber roles are not configured for this island"}), 403
-
     # Enforce one-time Sub Rules acceptance for member islands
-    if _is_member_island(island_cat, island_type) and not is_viewer_admin:
+    if _is_member_island(island_cat, island_type, target) and not is_viewer_admin:
         if not _user_has_sub_rules(user):
             _log_dodo_reveal_attempt(user, target, "denied", "missing_sub_rules_acceptance", channel_id=channel_id)
             _record_api_audit_event("dodo_reveal_denied", target, {"reason": "missing_sub_rules_acceptance", "channel_id": channel_id})
@@ -2075,6 +2041,40 @@ def reveal_dodo(name):
                 "code": "missing_sub_rules_acceptance",
                 "requires_sub_rules": True,
             }), 403
+
+    # Check that user has saved at least one In-Game Character (IGN & Island Name)
+    from utils.unified_auth import resolve_all_user_ids
+    cand_user_ids = resolve_all_user_ids(user)
+
+    saved_char = None
+    if cand_user_ids:
+        char_db = get_db()
+        try:
+            placeholders = ",".join("?" for _ in cand_user_ids)
+            saved_char = char_db.execute(
+                f"""
+                SELECT ign, island_name FROM user_saved_characters
+                WHERE user_id IN ({placeholders}) AND TRIM(ign) != ''
+                ORDER BY is_default DESC, updated_at DESC LIMIT 1
+                """,
+                cand_user_ids,
+            ).fetchone()
+        finally:
+            char_db.close()
+
+    if not saved_char or not (saved_char["ign"] or "").strip():
+        _log_dodo_reveal_attempt(user, target, "denied", "missing_saved_character", channel_id=channel_id)
+        _record_api_audit_event("dodo_reveal_denied", target, {"reason": "missing_saved_character", "channel_id": channel_id})
+        return jsonify({
+            "error": "You must save your In-Game Character (IGN & Island Name) first before you can reveal Dodo codes. Please add your character in your <a href=\"/profile\">Profile Settings</a>.",
+            "code": "missing_saved_character",
+            "requires_character": True,
+        }), 403
+
+    if _is_member_island(island_cat, island_type, target) and not effective_required_roles and not is_viewer_mod:
+        _log_dodo_reveal_attempt(user, target, "denied", "no_member_roles_configured", channel_id=channel_id)
+        _record_api_audit_event("dodo_reveal_denied", target, {"reason": "no_member_roles_configured", "channel_id": channel_id})
+        return jsonify({"error": "Subscriber roles are not configured for this island"}), 403
 
     # Check for general island access role
     island_access_role = str(Config.ISLAND_ACCESS_ROLE) if Config.ISLAND_ACCESS_ROLE else ""
@@ -3085,6 +3085,14 @@ def api_island_drop(name):
     if not is_viewer_mod and not _has_island_access(user.get("roles", []), [], is_viewer_mod, island_name=clean_name, user=user):
         return jsonify({"success": False, "error": f"You do not have the required membership tier to drop items on {clean_name}."}), 403
 
+    if not is_viewer_admin and not _user_has_sub_rules(user):
+        return jsonify({
+            "success": False,
+            "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before dropping items.",
+            "code": "missing_sub_rules_acceptance",
+            "requires_sub_rules": True,
+        }), 403
+
     body = request.get_json(silent=True) or {}
     items = body.get("items") or body.get("item") or ""
     if not items:
@@ -3188,6 +3196,14 @@ def api_island_villager_inject(name):
     is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
     if not is_viewer_mod and not _has_island_access(user.get("roles", []), [], is_viewer_mod, island_name=clean_name, user=user):
         return jsonify({"success": False, "error": f"You do not have the required membership tier to inject villagers on {clean_name}."}), 403
+
+    if not is_viewer_admin and not _user_has_sub_rules(user):
+        return jsonify({
+            "success": False,
+            "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before injecting villagers.",
+            "code": "missing_sub_rules_acceptance",
+            "requires_sub_rules": True,
+        }), 403
 
     body = request.get_json(silent=True) or {}
     villager = body.get("villager") or body.get("villagers") or body.get("villager_name")
@@ -4500,6 +4516,14 @@ def order_drop():
         if not is_viewer_mod and not _has_island_access(auth_user.get("roles", []), [], is_viewer_mod, island_name=clean_name, user=auth_user):
             return jsonify({"success": False, "error": f"You do not have access to drop on {clean_name}."}), 403
 
+        if not is_viewer_admin and not _user_has_sub_rules(auth_user):
+            return jsonify({
+                "success": False,
+                "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before dropping items.",
+                "code": "missing_sub_rules_acceptance",
+                "requires_sub_rules": True,
+            }), 403
+
         from utils.sysbot_api import get_island_sysbot_client
         client = get_island_sysbot_client(clean_name, timeout=5)
         items = body.get("items") or body.get("item") or ""
@@ -4688,6 +4712,14 @@ def order_villagers():
             is_viewer_mod = bool(auth_user.get("is_mod")) or is_viewer_admin
             if not is_viewer_mod and not _has_island_access(auth_user.get("roles", []), [], is_viewer_mod, island_name=clean_name, user=auth_user):
                 return jsonify({"success": False, "error": f"You do not have access to inject on {clean_name}."}), 403
+
+            if not is_viewer_admin and not _user_has_sub_rules(auth_user):
+                return jsonify({
+                    "success": False,
+                    "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before injecting villagers.",
+                    "code": "missing_sub_rules_acceptance",
+                    "requires_sub_rules": True,
+                }), 403
 
             from utils.sysbot_api import get_island_sysbot_client
             client = get_island_sysbot_client(clean_name, timeout=5)

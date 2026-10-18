@@ -123,8 +123,8 @@ ENFORCE_BLOCKLIST = True
 REQUIRE_REGISTERED_CHARACTER = False
 SUB_RULES_ROLE_ID = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
 SUB_RULES_MSG = (
-    "You need to **accept the sub rules** first before you can use the islands. "
-    "Once you've accepted them, come back and try again."
+    "You need to **accept the sub rules** first before you can use the islands (role <@&1077997850165772398> required).\n"
+    "Please go to <#783677194576330792>, review and accept the rules, then come back and try again."
 )
 ORDER_RULES_ROLE_ID = getattr(Config, "ORDER_RULES_ROLE_ID", 1176191811438510231) or 1176191811438510231
 ORDER_RULES_MSG = (
@@ -519,19 +519,25 @@ async def _denied_reason(discord_user_id: int) -> str | None:
 
 
 def _has_sub_role(user: discord.abc.User) -> bool:
-    """True if the user is a guild member holding the sub-rules role or accepted in DB."""
-    if isinstance(user, discord.Member) and any(getattr(r, "id", None) == SUB_RULES_ROLE_ID for r in getattr(user, "roles", [])):
-        return True
-    try:
-        with connect_db() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM user_sub_rules_accepted WHERE user_id = ? LIMIT 1",
-                (str(getattr(user, "id", "")),),
-            ).fetchone()
-            if row:
+    """True if the user is a guild member holding sub-rules role 1077997850165772398."""
+    if isinstance(user, discord.Member):
+        roles = getattr(user, "roles", []) or []
+        if any(getattr(r, "id", None) == SUB_RULES_ROLE_ID for r in roles):
+            return True
+        perms = getattr(user, "guild_permissions", None)
+        if perms and getattr(perms, "administrator", None) is True:
+            return True
+        return False
+    guild = getattr(user, "guild", None)
+    if guild and hasattr(guild, "get_member"):
+        m = guild.get_member(user.id)
+        if m:
+            roles = getattr(m, "roles", []) or []
+            if any(getattr(r, "id", None) == SUB_RULES_ROLE_ID for r in roles):
                 return True
-    except Exception:
-        pass
+            perms = getattr(m, "guild_permissions", None)
+            if perms and getattr(perms, "administrator", None) is True:
+                return True
     return False
 
 
@@ -1277,11 +1283,27 @@ def _err_embed(text: str) -> discord.Embed:
     return embed
 
 
+class SubRulesPromptView(discord.ui.View):
+    """Link button directly to the #sub-rules channel."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(
+            discord.ui.Button(
+                label="Go to #sub-rules",
+                style=discord.ButtonStyle.link,
+                url="https://discord.com/channels/729590421478703135/783677194576330792",
+                emoji="📜",
+            )
+        )
+
+
 async def _reply(
     interaction: discord.Interaction,
     content: str | None = None,
     *,
     embed: discord.Embed | None = None,
+    view: discord.ui.View | None = None,
 ) -> None:
     """Ephemeral reply that works before AND after interaction.response was used/deferred."""
     kwargs: dict[str, Any] = {"ephemeral": True}
@@ -1289,6 +1311,8 @@ async def _reply(
         kwargs["content"] = content
     if embed is not None:
         kwargs["embed"] = embed
+    if view is not None:
+        kwargs["view"] = view
     try:
         if interaction.response.is_done():
             await interaction.followup.send(**kwargs)
@@ -2944,7 +2968,8 @@ class _IslandButton:
         """Canonical island if the click may proceed; otherwise replies with the reason and returns None."""
         denied = await _access_denied(interaction.user, require_order_rules=require_order_rules)
         if denied:
-            await _reply(interaction, embed=_err_embed(denied))
+            view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
+            await _reply(interaction, embed=_err_embed(denied), view=view)
             return None
         island = _canonical_island(self.island)
         if not island:
@@ -2966,17 +2991,18 @@ class GetDodoButton(
     _btn_style = discord.ButtonStyle.success
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        denied = await _access_denied(interaction.user)
+        if denied:
+            view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
+            await _reply(interaction, embed=_err_embed(denied), view=view)
+            return
+
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         resolved = await _resolve_client(interaction, self.island)
         if not resolved:
             return
         island, client = resolved
-
-        denied = await _access_denied(interaction.user)
-        if denied:
-            await _reply(interaction, embed=_err_embed(denied))
-            return
 
         dodo = await _find_dodo(island, client)
 
@@ -3133,7 +3159,8 @@ class GuideButton(
     async def callback(self, interaction: discord.Interaction) -> None:
         denied = await _access_denied(interaction.user)
         if denied:
-            await _reply(interaction, embed=_err_embed(denied))
+            view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
+            await _reply(interaction, embed=_err_embed(denied), view=view)
             return
         island = _canonical_island(self.island)
         if not island:
@@ -3545,7 +3572,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
     async def _handle_catalog_search(self, interaction: discord.Interaction, query: str, island: str | None) -> None:
         denied = await _access_denied(interaction.user, require_order_rules=True)
         if denied:
-            await _reply(interaction, embed=_err_embed(denied))
+            view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
+            await _reply(interaction, embed=_err_embed(denied), view=view)
             return
 
         if island:
@@ -3618,7 +3646,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
     ) -> None:
         denied = await _access_denied(interaction.user, require_order_rules=True)
         if denied:
-            await _reply(interaction, embed=_err_embed(denied))
+            view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
+            await _reply(interaction, embed=_err_embed(denied), view=view)
             return
 
         if island:
@@ -3737,7 +3766,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
     ) -> None:
         denied = await _access_denied(interaction.user, require_order_rules=True)
         if denied:
-            await _reply(interaction, embed=_err_embed(denied))
+            view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
+            await _reply(interaction, embed=_err_embed(denied), view=view)
             return
 
         if island:
@@ -3880,7 +3910,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
     ) -> None:
         denied = await _access_denied(interaction.user, require_order_rules=True)
         if denied:
-            await _reply(interaction, embed=_err_embed(denied))
+            view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
+            await _reply(interaction, embed=_err_embed(denied), view=view)
             return
 
         if island:

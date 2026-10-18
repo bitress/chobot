@@ -19,7 +19,12 @@ from discord.ui import View, UserSelect, Select, button
 from utils.config import Config
 from utils.database import connect_async_db, get_backend
 from utils.helpers import clean_text
-from utils.sysbot_telemetry import register_flight_event_listener, unregister_flight_event_listener
+from utils.sysbot_telemetry import (
+    is_ignored_flight_player,
+    is_valid_origin_island,
+    register_flight_event_listener,
+    unregister_flight_event_listener,
+)
 
 logger = logging.getLogger("FlightLogger")
 
@@ -2854,7 +2859,15 @@ class FlightLoggerCog(commands.Cog):
 
             if evt_type == "arrival":
                 ign_raw = player.strip()
+                if is_ignored_flight_player(ign_raw):
+                    logger.debug(f"[FLIGHT] Ignoring direct arrival for host player: {ign_raw}")
+                    return
+
                 island_raw = origin.strip()
+                if not is_valid_origin_island(island_raw):
+                    logger.debug(f"[FLIGHT] Ignoring direct arrival without origin island: {ign_raw}")
+                    return
+
                 dest_raw = island_name.strip()
                 ign_norm = self.normalize_identity_text(ign_raw)
                 isl_norm = self.normalize_identity_text(island_raw)
@@ -2906,7 +2919,15 @@ class FlightLoggerCog(commands.Cog):
         if match:
             raw_ign    = (match.group(1) or "").strip()
             ign_raw    = re.sub(r"^>|^\s*\[.*?\]|[\U0001f6ec\U0001f6eb]", "", raw_ign).strip()
+            if is_ignored_flight_player(ign_raw):
+                logger.debug(f"[FLIGHT] Ignoring channel flight message for host player: {ign_raw}")
+                return
+
             island_raw = (match.group(2) or "").strip() if match.group(2) else ""
+            if not is_valid_origin_island(island_raw):
+                logger.debug(f"[FLIGHT] Ignoring channel flight message without origin island: {content}")
+                return
+
             dest_raw   = (match.group(3) or "").strip()
             ign_norm = self.normalize_identity_text(ign_raw)
             isl_norm = self.normalize_identity_text(island_raw)
@@ -2918,6 +2939,14 @@ class FlightLoggerCog(commands.Cog):
     async def _process_flight_log(self, guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message_url=None, message_content=None):
         """Background task: look up members then run the full log pipeline."""
         try:
+            if is_ignored_flight_player(ign_raw):
+                logger.debug(f"[FLIGHT] Skipping flight log pipeline for host player: {ign_raw}")
+                return
+
+            if not is_valid_origin_island(island_raw):
+                logger.debug(f"[FLIGHT] Skipping flight log pipeline for arrival with no island name: {ign_raw}")
+                return
+
             ign_clean = clean_text(ign_raw)
             dest_clean = clean_text(dest_raw)
             now = time.time()
@@ -2977,6 +3006,10 @@ class FlightLoggerCog(commands.Cog):
             logger.error(f"[FLIGHT] Pipeline error for {ign_raw}: {e}", exc_info=True)
 
     async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub', message_url=None, message_content=None):
+        if status == "JOINING" and not is_valid_origin_island(island):
+            logger.debug(f"[FLIGHT] Aborting log_result: joining event has no origin island for {ign}")
+            return
+
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
         if not output_channel: return
 
@@ -3493,9 +3526,13 @@ class FlightLoggerCog(commands.Cog):
 
                 if not dry_run:
                     try:
-                        ign_raw    = match.group(1).strip()
-                        island_raw = match.group(2).strip()
-                        dest_raw   = match.group(3).strip()
+                        ign_raw    = (match.group(1) or "").strip()
+                        island_raw = (match.group(2) or "").strip() if match.group(2) else ""
+                        dest_raw   = (match.group(3) or "").strip() if match.group(3) else ""
+
+                        if not is_valid_origin_island(island_raw):
+                            logger.debug(f"[RECOVER] Skipping arrival with no origin island: {ign_raw}")
+                            continue
 
                         ign_norm = self.normalize_identity_text(ign_raw)
                         isl_norm = self.normalize_identity_text(island_raw)
@@ -4279,7 +4316,14 @@ class FreeFlightCog(commands.Cog, name="FreeFlightLogger"):
 
         raw_ign    = (match.group(1) or "").strip()
         ign_raw    = re.sub(r"^>|^\s*\[.*?\]|[\U0001f6ec\U0001f6eb]", "", raw_ign).strip()
+        if is_ignored_flight_player(ign_raw):
+            return
+
         island_raw = (match.group(2) or "").strip() if match.group(2) else ""
+        if not is_valid_origin_island(island_raw):
+            logger.debug(f"[FREE-FLIGHT] Ignoring flight message with no origin island: {content}")
+            return
+
         dest_raw   = (match.group(3) or "").strip()
         visit_ts   = int(message.created_at.timestamp())
         guild      = self.bot.get_guild(Config.GUILD_ID)
