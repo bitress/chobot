@@ -43,6 +43,7 @@ import urllib.parse
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any
 
 import aiohttp
@@ -1209,17 +1210,18 @@ def _bullets(names: list[str], cap: int = 10) -> str:
     return "\n".join(lines)[:1024]
 
 
+@lru_cache(maxsize=128)
 def _map_url(island_name: str) -> str:
-    """Return the CDN URL for an island's map image (.png, .jpg, or .jpeg)."""
+    """Return the CDN URL for an island's map image (.jpg, .png, or .jpeg). Cached to avoid blocking loop."""
     slug = re.sub(r"[^a-zA-Z0-9]", "", island_name.lower())
 
-    for ext in (".png", ".jpg", ".jpeg"):
+    for ext in (".jpg", ".png", ".jpeg"):
         url = f"{MAP_CDN_BASE.rstrip('/')}/{slug}{ext}"
         try:
-            response = requests.head(url, timeout=3, allow_redirects=True)
+            response = requests.head(url, timeout=2, allow_redirects=True)
             if response.status_code == 200:
                 return url
-        except requests.RequestException:
+        except Exception:
             continue
 
     return f"{MAP_CDN_BASE.rstrip('/')}/{slug}.jpg"
@@ -3635,13 +3637,16 @@ class DropBotCog(commands.Cog, name="DropBot"):
     """
     Manages persistent interactive island control panels across sub-island channels.
     No privileged intents required — operates entirely on Discord's Interaction API.
-    Auto-refreshes panel messages in the background so users always see live status.
+    Auto-refreshes panel messages in the background so users always see live status,
+    and keeps panels sticky at the bottom of the channel when new messages arrive.
     """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._sigs: dict[str, tuple[str, float]] = {}   # channel_id -> (embed signature, last edit time)
+        self._sigs: dict[str, tuple[str, float, tuple[bool, bool]]] = {}   # channel_id -> (embed signature, last edit time, dodo_state)
         self._dead_panels: set[str] = set()              # channel_ids whose panel message no longer exists
+        self._panel_channels: dict[int, str] = {}        # channel_id -> island_name
+        self._pending_reposts: dict[int, asyncio.Task] = {}
 
     async def cog_load(self) -> None:
         await asyncio.to_thread(_init_tables)
@@ -3654,15 +3659,28 @@ class DropBotCog(commands.Cog, name="DropBot"):
             logger.info("[DropBot] Started SysBot telemetry worker and registered bot instance.")
         except Exception as exc:
             logger.warning("[DropBot] Could not start telemetry worker: %s", exc)
+
+        panels = await asyncio.to_thread(_load_all_panels)
+        self._panel_channels = {
+            int(p["channel_id"]): str(p["island_name"])
+            for p in panels
+            if p.get("channel_id") and p.get("island_name")
+        }
+
         # One registration covers every panel in every channel (the island is in the custom_id).
         self.bot.add_dynamic_items(*ALL_REGISTERED_DYNAMIC_ITEMS)
         self.auto_refresh_panels_loop.start()
         logger.info(
-            "[DropBot] Registered %d persistent button types and started auto-refresh loop.",
+            "[DropBot] Registered %d persistent button types and started auto-refresh loop for %d channels.",
             len(ALL_REGISTERED_DYNAMIC_ITEMS),
+            len(self._panel_channels),
         )
 
     async def cog_unload(self) -> None:
+        for task in self._pending_reposts.values():
+            if not task.done():
+                task.cancel()
+        self._pending_reposts.clear()
         self.auto_refresh_panels_loop.cancel()
         self.bot.remove_dynamic_items(*ALL_REGISTERED_DYNAMIC_ITEMS)
         await _close_http()
@@ -3673,6 +3691,59 @@ class DropBotCog(commands.Cog, name="DropBot"):
             return
         logger.error("[DropBot] Command error: %s", error, exc_info=error)
         await _reply(interaction, embed=_err_embed("Something went wrong running that command."))
+
+    # ── Sticky bottom handling ────────────────────────────────────────────────
+
+    def _schedule_sticky_repost(self, channel_id: int) -> None:
+        if channel_id in self._pending_reposts:
+            task = self._pending_reposts[channel_id]
+            if not task.done():
+                task.cancel()
+        self._pending_reposts[channel_id] = asyncio.create_task(self._do_sticky_repost(channel_id))
+
+    async def _do_sticky_repost(self, channel_id: int) -> None:
+        try:
+            await asyncio.sleep(2.0)  # Debounce: wait for consecutive messages or typing bursts
+            panel = await asyncio.to_thread(_get_panel_row, channel_id)
+            if not panel or not panel.get("island_name") or not panel.get("message_id"):
+                return
+            island = panel["island_name"]
+            old_msg_id = int(panel["message_id"])
+
+            channel = self.bot.get_channel(channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except Exception:
+                    return
+
+            if getattr(channel, "last_message_id", None) == old_msg_id:
+                return  # already at the bottom
+
+            # Delete old panel message
+            with contextlib.suppress(Exception):
+                await channel.get_partial_message(old_msg_id).delete()
+
+            status = await fetch_island_live_status(island)
+            embed = _build_panel_embed(island, status)
+            new_msg = await channel.send(embed=embed, view=IslandPanelView(island, status))
+            await asyncio.to_thread(_upsert_panel, channel_id, island, new_msg.id)
+            self._panel_channels[channel_id] = island
+
+            sig = _embed_signature(embed)
+            is_running = bool(status.get("is_running", True)) if status else True
+            raw_dodo = (status.get("dodo_code") or "").strip().upper() if status else ""
+            is_valid_dodo = bool(raw_dodo and raw_dodo not in _INVALID_DODO_CODES) if status else True
+            self._sigs[str(channel_id)] = (sig, time.monotonic(), (is_running, is_valid_dodo))
+        except Exception as exc:
+            logger.debug("[DropBot] Error in sticky repost for channel %s: %s", channel_id, exc)
+
+    @commands.Cog.listener("on_message")
+    async def on_panel_channel_message(self, message: discord.Message) -> None:
+        if not message.guild or (self.bot.user and message.author.id == self.bot.user.id):
+            return
+        if message.channel.id in self._panel_channels:
+            self._schedule_sticky_repost(message.channel.id)
 
     # ── Auto-refresh ──────────────────────────────────────────────────────────
 
@@ -3711,6 +3782,21 @@ class DropBotCog(commands.Cog, name="DropBot"):
                 is_valid_dodo = bool(raw_dodo and raw_dodo not in _INVALID_DODO_CODES) if status else True
                 dodo_state = (is_running, is_valid_dodo)
 
+                channel = self.bot.get_channel(channel_id)
+                last_msg_id = getattr(channel, "last_message_id", None)
+                is_at_bottom = (last_msg_id == message_id) if last_msg_id else True
+
+                # If the panel was pushed up by new messages, repost at the bottom!
+                if not is_at_bottom and isinstance(channel, discord.TextChannel):
+                    with contextlib.suppress(Exception):
+                        old_msg = self.bot.get_partial_messageable(channel_id).get_partial_message(message_id)
+                        await old_msg.delete()
+                    new_msg = await channel.send(embed=embed, view=IslandPanelView(island, status))
+                    await asyncio.to_thread(_upsert_panel, channel.id, island, new_msg.id)
+                    self._panel_channels[channel.id] = island
+                    self._sigs[cid] = (sig, now, dodo_state)
+                    return
+
                 if prev and prev[0] == sig and (len(prev) > 2 and prev[2] == dodo_state) and now - prev[1] < FORCE_EDIT_SECONDS:
                     return
 
@@ -3748,6 +3834,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
         embed = _build_panel_embed(island, status_data)
         panel_msg = await channel.send(embed=embed, view=IslandPanelView(island_name=island, status_data=status_data))
         await asyncio.to_thread(_upsert_panel, channel.id, island, panel_msg.id)
+        self._panel_channels[channel.id] = island
         self._dead_panels.discard(str(channel.id))
         self._sigs.pop(str(channel.id), None)
         return panel_msg
