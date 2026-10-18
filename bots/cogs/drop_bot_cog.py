@@ -29,6 +29,7 @@ re-adding a view per message. Requires discord.py >= 2.4.
 
 from __future__ import annotations
 
+import requests
 import asyncio
 import contextlib
 import difflib
@@ -1209,9 +1210,19 @@ def _bullets(names: list[str], cap: int = 10) -> str:
 
 
 def _map_url(island_name: str) -> str:
-    """CDN URL for the island's map image."""
+    """Return the CDN URL for an island's map image (.png, .jpg, or .jpeg)."""
     slug = re.sub(r"[^a-zA-Z0-9]", "", island_name.lower())
-    return f"{MAP_CDN_BASE}/{slug}.jpg"
+
+    for ext in (".png", ".jpg", ".jpeg"):
+        url = f"{MAP_CDN_BASE.rstrip('/')}/{slug}{ext}"
+        try:
+            response = requests.head(url, timeout=3, allow_redirects=True)
+            if response.status_code == 200:
+                return url
+        except requests.RequestException:
+            continue
+
+    return f"{MAP_CDN_BASE.rstrip('/')}/{slug}.jpg"
 
 
 def _build_panel_embed(island_name: str, status_data: dict | None = None) -> discord.Embed:
@@ -2028,7 +2039,7 @@ class SanrioInjectionWizardView(_OwnedView):
         elif self.step1_done and not self.step2_done:
             curr = f"Fly to **[{self.island_name}]({_island_url(self.island_name)})** now! Once you land, click **2️⃣ Inject {self.target_villager}**."
         else:
-            curr = "Walk into Plot 1's house on the island, talk to the resident inside, and invite them to move in!"
+            curr = "🎉 **VILLAGER INJECTED!** Walk into Plot 1's house on the island, talk to the resident inside, and invite them to move in!"
 
         embed.add_field(name="📌 Current Step", value=curr, inline=False)
 
