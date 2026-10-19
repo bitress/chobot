@@ -219,10 +219,10 @@ class Config:
         # 27 Free Islands (indices 20..46 -> ports 8221..8247)
         "Kakanggata", "Kalawakan", "Kundiman", "Kilig", "Bathala",
         "Dalangin", "Gunita", "Kaulayaw", "Tala", "Sinagtala",
-        "Tadhana", "Maharlika", "Pagsamo", "Harana", "Pagsuyo",
-        "Matahom", "Paraluman", "Babaylan", "Amihan", "Silakbo",
-        "Dangal", "Kariktan", "Tinig", "Banaag", "Sinag",
-        "Marilag", "Giting",
+        "Tinig", "Tadhana", "Maharlika", "Pagsamo", "Harana",
+        "Pagsuyo", "Matahom", "Paraluman", "Marilag", "Babaylan",
+        "Amihan", "Silakbo", "Banaag", "Dangal", "Kariktan",
+        "Sinag", "Giting",
         # 1 Order Bot Island (index 47 -> port 8248)
         "Sinta",
     ]
@@ -281,10 +281,9 @@ class Config:
 
     FREE_ISLANDS = [
         "Kakanggata", "Kalawakan", "Kundiman", "Kilig", "Bathala", "Dalangin",
-        "Gunita", "Kaulayaw", "Tala", "Sinagtala", "Tadhana", "Maharlika",
-        "Pagsamo", "Harana", "Pagsuyo", "Matahom", "Paraluman", "Babaylan",
-        "Amihan", "Silakbo", "Dangal", "Kariktan", "Tinig", "Banaag",
-        "Sinag", "Giting", "Marilag"
+        "Gunita", "Kaulayaw", "Tala", "Sinagtala", "Tinig", "Tadhana", "Maharlika",
+        "Pagsamo", "Harana", "Pagsuyo", "Matahom", "Paraluman", "Marilag", "Babaylan",
+        "Amihan", "Silakbo", "Banaag", "Dangal", "Kariktan", "Sinag", "Giting",
     ]
 
     ORDER_BOT_ISLANDS = [ORDER_BOT_ISLAND] if ORDER_BOT_ISLAND else []
