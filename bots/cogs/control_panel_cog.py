@@ -27,7 +27,7 @@ import time
 import urllib.parse
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import discord
 from discord import app_commands
@@ -113,10 +113,14 @@ ACTIONS: dict[str, ActionSpec] = {
                    "Toggles automatic map refresh in restore mode."),
         ActionSpec("status", "Refresh Status", "🔄", _S.secondary, 3, "Refresh status", "Refresh Status",
                    "Fetches live status and Dodo code from SysBot to refresh the panel in-place.", local=True),
+        ActionSpec("echo", "Echo", "📣", _S.secondary, 3, "Echo broadcast settings", "Echo Broadcasts",
+                   "Toggles automated announcement echoes for Dodo codes, arrivals, and updates.", local=True),
         ActionSpec("logs", "Logs", "📜", _S.secondary, 3, "Recent logs", "Recent Logs",
                    "Shows the most recent drop logs for this island.", local=True),
         ActionSpec("guide", "Guide", "📖", _S.secondary, 3, "Guide", "Guide",
                    "Shows this help.", local=True),
+        ActionSpec("switch", "All Islands", "🌐", _S.secondary, 3, "Browse all islands", "Browse Islands",
+                   "Switch the control panel to any of the 48 Sub and Free islands across the cluster.", local=True),
     )
 }
 
@@ -322,6 +326,32 @@ def is_authorized(user: discord.User | discord.Member) -> bool:
 check_control_panel_role = is_authorized   # backwards-compatible name
 
 
+def panel_access():
+    """Slash command check requiring control-panel role or Administrator."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if not is_authorized(interaction.user):
+            raise app_commands.CheckFailure("You need the control-panel role (or Administrator) to use these controls.")
+        return True
+    return app_commands.check(predicate)
+
+
+async def _resolve_target(interaction: discord.Interaction, island: str | None) -> str | None:
+    """Resolve target island for commands/panels, prioritizing explicit name, then channel DB row, then channel name."""
+    if island:
+        return _canonical_island(island)      # None -> caller replies "Unknown island"
+    row = await asyncio.to_thread(_get_control_panel, interaction.channel_id)
+    if row and (t := _canonical_island(row.get("island_name"))):
+        return t
+    return _infer_island_from_channel(interaction.channel)
+
+
+def get_sub_and_free_islands() -> tuple[list[str], list[str]]:
+    """Single source of truth for Sub/Order and Free islands across the cluster."""
+    sub_list = list(dict.fromkeys(list(Config.SUB_ISLANDS) + ["Sinta"]))
+    free_list = [i for i in Config.ALL_ISLAND_PORT_ORDER if i not in Config.SUB_ISLANDS and i != "Sinta"]
+    return sub_list, free_list
+
+
 # ─── Embeds ────────────────────────────────────────────────────────────────────
 
 def _embed_signature(embed: discord.Embed) -> str:
@@ -367,9 +397,10 @@ def build_guide_embed() -> discord.Embed:
     return embed
 
 
-def _build_island_logs_embed(island: str, limit: int = 20) -> discord.Embed:
-    """Build an ephemeral embed showing the most recent drop logs for the island (up to limit)."""
-    rows = []
+def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None = None) -> discord.Embed:
+    """Build an ephemeral embed showing the most recent drop logs and echo broadcast data for the island."""
+    drops_rows = []
+    echo_audit_rows = []
     try:
         with connect_db() as conn:
             conn.execute(
@@ -385,7 +416,7 @@ def _build_island_logs_embed(island: str, limit: int = 20) -> discord.Embed:
                 )
                 """
             )
-            rows = conn.execute(
+            drops_rows = conn.execute(
                 """
                 SELECT id, island_name, items, requested_by_user_id, status, response_message, created_at
                 FROM island_drops_log
@@ -395,26 +426,85 @@ def _build_island_logs_embed(island: str, limit: int = 20) -> discord.Embed:
                 """,
                 (island.strip(), limit),
             ).fetchall()
+
+            echo_audit_rows = conn.execute(
+                """
+                SELECT action, user_name, ok, message, created_at
+                FROM control_panel_audit
+                WHERE LOWER(island_name) = LOWER(?)
+                  AND (action LIKE 'echo%' OR action = 'echo')
+                ORDER BY id DESC
+                LIMIT 5
+                """,
+                (island.strip(),),
+            ).fetchall()
     except Exception as exc:
-        return _err_embed(f"Failed to query drop logs: {exc}", "❌ Database Error")
+        logger.error("[ControlPanel] Failed to query logs for %s: %s", island, exc, exc_info=True)
+        return _err_embed("Unable to retrieve logs at this time. Please try again later.", "❌ Database Error")
+
+    # If status wasn't provided, attempt to fetch echo status synchronously
+    if status is None:
+        try:
+            client = get_island_sysbot_client(island)
+            status = client.get_echo_status_sync()
+        except Exception:
+            status = None
 
     embed = discord.Embed(
-        title=f"📜 Recent Logs — {island}",
-        description=f"Showing the last **{len(rows)}** drop request{'s' if len(rows) != 1 else ''} on **{island}** (max {limit}):",
-        color=PANEL_COLOR_ONLINE if rows else PANEL_COLOR_UNREACHABLE,
+        title=f"📜 Recent Logs & Echo Data — {island}",
+        color=PANEL_COLOR_ONLINE if drops_rows or echo_audit_rows else PANEL_COLOR_UNREACHABLE,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
 
-    if not rows:
-        embed.description = f"No drop activity recorded yet for **{island}**.\n\nLogs will appear here whenever users queue or drop items on this island."
+    # 1. Echo Broadcast Status
+    if status and isinstance(status, dict):
+        def _badge(val: Any) -> str:
+            if val is True or str(val).lower() in ("true", "1", "on"):
+                return "🟢 `ON`"
+            if val is False or str(val).lower() in ("false", "0", "off"):
+                return "🔴 `OFF`"
+            return "⚪ `—`"
+
+        dodo = status.get("echo_dodo_enabled")
+        arrivals = status.get("echo_arrivals_enabled")
+        updates = status.get("echo_island_updates_enabled")
+
+        echo_summary = (
+            f"• **Dodo Broadcast:** {_badge(dodo)}\n"
+            f"• **Arrivals / Departures:** {_badge(arrivals)}\n"
+            f"• **Island State Updates:** {_badge(updates)}"
+        )
+        embed.add_field(name="📣 Live Echo Configuration", value=echo_summary, inline=False)
+
+    # 2. Recent Echo Activity / Audit History
+    if echo_audit_rows:
+        audit_lines = []
+        for r in echo_audit_rows:
+            r_dict = dict(r)
+            act = str(r_dict.get("action") or "").replace("echo-", "").replace("echo_", "").title()
+            user = str(r_dict.get("user_name") or "User")
+            ok_mark = "✅" if r_dict.get("ok") else "⚠️"
+            raw_ts = str(r_dict.get("created_at") or "")
+            t_part = raw_ts.split(" ")[1][:8] if " " in raw_ts else raw_ts[:16]
+            msg = str(r_dict.get("message") or "")[:40]
+            audit_lines.append(f"`{t_part}` {ok_mark} **{user}**: `{act}`" + (f" ({msg})" if msg else ""))
+        embed.add_field(name="📣 Recent Echo Activity", value="\n".join(audit_lines)[:1020], inline=False)
+
+    # 3. Drop Request Logs
+    if not drops_rows:
+        embed.add_field(
+            name="📦 Drop Request History",
+            value=f"No drop activity recorded yet for **{island}**.\n*Logs will appear here whenever users queue or drop items on this island.*",
+            inline=False,
+        )
         return embed
 
     lines = []
-    for r in rows:
+    for r in drops_rows:
         r_dict = dict(r)
-        status = str(r_dict.get("status") or "unknown").lower()
-        is_ok = status in ("queued", "success", "ok", "completed")
+        drop_status = str(r_dict.get("status") or "unknown").lower()
+        is_ok = drop_status in ("queued", "success", "ok", "completed")
         emoji = "✅" if is_ok else "❌"
 
         raw_ts = str(r_dict.get("created_at") or "")
@@ -442,16 +532,15 @@ def _build_island_logs_embed(island: str, limit: int = 20) -> discord.Embed:
         lines.append(line)
 
     full_text = "\n".join(lines)
-    if len(full_text) <= 3900:
-        embed.description = f"Last **{len(rows)}** drop request{'s' if len(rows) != 1 else ''} for **{island}**:\n\n" + full_text
+    if len(full_text) <= 1000:
+        embed.add_field(name=f"📦 Drop Request History ({len(drops_rows)})", value=full_text, inline=False)
     else:
-        embed.description = f"Last **{len(rows)}** drop request{'s' if len(rows) != 1 else ''} for **{island}**:"
         chunk = []
         chunk_len = 0
         part = 1
         for l in lines:
             if chunk_len + len(l) > 1000:
-                embed.add_field(name=f"Page {part}", value="\n".join(chunk), inline=False)
+                embed.add_field(name=f"📦 Drop Request History (Part {part})", value="\n".join(chunk), inline=False)
                 chunk = [l]
                 chunk_len = len(l)
                 part += 1
@@ -459,7 +548,7 @@ def _build_island_logs_embed(island: str, limit: int = 20) -> discord.Embed:
                 chunk.append(l)
                 chunk_len += len(l)
         if chunk:
-            embed.add_field(name=f"Page {part}", value="\n".join(chunk), inline=False)
+            embed.add_field(name=f"📦 Drop Request History (Part {part})", value="\n".join(chunk), inline=False)
 
     return embed
 
@@ -519,6 +608,27 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
         ),
         inline=True,
     )
+
+    def _bool_icon(val: Any) -> str:
+        if val is True or str(val).lower() in ("true", "1", "on"):
+            return "🟢 `ON`"
+        if val is False or str(val).lower() in ("false", "0", "off"):
+            return "🔴 `OFF`"
+        return "`—`"
+
+    echo_dodo = _bool_icon(status.get("echo_dodo_enabled"))
+    echo_arr = _bool_icon(status.get("echo_arrivals_enabled"))
+    echo_upd = _bool_icon(status.get("echo_island_updates_enabled"))
+
+    embed.add_field(
+        name="📣 Echo Broadcasts",
+        value=(
+            f"• **Dodo:** {echo_dodo}\n"
+            f"• **Arrivals:** {echo_arr}\n"
+            f"• **Updates:** {echo_upd}"
+        ),
+        inline=True,
+    )
     port = _endpoint_port(island_name)
     embed.add_field(name="🔌 SysBot Port", value=f"`{port}`" if port else "`—`", inline=True)
     embed.add_field(name="🕒 Last Updated", value=f"<t:{int(time.time())}:R>", inline=True)
@@ -552,6 +662,50 @@ async def _update_panel_message(
     channel_id = getattr(message, "channel", None) and message.channel.id
     if cog and channel_id:
         cog._sigs[str(channel_id)] = (_embed_signature(embed), time.monotonic())
+
+
+async def switch_panel(
+    bot: commands.Bot,
+    channel_id: int,
+    message: discord.Message | discord.PartialMessage | None,
+    new_island: str,
+    user: discord.abc.User,
+    source: str,
+) -> tuple[bool, str]:
+    """
+    Centralized island switcher:
+    - Locks channel to prevent race conditions.
+    - Writes to DB before editing message so auto-refresh loop doesn't read stale state.
+    - Edits the message and updates signature.
+    - Reverts DB row if message edit fails.
+    - Records audit log.
+    """
+    cog: Any = bot.get_cog("ControlPanelCog")
+    old_row = await asyncio.to_thread(_get_control_panel, channel_id)
+    old_island = old_row.get("island_name") if old_row else None
+    lock = cog._locks[channel_id] if cog else asyncio.Lock()
+    msg_id = message.id if message else (int(old_row["message_id"]) if old_row and old_row.get("message_id") else None)
+
+    ok, err_msg = False, ""
+    async with lock:
+        await asyncio.to_thread(_upsert_control_panel, channel_id, new_island, msg_id)
+        try:
+            status = await fetch_island_status(new_island)
+            embed = build_control_panel_embed(new_island, status)
+            if message:
+                await message.edit(embed=embed, view=IslandControlPanelView(new_island))
+            if cog:
+                cog._sigs[str(channel_id)] = (_embed_signature(embed), time.monotonic())
+            ok = True
+        except Exception as exc:
+            logger.error("[ControlPanel] Failed to switch panel in %s to %s: %s", channel_id, new_island, exc, exc_info=True)
+            err_msg = "Failed to update the control panel message."
+            # Rollback DB row if edit failed
+            if old_island:
+                await asyncio.to_thread(_upsert_control_panel, channel_id, old_island, msg_id)
+
+    await asyncio.to_thread(_log_audit, new_island, "switch", user, ok, f"{source} (from {old_island or 'unknown'})")
+    return ok, err_msg
 
 
 def _interpret(res: Any) -> tuple[bool, str]:
@@ -666,6 +820,329 @@ class ConfirmActionView(discord.ui.View):
                 await interaction.response.send_message("❌ Something went wrong.", ephemeral=True)
 
 
+# ─── Echo Settings & Island Directory Components ──────────────────────────────
+
+KEYS = {
+    "dodo": "echo_dodo_enabled",
+    "arrivals": "echo_arrivals_enabled",
+    "island_updates": "echo_island_updates_enabled",
+}
+
+
+def build_echo_settings_embed(island_name: str, status: dict | None) -> discord.Embed:
+    data = status or {}
+    online = bool(data.get("is_running") or data.get("success") or data.get("ip"))
+    dodo = data.get("echo_dodo_enabled")
+    arrivals = data.get("echo_arrivals_enabled")
+    updates = data.get("echo_island_updates_enabled")
+
+    def _badge(val: Any) -> str:
+        if val is True:
+            return "🟢 **ENABLED**"
+        if val is False:
+            return "🔴 **DISABLED**"
+        return "⚪ *Unknown*"
+
+    embed = discord.Embed(
+        title=f"📣 Echo Broadcast Settings — {island_name}",
+        description=(
+            f"Manage automated Discord announcements for **{island_name}**.\n\n"
+            f"• **🦤 Dodo Code Broadcast**: {_badge(dodo)}\n"
+            f"  *Echoes when a new Dodo code is generated or detected.*\n\n"
+            f"• **🛬 Arrivals & Departures**: {_badge(arrivals)}\n"
+            f"  *Echoes player arrival and departure flight events in real-time.*\n\n"
+            f"• **📢 Island State Updates**: {_badge(updates)}\n"
+            f"  *Echoes island gate, clean, and queue state changes.*\n"
+        ),
+        color=PANEL_COLOR_ONLINE if online else PANEL_COLOR_OFFLINE,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.set_footer(text=f"Island: {island_name} • ChoPaeng SysBot Echo Control", icon_url=PANEL_FOOTER_ICON)
+    return embed
+
+
+class EchoSettingsView(discord.ui.View):
+    """Ephemeral control panel for toggling SysBot echo announcements."""
+
+    def __init__(
+        self,
+        island: str,
+        status: dict | None,
+        parent_message: discord.Message | None = None,
+        interaction: discord.Interaction | None = None,
+    ):
+        super().__init__(timeout=180)
+        self.island = island
+        self.status = status or {}
+        self.parent_message = parent_message
+        self.interaction = interaction
+        self._build_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not is_authorized(interaction.user):
+            await interaction.response.send_message(embed=_denied_embed(), ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            if isinstance(child, (discord.ui.Button, discord.ui.Select)):
+                child.disabled = True
+        if self.interaction:
+            with contextlib.suppress(Exception):
+                await self.interaction.edit_original_response(view=self)
+
+    def _build_buttons(self) -> None:
+        self.clear_items()
+        dodo_on = self.status.get("echo_dodo_enabled") is True
+        arr_on = self.status.get("echo_arrivals_enabled") is True
+        upd_on = self.status.get("echo_island_updates_enabled") is True
+
+        # Row 0: Individual category toggles
+        b_dodo = discord.ui.Button(
+            label=f"Dodo: {'ON' if dodo_on else 'OFF'}",
+            emoji="🦤",
+            style=discord.ButtonStyle.success if dodo_on else discord.ButtonStyle.secondary,
+            row=0,
+        )
+        b_dodo.callback = self._on_toggle_dodo
+        self.add_item(b_dodo)
+
+        b_arr = discord.ui.Button(
+            label=f"Arrivals: {'ON' if arr_on else 'OFF'}",
+            emoji="🛬",
+            style=discord.ButtonStyle.success if arr_on else discord.ButtonStyle.secondary,
+            row=0,
+        )
+        b_arr.callback = self._on_toggle_arrivals
+        self.add_item(b_arr)
+
+        b_upd = discord.ui.Button(
+            label=f"Updates: {'ON' if upd_on else 'OFF'}",
+            emoji="📢",
+            style=discord.ButtonStyle.success if upd_on else discord.ButtonStyle.secondary,
+            row=0,
+        )
+        b_upd.callback = self._on_toggle_updates
+        self.add_item(b_upd)
+
+        # Row 1: Batch toggle and refresh
+        b_all = discord.ui.Button(
+            label="Toggle All",
+            emoji="🔄",
+            style=discord.ButtonStyle.primary,
+            row=1,
+        )
+        b_all.callback = self._on_toggle_all
+        self.add_item(b_all)
+
+        b_refresh = discord.ui.Button(
+            label="Refresh",
+            emoji="🔃",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        b_refresh.callback = self._refresh
+        self.add_item(b_refresh)
+
+    async def _on_toggle_dodo(self, interaction: discord.Interaction) -> None:
+        await self._toggle_echo(interaction, "dodo")
+
+    async def _on_toggle_arrivals(self, interaction: discord.Interaction) -> None:
+        await self._toggle_echo(interaction, "arrivals")
+
+    async def _on_toggle_updates(self, interaction: discord.Interaction) -> None:
+        await self._toggle_echo(interaction, "island_updates")
+
+    async def _on_toggle_all(self, interaction: discord.Interaction) -> None:
+        await self._toggle_echo(interaction, "all")
+
+    async def _toggle_echo(self, interaction: discord.Interaction, echo_type: str) -> None:
+        await interaction.response.defer()
+        ok, msg = False, ""
+        try:
+            client = get_island_sysbot_client(self.island)
+            if echo_type == "all":
+                want = not all(self.status.get(k) is True for k in KEYS.values())
+            else:
+                key_name = KEYS.get(echo_type)
+                want = (self.status.get(key_name) is not True) if key_name else True
+
+            res = await asyncio.wait_for(client.toggle_echo(echo_type=echo_type, enabled=want), ACTION_TIMEOUT)
+            ok, msg = _interpret(res)
+        except asyncio.TimeoutError:
+            msg = "SysBot didn't answer in time."
+            logger.warning("[ControlPanel] Echo toggle timeout on %s", self.island)
+        except Exception as exc:
+            msg = "Failed to communicate with SysBot."
+            logger.error("[ControlPanel] Error toggling echo on %s: %s", self.island, exc, exc_info=True)
+        finally:
+            await asyncio.to_thread(_log_audit, self.island, f"echo-{echo_type}", interaction.user, ok, msg)
+
+        self.status = await fetch_island_status(self.island)
+        self._build_buttons()
+        embed = build_echo_settings_embed(self.island, self.status)
+        if not ok:
+            embed.set_footer(text=f"⚠️ Action failed: {msg or 'Unknown error'}", icon_url=PANEL_FOOTER_ICON)
+        await interaction.edit_original_response(embed=embed, view=self)
+
+        if ok and self.parent_message:
+            try:
+                await _update_panel_message(self.parent_message, self.island, interaction.client)
+            except Exception as exc:
+                logger.debug("[ControlPanel] Could not update parent panel: %s", exc)
+
+    async def _refresh(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        self.status = await fetch_island_status(self.island)
+        self._build_buttons()
+        embed = build_echo_settings_embed(self.island, self.status)
+        await interaction.edit_original_response(embed=embed, view=self)
+
+
+def build_all_islands_embed(current_island: str) -> discord.Embed:
+    sub_list, free_list = get_sub_and_free_islands()
+    free_sorted = sorted(free_list, key=lambda s: s.lower())
+    free_a_k = [i for i in free_sorted if i[0].upper() <= "K"]
+    free_l_z = [i for i in free_sorted if i[0].upper() > "K"]
+    total = len(sub_list) + len(free_list)
+
+    embed = discord.Embed(
+        title=f"🌐 Island Cluster Directory ({total} Islands)",
+        description=(
+            f"Currently active panel island: **{current_island}**\n\n"
+            "Select any island below to immediately switch this channel's control panel:\n\n"
+            f"• **👑 Sub & Order Islands ({len(sub_list)})**:\n  {', '.join(sub_list)}\n\n"
+            f"• **🌴 Free Islands A - K ({len(free_a_k)})**:\n  {', '.join(free_a_k)}\n\n"
+            f"• **🌴 Free Islands L - Z ({len(free_l_z)})**:\n  {', '.join(free_l_z)}"
+        ),
+        color=PANEL_COLOR_ONLINE,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.set_footer(text=f"ChoPaeng Island Cluster • {total} Total Nodes", icon_url=PANEL_FOOTER_ICON)
+    return embed
+
+
+class AllIslandsBrowserView(discord.ui.View):
+    """Allows selecting any of the Sub and Free islands across the cluster."""
+
+    def __init__(
+        self,
+        current_island: str,
+        panel_message: discord.Message | None = None,
+        interaction: discord.Interaction | None = None,
+    ):
+        super().__init__(timeout=120)
+        self.current_island = current_island
+        self.panel_message = panel_message
+        self.interaction = interaction
+        self._build_dropdowns()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not is_authorized(interaction.user):
+            await interaction.response.send_message(embed=_denied_embed(), ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            if isinstance(child, (discord.ui.Button, discord.ui.Select)):
+                child.disabled = True
+        if self.interaction:
+            with contextlib.suppress(Exception):
+                await self.interaction.edit_original_response(view=self)
+
+    def _build_dropdowns(self) -> None:
+        sub_list, free_list = get_sub_and_free_islands()
+
+        # 1. Sub & Order Islands
+        sub_options = [
+            discord.SelectOption(
+                label=name,
+                description="Order Bot Island" if name == "Sinta" else "Sub / VIP Island",
+                emoji="🤖" if name == "Sinta" else "👑",
+                value=name,
+                default=(_norm(name) == _norm(self.current_island)),
+            )
+            for name in sub_list[:25]
+        ]
+        sel_sub = discord.ui.Select(
+            placeholder=f"👑 Sub & Order Islands ({len(sub_list)})...",
+            options=sub_options,
+            row=0,
+            custom_id="browser_sub",
+        )
+        sel_sub.callback = self._on_select
+        self.add_item(sel_sub)
+
+        # 2. Free Islands A - K and L - Z
+        free_sorted = sorted(free_list, key=lambda s: s.lower())
+        free_a_k = [i for i in free_sorted if i[0].upper() <= "K"]
+        free_l_z = [i for i in free_sorted if i[0].upper() > "K"]
+
+        free_ak_options = [
+            discord.SelectOption(
+                label=name,
+                description="Free / Twitch Island",
+                emoji="🌴",
+                value=name,
+                default=(_norm(name) == _norm(self.current_island)),
+            )
+            for name in free_a_k[:25]
+        ]
+        sel_ak = discord.ui.Select(
+            placeholder=f"🌴 Free Islands A - K ({len(free_a_k)})...",
+            options=free_ak_options,
+            row=1,
+            custom_id="browser_free_ak",
+        )
+        sel_ak.callback = self._on_select
+        self.add_item(sel_ak)
+
+        free_lz_options = [
+            discord.SelectOption(
+                label=name,
+                description="Free / Twitch Island",
+                emoji="🌴",
+                value=name,
+                default=(_norm(name) == _norm(self.current_island)),
+            )
+            for name in free_l_z[:25]
+        ]
+        sel_lz = discord.ui.Select(
+            placeholder=f"🌴 Free Islands L - Z ({len(free_l_z)})...",
+            options=free_lz_options,
+            row=2,
+            custom_id="browser_free_lz",
+        )
+        sel_lz.callback = self._on_select
+        self.add_item(sel_lz)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        values = (interaction.data or {}).get("values") or []
+        if not values:
+            return
+        new_island = _canonical_island(values[0])
+        if not new_island:
+            await interaction.response.send_message(embed=_err_embed("Unknown island.", "❌ Error"), ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        if self.panel_message and interaction.channel_id:
+            ok, err_msg = await switch_panel(
+                interaction.client, interaction.channel_id, self.panel_message, new_island, interaction.user, "browser"
+            )
+            if not ok:
+                await interaction.edit_original_response(embed=_err_embed(err_msg or "Failed to switch island.", "❌ Error"), view=None)
+                return
+
+        await interaction.edit_original_response(
+            content=f"✅ Switched control panel to **{new_island}**!",
+            embed=None,
+            view=None,
+        )
+
+
 # ─── Dynamic Items & Persistent Components ─────────────────────────────────────
 
 class _PanelErrors:
@@ -688,25 +1165,29 @@ class ControlPanelIslandSelect(
     def __init__(self, current_island: str):
         self.current_island = current_island
 
-        featured = list(dict.fromkeys(list(Config.SUB_ISLANDS) + ["Sinta"]))
-        if current_island not in featured:
-            featured = [current_island] + featured[:24]
+        sub_list, free_list = get_sub_and_free_islands()
+        is_free = any(_norm(current_island) == _norm(f) for f in free_list)
+        active_list = free_list if is_free else sub_list
 
-        options = [
-            discord.SelectOption(
-                label=name[:100],
-                description="Order Bot Island" if name == "Sinta" else "Sub Island",
-                emoji="🏝️",
-                value=name[:100],
-                default=(name.lower() == current_island.lower()),
+        ordered = [current_island] + [i for i in active_list if _norm(i) != _norm(current_island)]
+        options = []
+        for name in ordered[:25]:
+            is_order = (name == "Sinta")
+            options.append(
+                discord.SelectOption(
+                    label=name[:100],
+                    description="Order Bot Island" if is_order else ("Free / Twitch Island" if is_free else "Sub / VIP Island"),
+                    emoji="🤖" if is_order else ("🌴" if is_free else "🏝️"),
+                    value=name[:100],
+                    default=(_norm(name) == _norm(current_island)),
+                )
             )
-            for name in featured[:25]
-        ]
+
         super().__init__(
             discord.ui.Select(
                 custom_id=_cid("select", current_island),
                 placeholder=f"🏝️ Control Island: {current_island}…"[:150],
-                options=options,
+                options=options[:25],
                 row=0,
             )
         )
@@ -727,18 +1208,12 @@ class ControlPanelIslandSelect(
             return
 
         await interaction.response.defer()
-        status = await fetch_island_status(new_island)
-        embed = build_control_panel_embed(new_island, status)
-        await interaction.edit_original_response(embed=embed, view=IslandControlPanelView(new_island))
-
-        logger.info("[ControlPanel] %s switched panel %s -> %s", interaction.user, self.current_island, new_island)
-        await asyncio.to_thread(_log_audit, new_island, "switch", interaction.user, True, f"from {self.current_island}")
-        if interaction.channel_id:
-            msg_id = interaction.message.id if interaction.message else None
-            await asyncio.to_thread(_upsert_control_panel, interaction.channel_id, new_island, msg_id)
-            cog: Any = interaction.client.get_cog("ControlPanelCog")
-            if cog:
-                cog._sigs[str(interaction.channel_id)] = (_embed_signature(embed), time.monotonic())
+        if interaction.message and interaction.channel_id:
+            ok, err_msg = await switch_panel(
+                interaction.client, interaction.channel_id, interaction.message, new_island, interaction.user, "select dropdown"
+            )
+            if not ok:
+                await interaction.followup.send(embed=_err_embed(err_msg or "Failed to switch island.", "❌ Error"), ephemeral=True)
 
 
 class ControlPanelActionButton(
@@ -790,8 +1265,22 @@ class ControlPanelActionButton(
 
         if spec.key == "logs":
             await interaction.response.defer(ephemeral=True)
-            embed = await asyncio.to_thread(_build_island_logs_embed, island, 20)
+            status = await fetch_island_status(island)
+            embed = await asyncio.to_thread(_build_island_logs_embed, island, 20, status)
             await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        if spec.key == "echo":
+            status = await fetch_island_status(island)
+            embed = build_echo_settings_embed(island, status)
+            view = EchoSettingsView(island, status, interaction.message, interaction=interaction)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
+
+        if spec.key == "switch":
+            embed = build_all_islands_embed(island)
+            view = AllIslandsBrowserView(island, interaction.message, interaction=interaction)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
 
         if spec.key == "status":
@@ -804,6 +1293,13 @@ class ControlPanelActionButton(
             cog: Any = interaction.client.get_cog("ControlPanelCog")
             if cog and interaction.channel_id:
                 cog._sigs[str(interaction.channel_id)] = (_embed_signature(embed), time.monotonic())
+            return
+
+        if spec.local:
+            await interaction.response.send_message(
+                embed=_err_embed(f"Action '{spec.title}' is marked local but has no handler configured.", "❌ Not Implemented"),
+                ephemeral=True,
+            )
             return
 
         if spec.confirm:
@@ -857,18 +1353,21 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
             self.bot.remove_dynamic_items(ControlPanelIslandSelect, ControlPanelActionButton)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        msg = (
-            "You need the **Manage Server** permission to use this command."
-            if isinstance(error, app_commands.MissingPermissions)
-            else "Something went wrong running that command."
-        )
-        if not isinstance(error, app_commands.MissingPermissions):
+        title = "❌ Error"
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "You need the **Manage Server** permission to use this command."
+            title = "🚫 Access Denied"
+        elif isinstance(error, app_commands.CheckFailure):
+            msg = str(error) or "You need the control-panel role (or Administrator) to use this command."
+            title = "🚫 Access Denied"
+        else:
+            msg = "Something went wrong running that command."
             logger.error("[ControlPanelCog] Command error: %s", error, exc_info=error)
         with contextlib.suppress(discord.HTTPException):
             if interaction.response.is_done():
-                await interaction.followup.send(embed=_err_embed(msg, "❌ Error"), ephemeral=True)
+                await interaction.followup.send(embed=_err_embed(msg, title), ephemeral=True)
             else:
-                await interaction.response.send_message(embed=_err_embed(msg, "❌ Error"), ephemeral=True)
+                await interaction.response.send_message(embed=_err_embed(msg, title), ephemeral=True)
 
     # ── Keeping a channel's panel alive ───────────────────────────────────────
 
@@ -997,7 +1496,6 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
         name="control-panel",
         description="SysBot island remote control console",
         guild_only=True,
-        default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @control_panel_group.command(name="setup", description="Post the interactive island control panel in this channel")
@@ -1043,6 +1541,103 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
         self._dead_channels.discard(channel.id)
         logger.info("[ControlPanelCog] setup: island=%s channel=%s msg=%s by %s", target, channel.id, msg.id, interaction.user)
         await interaction.followup.send(f"✅ Control panel for **{target}** posted in {channel.mention}.", ephemeral=True)
+
+    @control_panel_group.command(name="echo", description="View or toggle SysBot echo broadcast settings for an island")
+    @app_commands.describe(
+        island="Island to configure (defaults to this channel's panel island)",
+        category="Echo category to toggle (or all)",
+        enabled="Explicit true/false state (optional, toggles current state if omitted)",
+    )
+    @panel_access()
+    @app_commands.autocomplete(island=island_autocomplete)
+    async def control_panel_echo(
+        self,
+        interaction: discord.Interaction,
+        island: str | None = None,
+        category: Literal["all", "dodo", "arrivals", "island_updates"] = "all",
+        enabled: bool | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if island:
+            target = _canonical_island(island)
+            if not target:
+                await interaction.followup.send(
+                    embed=_err_embed(f"**{island[:50]}** is not a recognized island.", "❌ Unknown Island"),
+                    ephemeral=True,
+                )
+                return
+        else:
+            target = await _resolve_target(interaction, None)
+            if not target:
+                await interaction.followup.send(
+                    embed=_err_embed("Could not determine target island. Pass it explicitly: `/control-panel echo island:Kakanggata`", "❌ Unknown Island"),
+                    ephemeral=True,
+                )
+                return
+
+        ok, msg = False, ""
+        try:
+            client = get_island_sysbot_client(target)
+            curr_status = await fetch_island_status(target)
+            if enabled is not None:
+                want = enabled
+            elif category == "all":
+                want = not all(curr_status.get(k) is True for k in KEYS.values())
+            else:
+                key_name = KEYS.get(category)
+                want = (curr_status.get(key_name) is not True) if key_name else True
+
+            res = await asyncio.wait_for(client.toggle_echo(echo_type=category, enabled=want), ACTION_TIMEOUT)
+            ok, msg = _interpret(res)
+        except asyncio.TimeoutError:
+            msg = "SysBot didn't answer in time."
+            logger.warning("[ControlPanel] Echo slash toggle timeout on %s", target)
+        except Exception as exc:
+            msg = "Failed to communicate with SysBot."
+            logger.error("[ControlPanel] Error toggling echo via slash command on %s: %s", target, exc, exc_info=True)
+        finally:
+            await asyncio.to_thread(_log_audit, target, f"echo-{category}", interaction.user, ok, msg)
+
+        new_status = await fetch_island_status(target)
+        embed = build_echo_settings_embed(target, new_status)
+        if not ok:
+            embed.set_footer(text=f"⚠️ Action failed: {msg or 'Unknown error'}", icon_url=PANEL_FOOTER_ICON)
+        view = EchoSettingsView(target, new_status, None, interaction=interaction)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    @control_panel_group.command(name="switch", description="Switch the control panel in this channel to a different island")
+    @app_commands.describe(island="Island to switch the panel to")
+    @panel_access()
+    @app_commands.autocomplete(island=island_autocomplete)
+    async def control_panel_switch(self, interaction: discord.Interaction, island: str) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        target = _canonical_island(island)
+        if not target:
+            await interaction.followup.send(embed=_err_embed(f"**{island[:50]}** is not a recognized island.", "❌ Unknown Island"), ephemeral=True)
+            return
+
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send(embed=_err_embed("Panels can only be switched in regular text channels.", "❌ Error"), ephemeral=True)
+            return
+
+        panel = await asyncio.to_thread(_get_control_panel, channel.id)
+        msg: discord.Message | discord.PartialMessage | None = None
+        if panel and panel.get("message_id"):
+            msg = channel.get_partial_message(int(panel["message_id"]))
+        else:
+            msg = await self.ensure_persistent_panel(channel.id)
+
+        if not msg:
+            await interaction.followup.send(embed=_err_embed("Could not find or create a control panel in this channel.", "❌ Error"), ephemeral=True)
+            return
+
+        ok, err_msg = await switch_panel(self.bot, channel.id, msg, target, interaction.user, "slash command")
+        if ok:
+            await interaction.followup.send(f"✅ Control panel switched to **{target}**.", ephemeral=True)
+        else:
+            await interaction.followup.send(embed=_err_embed(err_msg or "Failed to switch panel.", "❌ Error"), ephemeral=True)
+
 
 
 async def setup(bot: commands.Bot) -> None:

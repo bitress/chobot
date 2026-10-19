@@ -1038,11 +1038,53 @@ class SysBotClient:
             payload_r = {"enabled": enabled} if enabled is not None else {}
             res, _ = self._post("/api/togglerefresh", payload_r)
             return res
+        elif action_clean in ("echo-dodo", "echo_dodo", "echododo"):
+            enabled = kwargs.get("enabled")
+            return self.toggle_echo_sync("dodo", enabled)
+        elif action_clean in ("echo-arrivals", "echo_arrivals", "echoarrivals"):
+            enabled = kwargs.get("enabled")
+            return self.toggle_echo_sync("arrivals", enabled)
+        elif action_clean in ("echo-updates", "echo_updates", "echo_island_updates", "echoupdates"):
+            enabled = kwargs.get("enabled")
+            return self.toggle_echo_sync("island_updates", enabled)
+        elif action_clean in ("echo-all", "echo_all", "echoall", "echo"):
+            enabled = kwargs.get("enabled")
+            echo_type = kwargs.get("type", "all")
+            return self.toggle_echo_sync(echo_type, enabled)
         elif action_clean in ("guide", "control_guide"):
             res, _ = self._get("/api/control/guide")
             return res
 
         return data if isinstance(data, dict) else {"success": False, "error": f"Unknown control action: {action}"}
+
+    def get_echo_status_sync(self) -> dict:
+        """Fetch echo status via GET /api/echo."""
+        res, code = self._get("/api/echo")
+        if isinstance(res, dict) and code < 400:
+            return res
+        return {"success": False, "error": f"HTTP {code}"}
+
+    async def get_echo_status(self) -> dict:
+        """Fetch echo status asynchronously."""
+        return await asyncio.to_thread(self.get_echo_status_sync)
+
+    def toggle_echo_sync(self, echo_type: str = "all", enabled: Optional[bool] = None, **kwargs) -> dict:
+        """Toggle or set echo state via POST /api/echo or POST /api/toggleecho."""
+        payload: Dict[str, Any] = {}
+        if echo_type:
+            payload["type"] = echo_type
+        if enabled is not None:
+            payload["enabled"] = enabled
+        payload.update(kwargs)
+        res, code = self._post("/api/echo", payload)
+        if code != 404 and isinstance(res, dict):
+            return res
+        res, code = self._post("/api/toggleecho", payload)
+        return res if isinstance(res, dict) else {"success": False, "error": f"HTTP {code}"}
+
+    async def toggle_echo(self, echo_type: str = "all", enabled: Optional[bool] = None, **kwargs) -> dict:
+        """Toggle or set echo state asynchronously."""
+        return await asyncio.to_thread(self.toggle_echo_sync, echo_type, enabled, **kwargs)
 
     async def control_action(self, action: str, **kwargs) -> dict:
         """Execute control action asynchronously."""
