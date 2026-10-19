@@ -2298,6 +2298,34 @@ def home():
                 "path": "/api/find?q=<item>",
                 "description": "Search for item availability across all islands"
             },
+            "items_search": {
+                "path": "/api/items/search?query=<query>",
+                "description": "Search catalog items with detailed variations, images, and pricing"
+            },
+            "recipes_search": {
+                "path": "/api/recipes/search?query=<query>",
+                "description": "Search crafting DIY recipes by recipe name, crafted item, or material"
+            },
+            "items_customizations": {
+                "path": "/api/items/customizations?item=<name>",
+                "description": "Get item customization options, variations, pattern/body titles, and kit type"
+            },
+            "telemetry": {
+                "path": "/api/telemetry",
+                "description": "Real-time multi-island telemetry, visitor counts, in-game time, and health overview"
+            },
+            "island_items": {
+                "path": "/api/island/items?query=<query>",
+                "description": "Locate on-ground items on interactive treasure island maps by acre and coordinates"
+            },
+            "island_map_image": {
+                "path": "/api/island/map/image?scale=<scale>",
+                "description": "Dynamic scalable ACNH radar island map image with live visitor radar blips"
+            },
+            "players_live": {
+                "path": "/api/players/live",
+                "description": "Real-time active visitors and player presence across all islands"
+            },
             "search_villagers": {
                 "path": "/api/villager?q=<name>",
                 "description": "Locate specific villagers on islands"
@@ -6895,3 +6923,194 @@ def api_user_notifications_read():
         return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
         conn.close()
+
+
+# ============================================================================
+# INTERACTIVE MAP, CATALOG & LIVE TELEMETRY API ENDPOINTS
+# ============================================================================
+
+@app.route("/api/items/search", methods=["GET"])
+def api_items_search():
+    """
+    Search catalog items by name, category, or internal ID.
+    Query params:
+      - query / q / name: search keyword
+      - category / cat: category filter
+      - limit: items per page (default 50, max 200)
+      - offset: pagination offset (default 0)
+    """
+    from utils import catalog_map_service
+    q = request.args.get("query") or request.args.get("q") or request.args.get("name") or ""
+    cat = request.args.get("category") or request.args.get("cat")
+    try:
+        limit = min(max(int(request.args.get("limit", 50)), 1), 200)
+    except (ValueError, TypeError):
+        limit = 50
+    try:
+        offset = max(int(request.args.get("offset", 0)), 0)
+    except (ValueError, TypeError):
+        offset = 0
+
+    data = catalog_map_service.search_catalog_items(q, category=cat, limit=limit, offset=offset)
+    return jsonify(data)
+
+
+@app.route("/api/recipes/search", methods=["GET"])
+def api_recipes_search():
+    """
+    Search DIY crafting recipes by recipe name, crafted item, or material requirement.
+    Query params:
+      - query / q / name: search keyword
+      - category / cat: recipe category filter
+      - material / ingredient: required material filter
+      - limit: recipes per page (default 50, max 200)
+      - offset: pagination offset (default 0)
+    """
+    from utils import catalog_map_service
+    q = request.args.get("query") or request.args.get("q") or request.args.get("name") or ""
+    cat = request.args.get("category") or request.args.get("cat")
+    mat = request.args.get("material") or request.args.get("ingredient")
+    try:
+        limit = min(max(int(request.args.get("limit", 50)), 1), 200)
+    except (ValueError, TypeError):
+        limit = 50
+    try:
+        offset = max(int(request.args.get("offset", 0)), 0)
+    except (ValueError, TypeError):
+        offset = 0
+
+    data = catalog_map_service.search_catalog_recipes(q, category=cat, material=mat, limit=limit, offset=offset)
+    return jsonify(data)
+
+
+@app.route("/api/items/customizations", methods=["GET"])
+def api_items_customizations():
+    """
+    Get item customization variations, pattern titles, body titles, and kit requirements.
+    Query params:
+      - item / name / query / id: target item name or ID
+    """
+    from utils import catalog_map_service
+    item_param = (
+        request.args.get("item")
+        or request.args.get("name")
+        or request.args.get("query")
+        or request.args.get("id")
+        or ""
+    ).strip()
+    if not item_param:
+        return jsonify({"ok": False, "error": "Query parameter 'item' is required."}), 400
+
+    data = catalog_map_service.get_item_customizations(item_param)
+    return jsonify(data)
+
+
+@app.route("/api/telemetry", methods=["GET"])
+def api_telemetry():
+    """
+    Multi-island real-time SysBot telemetry, visitor metrics, and health overview.
+    Query params:
+      - island / name: optional island name filter
+    """
+    from utils import catalog_map_service
+    viewer = _current_auth_user()
+    isl = request.args.get("island") or request.args.get("name")
+    data = catalog_map_service.build_telemetry_payload(island_filter=isl, viewer=viewer)
+    return jsonify(data)
+
+
+@app.route("/api/island/items", methods=["GET"])
+@app.route("/api/islands/items", methods=["GET"])
+@app.route("/api/islands/<island_name>/items", methods=["GET"])
+def api_island_items(island_name: Optional[str] = None):
+    """
+    Interactive map item locator: locates on-ground items on treasure islands
+    by acre, sector, and precise map coordinates.
+    Query params:
+      - query / q: item name or category to search
+      - island / name: island name (or 'all')
+      - acre / sector: acre/sector filter (e.g. 'a0', 'B3')
+      - category / cat: category filter
+      - limit: results per page (default 100, max 500)
+      - offset: pagination offset (default 0)
+    """
+    from utils import catalog_map_service
+    isl = (island_name or request.args.get("island") or request.args.get("name") or "").strip()
+    q = request.args.get("query") or request.args.get("q") or ""
+    acre = request.args.get("acre") or request.args.get("sector")
+    cat = request.args.get("category") or request.args.get("cat")
+    try:
+        limit = min(max(int(request.args.get("limit", 100)), 1), 500)
+    except (ValueError, TypeError):
+        limit = 100
+    try:
+        offset = max(int(request.args.get("offset", 0)), 0)
+    except (ValueError, TypeError):
+        offset = 0
+
+    data = catalog_map_service.search_island_items_unified(
+        query=q,
+        island_name=isl,
+        acre=acre,
+        category=cat,
+        limit=limit,
+        offset=offset,
+    )
+    return jsonify(data)
+
+
+@app.route("/api/island/map/image", methods=["GET"])
+@app.route("/api/islands/map/image", methods=["GET"])
+@app.route("/api/islands/<island_name>/map/image", methods=["GET"])
+def api_island_map_image(island_name: Optional[str] = None):
+    """
+    Dynamic scalable interactive island map image.
+    Provides CDN cached terrain maps or procedurally generated high-resolution
+    ACNH radar grid maps with live visitor radar blips.
+    Query params:
+      - island / name: island name (default 'Hiraya')
+      - scale: magnification multiplier (default 1.0, range 0.1 .. 4.0)
+      - theme: 'radar', 'satellite', 'dark', 'light' (default 'radar')
+      - players: overlay live visitor radar blips ('1'/'0', default 1)
+      - items: overlay items on ground ('1'/'0', default 0)
+      - format: image format ('png', 'webp', 'jpeg', default 'png')
+    """
+    from utils import catalog_map_service
+    isl = (island_name or request.args.get("island") or request.args.get("name") or "Hiraya").strip()
+    try:
+        scale_val = float(request.args.get("scale", 1.0))
+    except (ValueError, TypeError):
+        scale_val = 1.0
+
+    theme = request.args.get("theme", "radar")
+    overlay_players = request.args.get("players", "1").lower() not in ("0", "false", "no")
+    overlay_items = request.args.get("items", "0").lower() in ("1", "true", "yes")
+    fmt = request.args.get("format", "png")
+
+    img_bytes, mimetype = catalog_map_service.render_island_map_image(
+        island_name=isl,
+        scale=scale_val,
+        theme=theme,
+        overlay_items=overlay_items,
+        overlay_players=overlay_players,
+        format_type=fmt,
+    )
+
+    resp = send_file(io.BytesIO(img_bytes), mimetype=mimetype)
+    resp.headers["Cache-Control"] = "public, max-age=120"
+    return resp
+
+
+@app.route("/api/players/live", methods=["GET"])
+def api_players_live():
+    """
+    Real-time active visitor presence and player tracking across all islands.
+    Query params:
+      - island / name: optional island name filter
+    """
+    from utils import catalog_map_service
+    viewer = _current_auth_user()
+    isl = request.args.get("island") or request.args.get("name")
+    data = catalog_map_service.build_live_players_payload(island_filter=isl, viewer=viewer)
+    return jsonify(data)
+
