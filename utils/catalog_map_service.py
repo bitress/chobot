@@ -25,7 +25,14 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from PIL import Image, ImageDraw, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    HAS_PIL = True
+except ImportError:
+    Image = None  # type: ignore
+    ImageDraw = None  # type: ignore
+    ImageFont = None  # type: ignore
+    HAS_PIL = False
 
 from utils.config import Config
 from utils.database import connect_db
@@ -475,11 +482,16 @@ def render_island_map_image(
     4. Resizes smoothly using scale (clamped 0.1 .. 4.0).
     5. Returns (image_bytes, mimetype).
     """
+    if not HAS_PIL:
+        raise RuntimeError(
+            "Pillow library is required for map rendering. Please install it using: pip install Pillow"
+        )
+
     clean_name = (island_name or "Hiraya").strip()
     norm_name = clean_name.lower()
     local_cache_path = os.path.join(_MAP_STORAGE_DIR, f"{norm_name}.png")
 
-    img: Optional[Image.Image] = None
+    img: Optional[Any] = None
 
     # Step 1: Check local storage cache
     if os.path.exists(local_cache_path):
@@ -516,7 +528,8 @@ def render_island_map_image(
     if abs(clamped_scale - 1.0) > 0.01:
         new_w = max(32, int(img.width * clamped_scale))
         new_h = max(32, int(img.height * clamped_scale))
-        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        resample_method = getattr(getattr(Image, "Resampling", None), "LANCZOS", getattr(Image, "LANCZOS", 1))
+        img = img.resize((new_w, new_h), resample_method)
 
     # Export to requested image format
     buffer = io.BytesIO()
@@ -535,7 +548,7 @@ def render_island_map_image(
     return buffer.getvalue(), mimetype
 
 
-def _generate_procedural_radar_map(island_name: str, theme: str = "radar") -> Image.Image:
+def _generate_procedural_radar_map(island_name: str, theme: str = "radar") -> Any:
     """Generate a crisp, aesthetic Animal Crossing 7x6 Acre Radar Map."""
     width, height = 896, 768  # 112x96 tiles * 8px
     img = Image.new("RGBA", (width, height), (26, 68, 115, 255))  # Ocean blue
@@ -582,7 +595,7 @@ def _generate_procedural_radar_map(island_name: str, theme: str = "radar") -> Im
     return img
 
 
-def _overlay_live_players(img: Image.Image, island_name: str) -> Image.Image:
+def _overlay_live_players(img: Any, island_name: str) -> Any:
     """Overlay active visitor radar blips and name badges onto the island map."""
     try:
         from utils.sysbot_telemetry import get_cached_island_telemetry

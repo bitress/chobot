@@ -7087,18 +7087,21 @@ def api_island_map_image(island_name: Optional[str] = None):
     overlay_items = request.args.get("items", "0").lower() in ("1", "true", "yes")
     fmt = request.args.get("format", "png")
 
-    img_bytes, mimetype = catalog_map_service.render_island_map_image(
-        island_name=isl,
-        scale=scale_val,
-        theme=theme,
-        overlay_items=overlay_items,
-        overlay_players=overlay_players,
-        format_type=fmt,
-    )
-
-    resp = send_file(io.BytesIO(img_bytes), mimetype=mimetype)
-    resp.headers["Cache-Control"] = "public, max-age=120"
-    return resp
+    try:
+        img_bytes, mimetype = catalog_map_service.render_island_map_image(
+            island_name=isl,
+            scale=scale_val,
+            theme=theme,
+            overlay_items=overlay_items,
+            overlay_players=overlay_players,
+            format_type=fmt,
+        )
+        resp = send_file(io.BytesIO(img_bytes), mimetype=mimetype)
+        resp.headers["Cache-Control"] = "public, max-age=120"
+        return resp
+    except Exception as exc:
+        logging.getLogger("flask_api").error(f"Failed to render island map image: {exc}")
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/api/players/live", methods=["GET"])
