@@ -125,90 +125,10 @@ def search_catalog_items(
     limit: int = 50,
     offset: int = 0,
 ) -> Dict[str, Any]:
-    """Search items by name, category, or internal ID with ranking."""
-    _ensure_catalog_loaded()
-    q = (query or "").strip().lower()
-    cat_filter = (category or "").strip().lower()
+    """Search items by name, category, or internal ID using nhl_map_parser."""
+    from utils import nhl_map_parser
+    return nhl_map_parser.search_catalog_items(query=query, category=category, limit=limit, offset=offset)
 
-    if not q and not cat_filter:
-        subset = _ITEMS_LIST[offset : offset + limit]
-        return {
-            "ok": True,
-            "query": query,
-            "total": len(_ITEMS_LIST),
-            "limit": limit,
-            "offset": offset,
-            "items": [_format_item_summary(it) for it in subset],
-        }
-
-    exact_matches: List[Dict[str, Any]] = []
-    prefix_matches: List[Dict[str, Any]] = []
-    contains_matches: List[Dict[str, Any]] = []
-
-    for it in _ITEMS_LIST:
-        it_cat = (it.get("Category") or "").lower()
-        if cat_filter and cat_filter not in it_cat:
-            continue
-
-        name = (it.get("Name") or "").lower()
-        internal_id = str(it.get("Internal ID") or "").lower()
-
-        if q:
-            if name == q or internal_id == q:
-                exact_matches.append(it)
-            elif name.startswith(q):
-                prefix_matches.append(it)
-            elif q in name or q in internal_id or q in (it.get("Series") or "").lower():
-                contains_matches.append(it)
-        else:
-            contains_matches.append(it)
-
-    all_matched = exact_matches + prefix_matches + contains_matches
-    total_count = len(all_matched)
-    paginated = all_matched[offset : offset + limit]
-
-    return {
-        "ok": True,
-        "query": query,
-        "category": category,
-        "total": total_count,
-        "limit": limit,
-        "offset": offset,
-        "items": [_format_item_summary(it) for it in paginated],
-    }
-
-
-def _format_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
-    """Format an item dictionary into a clean, modern API representation."""
-    variations = item.get("Variations") or []
-    first_var = variations[0] if variations else {}
-    img_url = first_var.get("imageUrl") or ""
-
-    diy_val = item.get("DIY")
-    is_diy = str(diy_val).lower() in ("yes", "true", "1") if diy_val is not None else False
-
-    return {
-        "name": item.get("Name") or "",
-        "category": item.get("Category") or "",
-        "internal_id": item.get("Internal ID") or "",
-        "buy": item.get("Buy") or "NA",
-        "sell": item.get("Sell") or "NA",
-        "source": item.get("Source") or "",
-        "series": item.get("Series") or "",
-        "diy": is_diy,
-        "customizable": len(variations) > 1 or bool(item.get("BodyTitle") or item.get("PatternTitle")),
-        "variations_count": len(variations),
-        "colors": item.get("Colours") or [],
-        "image_url": img_url,
-        "body_title": item.get("BodyTitle"),
-        "pattern_title": item.get("PatternTitle"),
-        "variations": variations,
-    }
-
-
-# ============================================================================
-# 2. RECIPE SEARCH
-# ============================================================================
 
 def search_catalog_recipes(
     query: str,
@@ -217,249 +137,37 @@ def search_catalog_recipes(
     limit: int = 50,
     offset: int = 0,
 ) -> Dict[str, Any]:
-    """Search crafting DIY recipes by recipe name, crafted item, or material requirement."""
-    _ensure_catalog_loaded()
-    q = (query or "").strip().lower()
-    cat_filter = (category or "").strip().lower()
-    mat_filter = (material or "").strip().lower()
+    """Search crafting DIY recipes by recipe name, crafted item, or material requirement using nhl_map_parser."""
+    from utils import nhl_map_parser
+    return nhl_map_parser.search_catalog_recipes(
+        query=query, category=category, material=material, limit=limit, offset=offset
+    )
 
-    matches = []
-    for r in _RECIPES_LIST:
-        r_cat = (r.get("category") or "").lower()
-        if cat_filter and cat_filter not in r_cat:
-            continue
-
-        mats = r.get("materials") or {}
-        mat_keys = [str(k).lower() for k in mats.keys()]
-        if mat_filter and not any(mat_filter in mk for mk in mat_keys):
-            continue
-
-        if q:
-            name = (r.get("name") or "").lower()
-            name_match = q in name
-            mat_match = any(q in mk for mk in mat_keys)
-            source_match = any(q in str(s).lower() for s in (r.get("source") or []))
-            if not (name_match or mat_match or source_match):
-                continue
-
-        matches.append({
-            "name": r.get("name") or "",
-            "category": r.get("category") or "",
-            "image": r.get("image") or "",
-            "buy": r.get("buy"),
-            "sell": r.get("sell"),
-            "source": r.get("source") or [],
-            "season_event": r.get("seasonEvent"),
-            "internal_id": r.get("internalId"),
-            "crafted_item_internal_id": r.get("craftedItemInternalId"),
-            "materials": r.get("materials") or {},
-            "unique_entry_id": r.get("uniqueEntryId") or "",
-        })
-
-    total = len(matches)
-    paginated = matches[offset : offset + limit]
-
-    return {
-        "ok": True,
-        "query": query,
-        "category": category,
-        "material": material,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "recipes": paginated,
-    }
-
-
-# ============================================================================
-# 3. ITEM CUSTOMIZATIONS
-# ============================================================================
 
 def get_item_customizations(item_query: str) -> Dict[str, Any]:
-    """Retrieve full customization kits, Cyrus price, and variations for an item."""
-    _ensure_catalog_loaded()
-    q = (item_query or "").strip().lower()
-    if not q:
-        return {"ok": False, "error": "Item query is required", "found": False}
+    """Retrieve full customization kits, Cyrus price, and variations using nhl_map_parser."""
+    from utils import nhl_map_parser
+    return nhl_map_parser.get_item_customizations(item_query)
 
-    target = _ITEMS_BY_NAME.get(q) or _ITEMS_BY_ID.get(q)
-
-    # Fuzzy match if exact lookup fails
-    if not target:
-        for it in _ITEMS_LIST:
-            if q in (it.get("Name") or "").lower():
-                target = it
-                break
-
-    if not target:
-        return {"ok": True, "found": False, "item": item_query, "variations": []}
-
-    variations_raw = target.get("Variations") or []
-    variations = []
-    for v in variations_raw:
-        variations.append({
-            "variation": v.get("Variation") or v.get("variation") or "Standard",
-            "pattern": v.get("Pattern") or v.get("pattern"),
-            "id": v.get("id"),
-            "poker_id": v.get("pokerId"),
-            "filename": v.get("Filename"),
-            "image_url": v.get("imageUrl") or v.get("storageImage") or v.get("closetImage") or "",
-            "colors": v.get("Colours") or [],
-            "unique_entry_id": v.get("uniqueEntryId"),
-        })
-
-    is_customizable = len(variations) > 1 or bool(target.get("BodyTitle") or target.get("PatternTitle"))
-
-    return {
-        "ok": True,
-        "found": True,
-        "item": target.get("Name"),
-        "category": target.get("Category"),
-        "internal_id": target.get("Internal ID"),
-        "customizable": is_customizable,
-        "body_title": target.get("BodyTitle"),
-        "pattern_title": target.get("PatternTitle"),
-        "total_variations": len(variations),
-        "variations": variations,
-    }
-
-
-# ============================================================================
-# 4. UNIFIED ISLAND ITEMS (Interactive Map item finder)
-# ============================================================================
 
 def search_island_items_unified(
-    query: str,
+    query: str = "",
     island_name: Optional[str] = None,
     acre: Optional[str] = None,
     category: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> Dict[str, Any]:
-    """
-    Search on-ground items across treasure islands and sub islands.
-    Integrates:
-    - Real .nhl parsed live map items (utils.nhl_map_parser)
-    - Explorer / treasure islands database (items_detail.json)
-    - In-memory item cache location mapping (cache_dump.json)
-    """
-    _ensure_catalog_loaded()
-    q = (query or "").strip().lower()
-    target_isl = (island_name or "").strip()
-    acre_filter = (acre or "").strip().lower()
-    cat_filter = (category or "").strip().lower()
-
-    results: List[Dict[str, Any]] = []
-    seen_keys: set[tuple[str, str, str]] = set()
-
-    # 1. Try NHL live binary map parser if a specific island is requested
-    if target_isl and target_isl.lower() != "all":
-        try:
-            from utils.nhl_map_parser import search_island_items
-            nhl_res = search_island_items(target_isl, q)
-            if nhl_res.get("ok") and nhl_res.get("matches"):
-                for m in nhl_res["matches"]:
-                    m_name = m.get("name") or ""
-                    m_acre = m.get("acre") or m.get("sector") or ""
-                    key = (m_name.lower(), target_isl.lower(), m_acre.lower())
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        results.append({
-                            "name": m_name,
-                            "island": target_isl,
-                            "acre": m.get("acre") or "",
-                            "sector": m.get("sector") or "",
-                            "x": m.get("x"),
-                            "y": m.get("y"),
-                            "category": m.get("category") or "On Ground",
-                            "item_id": m.get("item_id"),
-                            "source": "live_nhl_map",
-                        })
-        except Exception as exc:
-            logger.debug(f"[CatalogMapService] NHL search note: {exc}")
-
-    # 2. Search treasure islands database from items_detail.json
-    ti_candidates = _TREASURE_ISLANDS
-    if target_isl and target_isl.lower() != "all":
-        ti_candidates = _TREASURE_BY_ISLAND.get(target_isl.lower(), [])
-        if not ti_candidates:
-            # Fallback scan in case of slight casing mismatch
-            ti_candidates = [t for t in _TREASURE_ISLANDS if t.get("islandID", "").lower() == target_isl.lower()]
-
-    for ti in ti_candidates:
-        item_name = (ti.get("item") or "").strip()
-        item_isl = (ti.get("islandID") or "").strip()
-        item_acre = (ti.get("acre") or "").strip()
-        item_type = (ti.get("itemtype") or "").strip()
-
-        if q and q not in item_name.lower():
-            continue
-        if acre_filter and acre_filter not in item_acre.lower():
-            continue
-        if cat_filter and cat_filter not in item_type.lower():
-            continue
-
-        key = (item_name.lower(), item_isl.lower(), item_acre.lower())
-        if key not in seen_keys:
-            seen_keys.add(key)
-            results.append({
-                "name": item_name,
-                "island": item_isl,
-                "acre": item_acre,
-                "sector": item_acre.upper(),
-                "x": None,
-                "y": None,
-                "category": item_type or "Catalog",
-                "item_id": None,
-                "source": "treasure_islands_db",
-            })
-
-    # 3. Search item cache locations (GSheets / cache_dump.json)
-    if not results and q:
-        try:
-            cache_file = os.path.join(_BASE_DIR, "cache_dump.json")
-            if os.path.exists(cache_file):
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    cdata = json.load(f)
-                    for k, loc_str in cdata.items():
-                        if k.startswith("_"):
-                            continue
-                        if q in k.lower():
-                            islands_found = [s.strip() for s in str(loc_str).split(",") if s.strip()]
-                            for isl in islands_found:
-                                if target_isl and target_isl.lower() != "all" and target_isl.lower() != isl.lower():
-                                    continue
-                                key = (k.lower(), isl.lower(), "")
-                                if key not in seen_keys:
-                                    seen_keys.add(key)
-                                    results.append({
-                                        "name": k,
-                                        "island": isl,
-                                        "acre": "Island Wide",
-                                        "sector": "",
-                                        "x": None,
-                                        "y": None,
-                                        "category": "Available",
-                                        "item_id": None,
-                                        "source": "island_item_cache",
-                                    })
-        except Exception as exc:
-            logger.debug(f"[CatalogMapService] Cache search note: {exc}")
-
-    total = len(results)
-    paginated = results[offset : offset + limit]
-
-    return {
-        "ok": True,
-        "query": query,
-        "island": target_isl or "all",
-        "acre": acre,
-        "category": category,
-        "total_matches": total,
-        "limit": limit,
-        "offset": offset,
-        "items": paginated,
-    }
+    """Unified search across live .nhl island maps and treasure islands databases."""
+    from utils import nhl_map_parser
+    return nhl_map_parser.search_island_items(
+        island_name=island_name,
+        query=query,
+        acre=acre,
+        category=category,
+        limit=limit,
+        offset=offset,
+    )
 
 
 # ============================================================================
@@ -522,6 +230,10 @@ def render_island_map_image(
     # Step 4: Overlay live players if active
     if overlay_players:
         img = _overlay_live_players(img, clean_name)
+
+    # Step 5: Overlay ground items from .nhl if requested
+    if overlay_items:
+        img = _overlay_ground_items(img, clean_name)
 
     # Step 5: Scale image
     clamped_scale = max(0.1, min(4.0, float(scale)))
@@ -647,6 +359,35 @@ def _overlay_live_players(img: Any, island_name: str) -> Any:
     return img
 
 
+def _overlay_ground_items(img: Any, island_name: str) -> Any:
+    """Overlay parsed .nhl on-ground item markers onto the radar map."""
+    if not HAS_PIL or not img:
+        return img
+    try:
+        from utils.nhl_map_parser import get_island_map_data
+        map_data = get_island_map_data(island_name)
+        items = map_data.get("items") or []
+        if not items:
+            return img
+
+        draw = ImageDraw.Draw(img)
+        # Standard ACNH radar island dimensions: 112 cols x 96 rows
+        scale_x = img.width / 112.0
+        scale_y = img.height / 96.0
+
+        for it in items[:1500]:
+            x = it.get("x")
+            y = it.get("y")
+            if x is not None and y is not None:
+                px = int(x * scale_x)
+                py = int(y * scale_y)
+                draw.rectangle([px - 1, py - 1, px + 1, py + 1], fill=(255, 235, 60, 220))
+    except Exception as exc:
+        logger.debug(f"[CatalogMapService] Overlay items note: {exc}")
+
+    return img
+
+
 # ============================================================================
 # 6. TELEMETRY & HEALTH SUMMARY
 # ============================================================================
@@ -667,6 +408,7 @@ def build_telemetry_payload(
         _is_sub_island,
     )
     from utils import island_access
+    from utils.nhl_map_parser import get_island_map_telemetry
 
     all_ports = getattr(Config, "ALL_ISLAND_PORT_ORDER", [])
     raw_telemetry = get_all_cached_telemetry(mask_sub_dodo=False)
@@ -739,6 +481,7 @@ def build_telemetry_payload(
     visitor_summary = get_live_visitor_overview()
     health_summary = get_all_islands_health()
     load_summary = get_island_load_overview()
+    map_telemetry = get_island_map_telemetry()
 
     return {
         "ok": True,
@@ -748,10 +491,12 @@ def build_telemetry_payload(
             "online_islands": online_count,
             "total_visitors": total_visitors,
             "active_islands_count": visitor_summary.get("active_islands_count", 0),
+            "maps_available": map_telemetry.get("islands_with_maps", 0),
         },
         "visitor_overview": visitor_summary,
         "load_overview": load_summary,
         "health": health_summary,
+        "map_telemetry": map_telemetry,
         "islands": islands_result,
     }
 
