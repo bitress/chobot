@@ -862,6 +862,10 @@ class SysBotClient:
             params["type"] = event_type
 
         data, code = self._get("/api/events", **params)
+        if (code == 404 or not isinstance(data, dict) or not data.get("success")) and code != 503:
+            data_act, code_act = self._get("/api/activity", **params)
+            if isinstance(data_act, dict) and data_act.get("success"):
+                data, code = data_act, code_act
         if not isinstance(data, dict):
             return {"success": False, "error": f"Invalid response from SysBot (HTTP {code}).", "events": []}
         return data
@@ -1068,22 +1072,6 @@ class SysBotClient:
         """Fetch echo status asynchronously."""
         return await asyncio.to_thread(self.get_echo_status_sync)
 
-    def get_events_sync(self, limit: int = 30, event_type: Optional[str] = None) -> list:
-        """Fetch recent island events via GET /api/events or GET /api/activity."""
-        params: Dict[str, Any] = {"limit": limit}
-        if event_type:
-            params["type"] = event_type
-        res, code = self._get("/api/events", params)
-        if isinstance(res, dict) and res.get("success"):
-            return res.get("events") or []
-        res, code = self._get("/api/activity", params)
-        if isinstance(res, dict) and res.get("success"):
-            return res.get("events") or []
-        return []
-
-    async def get_events(self, limit: int = 30, event_type: Optional[str] = None) -> list:
-        """Fetch recent island events asynchronously."""
-        return await asyncio.to_thread(self.get_events_sync, limit, event_type)
 
     def toggle_echo_sync(self, echo_type: str = "all", enabled: Optional[bool] = None, **kwargs) -> dict:
         """Toggle or set echo state via POST /api/echo or POST /api/toggleecho."""

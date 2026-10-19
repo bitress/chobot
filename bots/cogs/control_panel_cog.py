@@ -447,7 +447,8 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
     client = None
     try:
         client = get_island_sysbot_client(island)
-        events = client.get_events_sync(limit=40)
+        resp = client.get_events_sync(limit=40)
+        events = (resp.get("events") if isinstance(resp, dict) else resp) or []
     except Exception as exc:
         logger.debug("[ControlPanel] Failed to fetch live events for %s: %s", island, exc)
 
