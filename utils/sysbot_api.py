@@ -1068,13 +1068,54 @@ class SysBotClient:
         """Fetch echo status asynchronously."""
         return await asyncio.to_thread(self.get_echo_status_sync)
 
+    def get_events_sync(self, limit: int = 30, event_type: Optional[str] = None) -> list:
+        """Fetch recent island events via GET /api/events or GET /api/activity."""
+        params: Dict[str, Any] = {"limit": limit}
+        if event_type:
+            params["type"] = event_type
+        res, code = self._get("/api/events", params)
+        if isinstance(res, dict) and res.get("success"):
+            return res.get("events") or []
+        res, code = self._get("/api/activity", params)
+        if isinstance(res, dict) and res.get("success"):
+            return res.get("events") or []
+        return []
+
+    async def get_events(self, limit: int = 30, event_type: Optional[str] = None) -> list:
+        """Fetch recent island events asynchronously."""
+        return await asyncio.to_thread(self.get_events_sync, limit, event_type)
+
     def toggle_echo_sync(self, echo_type: str = "all", enabled: Optional[bool] = None, **kwargs) -> dict:
         """Toggle or set echo state via POST /api/echo or POST /api/toggleecho."""
         payload: Dict[str, Any] = {}
-        if echo_type:
+        target = (echo_type or "all").strip().lower()
+        if target == "all":
+            payload["type"] = "all"
+            if enabled is not None:
+                payload["enabled"] = enabled
+                payload["echo_dodo_enabled"] = enabled
+                payload["echo_arrivals_enabled"] = enabled
+                payload["echo_island_updates_enabled"] = enabled
+        elif target == "dodo":
+            if enabled is not None:
+                payload["echo_dodo_enabled"] = enabled
+            else:
+                payload["type"] = "dodo"
+        elif target in ("arrivals", "arrival", "departures", "departure"):
+            if enabled is not None:
+                payload["echo_arrivals_enabled"] = enabled
+            else:
+                payload["type"] = "arrivals"
+        elif target in ("island_updates", "islandupdates", "updates", "island"):
+            if enabled is not None:
+                payload["echo_island_updates_enabled"] = enabled
+            else:
+                payload["type"] = "island_updates"
+        else:
             payload["type"] = echo_type
-        if enabled is not None:
-            payload["enabled"] = enabled
+            if enabled is not None:
+                payload["enabled"] = enabled
+
         payload.update(kwargs)
         res, code = self._post("/api/echo", payload)
         if code != 404 and isinstance(res, dict):

@@ -442,42 +442,147 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
         logger.error("[ControlPanel] Failed to query logs for %s: %s", island, exc, exc_info=True)
         return _err_embed("Unable to retrieve logs at this time. Please try again later.", "❌ Database Error")
 
-    # If status wasn't provided, attempt to fetch echo status synchronously
+    # Fetch live events from SysBot
+    events = []
+    client = None
+    try:
+        client = get_island_sysbot_client(island)
+        events = client.get_events_sync(limit=40)
+    except Exception as exc:
+        logger.debug("[ControlPanel] Failed to fetch live events for %s: %s", island, exc)
+
+    # Fallback to events in status if available
+    if not events and status and isinstance(status, dict):
+        events = list(status.get("recent_events") or [])
+
+    # If status wasn't provided, attempt to fetch status/echo synchronously
     if status is None:
         try:
-            client = get_island_sysbot_client(island)
-            status = client.get_echo_status_sync()
+            client = client or get_island_sysbot_client(island)
+            status = client.get_status_sync()
+            if not status or not status.get("success"):
+                status = client.get_echo_status_sync()
         except Exception:
             status = None
 
     embed = discord.Embed(
-        title=f"📜 Recent Logs & Echo Data — {island}",
-        color=PANEL_COLOR_ONLINE if drops_rows or echo_audit_rows else PANEL_COLOR_UNREACHABLE,
+        title=f"📜 Live Activity Logs & Echo Data — {island}",
+        color=PANEL_COLOR_ONLINE if (drops_rows or echo_audit_rows or events) else PANEL_COLOR_UNREACHABLE,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
 
+    data = status or {}
+
+    def _badge(val: Any) -> str:
+        if val is True or str(val).lower() in ("true", "1", "on"):
+            return "🟢 `ON`"
+        if val is False or str(val).lower() in ("false", "0", "off"):
+            return "🔴 `OFF`"
+        return "⚪ `—`"
+
+    def _fmt_evt_time(evt: dict) -> str:
+        lt = str(evt.get("LocalTime") or "")
+        if " " in lt:
+            parts = lt.split(" ")
+            if len(parts) >= 3:
+                return f"{parts[1][:5]} {parts[2]}"
+            return parts[1][:8]
+        ts = str(evt.get("Timestamp") or "")
+        if "T" in ts:
+            return ts.split("T")[1][:8]
+        return lt[:10] or "—"
+
     # 1. Echo Broadcast Status
-    if status and isinstance(status, dict):
-        def _badge(val: Any) -> str:
-            if val is True or str(val).lower() in ("true", "1", "on"):
-                return "🟢 `ON`"
-            if val is False or str(val).lower() in ("false", "0", "off"):
-                return "🔴 `OFF`"
-            return "⚪ `—`"
+    dodo_on = data.get("echo_dodo_enabled")
+    arrivals_on = data.get("echo_arrivals_enabled")
+    updates_on = data.get("echo_island_updates_enabled")
 
-        dodo = status.get("echo_dodo_enabled")
-        arrivals = status.get("echo_arrivals_enabled")
-        updates = status.get("echo_island_updates_enabled")
+    echo_summary = (
+        f"• **Dodo Broadcast:** {_badge(dodo_on)}  "
+        f"• **Arrivals/Departures:** {_badge(arrivals_on)}  "
+        f"• **Island State Updates:** {_badge(updates_on)}"
+    )
+    embed.add_field(name="📣 Live Echo Configuration", value=echo_summary, inline=False)
 
-        echo_summary = (
-            f"• **Dodo Broadcast:** {_badge(dodo)}\n"
-            f"• **Arrivals / Departures:** {_badge(arrivals)}\n"
-            f"• **Island State Updates:** {_badge(updates)}"
-        )
-        embed.add_field(name="📣 Live Echo Configuration", value=echo_summary, inline=False)
+    # 2. Dodo Broadcast Data Log
+    dodo_code = data.get("dodo_code") or "—"
+    is_valid = data.get("is_dodo_valid")
+    last_dodo_fetch = data.get("last_dodo_fetch") or "—"
+    valid_str = "🟢 Valid" if is_valid is True else ("🔴 Expired/Pending" if is_valid is False else "⚪ —")
 
-    # 2. Recent Echo Activity / Audit History
+    dodo_events = []
+    state_events = []
+    flight_events = []
+
+    for e in events:
+        t = str(e.get("Type") or "").lower()
+        m = str(e.get("Message") or "")
+        m_lower = m.lower()
+        if t in ("dodo", "crash") or "dodo" in m_lower or "crash" in m_lower or e.get("DodoCode"):
+            dodo_events.append(e)
+        elif t in ("arrival", "departure") or "joining" in m_lower or "departed" in m_lower:
+            flight_events.append(e)
+        elif t in ("layer", "system", "state", "clean", "gate", "echo") or any(
+            k in m_lower for k in ("layer", "unstick", "controller", "refresh", "clean", "mash", "commands", "gate", "queue")
+        ):
+            state_events.append(e)
+
+    dodo_lines = [
+        f"• **Current Dodo:** `{dodo_code}` ({valid_str}) • **Last Update:** `{last_dodo_fetch}`"
+    ]
+    if dodo_events:
+        for e in dodo_events[:5]:
+            t_str = _fmt_evt_time(e)
+            msg = str(e.get("Message") or "").strip()
+            icon = "⚠️" if "crash" in str(e.get("Type") or "").lower() or "crash" in msg.lower() else "🦤"
+            dodo_lines.append(f"`{t_str}` {icon} {msg[:80]}")
+    else:
+        dodo_lines.append("*No recent Dodo broadcast events in live buffer.*")
+
+    embed.add_field(name="🦤 Dodo Code Broadcast Logs", value="\n".join(dodo_lines)[:1020], inline=False)
+
+    # 3. Island State Updates Data Log
+    current_layer = data.get("layer") or data.get("current_layer") or "Default"
+    queue_count = data.get("queue_count", 0)
+    accepting = data.get("accepting_commands")
+    accept_str = "🟢 Yes" if accepting is True else ("🔴 No" if accepting is False else "⚪ —")
+
+    state_lines = [
+        f"• **Layer:** `{current_layer}` • **Queue:** `{queue_count}` • **Accepting Commands:** {accept_str}"
+    ]
+    if state_events:
+        for e in state_events[:5]:
+            t_str = _fmt_evt_time(e)
+            msg = str(e.get("Message") or "").strip()
+            msg_lower = msg.lower()
+            if "layer" in msg_lower:
+                icon = "🗺️"
+            elif "unstick" in msg_lower or "mash" in msg_lower:
+                icon = "🕹️"
+            elif "clean" in msg_lower or "refresh" in msg_lower:
+                icon = "🧹"
+            elif "echo" in msg_lower:
+                icon = "📣"
+            else:
+                icon = "📢"
+            state_lines.append(f"`{t_str}` {icon} {msg[:80]}")
+    else:
+        state_lines.append("*No recent island state update events in live buffer.*")
+
+    embed.add_field(name="📢 Island State Updates Logs", value="\n".join(state_lines)[:1020], inline=False)
+
+    # 4. Flight Events (Arrivals & Departures) if any
+    if flight_events:
+        flight_lines = []
+        for e in flight_events[:4]:
+            t_str = _fmt_evt_time(e)
+            msg = str(e.get("Message") or "").strip()
+            icon = "🛬" if "arrival" in str(e.get("Type") or "").lower() or "joining" in msg.lower() else "🛫"
+            flight_lines.append(f"`{t_str}` {icon} {msg[:80]}")
+        embed.add_field(name="🛬 Recent Flight Activity", value="\n".join(flight_lines)[:1020], inline=False)
+
+    # 5. Recent Echo & Control Audit History
     if echo_audit_rows:
         audit_lines = []
         for r in echo_audit_rows:
@@ -489,9 +594,9 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
             t_part = raw_ts.split(" ")[1][:8] if " " in raw_ts else raw_ts[:16]
             msg = str(r_dict.get("message") or "")[:40]
             audit_lines.append(f"`{t_part}` {ok_mark} **{user}**: `{act}`" + (f" ({msg})" if msg else ""))
-        embed.add_field(name="📣 Recent Echo Activity", value="\n".join(audit_lines)[:1020], inline=False)
+        embed.add_field(name="📜 Discord Action Audit", value="\n".join(audit_lines)[:1020], inline=False)
 
-    # 3. Drop Request Logs
+    # 6. Drop Request Logs
     if not drops_rows:
         embed.add_field(
             name="📦 Drop Request History",
