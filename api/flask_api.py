@@ -21,7 +21,7 @@ import urllib.request
 import io
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Optional
 
 import requests
 from flask import Flask, jsonify, request, session, redirect, url_for, send_file
