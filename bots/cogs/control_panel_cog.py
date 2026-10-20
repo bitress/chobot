@@ -202,9 +202,114 @@ def _init_panel_table() -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS island_echo_settings (
+                    island_name     TEXT PRIMARY KEY,
+                    echo_dodo       INTEGER NOT NULL DEFAULT 1,
+                    echo_arrivals   INTEGER NOT NULL DEFAULT 1,
+                    echo_updates    INTEGER NOT NULL DEFAULT 1,
+                    updated_at      TEXT
+                )
+                """
+            )
             conn.commit()
     except Exception as exc:
         logger.error("[ControlPanel] Failed to initialize database tables: %s", exc)
+
+
+def _get_echo_settings(island_name: str) -> dict[str, bool] | None:
+    """Retrieve saved echo broadcast settings from the backend database."""
+    try:
+        with connect_db() as conn:
+            row = conn.execute(
+                "SELECT echo_dodo, echo_arrivals, echo_updates FROM island_echo_settings WHERE island_name = ?",
+                (island_name.strip().lower(),),
+            ).fetchone()
+            if row:
+                return {
+                    "echo_dodo_enabled": bool(row["echo_dodo"]),
+                    "echo_arrivals_enabled": bool(row["echo_arrivals"]),
+                    "echo_island_updates_enabled": bool(row["echo_updates"]),
+                }
+    except Exception as exc:
+        logger.debug("[ControlPanel] Failed to get echo settings for %s: %s", island_name, exc)
+    return None
+
+
+def _save_echo_settings(island_name: str, dodo: bool, arrivals: bool, updates: bool) -> None:
+    """Persist echo broadcast settings for an island in the backend database."""
+    try:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with connect_db() as conn:
+            conn.execute(
+                """
+                INSERT INTO island_echo_settings (island_name, echo_dodo, echo_arrivals, echo_updates, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(island_name) DO UPDATE SET
+                    echo_dodo = excluded.echo_dodo,
+                    echo_arrivals = excluded.echo_arrivals,
+                    echo_updates = excluded.echo_updates,
+                    updated_at = excluded.updated_at
+                """,
+                (island_name.strip().lower(), int(dodo), int(arrivals), int(updates), now_iso),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.error("[ControlPanel] Failed to save echo settings for %s: %s", island_name, exc)
+
+
+def _save_echo_settings_all(dodo: bool, arrivals: bool, updates: bool) -> None:
+    """Persist echo broadcast settings for all 48 islands in the backend database."""
+    try:
+        sub_list, free_list = get_sub_and_free_islands()
+        all_islands = sorted(set(sub_list + free_list), key=lambda s: s.lower())
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with connect_db() as conn:
+            for isl in all_islands:
+                conn.execute(
+                    """
+                    INSERT INTO island_echo_settings (island_name, echo_dodo, echo_arrivals, echo_updates, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(island_name) DO UPDATE SET
+                        echo_dodo = excluded.echo_dodo,
+                        echo_arrivals = excluded.echo_arrivals,
+                        echo_updates = excluded.echo_updates,
+                        updated_at = excluded.updated_at
+                    """,
+                    (isl.strip().lower(), int(dodo), int(arrivals), int(updates), now_iso),
+                )
+            conn.commit()
+        logger.info("[ControlPanel] Persisted echo settings for %d islands to backend database.", len(all_islands))
+    except Exception as exc:
+        logger.error("[ControlPanel] Failed to save cluster echo settings: %s", exc)
+
+
+async def _broadcast_echo_to_cluster(dodo: bool, arrivals: bool, updates: bool) -> None:
+    """Push echo settings via HTTP to all reachable SysBots across the cluster."""
+    sub_list, free_list = get_sub_and_free_islands()
+    all_islands = sorted(set(sub_list + free_list), key=lambda s: s.lower())
+    sem = asyncio.Semaphore(8)
+
+    async def _push_one(isl: str) -> None:
+        async with sem:
+            try:
+                client = get_island_sysbot_client(isl)
+                await asyncio.wait_for(
+                    client.toggle_echo(
+                        echo_type="all",
+                        enabled=None,
+                        echo_dodo_enabled=dodo,
+                        echo_arrivals_enabled=arrivals,
+                        echo_island_updates_enabled=updates,
+                    ),
+                    timeout=3.0,
+                )
+            except Exception as err:
+                logger.debug("[ControlPanel] Cluster echo push to %s: %s", isl, err)
+
+    await asyncio.gather(*(_push_one(i) for i in all_islands), return_exceptions=True)
+    logger.info("[ControlPanel] Finished cluster broadcast of echo settings to %d islands.", len(all_islands))
 
 
 def _upsert_control_panel(channel_id: int, island_name: str, message_id: int | None = None) -> None:
@@ -968,6 +1073,37 @@ async def fetch_island_status(island_name: str) -> dict:
                 isl_entry["mash_b"] = data["mash_b"]
             if data.get("refresh_map") is not None:
                 isl_entry["refresh_map"] = data["refresh_map"]
+
+            # Auto-reconcile Echo Broadcast settings with backend database
+            saved_echo = await asyncio.to_thread(_get_echo_settings, island_name)
+            if saved_echo:
+                needs_sync = False
+                for k, v in saved_echo.items():
+                    if data.get(k) is not None and data.get(k) != v:
+                        needs_sync = True
+                        break
+                if needs_sync:
+                    try:
+                        logger.info("[ControlPanel] Auto-syncing saved echo settings to SysBot for %s: %s", island_name, saved_echo)
+                        await client.toggle_echo(
+                            echo_type="all",
+                            enabled=None,
+                            echo_dodo_enabled=saved_echo["echo_dodo_enabled"],
+                            echo_arrivals_enabled=saved_echo["echo_arrivals_enabled"],
+                            echo_island_updates_enabled=saved_echo["echo_island_updates_enabled"],
+                        )
+                        data.update(saved_echo)
+                    except Exception as err:
+                        logger.debug("[ControlPanel] Echo auto-sync failed for %s: %s", island_name, err)
+                else:
+                    for k, v in saved_echo.items():
+                        if data.get(k) is None:
+                            data[k] = v
+            elif any(data.get(k) is not None for k in ("echo_dodo_enabled", "echo_arrivals_enabled", "echo_island_updates_enabled")):
+                d_val = bool(data.get("echo_dodo_enabled", True))
+                a_val = bool(data.get("echo_arrivals_enabled", True))
+                u_val = bool(data.get("echo_island_updates_enabled", True))
+                await asyncio.to_thread(_save_echo_settings, island_name, d_val, a_val, u_val)
         return data
     except Exception as exc:
         logger.warning("[ControlPanel] Failed to fetch status for %s: %s", island_name, exc)
@@ -1271,7 +1407,7 @@ class EchoSettingsView(discord.ui.View):
         b_upd.callback = self._on_toggle_updates
         self.add_item(b_upd)
 
-        # Row 1: Batch toggle and refresh
+        # Row 1: Batch toggle, cluster-wide apply, and refresh
         b_all = discord.ui.Button(
             label="Toggle All",
             emoji="🔄",
@@ -1280,6 +1416,15 @@ class EchoSettingsView(discord.ui.View):
         )
         b_all.callback = self._on_toggle_all
         self.add_item(b_all)
+
+        b_apply_all = discord.ui.Button(
+            label="Apply to All",
+            emoji="🌐",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        b_apply_all.callback = self._on_apply_to_all
+        self.add_item(b_apply_all)
 
         b_refresh = discord.ui.Button(
             label="Refresh",
@@ -1324,11 +1469,19 @@ class EchoSettingsView(discord.ui.View):
         finally:
             await asyncio.to_thread(_log_audit, self.island, f"echo-{echo_type}", interaction.user, ok, msg)
 
+        # Re-fetch status and persist new settings to backend database
         self.status = await fetch_island_status(self.island)
+        dodo_val = self.status.get("echo_dodo_enabled") is True
+        arr_val = self.status.get("echo_arrivals_enabled") is True
+        upd_val = self.status.get("echo_island_updates_enabled") is True
+        await asyncio.to_thread(_save_echo_settings, self.island, dodo_val, arr_val, upd_val)
+
         self._build_buttons()
         embed = build_echo_settings_embed(self.island, self.status)
         if not ok:
             embed.set_footer(text=f"⚠️ Action failed: {msg or 'Unknown error'}", icon_url=PANEL_FOOTER_ICON)
+        else:
+            embed.set_footer(text=f"💾 Saved to backend & synced to SysBot • {self.island}", icon_url=PANEL_FOOTER_ICON)
         await interaction.edit_original_response(embed=embed, view=self)
 
         if ok and self.parent_message:
@@ -1336,6 +1489,28 @@ class EchoSettingsView(discord.ui.View):
                 await _update_panel_message(self.parent_message, self.island, interaction.client)
             except Exception as exc:
                 logger.debug("[ControlPanel] Could not update parent panel: %s", exc)
+
+    async def _on_apply_to_all(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        dodo_val = self.status.get("echo_dodo_enabled") is True
+        arr_val = self.status.get("echo_arrivals_enabled") is True
+        upd_val = self.status.get("echo_island_updates_enabled") is True
+
+        # Persist to database for all 48 islands
+        await asyncio.to_thread(_save_echo_settings_all, dodo_val, arr_val, upd_val)
+
+        # Broadcast asynchronously to all reachable SysBots
+        asyncio.create_task(_broadcast_echo_to_cluster(dodo_val, arr_val, upd_val))
+
+        embed = build_echo_settings_embed(self.island, self.status)
+        d_str = "ON" if dodo_val else "OFF"
+        a_str = "ON" if arr_val else "OFF"
+        u_str = "ON" if upd_val else "OFF"
+        embed.set_footer(
+            text=f"🌐 Saved & broadcasted to all 48 islands: Dodo={d_str}, Arr={a_str}, Upd={u_str}",
+            icon_url=PANEL_FOOTER_ICON,
+        )
+        await interaction.edit_original_response(embed=embed, view=self)
 
     async def _refresh(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
