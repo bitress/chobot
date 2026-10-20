@@ -356,6 +356,9 @@ class ACNHCatalog:
                 categories_set.add(source_sheet)
                 name = it.get("name") or "Unknown"
                 raw_int_id = it.get("internalId")
+                if raw_int_id is None and it.get("variations"):
+                    raw_int_id = it["variations"][0].get("internalId")
+
                 if raw_int_id is not None:
                     try:
                         internal_id = f"{int(raw_int_id):04X}"
@@ -365,8 +368,20 @@ class ACNHCatalog:
                     internal_id = ""
 
                 image_url = it.get("image") or ""
+                if not image_url and it.get("variations"):
+                    v0 = it["variations"][0]
+                    image_url = v0.get("image") or v0.get("storageImage") or v0.get("closetImage") or ""
+
                 variation = it.get("variation") or ""
+                if not variation and it.get("variations"):
+                    variation = it["variations"][0].get("variation") or ""
+
                 variant_id = str(it.get("variantId") or "") if it.get("variantId") is not None else ""
+                if not variant_id and it.get("variations"):
+                    v_id_val = it["variations"][0].get("variantId")
+                    if v_id_val is not None:
+                        variant_id = str(v_id_val)
+
                 diy = bool(it.get("diy"))
                 stack_size = int(it.get("stackSize") or 1)
 

@@ -6336,6 +6336,39 @@ def api_get_island_map(island_name: str):
     return jsonify({"ok": True, **data})
 
 
+@app.route("/api/islands/<island_name>/map/data", methods=["GET"])
+@app.route("/api/island/<island_name>/map/data", methods=["GET"])
+def api_get_island_map_data_live(island_name: str):
+    """
+    Returns live compact map data (RAM or cached).
+    Checks map_cache first, then polls SysBot /api/island/map/data if available,
+    falling back to parsed .nhl map data.
+    """
+    from utils.cache import map_cache
+    norm = island_name.strip().lower()
+    cache_key = f"live_map_data:{norm}"
+    cached_val = map_cache.get(cache_key)
+    if cached_val is not None:
+        return jsonify(cached_val)
+
+    try:
+        from utils.sysbot_api import SysBotClientPool
+        client = SysBotClientPool.get_client(island_name)
+        if client and client.base_url:
+            data, code = client._get("/api/island/map/data")
+            if code == 200 and isinstance(data, dict) and data.get("success"):
+                map_cache.set(cache_key, data, ttl=60.0)
+                return jsonify(data)
+    except Exception as exc:
+        logging.getLogger("flask_api").debug(f"SysBot live map data fetch note: {exc}")
+
+    from utils.nhl_map_parser import get_island_map_data
+    data = get_island_map_data(island_name)
+    res = {"ok": True, **data}
+    map_cache.set(cache_key, res, ttl=60.0)
+    return jsonify(res)
+
+
 @app.route("/api/islands/<island_name>/map/search", methods=["GET"])
 def api_search_island_map(island_name: str):
     """

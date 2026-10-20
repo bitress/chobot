@@ -36,6 +36,7 @@ except ImportError:
 
 from utils.config import Config
 from utils.database import connect_db
+from utils.cache import render_cache, catalog_cache
 
 logger = logging.getLogger("CatalogMapService")
 
@@ -197,6 +198,12 @@ def render_island_map_image(
 
     clean_name = (island_name or "Hiraya").strip()
     norm_name = clean_name.lower()
+
+    cache_key = f"{norm_name}:{scale}:{theme}:{overlay_items}:{overlay_players}:{format_type}"
+    cached_img = render_cache.get(cache_key)
+    if cached_img is not None:
+        return cached_img
+
     local_cache_path = os.path.join(_MAP_STORAGE_DIR, f"{norm_name}.png")
 
     img: Optional[Any] = None
@@ -257,7 +264,10 @@ def render_island_map_image(
         img.save(buffer, format="PNG", optimize=True)
         mimetype = "image/png"
 
-    return buffer.getvalue(), mimetype
+    res = (buffer.getvalue(), mimetype)
+    ttl = 5.0 if overlay_players else 120.0
+    render_cache.set(cache_key, res, ttl=ttl)
+    return res
 
 def _generate_procedural_radar_map(island_name: str, theme: str = "radar") -> Any:
     """Generate a crisp, aesthetic Animal Crossing 7x6 Acre Radar Map with authentic ACNH acre notation."""

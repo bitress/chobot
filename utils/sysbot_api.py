@@ -19,6 +19,7 @@ import urllib3.exceptions
 
 from utils.config import Config
 from utils.database import connect_db
+from utils.cache import bundles_cache, bot_status_cache
 
 logger = logging.getLogger("SysBotAPI")
 
@@ -740,6 +741,10 @@ class SysBotClient:
     def get_bot_status_sync(self) -> dict:
         """Fetch SysBot island and order bot state synchronously."""
         island_default = getattr(Config, "ORDER_BOT_ISLAND", "Sinta")
+        cache_key = f"bot_status:{self.base_url}"
+        cached_status = bot_status_cache.get(cache_key)
+        if cached_status is not None:
+            return cached_status
         if not self.base_url or time.monotonic() < self._offline_until:
             return {
                 "success": False,

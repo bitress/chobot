@@ -2515,7 +2515,9 @@ def _cart_key(it: CatalogItem) -> str:
     hex_code = it.to_hex()
     if hex_code:
         return hex_code
-    return f"{it.internal_id}:{it.variant_id or it.variation or ''}"
+    if it.internal_id or it.variant_id or it.variation:
+        return f"{it.internal_id}:{it.variant_id or it.variation or ''}"
+    return f"it_{abs(hash((it.name, it.category))):08x}"
 
 
 async def _show_catalog(
@@ -2658,7 +2660,10 @@ class CatalogSearchView(_OwnedView):
         self.all_items: list[CatalogItem] = list(items or [])
         self.items: list[CatalogItem] = self.all_items
         self.villagers: list[CatalogVillager] = list(villagers or [])
-        self._items_by_key: dict[str, CatalogItem] = {_cart_key(i): i for i in self.all_items}
+        self._items_by_key: dict[str, CatalogItem] = {}
+        for idx, i in enumerate(self.all_items):
+            k = _cart_key(i) or f"item_{idx}"
+            self._items_by_key[k] = i
         self.page_size = page_size
         self.page = 0
         self.category: str | None = None
@@ -2681,7 +2686,10 @@ class CatalogSearchView(_OwnedView):
         self.all_items = list(items)
         self.items = self.all_items
         self.villagers = list(villagers)
-        self._items_by_key = {_cart_key(i): i for i in self.all_items}
+        self._items_by_key = {}
+        for idx, i in enumerate(self.all_items):
+            k = _cart_key(i) or f"item_{idx}"
+            self._items_by_key[k] = i
         self.category = None
         self.page = 0
         self._rebuild()
@@ -2701,10 +2709,16 @@ class CatalogSearchView(_OwnedView):
         # Items dropdown
         if page_items:
             options: list[discord.SelectOption] = []
-            for it in page_items:
+            seen_values: set[str] = set()
+            for idx, it in enumerate(page_items):
                 bits: list[str] = []
                 key = _cart_key(it)
-                if key in self.cart:
+                if not key or key in seen_values:
+                    key = f"{key or 'item'}_{self.page}_{idx}"
+                    self._items_by_key[key] = it
+                seen_values.add(key)
+
+                if key in self.cart or _cart_key(it) in self.cart:
                     bits.append("✅ In cart")
                 bits.append(str(it.category or "Item"))
                 bits.append(f"×{_default_qty(it)}")
@@ -2734,15 +2748,21 @@ class CatalogSearchView(_OwnedView):
 
         # Villagers dropdown (first page only)
         if self.villagers and self.page == 0:
-            v_options = [
-                discord.SelectOption(
-                    label=v.display_name[:100],
-                    description=f"ID: {v.villager_id} • {v.personality}"[:100],
-                    value=f"v_{v.villager_id}"[:100],
-                    emoji="🐱",
+            v_options = []
+            seen_v: set[str] = set()
+            for idx, v in enumerate(self.villagers[:10]):
+                val = f"v_{v.villager_id}"
+                if val in seen_v:
+                    val = f"{val}_{idx}"
+                seen_v.add(val)
+                v_options.append(
+                    discord.SelectOption(
+                        label=v.display_name[:100],
+                        description=f"ID: {v.villager_id} • {v.personality}"[:100],
+                        value=val[:100],
+                        emoji="🐱",
+                    )
                 )
-                for v in self.villagers[:10]
-            ]
             villager_select = discord.ui.Select(
                 placeholder=(f"Inject a villager into {self.island_name}…" if self.island_name
                              else "Select villager to inspect…")[:100],
