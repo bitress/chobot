@@ -689,6 +689,33 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
     else:
         dodo_display = "`-----` (No Dodo)"
 
+    # Extract live visitor names from status or telemetry cache
+    visitors: list[str] = []
+    if not unreachable and status:
+        try:
+            from utils.sysbot_telemetry import parse_sysbot_visitors
+            _, v_names = parse_sysbot_visitors(status)
+            if v_names:
+                visitors = list(v_names)
+        except Exception as exc:
+            logger.debug("[ControlPanel] Failed to parse visitors from status for %s: %s", island_name, exc)
+
+    if not visitors and not unreachable:
+        try:
+            from utils.sysbot_telemetry import get_cached_island_telemetry
+            telem = get_cached_island_telemetry(island_name)
+            if telem and telem.get("visitor_list"):
+                visitors = [str(x) for x in telem["visitor_list"] if str(x).strip()]
+        except Exception as exc:
+            logger.debug("[ControlPanel] Failed to get cached telemetry visitors for %s: %s", island_name, exc)
+
+    if unreachable:
+        visitors_display = "`—`"
+    elif visitors:
+        visitors_display = "\n".join(f"• **{v}**" for v in visitors)
+    else:
+        visitors_display = "*(No visitors on island)*"
+
     embed = discord.Embed(
         title=f"🎛️ Island Remote Control Panel — {island_name}",
         description=(
@@ -704,6 +731,11 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
         name="📡 Requests",
         value="`—`" if unreachable else f"`{'Accepting' if accepting else 'Paused'}`",
         inline=True,
+    )
+    embed.add_field(
+        name="👥 Current Visitors",
+        value=visitors_display,
+        inline=False,
     )
     embed.add_field(
         name="⚙️ Console States",
