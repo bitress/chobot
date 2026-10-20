@@ -860,9 +860,10 @@ def build_find_panel_embed(guild_icon: str | None = None) -> discord.Embed:
             "Welcome to the **Chobot Find Station**!\n"
             "Use the buttons below to search for items and villagers across all Sub Islands, "
             "or roll the dice for a surprise pick.\n\n"
-            f"{Config.STAR_PINK} **Items** — Furniture, clothing, DIY recipes, and more\n"
-            f"{Config.STAR_PINK} **Villagers** — Find which island a villager is currently on\n"
-            f"{Config.STAR_PINK} **Random** — Discover something new"
+            f"{Config.STAR_PINK} **Find Station** — Search both items & villagers in one place\n"
+            f"{Config.STAR_PINK} **Search Items** — Furniture, clothing, DIY recipes, and more\n"
+            f"{Config.STAR_PINK} **Search Villagers** — Find which island a villager is currently on\n"
+            f"{Config.STAR_PINK} **Random Item** — Discover something new"
         ),
         color=discord.Color.teal(),
     )
@@ -878,22 +879,189 @@ def build_find_panel_embed(guild_icon: str | None = None) -> discord.Embed:
     return embed
 
 
+class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
+    """Unified modal for searching both items and villagers from the Find Station panel."""
+
+    query = discord.ui.TextInput(
+        label="Item or Villager Name",
+        placeholder="e.g. Ironwood Kitchenette, Raymond, Gold Axe, Marshal...",
+        required=True,
+        min_length=2,
+        max_length=80,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        cog: DiscordCommandCog | None = (
+            interaction.client.cogs.get("DiscordCommandCog") if interaction.client else None
+        )
+        if not cog:
+            await interaction.followup.send("❌ Bot not ready. Try again in a moment.", ephemeral=True)
+            return
+
+        raw = self.query.value.strip()
+        search_term = normalize_text(raw)
+
+        # 1. Check Villagers
+        villager_map = cog.data_manager.get_villagers([
+            Config.VILLAGERS_DIR,
+            Config.TWITCH_VILLAGERS_DIR
+        ])
+        found_villager_locs = villager_map.get(search_term)
+
+        # 2. Check Items
+        with cog.data_manager.lock:
+            cache = cog.data_manager.cache
+            item_keys = [k for k in cache.keys() if k != "_display"]
+            found_item_locs = cache.get(search_term)
+            display_map = cache.get("_display", {})
+            item_display = display_map.get(search_term, raw)
+
+        # 3. Direct hit: Villager on island
+        if found_villager_locs:
+            result_view = FindResultView(
+                cog=cog, last_query=search_term, last_display=raw,
+                search_type="villager", author_id=interaction.user.id
+            )
+            nooki_data = await NookipediaClient.get_villager_info(search_term)
+            island_map, _ = await cog._fetch_islands_api_snapshot()
+            embed = cog.create_found_embed(
+                interaction, search_term, found_villager_locs, is_villager=True,
+                nooki_data=nooki_data, island_map=island_map or {}
+            )
+            if embed:
+                send_embeds = [embed]
+                if nooki_data:
+                    house_embed = cog.create_villager_house_embed(interaction, search_term, nooki_data)
+                    if house_embed:
+                        send_embeds.append(house_embed)
+                await interaction.followup.send(
+                    content=f"Hey <@{interaction.user.id}>, look who I found!",
+                    embeds=send_embeds, view=result_view, ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    content=f"**{raw.title()}** is not currently on any Sub Island.",
+                    view=result_view, ephemeral=True
+                )
+            return
+
+        # 4. Direct hit: Item on island
+        if found_item_locs:
+            result_view = FindResultView(
+                cog=cog, last_query=search_term, last_display=item_display,
+                search_type="item", author_id=interaction.user.id
+            )
+            island_map, _ = await cog._fetch_islands_api_snapshot()
+            embed = cog.create_found_embed(
+                interaction, item_display, found_item_locs, is_villager=False, island_map=island_map or {}
+            )
+            if embed:
+                await interaction.followup.send(
+                    content=f"Hey <@{interaction.user.id}>, look what I found!",
+                    embed=embed, view=result_view, ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    content=f"**{item_display}** is not currently available on any Sub Island.",
+                    view=result_view, ephemeral=True
+                )
+            return
+
+        # 5. Check if it's a known villager (in DB or Nookipedia) but not currently on an island
+        is_known_villager = search_term in villager_map
+        if not is_known_villager:
+            nooki_info = await NookipediaClient.get_villager_info(search_term)
+            if nooki_info:
+                is_known_villager = True
+
+        if is_known_villager:
+            result_view = FindResultView(
+                cog=cog, last_query=search_term, last_display=raw,
+                search_type="villager", author_id=interaction.user.id
+            )
+            await interaction.followup.send(
+                content=f"**{raw.title()}** is not currently on any Sub Island.",
+                view=result_view, ephemeral=True
+            )
+            return
+
+        # 6. Check if exact item key in cache (catalog item not placed on islands)
+        if search_term in item_keys:
+            result_view = FindResultView(
+                cog=cog, last_query=search_term, last_display=item_display,
+                search_type="item", author_id=interaction.user.id
+            )
+            await interaction.followup.send(
+                content=f"**{item_display}** is not currently available on any Sub Island.",
+                view=result_view, ephemeral=True
+            )
+            return
+
+        # 7. Fuzzy suggestions: Check both villagers and items
+        v_matches = process.extract(search_term, list(villager_map.keys()), limit=3, scorer=fuzz.WRatio) if villager_map else []
+        v_suggestions = [(m[0], m[0].title()) for m in v_matches if m[1] > 75]
+        v_top_score = v_matches[0][1] if (v_matches and len(v_matches[0]) > 1) else 0
+
+        item_keys_suggestions = get_best_suggestions(search_term, item_keys, limit=8)
+        i_suggestions = [(k, display_map.get(k, k)) for k in item_keys_suggestions]
+
+        if v_suggestions and (v_top_score >= 85 or not i_suggestions):
+            embed_fail = cog.create_fail_embed(interaction, raw, [s[1] for s in v_suggestions], is_villager=True)
+            view = SuggestionView(cog, v_suggestions, "villager", interaction.user.id)
+            await interaction.followup.send(
+                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, view=view, ephemeral=True
+            )
+        elif i_suggestions:
+            embed_fail = cog.create_fail_embed(interaction, raw, [disp for _, disp in i_suggestions])
+            view = SuggestionView(cog, i_suggestions, "item", interaction.user.id)
+            await interaction.followup.send(
+                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, view=view, ephemeral=True
+            )
+        else:
+            embed_fail = cog.create_fail_embed(interaction, raw, [])
+            await interaction.followup.send(
+                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, ephemeral=True
+            )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        logger.exception(f"[FindStationModal] Error: {error}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ Something went wrong. Try again.", ephemeral=True)
+
+
 class FindPanelView(discord.ui.View):
     """Persistent, channel-deployable Find Station panel.
 
-    Mirrors the OrderPanelView pattern — deployed by /findpanel and survives
-    bot restarts because all buttons carry stable custom_ids and timeout=None.
+    Mirrors the OrderPanelView pattern — deployed by /findpanel or /find-station
+    and survives bot restarts because all buttons carry stable custom_ids and timeout=None.
     """
 
     def __init__(self):
         super().__init__(timeout=None)  # Persistent — never times out
 
+    # ── Unified Search (Items & Villagers) ────────────────────────────────────
+
+    @discord.ui.button(
+        label="Find Station",
+        style=discord.ButtonStyle.primary,
+        emoji="🔍",
+        custom_id="find_panel_btn_search",
+        row=0,
+    )
+    async def btn_search(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        """Open the unified Find Station search modal."""
+        modal = FindStationModal()
+        await interaction.response.send_modal(modal)
+
     # ── Search Items ──────────────────────────────────────────────────────────
 
     @discord.ui.button(
         label="Search Items",
-        style=discord.ButtonStyle.primary,
-        emoji="🔍",
+        style=discord.ButtonStyle.secondary,
+        emoji="📦",
         custom_id="find_panel_btn_items",
         row=0,
     )
@@ -5630,6 +5798,51 @@ class DiscordCommandCog(commands.Cog):
         """Handle permission errors for order-rule cleanly and ephemerally."""
         if isinstance(error, (commands.CheckFailure, commands.MissingPermissions)):
             msg = "⛔ **Access Denied:** `/order-rule` is restricted to Admins only."
+            if ctx.interaction:
+                if not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await ctx.interaction.followup.send(msg, ephemeral=True)
+            else:
+                await ctx.reply(msg, ephemeral=True)
+
+    @commands.hybrid_command(
+        name="find-station",
+        aliases=["findstation"],
+        description="[Admin Only] Deploy the Find Station panel in this channel"
+    )
+    @app_commands.default_permissions(administrator=True)
+    @is_admin_only()
+    async def find_station(self, ctx: commands.Context):
+        """Deploy the Find Station panel without showing who invoked the command (Admin only)."""
+        if not is_admin_member(ctx.author) and not (ctx.bot and getattr(ctx.bot, "owner_id", None) and ctx.author.id == ctx.bot.owner_id):
+            msg = "⛔ **Access Denied:** `/find-station` is restricted to Admins only."
+            if ctx.interaction:
+                if not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(msg, ephemeral=True)
+                else:
+                    await ctx.interaction.followup.send(msg, ephemeral=True)
+            else:
+                await ctx.reply(msg, ephemeral=True)
+            return
+
+        guild_icon = resolve_guild_icon(ctx.guild, self.bot)
+        embed = build_find_panel_embed(guild_icon=guild_icon)
+        view = FindPanelView()
+        if ctx.interaction:
+            await ctx.interaction.response.defer(ephemeral=True, thinking=True)
+            await ctx.channel.send(embed=embed, view=view)
+            await ctx.interaction.followup.send("✅ Find Station panel deployed to this channel!", ephemeral=True)
+        else:
+            with contextlib.suppress(Exception):
+                await ctx.message.delete()
+            await ctx.channel.send(embed=embed, view=view)
+
+    @find_station.error
+    async def find_station_error(self, ctx: commands.Context, error: Exception):
+        """Handle permission errors for find-station cleanly and ephemerally."""
+        if isinstance(error, (commands.CheckFailure, commands.MissingPermissions)):
+            msg = "⛔ **Access Denied:** `/find-station` is restricted to Admins only."
             if ctx.interaction:
                 if not ctx.interaction.response.is_done():
                     await ctx.interaction.response.send_message(msg, ephemeral=True)
