@@ -259,31 +259,73 @@ def render_island_map_image(
 
     return buffer.getvalue(), mimetype
 
-
 def _generate_procedural_radar_map(island_name: str, theme: str = "radar") -> Any:
-    """Generate a crisp, aesthetic Animal Crossing 7x6 Acre Radar Map."""
+    """Generate a crisp, aesthetic Animal Crossing 7x6 Acre Radar Map with authentic ACNH acre notation."""
     width, height = 896, 768  # 112x96 tiles * 8px
-    img = Image.new("RGBA", (width, height), (26, 68, 115, 255))  # Ocean blue
+    theme_clean = (theme or "radar").strip().lower()
+
+    if theme_clean in ("dark", "night"):
+        ocean_color = (14, 28, 48, 255)
+        sand_color = (175, 160, 115, 255)
+        grass_color = (42, 110, 58, 255)
+        grid_color = (0, 255, 200, 50)
+        pier_color = (125, 90, 60, 255)
+        pier_outline = (85, 60, 40, 255)
+        plaza_color = (140, 130, 120, 160)
+    elif theme_clean in ("satellite", "natural"):
+        ocean_color = (32, 90, 135, 255)
+        sand_color = (242, 230, 175, 255)
+        grass_color = (82, 178, 80, 255)
+        grid_color = (255, 255, 255, 65)
+        pier_color = (165, 120, 80, 255)
+        pier_outline = (125, 90, 55, 255)
+        plaza_color = (180, 170, 150, 180)
+    else:  # "radar" or default
+        ocean_color = (26, 68, 115, 255)
+        sand_color = (235, 222, 160, 255)
+        grass_color = (78, 175, 78, 255)
+        grid_color = (255, 255, 255, 65)
+        pier_color = (160, 115, 75, 255)
+        pier_outline = (120, 85, 50, 255)
+        plaza_color = (170, 160, 140, 160)
+
+    img = Image.new("RGBA", (width, height), ocean_color)
     draw = ImageDraw.Draw(img)
 
-    # Shoreline beach (sand)
-    draw.rounded_rectangle([48, 48, width - 48, height - 80], radius=44, fill=(235, 222, 160, 255))
+    # 1. Shoreline beach (sand)
+    draw.rounded_rectangle([48, 48, width - 48, height - 80], radius=44, fill=sand_color)
 
-    # Lush Grassland island terrain
-    draw.rounded_rectangle([72, 72, width - 72, height - 104], radius=36, fill=(78, 175, 78, 255))
+    # 2. Lush Grassland island terrain
+    draw.rounded_rectangle([72, 72, width - 72, height - 104], radius=36, fill=grass_color)
 
-    # Airport South Pier
-    pier_x1 = width // 2 - 36
-    pier_x2 = width // 2 + 36
-    draw.rectangle([pier_x1, height - 104, pier_x2, height - 32], fill=(160, 115, 75, 255), outline=(120, 85, 50, 255), width=3)
+    # 3. Secret Beach (Redd's beach) in Acre A-4 (top center)
+    draw.rectangle([width // 2 - 28, 48, width // 2 + 28, 76], fill=sand_color)
 
-    # 7 Columns (A..G) x 6 Rows (1..6)
+    # 7 Columns (1..7 from West to East) x 6 Rows (A..F from North to South)
     col_width = width / 7.0
     row_height = height / 6.0
-    col_letters = ["A", "B", "C", "D", "E", "F", "G"]
+    row_letters = ["A", "B", "C", "D", "E", "F"]
+    col_numbers = ["1", "2", "3", "4", "5", "6", "7"]
 
-    # Subtle radar grid lines
-    grid_color = (255, 255, 255, 60)
+    # 4. Resident Services Plaza in Acre D-4 (center)
+    plaza_cx = width // 2
+    plaza_cy = int(row_height * 3.5)
+    draw.rounded_rectangle(
+        [plaza_cx - 40, plaza_cy - 32, plaza_cx + 40, plaza_cy + 32],
+        radius=8,
+        fill=plaza_color,
+        outline=(255, 255, 255, 40),
+        width=1,
+    )
+
+    # 5. Airport South Pier in Acre F-4 (bottom center, column 4)
+    pier_x1 = width // 2 - 38
+    pier_x2 = width // 2 + 38
+    draw.rectangle([pier_x1, height - 104, pier_x2, height - 28], fill=pier_color, outline=pier_outline, width=3)
+    for py in range(height - 96, height - 32, 12):
+        draw.line([(pier_x1 + 4, py), (pier_x2 - 4, py)], fill=pier_outline, width=1)
+
+    # 6. Subtle radar grid lines
     for c in range(1, 7):
         cx = int(c * col_width)
         draw.line([(cx, 0), (cx, height)], fill=grid_color, width=1)
@@ -291,18 +333,21 @@ def _generate_procedural_radar_map(island_name: str, theme: str = "radar") -> An
         ry = int(r * row_height)
         draw.line([(0, ry), (width, ry)], fill=grid_color, width=1)
 
-    # Acre labels (e.g. A1, B2)
-    for c_idx, letter in enumerate(col_letters):
-        for r_idx in range(6):
-            label = f"{letter}{r_idx + 1}"
+    # 7. Authentic ACNH Acre labels (A1..A7, B1..B7, ..., F1..F7)
+    for r_idx, r_letter in enumerate(row_letters):
+        for c_idx, c_num in enumerate(col_numbers):
+            label = f"{r_letter}{c_num}"
             lx = int(c_idx * col_width + 8)
             ly = int(r_idx * row_height + 6)
-            draw.text((lx, ly), label, fill=(255, 255, 255, 140))
+            draw.text((lx, ly), label, fill=(255, 255, 255, 170))
 
-    # Island Banner in top corner
-    banner_w = 220
-    draw.rounded_rectangle([16, 16, 16 + banner_w, 56], radius=10, fill=(15, 30, 50, 220), outline=(255, 215, 0, 200), width=2)
-    draw.text((28, 24), f"ISLAND: {island_name.upper()}", fill=(255, 235, 120, 255))
+    # 8. Island Banner in top-right ocean corner (Acre A-7) so Acre A-1 is completely visible
+    banner_text = f"{island_name.upper()}"
+    banner_w = max(200, len(banner_text) * 8 + 36)
+    bx2 = width - 16
+    bx1 = bx2 - banner_w
+    draw.rounded_rectangle([bx1, 14, bx2, 52], radius=10, fill=(15, 30, 50, 225), outline=(255, 215, 0, 210), width=2)
+    draw.text((bx1 + 16, 23), banner_text, fill=(255, 235, 120, 255))
 
     return img
 
