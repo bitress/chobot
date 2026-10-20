@@ -5,6 +5,38 @@ Maps all 48 SysBot.ACNHOrders island instances to their local HTTP ports (8201..
 
 import os
 import re
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+_BRIDGE_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _BRIDGE_DIR.parent
+
+# Load configuration from .env files (.env in sysbot_bridge, root .env, or fallback to .env.example)
+if load_dotenv is not None:
+    if (_BRIDGE_DIR / ".env").is_file():
+        load_dotenv(_BRIDGE_DIR / ".env")
+    if (_REPO_ROOT / ".env").is_file():
+        load_dotenv(_REPO_ROOT / ".env")
+    if not os.getenv("SYSBOT_API_KEY") and (_BRIDGE_DIR / ".env.example").is_file():
+        load_dotenv(_BRIDGE_DIR / ".env.example")
+else:
+    for env_path in (_BRIDGE_DIR / ".env", _REPO_ROOT / ".env", _BRIDGE_DIR / ".env.example"):
+        if env_path.is_file():
+            try:
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    clean_line = line.strip()
+                    if clean_line and not clean_line.startswith("#") and "=" in clean_line:
+                        k, v = clean_line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip("'\"")
+                        if k not in os.environ:
+                            os.environ[k] = v
+            except Exception:
+                pass
 
 # Bridge Server Host & Port (Default to 127.0.0.1 for local-only / Cloudflare Tunnel safety)
 BRIDGE_HOST = os.getenv("BRIDGE_HOST", "127.0.0.1").strip()

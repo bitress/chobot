@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import os
 import sys
 import time
 from collections.abc import Callable
@@ -45,6 +46,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("SysBotBridge")
+
+# Insecure mode flag (--insecure CLI argument or SYSBOT_BRIDGE_INSECURE=1 env var)
+INSECURE_MODE = (
+    "--insecure" in sys.argv
+    or os.getenv("SYSBOT_BRIDGE_INSECURE", "").strip().lower() in ("1", "true", "yes")
+)
 
 # Use monotonic clock for drift-free uptime calculation
 START_TIME = time.monotonic()
@@ -164,9 +171,10 @@ _TELEMETRY_CACHE = ClusterCache(ttl_seconds=2.0)
 async def auth_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
     """
     Validate credentials with constant-time comparison.
-    Only /health is accessible unauthenticated.
+    If INSECURE_MODE is active, all requests bypass authentication.
+    Otherwise, only /health is accessible unauthenticated.
     """
-    if request.method == "OPTIONS" or request.path == "/health":
+    if INSECURE_MODE or request.method == "OPTIONS" or request.path == "/health":
         return await handler(request)
 
     # 1. Cloudflare Access Service Token validation (if configured)
@@ -241,7 +249,8 @@ async def handle_root(request: web.Request) -> web.Response:
         "uptime_seconds": uptime_sec,
         "islands_mapped": len(ALL_ISLANDS),
         "port_range": f"{min(ports)}..{max(ports)}" if ports else "",
-        "auth_enabled": bool(SYSBOT_API_KEY),
+        "auth_enabled": bool(SYSBOT_API_KEY) and not INSECURE_MODE,
+        "insecure_mode": INSECURE_MODE,
         "endpoints": {
             "health": "/health",
             "islands": "/islands",
@@ -507,8 +516,8 @@ def create_app() -> web.Application:
 
 
 if __name__ == "__main__":
-    # Fail-closed: refuse to start without an API key unless --insecure is explicitly passed
-    if not SYSBOT_API_KEY and "--insecure" not in sys.argv:
+    # Fail-closed: refuse to start without an API key unless INSECURE_MODE is explicitly enabled
+    if not SYSBOT_API_KEY and not INSECURE_MODE:
         logger.critical(
             "FATAL: SYSBOT_API_KEY is not configured in environment or .env!\n"
             "Refusing to start in secure mode. Set SYSBOT_API_KEY or pass --insecure to bypass."
@@ -524,10 +533,14 @@ if __name__ == "__main__":
     logger.info("=======================================================")
     logger.info("Listening on: http://%s:%d", BRIDGE_HOST, BRIDGE_PORT)
     logger.info("Targeting: %d SysBot ports (%d..%d)", len(ALL_ISLANDS), min_port, max_port)
-    if SYSBOT_API_KEY:
+    if INSECURE_MODE:
+        logger.warning("=======================================================")
+        logger.warning(" [!] WARNING: RUNNING IN INSECURE MODE")
+        logger.warning(" Authentication is completely DISABLED.")
+        logger.warning(" Any caller can proxy commands to the 48 Switch bots!")
+        logger.warning("=======================================================")
+    elif SYSBOT_API_KEY:
         logger.info("Authentication: ENABLED (SYSBOT_API_KEY active)")
-    else:
-        logger.warning("Authentication: INSECURE MODE (--insecure specified, SYSBOT_API_KEY empty)")
     if CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET:
         logger.info("Cloudflare Access Tokens: ENABLED")
     logger.info("=======================================================")

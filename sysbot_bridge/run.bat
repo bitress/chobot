@@ -26,7 +26,7 @@ echo.
 
 :loop
 echo [%DATE% %TIME%] Starting SysBot Bridge on port 8200...
-"%PYTHON_EXE%" server.py
+"%PYTHON_EXE%" server.py %*
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo [%DATE% %TIME%] SysBot Bridge process stopped (code %EXIT_CODE%).
