@@ -37,6 +37,17 @@ from utils.config import Config
 from utils.database import connect_db
 from utils.sysbot_api import _INVALID_DODO_CODES, get_island_sysbot_client
 
+try:
+    from utils.sysbot_telemetry import (
+        parse_sysbot_visitors,
+        get_cached_island_telemetry,
+        get_recent_island_events,
+    )
+except ImportError:
+    parse_sysbot_visitors = None  # type: ignore
+    get_cached_island_telemetry = None  # type: ignore
+    get_recent_island_events = None  # type: ignore
+
 logger = logging.getLogger("ControlPanelCog")
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -129,6 +140,7 @@ ACTIONS: dict[str, ActionSpec] = {
 
 _COOLDOWNS: dict[tuple[str, str], float] = {}
 _ISLAND_LOCKS: dict[str, asyncio.Lock] = {}
+_CONSOLE_STATES: dict[str, dict[str, Any]] = {}
 
 
 def _cooldown_left(island: str, action: str, seconds: float = ACTION_COOLDOWN) -> float:
@@ -456,6 +468,24 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
     if not events and status and isinstance(status, dict):
         events = list(status.get("recent_events") or [])
 
+    # Fallback to SQLite island_events_log if events buffer is empty (e.g. Echo disabled)
+    if not events and get_recent_island_events is not None:
+        try:
+            db_evts = get_recent_island_events(island_name=island, limit=40)
+            if db_evts:
+                events = [
+                    {
+                        "Type": de.get("event_type"),
+                        "Message": de.get("message"),
+                        "Player": de.get("player"),
+                        "Island": de.get("origin_island"),
+                        "Timestamp": de.get("timestamp"),
+                    }
+                    for de in db_evts
+                ]
+        except Exception as exc:
+            logger.debug("[ControlPanel] Failed to fetch db events for %s: %s", island, exc)
+
     # If status wasn't provided, attempt to fetch status/echo synchronously
     if status is None:
         try:
@@ -483,16 +513,16 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
         return "⚪ `—`"
 
     def _fmt_evt_time(evt: dict) -> str:
-        lt = str(evt.get("LocalTime") or "")
+        lt = str(evt.get("LocalTime") or evt.get("localTime") or evt.get("local_time") or "")
         if " " in lt:
             parts = lt.split(" ")
             if len(parts) >= 3:
                 return f"{parts[1][:5]} {parts[2]}"
             return parts[1][:8]
-        ts = str(evt.get("Timestamp") or "")
+        ts = str(evt.get("Timestamp") or evt.get("timestamp") or "")
         if "T" in ts:
             return ts.split("T")[1][:8]
-        return lt[:10] or "—"
+        return lt[:10] or ts[:8] or "—"
 
     # 1. Echo Broadcast Status
     dodo_on = data.get("echo_dodo_enabled")
@@ -506,7 +536,7 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
     )
     embed.add_field(name="📣 Live Echo Configuration", value=echo_summary, inline=False)
 
-    # 2. Dodo Broadcast Data Log
+    # 2. Dodo Broadcast Data Log (Always shown in logs even if Discord channel broadcast is disabled)
     dodo_code = data.get("dodo_code") or "—"
     is_valid = data.get("is_dodo_valid")
     last_dodo_fetch = data.get("last_dodo_fetch") or "—"
@@ -517,10 +547,11 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
     flight_events = []
 
     for e in events:
-        t = str(e.get("Type") or "").lower()
-        m = str(e.get("Message") or "")
+        t = str(e.get("Type") or e.get("type") or e.get("event_type") or "").lower()
+        m = str(e.get("Message") or e.get("message") or "")
         m_lower = m.lower()
-        if t in ("dodo", "crash") or "dodo" in m_lower or "crash" in m_lower or e.get("DodoCode"):
+        dodo_code_val = e.get("DodoCode") or e.get("dodoCode") or e.get("dodo_code")
+        if t in ("dodo", "crash") or "dodo" in m_lower or "crash" in m_lower or dodo_code_val:
             dodo_events.append(e)
         elif t in ("arrival", "departure") or "joining" in m_lower or "departed" in m_lower:
             flight_events.append(e)
@@ -529,21 +560,51 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
         ):
             state_events.append(e)
 
+    # Fallback to recorded island visits if flight_events is empty
+    if not flight_events:
+        try:
+            with connect_db() as conn:
+                v_rows = conn.execute(
+                    """
+                    SELECT ign, origin_island, timestamp
+                    FROM island_visits
+                    WHERE LOWER(destination) = LOWER(?)
+                    ORDER BY timestamp DESC
+                    LIMIT 5
+                    """,
+                    (island.strip(),),
+                ).fetchall()
+                for vr in v_rows:
+                    vr_dict = dict(vr)
+                    ign = vr_dict.get("ign") or "Visitor"
+                    orig = vr_dict.get("origin_island")
+                    ts = vr_dict.get("timestamp") or 0
+                    t_str = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%H:%M:%S") if ts else "—"
+                    flight_events.append({
+                        "Type": "arrival",
+                        "Message": f"{ign} from {orig} joined {island}." if orig else f"{ign} joined {island}.",
+                        "Timestamp": t_str,
+                    })
+        except Exception as exc:
+            logger.debug("[ControlPanel] Fallback visit query error for %s: %s", island, exc)
+
     dodo_lines = [
         f"• **Current Dodo:** `{dodo_code}` ({valid_str}) • **Last Update:** `{last_dodo_fetch}`"
     ]
     if dodo_events:
         for e in dodo_events[:5]:
             t_str = _fmt_evt_time(e)
-            msg = str(e.get("Message") or "").strip()
-            icon = "⚠️" if "crash" in str(e.get("Type") or "").lower() or "crash" in msg.lower() else "🦤"
+            msg = str(e.get("Message") or e.get("message") or "").strip()
+            icon = "⚠️" if "crash" in str(e.get("Type") or e.get("type") or "").lower() or "crash" in msg.lower() else "🦤"
             dodo_lines.append(f"`{t_str}` {icon} {msg[:80]}")
+    elif dodo_on is False:
+        dodo_lines.append("• *Channel echo broadcast is OFF. Live Dodo code is tracked privately above.*")
     else:
         dodo_lines.append("*No recent Dodo broadcast events in live buffer.*")
 
     embed.add_field(name="🦤 Dodo Code Broadcast Logs", value="\n".join(dodo_lines)[:1020], inline=False)
 
-    # 3. Island State Updates Data Log
+    # 3. Island State Updates Data Log (Always shown in logs even if Discord channel broadcast is disabled)
     current_layer = data.get("layer") or data.get("current_layer") or "Default"
     queue_count = data.get("queue_count", 0)
     accepting = data.get("accepting_commands")
@@ -555,7 +616,7 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
     if state_events:
         for e in state_events[:5]:
             t_str = _fmt_evt_time(e)
-            msg = str(e.get("Message") or "").strip()
+            msg = str(e.get("Message") or e.get("message") or "").strip()
             msg_lower = msg.lower()
             if "layer" in msg_lower:
                 icon = "🗺️"
@@ -568,20 +629,29 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
             else:
                 icon = "📢"
             state_lines.append(f"`{t_str}` {icon} {msg[:80]}")
+    elif updates_on is False:
+        state_lines.append("• *Channel echo broadcast is OFF. Live states tracked privately above.*")
     else:
         state_lines.append("*No recent island state update events in live buffer.*")
 
     embed.add_field(name="📢 Island State Updates Logs", value="\n".join(state_lines)[:1020], inline=False)
 
-    # 4. Flight Events (Arrivals & Departures) if any
+    # 4. Flight Events (Always shown in logs even if Discord channel broadcast is disabled)
     if flight_events:
         flight_lines = []
-        for e in flight_events[:4]:
+        for e in flight_events[:5]:
             t_str = _fmt_evt_time(e)
-            msg = str(e.get("Message") or "").strip()
-            icon = "🛬" if "arrival" in str(e.get("Type") or "").lower() or "joining" in msg.lower() else "🛫"
+            msg = str(e.get("Message") or e.get("message") or "").strip()
+            icon = "🛬" if "arrival" in str(e.get("Type") or e.get("type") or "").lower() or "joining" in msg.lower() else "🛫"
             flight_lines.append(f"`{t_str}` {icon} {msg[:80]}")
         embed.add_field(name="🛬 Recent Flight Activity", value="\n".join(flight_lines)[:1020], inline=False)
+    else:
+        cnt_val, names_val = _visitors_from_status(island, data)
+        if names_val:
+            v_summary = f"• **Current Visitors:** {', '.join(names_val[:5])}\n• *Channel echo is OFF. Real-time flights logged privately here.*"
+            embed.add_field(name="🛬 Recent Flight Activity", value=v_summary[:1020], inline=False)
+        elif arrivals_on is False:
+            embed.add_field(name="🛬 Recent Flight Activity", value="*Channel echo broadcast is OFF. No recent flights recorded.*", inline=False)
 
     # 5. Recent Echo & Control Audit History
     if echo_audit_rows:
@@ -659,8 +729,100 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
     return embed
 
 
+def _extract_console_state(
+    status: dict,
+    keys: tuple[str, ...],
+    island: str | None = None,
+    state_key: str | None = None,
+) -> Any:
+    for k in keys:
+        if k in status and status[k] is not None:
+            return status[k]
+    sw = status.get("switch_telemetry")
+    if isinstance(sw, dict):
+        for k in keys:
+            if k in sw and sw[k] is not None:
+                return sw[k]
+    if island and state_key:
+        cached_action = _CONSOLE_STATES.get(island.lower(), {}).get(state_key)
+        if cached_action is not None:
+            return cached_action
+    if island and get_cached_island_telemetry is not None:
+        try:
+            telem = get_cached_island_telemetry(island)
+            if telem and isinstance(telem, dict):
+                for k in keys:
+                    if k in telem and telem[k] is not None:
+                        return telem[k]
+        except Exception:
+            pass
+    # If the bot is online and connected, screen default is ON unless explicitly turned off
+    if state_key == "screen_on" and status.get("is_running") and status.get("is_connected"):
+        return True
+    return None
+
+
+def _format_console_state(val: Any, unreachable: bool = False) -> str:
+    if unreachable:
+        return "`—`"
+    if val is True or str(val).lower() in ("true", "1", "on"):
+        return "🟢 `ON`"
+    if val is False or str(val).lower() in ("false", "0", "off"):
+        return "🔴 `OFF`"
+    return "`Unknown`"
+
+
 def _state(status: dict, key: str) -> str:
-    return str(status.get(key) or "Unknown")
+    unreachable = status.get("success") is False or bool(status.get("unreachable"))
+    val = status.get(key)
+    if val is not None:
+        return _format_console_state(val, unreachable)
+    return "`—`" if unreachable else "`Unknown`"
+
+
+def _bullets(names: list[str], cap: int = 10) -> str:
+    lines = [f"• **{n[:32]}**" for n in names[:cap]]
+    if len(names) > cap:
+        lines.append(f"*…and {len(names) - cap} more*")
+    return "\n".join(lines)[:1024]
+
+
+def _visitors_from_status(island: str, status: dict | None) -> tuple[int | None, list[str] | None]:
+    """
+    Extract (count, names) from status.
+    Returns:
+      (None, None) -> unknown (no visitor data present in status or cache)
+      (count, names) -> confirmed visitor data (including 0, [] for confirmed empty)
+    """
+    if not status or not isinstance(status, dict):
+        status = {}
+
+    unreachable = status.get("success") is False or bool(status.get("unreachable"))
+    if unreachable:
+        return None, None
+
+    has_live_keys = any(k in status for k in ("visitor_list", "visitors", "visitors_count"))
+    if has_live_keys and parse_sysbot_visitors is not None:
+        try:
+            cnt, names = parse_sysbot_visitors(status)
+            return cnt, list(names) if names is not None else []
+        except Exception as exc:
+            logger.debug("[ControlPanel] visitor parse failed for %s: %s", island, exc)
+
+    # Fallback to telemetry cache ONLY if live status lacked visitor keys entirely
+    if get_cached_island_telemetry is not None:
+        try:
+            telem = get_cached_island_telemetry(island)
+            if telem and (telem.get("visitor_list") is not None or telem.get("visitors_count") is not None):
+                t_list = [str(x) for x in telem.get("visitor_list") or [] if str(x).strip()]
+                t_cnt = telem.get("visitors_count")
+                if t_cnt is None:
+                    t_cnt = len(t_list)
+                return int(t_cnt), t_list
+        except Exception as exc:
+            logger.debug("[ControlPanel] telemetry cache visitor fallback failed for %s: %s", island, exc)
+
+    return None, None
 
 
 def build_control_panel_embed(island_name: str, status: dict | None = None) -> discord.Embed:
@@ -689,32 +851,27 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
     else:
         dodo_display = "`-----` (No Dodo)"
 
-    # Extract live visitor names from status or telemetry cache
-    visitors: list[str] = []
-    if not unreachable and status:
-        try:
-            from utils.sysbot_telemetry import parse_sysbot_visitors
-            _, v_names = parse_sysbot_visitors(status)
-            if v_names:
-                visitors = list(v_names)
-        except Exception as exc:
-            logger.debug("[ControlPanel] Failed to parse visitors from status for %s: %s", island_name, exc)
-
-    if not visitors and not unreachable:
-        try:
-            from utils.sysbot_telemetry import get_cached_island_telemetry
-            telem = get_cached_island_telemetry(island_name)
-            if telem and telem.get("visitor_list"):
-                visitors = [str(x) for x in telem["visitor_list"] if str(x).strip()]
-        except Exception as exc:
-            logger.debug("[ControlPanel] Failed to get cached telemetry visitors for %s: %s", island_name, exc)
-
-    if unreachable:
+    cnt, names = _visitors_from_status(island_name, status)
+    if cnt is None and names is None:
+        field_name = "👥 Current Visitors"
         visitors_display = "`—`"
-    elif visitors:
-        visitors_display = "\n".join(f"• **{v}**" for v in visitors)
     else:
-        visitors_display = "*(No visitors on island)*"
+        names = names or []
+        effective_count = max(cnt or 0, len(names))
+        field_name = f"👥 Current Visitors ({effective_count})"
+        if effective_count == 0:
+            visitors_display = "*No visitors on island*"
+        else:
+            rendered = _bullets(names)
+            if (cnt or 0) > len(names):
+                unresolved = (cnt or 0) - len(names)
+                extra = f"*+{unresolved} anonymous/loading*"
+                if rendered:
+                    visitors_display = f"{rendered}\n• {extra}"[:1024]
+                else:
+                    visitors_display = extra
+            else:
+                visitors_display = rendered or "*No visitors on island*"
 
     embed = discord.Embed(
         title=f"🎛️ Island Remote Control Panel — {island_name}",
@@ -733,16 +890,26 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
         inline=True,
     )
     embed.add_field(
-        name="👥 Current Visitors",
+        name=field_name,
         value=visitors_display,
         inline=False,
     )
+    screen_val = _extract_console_state(
+        status, ("screen_on", "screen", "screen_state", "is_screen_on"), island_name, "screen_on"
+    )
+    mash_val = _extract_console_state(
+        status, ("mash_b", "mashb", "mash_state", "is_mash_b"), island_name, "mash_b"
+    )
+    map_val = _extract_console_state(
+        status, ("refresh_map", "map_refresh", "map_refresh_state", "togglerefresh", "is_refresh_map"), island_name, "refresh_map"
+    )
+
     embed.add_field(
         name="⚙️ Console States",
         value=(
-            f"• **Screen:** `{_state(status, 'screen_state')}`\n"
-            f"• **Mash B:** `{_state(status, 'mash_state')}`\n"
-            f"• **Map Refresh:** `{_state(status, 'map_refresh_state')}`"
+            f"• **Screen:** {_format_console_state(screen_val, unreachable)}\n"
+            f"• **Mash B:** {_format_console_state(mash_val, unreachable)}\n"
+            f"• **Map Refresh:** {_format_console_state(map_val, unreachable)}"
         ),
         inline=True,
     )
@@ -781,6 +948,26 @@ async def fetch_island_status(island_name: str) -> dict:
         data = await asyncio.wait_for(client.get_bot_status(), STATUS_TIMEOUT)
         if not isinstance(data, dict):
             raise TypeError(f"unexpected status payload: {type(data).__name__}")
+        if data.get("success") and not data.get("unreachable"):
+            # If screen_on is missing from status payload (e.g. older SysBot build),
+            # check switch_telemetry or do a fast telemetry query
+            if data.get("screen_on") is None:
+                try:
+                    telem = await asyncio.wait_for(client.get_telemetry(), 1.5)
+                    if isinstance(telem, dict):
+                        sw = telem.get("switch_telemetry") or {}
+                        if sw.get("screen_on") is not None:
+                            data["screen_on"] = sw["screen_on"]
+                except Exception:
+                    pass
+            # Cache known states into _CONSOLE_STATES
+            isl_entry = _CONSOLE_STATES.setdefault(island_name.lower(), {})
+            if data.get("screen_on") is not None:
+                isl_entry["screen_on"] = data["screen_on"]
+            if data.get("mash_b") is not None:
+                isl_entry["mash_b"] = data["mash_b"]
+            if data.get("refresh_map") is not None:
+                isl_entry["refresh_map"] = data["refresh_map"]
         return data
     except Exception as exc:
         logger.warning("[ControlPanel] Failed to fetch status for %s: %s", island_name, exc)
@@ -897,6 +1084,26 @@ async def run_action(
             logger.debug("[ControlPanel] cause: %s", exc)
         if not ok:
             _COOLDOWNS.pop((island.lower(), spec.key), None)   # let them retry right away
+
+        if ok and isinstance(res, dict):
+            st_update = _CONSOLE_STATES.setdefault(island.lower(), {})
+            if "screen_on" in res:
+                st_update["screen_on"] = res["screen_on"]
+            elif spec.key == "screen":
+                if "screen on" in msg.lower():
+                    st_update["screen_on"] = True
+                elif "screen off" in msg.lower():
+                    st_update["screen_on"] = False
+                elif "screen_on" in st_update:
+                    st_update["screen_on"] = not st_update["screen_on"]
+            if "mash_b" in res:
+                st_update["mash_b"] = res["mash_b"]
+            elif spec.key == "mash" and "mash b set to:" in msg.lower():
+                st_update["mash_b"] = "true" in msg.lower()
+            if "refresh_map" in res:
+                st_update["refresh_map"] = res["refresh_map"]
+            elif spec.key == "map" and "refreshmap set to:" in msg.lower():
+                st_update["refresh_map"] = "true" in msg.lower()
 
     logger.info("[ControlPanel] %s on %s by %s (%s) ok=%s msg=%r", spec.key, island, interaction.user, interaction.user.id, ok, msg)
     await asyncio.to_thread(_log_audit, island, spec.key, interaction.user, ok, msg)

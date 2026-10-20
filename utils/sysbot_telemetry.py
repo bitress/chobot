@@ -398,6 +398,9 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
         "is_nooks_open": gametime_data.get("is_nooks_open") if gametime_data else None,
         "nooks_status": gametime_data.get("nooks_status") if gametime_data else None,
         "nooks_message": gametime_data.get("nooks_message") if gametime_data else None,
+        "screen_on": status_data.get("screen_on"),
+        "mash_b": status_data.get("mash_b"),
+        "refresh_map": status_data.get("refresh_map"),
     }
 
     with _CACHE_LOCK:

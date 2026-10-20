@@ -419,6 +419,26 @@ class SysBotClient:
             return {"success": False, "error": "Invalid response"}
         return data
 
+    async def get_telemetry(self) -> dict:
+        """Fetch system and hardware telemetry from GET /api/telemetry."""
+        if not self.base_url or time.monotonic() < self._offline_until:
+            return {"success": False, "error": "SysBot API is offline or not configured."}
+
+        data, code = await asyncio.to_thread(self._get, "/api/telemetry")
+        if not isinstance(data, dict):
+            return {"success": False, "error": "Invalid response"}
+        return data
+
+    def get_telemetry_sync(self) -> dict:
+        """Synchronously fetch system and hardware telemetry from GET /api/telemetry."""
+        if not self.base_url or time.monotonic() < self._offline_until:
+            return {"success": False, "error": "SysBot API is offline or not configured."}
+
+        data, code = self._get("/api/telemetry")
+        if not isinstance(data, dict):
+            return {"success": False, "error": "Invalid response"}
+        return data
+
     async def submit_order(
         self,
         username: str,
