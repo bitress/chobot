@@ -29,7 +29,6 @@ re-adding a view per message. Requires discord.py >= 2.4.
 
 from __future__ import annotations
 
-import requests
 import asyncio
 import contextlib
 import difflib
@@ -137,14 +136,47 @@ ENFORCE_BLOCKLIST = True
 # Flip to True once _has_registered_character() is implemented against the real table.
 REQUIRE_REGISTERED_CHARACTER = False
 SUB_RULES_ROLE_ID = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
-SUB_RULES_MSG = (
-    "You need to **accept the sub rules** first before you can use the islands (role <@&1077997850165772398> required).\n"
-    "Please go to <#783677194576330792>, review and accept the rules, then come back and try again."
-)
+SUB_RULES_CHANNEL_ID = getattr(Config, "SUB_RULES_CHANNEL_ID", 783677194576330792) or 783677194576330792
 ORDER_RULES_ROLE_ID = getattr(Config, "ORDER_RULES_ROLE_ID", 1176191811438510231) or 1176191811438510231
-ORDER_RULES_MSG = (
-    "You need to **accept the Order Bot rules** first before you can drop items or inject villagers. "
-    "Use `/rules` or review and accept them on the website, then come back and try again."
+GUILD_ID = getattr(Config, "GUILD_ID", 729590421478703135) or 729590421478703135
+
+
+class Denied(str):
+    """Structured access denial result with an identifiable error code and user-facing message."""
+    code: str
+
+    def __new__(cls, code: str, message: str):
+        obj = super().__new__(cls, message)
+        obj.code = code
+        return obj
+
+    @property
+    def message(self) -> str:
+        return str(self)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, Denied):
+            return self.code == other.code and str(self) == str(other)
+        return str(self) == other or self.code == other
+
+    def __hash__(self) -> int:
+        return hash((self.code, str(self)))
+
+
+def _build_sub_rules_msg() -> Denied:
+    role_id = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
+    channel_id = 783677194576330792
+    return Denied(
+        "sub_rules",
+        f"You need to **accept the sub rules** first before you can use the islands (role <@&{role_id}> required).\n"
+        f"Please go to <#{channel_id}> to read and accept the sub rules, then come back and try again.",
+    )
+
+
+SUB_RULES_MSG: Denied = _build_sub_rules_msg()
+ORDER_RULES_MSG: Denied = Denied(
+    "order_rules",
+    "You need to **accept the sub rules** first before you can drop items or inject villagers.",
 )
 
 # Timings
@@ -202,6 +234,11 @@ def _cooldown_left(user_id: int, island: str, action: str, seconds: float = ACTI
         return seconds - (now - last)
     _COOLDOWNS[key] = now
     return 0.0
+
+
+def _pop_cooldown(user_id: int, island: str, action: str) -> None:
+    """Remove an armed cooldown after an unattempted or immediately failed action."""
+    _COOLDOWNS.pop((user_id, island, action), None)
 
 
 def _cooldown_eta_ts(wait: float) -> str:
@@ -271,6 +308,20 @@ def _init_tables() -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dodo_reveal_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT,
+                    island_clean TEXT,
+                    channel_id TEXT,
+                    message_url TEXT,
+                    username TEXT,
+                    nickname TEXT,
+                    created_at INTEGER
+                )
+                """
+            )
             # Sanrio wizard resume state
             conn.execute(
                 """
@@ -280,11 +331,20 @@ def _init_tables() -> None:
                     target_villager TEXT NOT NULL,
                     placeholder_villager TEXT NOT NULL,
                     step1_done INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at INTEGER,
                     PRIMARY KEY (user_id, island_name)
                 )
                 """
             )
+            with contextlib.suppress(Exception):
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_island_drops_log_island_id ON island_drops_log (island_name, id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_villager_inj_island_id ON villager_injections_log (island_name, id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_dodo_reveal_island_id ON dodo_reveal_messages (island_clean, id)")
+            # Prune old logs (>30 days) and stale wizard states (>24h)
+            with contextlib.suppress(Exception):
+                conn.execute("DELETE FROM island_drops_log WHERE created_at < datetime('now', '-30 days')")
+                conn.execute("DELETE FROM villager_injections_log WHERE created_at < datetime('now', '-30 days')")
+                conn.execute("DELETE FROM sanrio_wizard_state WHERE updated_at < (strftime('%s', 'now') - 86400)")
             conn.commit()
     except Exception as exc:
         logger.error("[DropBot] Failed to init tables: %s", exc)
@@ -344,6 +404,16 @@ def _panel_channel_ids(island: str) -> list[int]:
         return []
 
 
+def _panel_channel_ids_cached(island: str) -> list[int]:
+    now = time.monotonic()
+    hit = _PANEL_CHANNELS_CACHE.get(island)
+    if hit and now - hit[0] < 60:
+        return hit[1]
+    res = _panel_channel_ids(island)
+    _PANEL_CHANNELS_CACHE[island] = (now, res)
+    return res
+
+
 def _log_drop(island: str, user_id: int, items: str, ok: bool, message: str) -> None:
     try:
         with connect_db() as conn:
@@ -357,57 +427,6 @@ def _log_drop(island: str, user_id: int, items: str, ok: bool, message: str) -> 
             conn.commit()
     except Exception as exc:
         logger.warning("[DropBot] Failed to write drop audit log: %s", exc)
-
-
-def _upsert_sanrio_state(
-    user_id: int, island: str, target: str, placeholder: str, step1_done: bool
-) -> None:
-    try:
-        with connect_db() as conn:
-            conn.execute(
-                """
-                INSERT INTO sanrio_wizard_state
-                    (user_id, island_name, target_villager, placeholder_villager, step1_done, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, island_name) DO UPDATE SET
-                    target_villager=excluded.target_villager,
-                    placeholder_villager=excluded.placeholder_villager,
-                    step1_done=excluded.step1_done,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    str(user_id), island, target, placeholder,
-                    1 if step1_done else 0,
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
-            conn.commit()
-    except Exception as exc:
-        logger.warning("[DropBot] Could not save sanrio wizard state: %s", exc)
-
-
-def _get_sanrio_state(user_id: int, island: str) -> dict | None:
-    try:
-        with connect_db() as conn:
-            row = conn.execute(
-                "SELECT * FROM sanrio_wizard_state WHERE user_id=? AND island_name=?",
-                (str(user_id), island),
-            ).fetchone()
-            return dict(row) if row else None
-    except Exception:
-        return None
-
-
-def _clear_sanrio_state(user_id: int, island: str) -> None:
-    try:
-        with connect_db() as conn:
-            conn.execute(
-                "DELETE FROM sanrio_wizard_state WHERE user_id=? AND island_name=?",
-                (str(user_id), island),
-            )
-            conn.commit()
-    except Exception:
-        pass
 
 
 def _log_injection(island: str, villager: str, plot: int | None, user_id: int, ok: bool, message: str) -> None:
@@ -529,7 +548,7 @@ async def _user_can_target(interaction: discord.Interaction, island: str) -> boo
     guild, member = interaction.guild, interaction.user
     if not guild or not isinstance(member, discord.Member):
         return False
-    for cid in await asyncio.to_thread(_panel_channel_ids, island):
+    for cid in await asyncio.to_thread(_panel_channel_ids_cached, island):
         ch = guild.get_channel(cid)
         if ch and ch.permissions_for(member).view_channel:
             return True
@@ -577,8 +596,8 @@ def _check_access(discord_user_id: int) -> str | None:
                     "You can't use island controls right now. "
                     "If you think this is a mistake, contact a moderator."
                 )
-        except Exception:
-            logger.exception("[DropBot] Blocklist check failed (allowing). Verify the warnings schema.")
+        except Exception as exc:
+            logger.error("[DropBot] ALERT: Blocklist check failed (allowing). Verify the warnings schema: %s", exc, exc_info=True)
 
     if REQUIRE_REGISTERED_CHARACTER and not _has_registered_character(discord_user_id):
         return (
@@ -643,12 +662,12 @@ def _has_order_role(user: discord.abc.User) -> bool:
     return False
 
 
-async def _access_denied(user: discord.abc.User, *, require_order_rules: bool = False) -> str | None:
-    """Role check first (cheap, no DB), then order rules if required, then the blocklist/registration checks."""
+async def _access_denied(user: discord.abc.User, *, require_order_rules: bool = False) -> Denied | str | None:
+    """Sub rules role check first (cheap, no DB), then the blocklist/registration checks.
+    Order rules are not required for DropBot; only sub rules are enforced.
+    """
     if not _has_sub_role(user):
         return SUB_RULES_MSG
-    if require_order_rules and not _has_order_role(user):
-        return ORDER_RULES_MSG
     return await _denied_reason(user.id)
 
 
@@ -691,46 +710,44 @@ def parse_drop_items(raw: str) -> tuple[list[tuple[str, int]] | None, str | None
     return parsed, None
 
 
-def _format_item_for_sysbot(item_name: str, qty: int) -> str:
-    """Format an item for SysBot/NHSE using hex codes.
-    Repeats the hex code for quantity, space-separated with NO commas.
-    """
-    clean = item_name.strip()
+def build_drop_payload(entries: list[tuple[str, int]]) -> str:
+    """Build a space-separated SysBot hex/item drop string with NO COMMAS."""
+    if not entries:
+        return ""
     try:
         from utils.data_manager import resolve_drop_items
-        hex_str, _ = resolve_drop_items(f"{clean} {qty}" if qty > 1 else clean)
-        if hex_str:
-            return hex_str
-    except Exception:
-        pass
-
-    try:
-        from utils.sysbot_api import sanitize_single_drop_item
-        sanitized = sanitize_single_drop_item(clean)
-        if sanitized:
-            return " ".join(sanitized * qty)
-    except Exception:
-        pass
-
-    return " ".join([clean] * qty)
-
-
-def _normalize_items(entries: list[tuple[str, int]]) -> str:
-    """Normalize drop items into space-separated hex codes with NO COMMAS."""
-    try:
-        from utils.data_manager import resolve_drop_items
-        formatted_entries = []
-        for item, qty in entries:
-            if qty > 1:
-                formatted_entries.append(f"{item} {qty}")
-            else:
-                formatted_entries.append(item)
+        formatted_entries = [f"{item} {qty}" if qty > 1 else item for item, qty in entries]
         hex_str, _ = resolve_drop_items(formatted_entries)
         if hex_str:
             return hex_str
     except Exception:
         pass
-    return " ".join(_format_item_for_sysbot(item, qty) for item, qty in entries)
+
+    parts: list[str] = []
+    for item, qty in entries:
+        clean = item.strip()
+        try:
+            from utils.sysbot_api import sanitize_single_drop_item
+            sanitized = sanitize_single_drop_item(clean)
+            if sanitized:
+                parts.extend([sanitized] * qty)
+                continue
+        except Exception:
+            pass
+        parts.extend([clean] * qty)
+    return " ".join(parts)
+
+
+def _format_item_for_sysbot(item_name: str, qty: int) -> str:
+    """Format an item for SysBot/NHSE using hex codes.
+    Repeats the hex code for quantity, space-separated with NO commas.
+    """
+    return build_drop_payload([(item_name, qty)])
+
+
+def _normalize_items(entries: list[tuple[str, int]]) -> str:
+    """Normalize drop items into space-separated hex codes with NO COMMAS."""
+    return build_drop_payload(entries)
 
 
 # ─── Villager matching ─────────────────────────────────────────────────────────
@@ -839,25 +856,11 @@ def _persist_dodo_reveal_message(
     channel_id: str,
     username: str,
     nickname: str,
-) -> None:
+) -> int | None:
     try:
         with connect_db() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS dodo_reveal_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT,
-                    island_clean TEXT,
-                    channel_id TEXT,
-                    message_url TEXT,
-                    username TEXT,
-                    nickname TEXT,
-                    created_at INTEGER
-                )
-                """
-            )
             clean = re.sub(r"[^a-zA-Z0-9]", "", island_name.lower())
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO dodo_reveal_messages
                 (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
@@ -874,8 +877,22 @@ def _persist_dodo_reveal_message(
                 ),
             )
             conn.commit()
+            return getattr(cur, "lastrowid", None)
     except Exception as exc:
-        logger.debug("[DropBot] Could not persist dodo_reveal_message: %s", exc)
+        logger.warning("[DropBot] Could not persist dodo_reveal_message: %s", exc)
+        return None
+
+
+def _update_dodo_reveal_url(row_id: int, message_url: str) -> None:
+    try:
+        with connect_db() as conn:
+            conn.execute(
+                "UPDATE dodo_reveal_messages SET message_url = ? WHERE id = ?",
+                (message_url, row_id),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("[DropBot] Could not update dodo_reveal_url: %s", exc)
 
 
 def _lookup_saved_character(user_id: str) -> tuple[str, str] | None:
@@ -905,9 +922,14 @@ async def _fire_dropbot_dodo_webhook(
 ) -> None:
     """POST a Dodo reveal audit embed matching Chopaeng's standard format. Never raises."""
     try:
+        # Write DB audit row FIRST so the reveal is logged even if the webhook fails
+        row_id = await asyncio.to_thread(
+            _persist_dodo_reveal_message, None, str(user_id), island_name, channel_id, username, display_name
+        )
+
         url = _dodo_webhook_url()
         if not url:
-            logger.warning("[DropBot] No webhook URL configured for Dodo reveals!")
+            logger.warning("[DropBot] No webhook URL configured for Dodo reveals! (Audit logged in DB)")
             return
         if _debounced(f"{user_id}:{island_name}"):
             return
@@ -960,9 +982,8 @@ async def _fire_dropbot_dodo_webhook(
             f"https://discord.com/channels/{getattr(Config, 'GUILD_ID', '')}/{log_channel}/{msg_id}"
             if msg_id else None
         )
-        await asyncio.to_thread(
-            _persist_dodo_reveal_message, msg_url, str(user_id), island_name, channel_id, username, display_name
-        )
+        if msg_url and row_id:
+            await asyncio.to_thread(_update_dodo_reveal_url, row_id, msg_url)
         logger.info("[DropBot] Dodo reveal webhook sent for %s by user %s", island_name, user_id)
     except Exception as exc:
         logger.warning("[DropBot] Dodo webhook failed: %s", exc)
@@ -970,6 +991,8 @@ async def _fire_dropbot_dodo_webhook(
 
 # ─── Live island status ────────────────────────────────────────────────────────
 
+_ISLAND_STATUS_CACHE: dict[str, tuple[float, dict]] = {}
+_PANEL_CHANNELS_CACHE: dict[str, tuple[float, list[int]]] = {}
 _CONSOLE_API_CACHE: tuple[float, list[dict]] = (0.0, [])
 _CONSOLE_API_LOCK: asyncio.Lock | None = None
 
@@ -1083,7 +1106,14 @@ async def fetch_island_live_status(island_name: str) -> dict:
         or (telem.get("raw_dodo") if telem else None)
         or (api_item.get("dodo_code") if api_item else None)
     )
-    is_valid_dodo = bool(client_status.get("is_dodo_valid") or _clean_dodo(dodo))
+    clean = _clean_dodo(dodo)
+    if client_status:
+        if client_status.get("is_dodo_valid") is False:
+            is_valid_dodo = False
+        else:
+            is_valid_dodo = bool(clean and client_status.get("is_dodo_valid", True))
+    else:
+        is_valid_dodo = bool(clean)
 
     # Clock & mode
     game_time = client_status.get("game_time")
@@ -1129,18 +1159,21 @@ async def fetch_island_live_status(island_name: str) -> dict:
         if isinstance(raw_v, list):
             villagers = [str(v) for v in raw_v]
 
-    return {
+    res = {
         "island_name": canonical,
         "is_running": is_running,
         "is_dodo_valid": is_valid_dodo,
-        "dodo_code": dodo,
+        "dodo_code": clean if is_valid_dodo else dodo,
         "console_stage": console_stage,
         "game_time": game_time,
         "is_nooks_open": is_nooks_open,
         "mode": mode,
         "villagers": villagers,
         "visitors": visitors,
+        "monitoring_outage": not (client_status or api_item or telem),
     }
+    _ISLAND_STATUS_CACHE[canonical_key] = (time.monotonic(), res)
+    return res
 
 
 # ─── Dodo lookup (ordered sources, one validity check) ─────────────────────────
@@ -1222,24 +1255,29 @@ def _bullets(names: list[str], cap: int = 10) -> str:
     return "\n".join(lines)[:1024]
 
 
-@lru_cache(maxsize=128)
-def _map_url(island_name: str) -> str:
-    """Return the CDN URL for an island's map image (.jpg, .png, or .jpeg). Cached to avoid blocking loop."""
-    slug = re.sub(r"[^a-zA-Z0-9]", "", island_name.lower())
+_MAP_CACHE: dict[str, tuple[float, str]] = {}
 
+
+async def _map_url_async(island: str, ttl: float = 3600) -> str:
+    slug = re.sub(r"[^a-z0-9]", "", island.lower())
+    hit = _MAP_CACHE.get(slug)
+    if hit and time.monotonic() - hit[0] < ttl:
+        return hit[1]
     for ext in (".jpg", ".png", ".jpeg"):
-        url = f"{MAP_CDN_BASE.rstrip('/')}/{slug}{ext}"
+        url = f"{MAP_CDN_BASE}/{slug}{ext}"
         try:
-            response = requests.head(url, timeout=2, allow_redirects=True)
-            if response.status_code == 200:
-                return url
+            async with _http().head(url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=2.0)) as r:
+                if r.status == 200:
+                    _MAP_CACHE[slug] = (time.monotonic(), url)
+                    return url
         except Exception:
             continue
+    fallback = f"{MAP_CDN_BASE}/{slug}.jpg"
+    _MAP_CACHE[slug] = (time.monotonic() - ttl + 60, fallback)   # retry in a minute
+    return fallback
 
-    return f"{MAP_CDN_BASE.rstrip('/')}/{slug}.jpg"
 
-
-def _build_panel_embed(island_name: str, status_data: dict | None = None) -> discord.Embed:
+async def _build_panel_embed(island_name: str, status_data: dict | None = None) -> discord.Embed:
     url = _island_url(island_name)
 
     if status_data:
@@ -1303,7 +1341,7 @@ def _build_panel_embed(island_name: str, status_data: dict | None = None) -> dis
     embed.add_field(name=visitor_title, value=_bullets(visitors), inline=True)
 
     # Map image as thumbnail (upper right - "second to below")
-    embed.set_thumbnail(url=_map_url(island_name))
+    embed.set_thumbnail(url=await _map_url_async(island_name))
 
     # Dodo GIF at bottom of embed
     embed.set_image(url=DODO_GIF)
@@ -1391,16 +1429,51 @@ def _err_embed(text: str) -> discord.Embed:
     return embed
 
 
+def build_drop_picker_embed(island: str) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"📦 Drop Items — {island}",
+        description=(
+            f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
+            f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
+            f"• Pick an item preset from the dropdown for instant dropping\n"
+            f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
+            f"• Use **📝 Custom / Hex** to enter your own items or hex list"
+        ),
+        color=PANEL_EMBED_COLOR,
+    )
+    embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+    return embed
+
+
+def build_villager_picker_embed(island: str) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"🐱 Inject Villager — {island}",
+        description=(
+            f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
+            f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
+            f"• Choose a villager from the menu to inject\n"
+            f"• Use **🔍 Search Villager** to search by name or species\n"
+            f"• Use **🎀 Sanrio / Amiibo** for special Sanrio villager injections\n"
+            f"• Use **✏️ Type Any Name** to enter any name manually"
+        ),
+        color=PANEL_EMBED_COLOR,
+    )
+    embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+    return embed
+
+
 class SubRulesPromptView(discord.ui.View):
     """Link button directly to the #sub-rules channel."""
 
     def __init__(self):
         super().__init__(timeout=None)
+        guild_id = getattr(Config, "GUILD_ID", 729590421478703135) or 729590421478703135
+        channel_id = getattr(Config, "SUB_RULES_CHANNEL_ID", 783677194576330792) or 783677194576330792
         self.add_item(
             discord.ui.Button(
                 label="Go to #sub-rules",
                 style=discord.ButtonStyle.link,
-                url="https://discord.com/channels/729590421478703135/783677194576330792",
+                url=f"https://discord.com/channels/{guild_id}/{channel_id}",
                 emoji="📜",
             )
         )
@@ -1412,9 +1485,10 @@ async def _reply(
     *,
     embed: discord.Embed | None = None,
     view: discord.ui.View | None = None,
+    ephemeral: bool = True,
 ) -> None:
     """Ephemeral reply that works before AND after interaction.response was used/deferred."""
-    kwargs: dict[str, Any] = {"ephemeral": True}
+    kwargs: dict[str, Any] = {"ephemeral": ephemeral}
     if content is not None:
         kwargs["content"] = content
     if embed is not None:
@@ -1428,6 +1502,30 @@ async def _reply(
             await interaction.response.send_message(**kwargs)
     except discord.HTTPException as exc:
         logger.warning("[DropBot] Could not send reply: %s", exc)
+
+
+async def _send(
+    interaction: discord.Interaction,
+    *,
+    embed: discord.Embed | None = None,
+    view: discord.ui.View | None = None,
+    content: str | None = None,
+    ephemeral: bool = True,
+) -> None:
+    """Convenience helper for ephemeral responses that stores orig_interaction on OwnedViews."""
+    if view and isinstance(view, _OwnedView):
+        view._orig_interaction = interaction
+    await _reply(interaction, content, embed=embed, view=view, ephemeral=ephemeral)
+
+
+def _sanitize_error_message(err: Any) -> str:
+    s = str(err or "").strip()
+    s = re.sub(r"https?://[^\s/$.?#].[^\s]*", "<redacted-url>", s)
+    s = re.sub(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b", "<redacted-host>", s)
+    s = re.sub(r"\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?\b", "<redacted-host>", s, flags=re.IGNORECASE)
+    if any(keyword in s.lower() for keyword in ("connectionrefused", "clientconnecterror", "oserror", "socket", "traceback")):
+        return "Connection to the island bot timed out or was refused."
+    return s[:200]
 
 
 async def _resolve_client(interaction: discord.Interaction, island_raw: str | None) -> tuple[str, Any] | None:
@@ -1454,10 +1552,15 @@ def _is_failure(result: Any) -> bool:
 # ─── Shared actions (used by modals, catalog view and confirm view) ────────────
 
 async def _check_island_online(island: str) -> bool:
-    """Quick check: is this island's bot currently running? Uses cached telemetry data."""
+    """Quick check: is this island's bot currently running? Uses cached status snapshot."""
+    canonical = _canonical_island(island) or island
+    key = _clean_key(canonical)
+    hit = _ISLAND_STATUS_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < 60.0:
+        return bool(hit[1].get("is_running", True))
     try:
         status = await fetch_island_live_status(island)
-        return bool(status.get("is_running"))
+        return bool(status.get("is_running", True))
     except Exception:
         return True  # fail open
 
@@ -1465,13 +1568,13 @@ async def _check_island_online(island: str) -> bool:
 async def _perform_drop(
     user: discord.abc.User,
     island_raw: str,
-    items_text: str,
+    items_or_entries: list[tuple[str, int]] | str,
     *,
     heading: str,
     contents: str,
 ) -> tuple[discord.Embed, bool]:
     """Returns (embed to show, whether the drop was queued)."""
-    denied = await _access_denied(user, require_order_rules=True)
+    denied = await _access_denied(user)
     if denied:
         return _err_embed(denied), False
     island = _canonical_island(island_raw)
@@ -1480,6 +1583,7 @@ async def _perform_drop(
 
     # Precheck: tell user immediately if bot is offline
     if not await _check_island_online(island):
+        _pop_cooldown(user.id, island, "drop")
         embed = discord.Embed(
             title="🔴 Island Bot Offline",
             description=(
@@ -1495,19 +1599,20 @@ async def _perform_drop(
     if wait:
         return _err_embed(f"Slow down — you can drop again {_cooldown_eta_ts(wait)}."), False
 
-    # Resolve to hex for the SysBot; keep human-readable name for display
-    hex_items: str | None = None
-    try:
-        from utils.data_manager import resolve_drop_items
-        hex_items, _ = resolve_drop_items(items_text)
-    except Exception:
-        pass
-    sysbot_payload = hex_items if hex_items else items_text
+    if isinstance(items_or_entries, list):
+        sysbot_payload = build_drop_payload(items_or_entries)
+    else:
+        parsed, _ = parse_drop_items(items_or_entries)
+        if parsed:
+            sysbot_payload = build_drop_payload(parsed)
+        else:
+            sysbot_payload = items_or_entries
 
     try:
         client = get_island_sysbot_client(island)
         result = await client.submit_drop(items=sysbot_payload, username=getattr(user, "display_name", user.name))
     except Exception as exc:
+        _pop_cooldown(user.id, island, "drop")
         err_msg = str(exc) or "bot did not respond"
         logger.exception("[DropBot] Drop failed island=%s user=%s: %s", island, user.id, err_msg)
         await asyncio.to_thread(_log_drop, island, user.id, sysbot_payload, False, err_msg)
@@ -1517,13 +1622,14 @@ async def _perform_drop(
             description=f"The island bot for **[{island}]({_island_url(island)})** didn't respond.",
             color=PANEL_EMBED_COLOR_ERR,
         )
-        embed.add_field(name="Reason", value=f"```{err_msg[:300]}```", inline=False)
+        embed.add_field(name="Reason", value=f"```{_sanitize_error_message(err_msg)}```", inline=False)
         embed.add_field(name="Attempted Items", value=f"```{contents[:300]}```", inline=False)
         embed.add_field(name="Status", value="Please make sure the island bot is running and connected.", inline=False)
         embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         return embed, False
 
     if _is_failure(result):
+        _pop_cooldown(user.id, island, "drop")
         err = (result or {}).get("error") if isinstance(result, dict) else None
         err = err or "unknown error"
         logger.warning("[DropBot] Drop rejected island=%s user=%s: %s", island, user.id, err)
@@ -1534,7 +1640,7 @@ async def _perform_drop(
             description=f"Your drop request on **[{island}]({_island_url(island)})** was not accepted by the bot.",
             color=PANEL_EMBED_COLOR_ERR,
         )
-        embed.add_field(name="Error Details", value=f"```{str(err)[:300]}```", inline=False)
+        embed.add_field(name="Error Details", value=f"```{_sanitize_error_message(err)}```", inline=False)
         embed.add_field(name="Items", value=f"```{contents[:300]}```", inline=False)
         embed.add_field(
             name="💡 Troubleshooting",
@@ -1573,7 +1679,7 @@ async def _perform_injection(
     cooldown_key: str = "inject",
 ) -> tuple[discord.Embed, bool]:
     """Returns (embed to show, whether the injection was queued)."""
-    denied = await _access_denied(user, require_order_rules=True)
+    denied = await _access_denied(user)
     if denied:
         return _err_embed(denied), False
     island = _canonical_island(island_raw)
@@ -1582,6 +1688,7 @@ async def _perform_injection(
 
     # Precheck: tell user immediately if bot is offline
     if not await _check_island_online(island):
+        _pop_cooldown(user.id, island, cooldown_key)
         embed = discord.Embed(
             title="🔴 Island Bot Offline",
             description=(
@@ -1597,36 +1704,40 @@ async def _perform_injection(
     if wait:
         return _err_embed(f"Slow down — you can inject again {_cooldown_eta_ts(wait)}."), False
 
+    display_name = villager
+    villager_code = villager
     try:
         from utils.data_manager import resolve_villager_code
-        villager = resolve_villager_code(villager)
+        villager_code = resolve_villager_code(villager)
     except Exception:
         pass
 
     try:
         client = get_island_sysbot_client(island)
-        result = await client.inject_villagers(villager, plot=plot)
+        result = await client.inject_villagers(villager_code, plot=plot)
     except Exception:
+        _pop_cooldown(user.id, island, cooldown_key)
         logger.exception("[DropBot] Injection failed island=%s user=%s", island, user.id)
-        await asyncio.to_thread(_log_injection, island, villager, plot, user.id, False, "bot did not respond")
+        await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, "bot did not respond")
         return _err_embed("The island bot didn't respond. Check that it's online and try again."), False
 
     if _is_failure(result):
+        _pop_cooldown(user.id, island, cooldown_key)
         err = (result or {}).get("error") if isinstance(result, dict) else None
         err = err or "unknown error"
         logger.warning("[DropBot] Injection rejected island=%s user=%s: %s", island, user.id, err)
-        await asyncio.to_thread(_log_injection, island, villager, plot, user.id, False, str(err))
-        return _err_embed(f"The injection was rejected: **{err}**\nMake sure the island bot is online."), False
+        await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, str(err))
+        return _err_embed(f"The injection was rejected: **{_sanitize_error_message(err)}**\nMake sure the island bot is online."), False
 
     await asyncio.to_thread(
-        _log_injection, island, villager, plot, user.id, True,
+        _log_injection, island, display_name, plot, user.id, True,
         str(result.get("message") or "Queued via Discord panel"),
     )
 
     embed = discord.Embed(
         title="🐱 Villager injection queued",
         description=(
-            f"**{villager}** is queued for injection into **[{island}]({_island_url(island)})**.\n"
+            f"**{display_name}** is queued for injection into **[{island}]({_island_url(island)})**.\n"
             "You **must be on the island** for the injection to take effect."
         ),
         color=PANEL_EMBED_COLOR,
@@ -1635,6 +1746,53 @@ async def _perform_injection(
         embed.add_field(name="Requested plot", value=str(plot), inline=True)
     embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
     return embed, True
+
+
+async def _start_injection(
+    interaction: discord.Interaction,
+    island_name: str,
+    villager: str,
+    plot: int | None = None,
+) -> None:
+    """Unified entry point for all villager injections.
+    
+    Checks is_sanrio_villager first. If Sanrio, launches the hot-swap wizard
+    (ignoring the plot argument because hot-swap uses Plot 1).
+    Otherwise executes the regular injection.
+    """
+    if is_sanrio_villager(villager):
+        canonical = get_canonical_sanrio_name(villager)
+        saved = await asyncio.to_thread(_load_sanrio_wizard_state, interaction.user.id, island_name)
+        step1_done = False
+        placeholder = "Raymond"
+        if saved and saved.get("target_villager", "").lower() == canonical.lower():
+            step1_done = bool(saved.get("step1_done"))
+            placeholder = saved.get("placeholder_villager") or "Raymond"
+        wizard = SanrioInjectionWizardView(
+            island_name=island_name,
+            user_id=interaction.user.id,
+            target_villager=canonical,
+            placeholder_villager=placeholder,
+            step1_done=step1_done,
+        )
+        if step1_done:
+            wizard.last_status = "✈️ **Resumed Session (Step 2 Ready):** Pick up right where you left off!"
+        embed = wizard.build_embed()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=None, embed=embed, view=wizard)
+        elif interaction.type == discord.InteractionType.component:
+            await interaction.response.edit_message(content=None, embed=embed, view=wizard)
+        else:
+            await interaction.response.send_message(embed=embed, view=wizard, ephemeral=True)
+        return
+
+    embed, _ = await _perform_injection(interaction.user, island_name, villager, plot)
+    if interaction.response.is_done():
+        await interaction.edit_original_response(content=None, embed=embed, view=None)
+    elif interaction.type == discord.InteractionType.component:
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ─── Modals ───────────────────────────────────────────────────────────────────
@@ -1764,78 +1922,87 @@ def _save_sanrio_wizard_state(
         with connect_db() as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS sanrio_wizard_state (
-                    user_id TEXT PRIMARY KEY,
-                    island TEXT,
-                    target_villager TEXT,
-                    placeholder_villager TEXT,
-                    step1_done INTEGER,
-                    updated_at INTEGER
-                )
-                """
-            )
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO sanrio_wizard_state
-                (user_id, island, target_villager, placeholder_villager, step1_done, updated_at)
+                INSERT INTO sanrio_wizard_state
+                    (user_id, island_name, target_villager, placeholder_villager, step1_done, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, island_name) DO UPDATE SET
+                    target_villager=excluded.target_villager,
+                    placeholder_villager=excluded.placeholder_villager,
+                    step1_done=excluded.step1_done,
+                    updated_at=excluded.updated_at
                 """,
                 (str(user_id), island, target, placeholder, 1 if step1_done else 0, int(time.time())),
             )
             conn.commit()
     except Exception as exc:
-        logger.debug("[DropBot] Could not save sanrio wizard state: %s", exc)
+        logger.warning("[DropBot] Could not save sanrio wizard state: %s", exc)
 
 
-def _load_sanrio_wizard_state(user_id: int) -> dict[str, Any] | None:
+def _load_sanrio_wizard_state(user_id: int, island: str | None = None) -> dict[str, Any] | None:
     try:
         with connect_db() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sanrio_wizard_state (
-                    user_id TEXT PRIMARY KEY,
-                    island TEXT,
-                    target_villager TEXT,
-                    placeholder_villager TEXT,
-                    step1_done INTEGER,
-                    updated_at INTEGER
-                )
-                """
-            )
-            row = conn.execute(
-                """
-                SELECT island, target_villager, placeholder_villager, step1_done, updated_at
-                FROM sanrio_wizard_state
-                WHERE user_id = ?
-                """,
-                (str(user_id),),
-            ).fetchone()
+            if island:
+                row = conn.execute(
+                    """
+                    SELECT island_name, target_villager, placeholder_villager, step1_done, updated_at
+                    FROM sanrio_wizard_state
+                    WHERE user_id = ? AND island_name = ?
+                    """,
+                    (str(user_id), island),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT island_name, target_villager, placeholder_villager, step1_done, updated_at
+                    FROM sanrio_wizard_state
+                    WHERE user_id = ?
+                    ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (str(user_id),),
+                ).fetchone()
+
             if row:
-                if int(time.time()) - (row["updated_at"] or 0) > 7200:
-                    _clear_sanrio_wizard_state(user_id)
+                updated_at = row["updated_at"]
+                ts = 0.0
+                if isinstance(updated_at, (int, float)):
+                    ts = float(updated_at)
+                elif isinstance(updated_at, str):
+                    try:
+                        ts = datetime.fromisoformat(updated_at).timestamp()
+                    except Exception:
+                        ts = float(updated_at) if updated_at.isdigit() else 0.0
+                if ts and (time.time() - ts > 7200):
+                    _clear_sanrio_wizard_state(user_id, row["island_name"])
                     return None
                 return {
-                    "island": row["island"],
+                    "island": row["island_name"],
+                    "island_name": row["island_name"],
                     "target_villager": row["target_villager"],
                     "placeholder_villager": row["placeholder_villager"],
                     "step1_done": bool(row["step1_done"]),
-                    "updated_at": row["updated_at"],
+                    "updated_at": ts or time.time(),
                 }
     except Exception as exc:
-        logger.debug("[DropBot] Could not load sanrio wizard state: %s", exc)
+        logger.warning("[DropBot] Could not load sanrio wizard state: %s", exc)
     return None
 
 
-def _clear_sanrio_wizard_state(user_id: int) -> None:
+def _clear_sanrio_wizard_state(user_id: int, island: str | None = None) -> None:
     try:
         with connect_db() as conn:
-            conn.execute(
-                "DELETE FROM sanrio_wizard_state WHERE user_id = ?",
-                (str(user_id),),
-            )
+            if island:
+                conn.execute(
+                    "DELETE FROM sanrio_wizard_state WHERE user_id = ? AND island_name = ?",
+                    (str(user_id), island),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM sanrio_wizard_state WHERE user_id = ?",
+                    (str(user_id),),
+                )
             conn.commit()
     except Exception as exc:
-        logger.debug("[DropBot] Could not clear sanrio wizard state: %s", exc)
+        logger.warning("[DropBot] Could not clear sanrio wizard state: %s", exc)
 
 
 class _OwnedView(discord.ui.View):
@@ -1851,16 +2018,22 @@ class _OwnedView(discord.ui.View):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("This menu isn't yours.", ephemeral=True)
             return False
+        self._interaction = interaction
         return True
 
     async def on_timeout(self) -> None:
         for c in self.children:
-            if hasattr(c, "disabled"):
+            if hasattr(c, "item") and hasattr(c.item, "disabled"):
+                c.item.disabled = True
+            elif hasattr(c, "disabled"):
                 c.disabled = True
-        target = self._orig_interaction or self._interaction
+        target = self._interaction or self._orig_interaction
         if target:
-            with contextlib.suppress(discord.HTTPException):
+            with contextlib.suppress(Exception):
                 await target.edit_original_response(view=self)
+        elif hasattr(self, "message") and self.message:
+            with contextlib.suppress(Exception):
+                await self.message.edit(view=self)
 
 
 class SanrioInjectionWizardView(_OwnedView):
@@ -2081,7 +2254,8 @@ class SanrioInjectionWizardView(_OwnedView):
     async def _on_skip_step1(self, interaction: discord.Interaction) -> None:
         self.step1_done = True
         self.last_status = "⏭️ Marked Step 1 as done. Click **2️⃣ Inject** once you land on the island!"
-        _save_sanrio_wizard_state(
+        await asyncio.to_thread(
+            _save_sanrio_wizard_state,
             self.user_id,
             self.island_name,
             self.target_villager,
@@ -2092,7 +2266,7 @@ class SanrioInjectionWizardView(_OwnedView):
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     async def _on_target_select(self, interaction: discord.Interaction) -> None:
-        vals = getattr(interaction.data, "get", lambda k, d: d)("values", [""])
+        vals = (interaction.data or {}).get("values", [])
         val = vals[0] if vals else ""
         if not val:
             return
@@ -2100,7 +2274,8 @@ class SanrioInjectionWizardView(_OwnedView):
             await interaction.response.send_modal(CustomAmiiboModal(self))
             return
         self.target_villager = val
-        _save_sanrio_wizard_state(
+        await asyncio.to_thread(
+            _save_sanrio_wizard_state,
             self.user_id,
             self.island_name,
             self.target_villager,
@@ -2111,7 +2286,7 @@ class SanrioInjectionWizardView(_OwnedView):
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     async def _on_placeholder_select(self, interaction: discord.Interaction) -> None:
-        vals = getattr(interaction.data, "get", lambda k, d: d)("values", [""])
+        vals = (interaction.data or {}).get("values", [])
         val = vals[0] if vals else ""
         if not val:
             return
@@ -2119,7 +2294,8 @@ class SanrioInjectionWizardView(_OwnedView):
             await interaction.response.send_modal(CustomPlaceholderModal(self))
             return
         self.placeholder_villager = val
-        _save_sanrio_wizard_state(
+        await asyncio.to_thread(
+            _save_sanrio_wizard_state,
             self.user_id,
             self.island_name,
             self.target_villager,
@@ -2140,7 +2316,8 @@ class SanrioInjectionWizardView(_OwnedView):
         )
         if ok:
             self.step1_done = True
-            _save_sanrio_wizard_state(
+            await asyncio.to_thread(
+                _save_sanrio_wizard_state,
                 self.user_id,
                 self.island_name,
                 self.target_villager,
@@ -2170,7 +2347,7 @@ class SanrioInjectionWizardView(_OwnedView):
         )
         if ok:
             self.step2_done = True
-            _clear_sanrio_wizard_state(self.user_id)
+            await asyncio.to_thread(_clear_sanrio_wizard_state, self.user_id, self.island_name)
             self.last_status = (
                 f"🎉 **VILLAGER INJECTED!**\n\n"
                 f"🏠 **Go to Plot 1's house now!**\n"
@@ -2187,19 +2364,7 @@ class SanrioInjectionWizardView(_OwnedView):
 
     async def _on_back(self, interaction: discord.Interaction) -> None:
         picker = InteractiveVillagerPickerView(self.island_name, self.user_id)
-        embed = discord.Embed(
-            title=f"🐱 Inject Villager — {self.island_name}",
-            description=(
-                f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
-                f"🏝️ **Target Island:** [{self.island_name}]({_island_url(self.island_name)})\n"
-                f"• Choose a villager from the menu to inject\n"
-                f"• Use **🔍 Search Villager** to search by name or species\n"
-                f"• Use **🎀 Sanrio / Amiibo** for special Sanrio villager injections\n"
-                f"• Use **✏️ Type Any Name** to enter any name manually"
-            ),
-            color=PANEL_EMBED_COLOR,
-        )
-        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        embed = build_villager_picker_embed(self.island_name)
         await interaction.response.edit_message(embed=embed, view=picker)
 
     async def _on_close(self, interaction: discord.Interaction) -> None:
@@ -2247,18 +2412,7 @@ class InjectVillagerModal(discord.ui.Modal, title="🐱 Inject Villager"):
         exact, candidates = await asyncio.to_thread(_match_villagers, raw_name)
 
         if exact:
-            if is_sanrio_villager(exact):
-                canonical = get_canonical_sanrio_name(exact)
-                wizard = SanrioInjectionWizardView(
-                    island_name=self.island_name,
-                    user_id=interaction.user.id,
-                    target_villager=canonical,
-                )
-                await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
-                return
-
-            embed, _ = await _perform_injection(interaction.user, self.island_name, exact, plot)
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await _start_injection(interaction, self.island_name, exact, plot)
             return
 
         if not candidates:
@@ -2309,7 +2463,7 @@ class VillagerChoiceView(_OwnedView):
         else:
             select = discord.ui.Select(
                 placeholder="Choose a villager…",
-                options=[discord.SelectOption(label=c[:100], value=c[:100]) for c in candidates],
+                options=[discord.SelectOption(label=c[:100], value=c[:100]) for c in candidates[:25]],
                 row=0,
             )
             select.callback = self._make_select_callback(select)  # type: ignore[assignment]
@@ -2320,12 +2474,8 @@ class VillagerChoiceView(_OwnedView):
         self.add_item(cancel)
 
     async def _run(self, interaction: discord.Interaction, villager: str) -> None:
-        await interaction.response.edit_message(
-            content=f"⏳ Injecting **{villager}**…", embed=None, view=None
-        )
-        embed, _ = await _perform_injection(interaction.user, self.island_name, villager, self.plot)
-        await interaction.edit_original_response(content=None, embed=embed, view=None)
         self.stop()
+        await _start_injection(interaction, self.island_name, villager, self.plot)
 
     async def _on_confirm(self, interaction: discord.Interaction) -> None:
         await self._run(interaction, self.candidates[0])
@@ -2361,7 +2511,11 @@ def _default_qty(it: CatalogItem) -> int:
 
 
 def _cart_key(it: CatalogItem) -> str:
-    return it.display_name.lower()
+    """Key cart entries by internal hex code or ID:variant to avoid name collisions."""
+    hex_code = it.to_hex()
+    if hex_code:
+        return hex_code
+    return f"{it.internal_id}:{it.variant_id or it.variation or ''}"
 
 
 async def _show_catalog(
@@ -2422,10 +2576,13 @@ class CartEditModal(discord.ui.Modal, title="🛒 Edit Drop Cart"):
     def __init__(self, parent: "CatalogSearchView"):
         super().__init__()
         self.parent_view = parent
+        lines = []
+        for key, e in parent.cart.items():
+            lines.append(f"{e.item.display_name} [{key}]: {e.qty}")
         self.lines = discord.ui.TextInput(
             label=f"Item: quantity  (1–{MAX_STACK}, 0 removes)",
             style=discord.TextStyle.paragraph,
-            default="\n".join(f"{e.item.display_name}: {e.qty}" for e in parent.cart.values())[:4000],
+            default="\n".join(lines)[:4000],
             max_length=4000,
             required=True,
         )
@@ -2438,18 +2595,28 @@ class CartEditModal(discord.ui.Modal, title="🛒 Edit Drop Cart"):
             raw = raw.strip()
             if not raw:
                 continue
-            name, sep, qty_s = raw.rpartition(":")
+            name_part, sep, qty_s = raw.rpartition(":")
             qty_s = qty_s.strip()
             if not sep or not qty_s.isdigit():
                 await _reply(interaction, embed=_err_embed(f"I couldn't read “{raw[:50]}”. Use `Item: quantity`."))
                 return
             qty = int(qty_s)
             if qty > MAX_STACK:
-                await _reply(interaction, embed=_err_embed(f"Quantity for **{name.strip()[:40]}** can't exceed {MAX_STACK}."))
+                await _reply(interaction, embed=_err_embed(f"Quantity can't exceed {MAX_STACK}."))
                 return
-            key = name.strip().lower()
-            if key not in cart:
-                await _reply(interaction, embed=_err_embed(f"I couldn't find **{name.strip()[:40]}** in your cart."))
+            key = None
+            if "[" in name_part and name_part.endswith("]"):
+                candidate_key = name_part[name_part.rfind("[") + 1 : -1].strip()
+                if candidate_key in cart:
+                    key = candidate_key
+            if not key:
+                clean_name = name_part.split("[")[0].strip().lower()
+                for k, e in cart.items():
+                    if e.item.display_name.lower() == clean_name:
+                        key = k
+                        break
+            if not key or key not in cart:
+                await _reply(interaction, embed=_err_embed(f"I couldn't find “{name_part.strip()[:40]}” in your cart."))
                 return
             updates[key] = qty
 
@@ -2491,6 +2658,7 @@ class CatalogSearchView(_OwnedView):
         self.all_items: list[CatalogItem] = list(items or [])
         self.items: list[CatalogItem] = self.all_items
         self.villagers: list[CatalogVillager] = list(villagers or [])
+        self._items_by_key: dict[str, CatalogItem] = {_cart_key(i): i for i in self.all_items}
         self.page_size = page_size
         self.page = 0
         self.category: str | None = None
@@ -2513,6 +2681,7 @@ class CatalogSearchView(_OwnedView):
         self.all_items = list(items)
         self.items = self.all_items
         self.villagers = list(villagers)
+        self._items_by_key = {_cart_key(i): i for i in self.all_items}
         self.category = None
         self.page = 0
         self._rebuild()
@@ -2532,9 +2701,10 @@ class CatalogSearchView(_OwnedView):
         # Items dropdown
         if page_items:
             options: list[discord.SelectOption] = []
-            for idx, it in enumerate(page_items):
+            for it in page_items:
                 bits: list[str] = []
-                if _cart_key(it) in self.cart:
+                key = _cart_key(it)
+                if key in self.cart:
                     bits.append("✅ In cart")
                 bits.append(str(it.category or "Item"))
                 bits.append(f"×{_default_qty(it)}")
@@ -2542,7 +2712,7 @@ class CatalogSearchView(_OwnedView):
                     discord.SelectOption(
                         label=it.display_name[:100],
                         description=" • ".join(bits)[:100],
-                        value=f"item_{idx}",
+                        value=key[:100],
                         emoji="📜" if it.diy else "📦",
                     )
                 )
@@ -2555,7 +2725,7 @@ class CatalogSearchView(_OwnedView):
                 placeholder=placeholder[:100],
                 min_values=1,
                 max_values=min(len(options), MAX_DROP_SLOTS),
-                options=options,
+                options=options[:25],
                 row=row,
             )
             item_select.callback = self.on_item_select  # type: ignore[assignment]
@@ -2568,17 +2738,17 @@ class CatalogSearchView(_OwnedView):
                 discord.SelectOption(
                     label=v.display_name[:100],
                     description=f"ID: {v.villager_id} • {v.personality}"[:100],
-                    value=f"villager_{idx}",
+                    value=f"v_{v.villager_id}"[:100],
                     emoji="🐱",
                 )
-                for idx, v in enumerate(self.villagers[:10])
+                for v in self.villagers[:10]
             ]
             villager_select = discord.ui.Select(
                 placeholder=(f"Inject a villager into {self.island_name}…" if self.island_name
                              else "Select villager to inspect…")[:100],
                 min_values=1,
                 max_values=1,
-                options=v_options,
+                options=v_options[:25],
                 row=row,
             )
             villager_select.callback = self.on_villager_select  # type: ignore[assignment]
@@ -2601,7 +2771,7 @@ class CatalogSearchView(_OwnedView):
                     )
                 )
             cat_select = discord.ui.Select(
-                placeholder="Filter by category…", min_values=1, max_values=1, options=cat_options, row=row
+                placeholder="Filter by category…", min_values=1, max_values=1, options=cat_options[:25], row=row
             )
             cat_select.callback = self.on_category_select  # type: ignore[assignment]
             self.add_item(cat_select)
@@ -2761,15 +2931,18 @@ class CatalogSearchView(_OwnedView):
     # ── items ──
     async def on_item_select(self, interaction: discord.Interaction) -> None:
         values = (interaction.data or {}).get("values", [])
-        page_items = self.page_items()
         chosen: list[CatalogItem] = []
         for val in values:
-            try:
-                idx = int(val.replace("item_", ""))
-            except ValueError:
-                continue
-            if 0 <= idx < len(page_items):
-                chosen.append(page_items[idx])
+            it = self._items_by_key.get(val)
+            if not it and val.startswith("item_"):
+                try:
+                    idx = int(val.replace("item_", ""))
+                    if 0 <= idx < len(self.page_items()):
+                        it = self.page_items()[idx]
+                except ValueError:
+                    pass
+            if it:
+                chosen.append(it)
 
         if not chosen:
             await interaction.response.defer()
@@ -2836,12 +3009,15 @@ class CatalogSearchView(_OwnedView):
         try:
             await interaction.response.defer()   # silent ack; we edit the search message below
             entries = list(self.cart.values())
-            drop_text = ", ".join(_format_item_for_sysbot(e.item.name, e.qty) for e in entries)
+            drop_entries = [
+                (e.item.to_hex() or e.item.internal_id or e.item.name, e.qty)
+                for e in entries
+            ]
             summary = ", ".join(f"{e.item.display_name} ×{e.qty}" for e in entries)
             embed, ok = await _perform_drop(
                 interaction.user,
                 self.island_name,
-                drop_text,
+                drop_entries,
                 heading="📦 Catalog Drop Queued",
                 contents=summary,
             )
@@ -2858,13 +3034,30 @@ class CatalogSearchView(_OwnedView):
     # ── villagers ──
     async def on_villager_select(self, interaction: discord.Interaction) -> None:
         values = (interaction.data or {}).get("values", [])
-        try:
-            v = self.villagers[int(values[0].replace("villager_", ""))]
-        except (ValueError, IndexError):
+        if not values:
+            await interaction.response.defer()
+            return
+        val = values[0]
+        v: CatalogVillager | None = None
+        if val.startswith("v_"):
+            vid = val[2:]
+            v = next((x for x in self.villagers if str(x.villager_id) == vid), None)
+        elif val.startswith("villager_"):
+            try:
+                idx = int(val.replace("villager_", ""))
+                if 0 <= idx < len(self.villagers):
+                    v = self.villagers[idx]
+            except (ValueError, IndexError):
+                pass
+
+        if not v:
             await interaction.response.defer()
             return
 
         if self.island_name:
+            if is_sanrio_villager(v.name):
+                await _start_injection(interaction, self.island_name, v.name)
+                return
             prompt = discord.Embed(
                 title="Inject this villager?",
                 description=f"**{v.name}** → **{self.island_name}** (next available plot)",
@@ -2889,7 +3082,6 @@ class CatalogSearchView(_OwnedView):
             )
             if v.photo_url:
                 embed.set_thumbnail(url=v.photo_url)
-            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
@@ -2933,17 +3125,7 @@ class DropFollowupView(_OwnedView):
     @discord.ui.button(label="New Drop Menu", emoji="📦", style=discord.ButtonStyle.secondary)
     async def on_new_drop(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         picker = InteractiveDropPickerView(self.island_name, self.user_id)
-        embed = discord.Embed(
-            title=f"📦 Drop Items — {self.island_name}",
-            description=(
-                f"Choose an item preset below, search the catalog, or type custom items.\n\n"
-                f"🏝️ **Target Island:** [{self.island_name}]({_island_url(self.island_name)})\n"
-                f"• Up to **{MAX_DROP_SLOTS}** item slots per drop\n"
-                f"• Maximum stack size: **{MAX_STACK}** per item"
-            ),
-            color=PANEL_EMBED_COLOR,
-        )
-        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        embed = build_drop_picker_embed(self.island_name)
         await interaction.response.send_message(embed=embed, view=picker, ephemeral=True)
 
 
@@ -2974,17 +3156,7 @@ class PresetDropConfirmView(_OwnedView):
     @discord.ui.button(label="Back", emoji="🔙", style=discord.ButtonStyle.secondary)
     async def on_back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         picker = InteractiveDropPickerView(self.island_name, self.user_id)
-        embed = discord.Embed(
-            title=f"📦 Drop Items — {self.island_name}",
-            description=(
-                f"Choose an item preset below, search the catalog, or type custom items.\n\n"
-                f"🏝️ **Target Island:** [{self.island_name}]({_island_url(self.island_name)})\n"
-                f"• Up to **{MAX_DROP_SLOTS}** item slots per drop\n"
-                f"• Maximum stack size: **{MAX_STACK}** per item"
-            ),
-            color=PANEL_EMBED_COLOR,
-        )
-        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        embed = build_drop_picker_embed(self.island_name)
         await interaction.response.edit_message(embed=embed, view=picker)
         self.stop()
 
@@ -3009,14 +3181,15 @@ class InteractiveDropPickerView(_OwnedView):
                 value=item_code[:100],
             )
             for label, desc, item_code, emoji in presets_data
-        ]
-        preset_select = discord.ui.Select(
-            placeholder="📦 Select an item preset to drop…",
-            options=preset_options,
-            row=0,
-        )
-        preset_select.callback = self._on_preset_select
-        self.add_item(preset_select)
+        ][:25]
+        if preset_options:
+            preset_select = discord.ui.Select(
+                placeholder="📦 Select an item preset to drop…",
+                options=preset_options,
+                row=0,
+            )
+            preset_select.callback = self._on_preset_select
+            self.add_item(preset_select)
 
         search_btn = discord.ui.Button(label="Search Catalog", emoji="🔍", style=discord.ButtonStyle.primary, row=1)
         search_btn.callback = self._on_search_catalog
@@ -3035,7 +3208,7 @@ class InteractiveDropPickerView(_OwnedView):
         self.add_item(close_btn)
 
     async def _on_preset_select(self, interaction: discord.Interaction) -> None:
-        vals = getattr(interaction.data, "get", lambda k, d: d)("values", [""])
+        vals = (interaction.data or {}).get("values", [])
         select = vals[0] if vals else ""
         if not select:
             return
@@ -3104,7 +3277,7 @@ class VillagerPlotPickView(_OwnedView):
 
         plot_select = discord.ui.Select(
             placeholder="Select house plot (optional)…",
-            options=plot_options,
+            options=plot_options[:25],
             row=0,
         )
         plot_select.callback = self._on_plot_select
@@ -3129,7 +3302,7 @@ class VillagerPlotPickView(_OwnedView):
         self.add_item(cancel_btn)
 
     async def _on_plot_select(self, interaction: discord.Interaction) -> None:
-        vals = getattr(interaction.data, "get", lambda k, d: d)("values", ["none"])
+        vals = (interaction.data or {}).get("values", ["none"])
         val = vals[0] if vals else "none"
         if val != "none" and val.isdigit():
             self.selected_plot = int(val)
@@ -3139,16 +3312,10 @@ class VillagerPlotPickView(_OwnedView):
             await interaction.response.defer()
 
     async def _on_inject(self, interaction: discord.Interaction) -> None:
-        await interaction.response.edit_message(
-            content=f"⏳ Injecting **{self.villager_name}** into **{self.island_name}**…",
-            embed=None,
-            view=None,
-        )
-        embed, _ = await _perform_injection(
-            interaction.user, self.island_name, self.villager_name, self.selected_plot
-        )
-        await interaction.edit_original_response(content=None, embed=embed, view=None)
         self.stop()
+        await _start_injection(
+            interaction, self.island_name, self.villager_name, self.selected_plot
+        )
 
     async def _on_cancel(self, interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(content="Injection cancelled.", embed=None, view=None)
@@ -3173,37 +3340,7 @@ class VillagerSearchModal(discord.ui.Modal, title="🔍 Search Villager"):
 
         exact, candidates = await asyncio.to_thread(_match_villagers, raw_name, 15)
         if exact:
-            if is_sanrio_villager(exact):
-                canonical = get_canonical_sanrio_name(exact)
-                saved = await asyncio.to_thread(_load_sanrio_wizard_state, interaction.user.id)
-                step1_done = bool(saved.get("step1_done")) if (saved and saved.get("target_villager", "").lower() == canonical.lower()) else False
-                wizard = SanrioInjectionWizardView(
-                    island_name=self.island_name,
-                    user_id=interaction.user.id,
-                    target_villager=canonical,
-                    step1_done=step1_done,
-                )
-                if step1_done:
-                    wizard.last_status = "✈️ **Resumed Session (Step 2 Ready):** Pick up right where you left off!"
-                await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
-                return
-
-            view = VillagerPlotPickView(
-                user_id=interaction.user.id,
-                island_name=self.island_name,
-                villager_name=exact,
-            )
-            embed = discord.Embed(
-                title=f"🐱 Inject {exact}",
-                description=(
-                    f"Found **{exact}**! Choose where to inject on **[{self.island_name}]({_island_url(self.island_name)})**.\n\n"
-                    f"• Click **⚡ Inject {exact}** for quick injection\n"
-                    f"• Or choose a specific plot ({PLOT_MIN}–{PLOT_MAX}) from the dropdown."
-                ),
-                color=PANEL_EMBED_COLOR,
-            )
-            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            await _start_injection(interaction, self.island_name, exact)
             return
 
         if not candidates:
@@ -3260,13 +3397,15 @@ class InteractiveVillagerPickerView(_OwnedView):
                 )
                 for v in popular_villagers
             ]
-        v_select = discord.ui.Select(
-            placeholder="🐱 Choose a popular villager to inject…",
-            options=v_options,
-            row=0,
-        )
-        v_select.callback = self._on_villager_select
-        self.add_item(v_select)
+        v_options = v_options[:25]
+        if v_options:
+            v_select = discord.ui.Select(
+                placeholder="🐱 Choose a popular villager to inject…",
+                options=v_options,
+                row=0,
+            )
+            v_select.callback = self._on_villager_select
+            self.add_item(v_select)
 
         search_btn = discord.ui.Button(label="Search Villager", emoji="🔍", style=discord.ButtonStyle.primary, row=1)
         search_btn.callback = self._on_search_villager
@@ -3285,23 +3424,12 @@ class InteractiveVillagerPickerView(_OwnedView):
         self.add_item(close_btn)
 
     async def _on_villager_select(self, interaction: discord.Interaction) -> None:
-        vals = getattr(interaction.data, "get", lambda k, d: d)("values", [""])
+        vals = (interaction.data or {}).get("values", [])
         selected_name = vals[0] if vals else ""
         if not selected_name:
             return
         if is_sanrio_villager(selected_name):
-            canonical = get_canonical_sanrio_name(selected_name)
-            saved = await asyncio.to_thread(_load_sanrio_wizard_state, self.user_id)
-            step1_done = bool(saved.get("step1_done")) if (saved and saved.get("target_villager", "").lower() == canonical.lower()) else False
-            wizard = SanrioInjectionWizardView(
-                island_name=self.island_name,
-                user_id=self.user_id,
-                target_villager=canonical,
-                step1_done=step1_done,
-            )
-            if step1_done:
-                wizard.last_status = "✈️ **Resumed Session (Step 2 Ready):** Pick up right where you left off!"
-            await interaction.response.edit_message(embed=wizard.build_embed(), view=wizard)
+            await _start_injection(interaction, self.island_name, selected_name)
             return
 
         view = VillagerPlotPickView(
@@ -3322,7 +3450,19 @@ class InteractiveVillagerPickerView(_OwnedView):
         await interaction.response.edit_message(embed=embed, view=view)
 
     async def _on_sanrio_wizard(self, interaction: discord.Interaction) -> None:
-        saved = await asyncio.to_thread(_load_sanrio_wizard_state, self.user_id)
+        saved = await asyncio.to_thread(_load_sanrio_wizard_state, self.user_id, self.island_name)
+        if saved and saved.get("step1_done"):
+            wizard = SanrioInjectionWizardView(
+                island_name=saved.get("island_name") or self.island_name,
+                user_id=self.user_id,
+                target_villager=saved.get("target_villager") or "Chai",
+                placeholder_villager=saved.get("placeholder_villager") or "Raymond",
+                step1_done=True,
+            )
+            wizard.last_status = "✈️ **Resumed Session (Step 2 Ready):** Pick up right where you left off!"
+        else:
+            wizard = SanrioInjectionWizardView(island_name=self.island_name, user_id=self.user_id)
+        await interaction.response.edit_message(embed=wizard.build_embed(), view=wizard)
         if saved and saved.get("step1_done"):
             wizard = SanrioInjectionWizardView(
                 island_name=saved.get("island") or self.island_name,
@@ -3385,7 +3525,7 @@ class _IslandButton:
 
     async def _gate(self, interaction: discord.Interaction, *, require_order_rules: bool = False) -> str | None:
         """Canonical island if the click may proceed; otherwise replies with the reason and returns None."""
-        denied = await _access_denied(interaction.user, require_order_rules=require_order_rules)
+        denied = await _access_denied(interaction.user)
         if denied:
             view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
             await _reply(interaction, embed=_err_embed(denied), view=view)
@@ -3399,6 +3539,31 @@ class _IslandButton:
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:  # type: ignore[override]
         logger.error("[DropBot] Button error island=%s: %s", getattr(self, "island", "?"), error, exc_info=error)
         await _reply(interaction, "❌ Something went wrong. Please try again in a moment.")
+
+
+_IN_FLIGHT_DODO_LOOKUPS: dict[str, asyncio.Future[str | None]] = {}
+
+
+async def _find_dodo_coalesced(island: str, client: Any) -> str | None:
+    """Coalesce concurrent Dodo lookups for the same island into a single in-flight task."""
+    loop = asyncio.get_running_loop()
+    if island in _IN_FLIGHT_DODO_LOOKUPS:
+        fut = _IN_FLIGHT_DODO_LOOKUPS[island]
+        return await fut
+
+    fut = loop.create_future()
+    _IN_FLIGHT_DODO_LOOKUPS[island] = fut
+    try:
+        res = await _find_dodo(island, client)
+        if not fut.done():
+            fut.set_result(res)
+        return res
+    except Exception as exc:
+        if not fut.done():
+            fut.set_exception(exc)
+        raise
+    finally:
+        _IN_FLIGHT_DODO_LOOKUPS.pop(island, None)
 
 
 class GetDodoButton(
@@ -3416,16 +3581,23 @@ class GetDodoButton(
             await _reply(interaction, embed=_err_embed(denied), view=view)
             return
 
+        cd = _cooldown_left(interaction.user.id, self.island, "dodo", 5.0)
+        if cd > 0:
+            await _reply(interaction, embed=_err_embed(f"⏳ Please wait **{cd:.1f}s** before requesting the Dodo code again."))
+            return
+
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         resolved = await _resolve_client(interaction, self.island)
         if not resolved:
+            _pop_cooldown(interaction.user.id, self.island, "dodo")
             return
         island, client = resolved
 
-        dodo = await _find_dodo(island, client)
+        dodo = await _find_dodo_coalesced(island, client)
 
         if not dodo:
+            _pop_cooldown(interaction.user.id, self.island, "dodo")
             embed = discord.Embed(
                 title="🔄 Dodo code unavailable",
                 description=(
@@ -3499,24 +3671,10 @@ class DropItemsButton(
 
     async def callback(self, interaction: discord.Interaction) -> None:
         try:
-            if island := await self._gate(interaction, require_order_rules=True):
-                embed = discord.Embed(
-                    title=f"📦 Drop Items — {island}",
-                    description=(
-                        f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
-                        f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
-                        f"• Pick an item preset from the dropdown for instant dropping\n"
-                        f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
-                        f"• Use **📝 Custom / Hex** to enter your own items or hex list"
-                    ),
-                    color=PANEL_EMBED_COLOR,
-                )
-                embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+            if island := await self._gate(interaction):
+                embed = build_drop_picker_embed(island)
                 view = InteractiveDropPickerView(island_name=island, user_id=interaction.user.id)
-                if interaction.response.is_done():
-                    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-                else:
-                    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                await _send(interaction, embed=embed, view=view, ephemeral=True)
         except Exception as exc:
             logger.error("[DropBot] DropItemsButton error: %s", exc, exc_info=exc)
             await _reply(interaction, "❌ Something went wrong opening the item drop picker.")
@@ -3530,7 +3688,7 @@ class SearchCatalogButton(
     _btn_action, _btn_label, _btn_emoji = "search", "Search Catalog", "🔍"
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if island := await self._gate(interaction, require_order_rules=True):
+        if island := await self._gate(interaction):
             await interaction.response.send_modal(CatalogSearchModal(island_name=island))
 
 
@@ -3543,25 +3701,10 @@ class InjectVillagerButton(
 
     async def callback(self, interaction: discord.Interaction) -> None:
         try:
-            if island := await self._gate(interaction, require_order_rules=True):
-                embed = discord.Embed(
-                    title=f"🐱 Inject Villager — {island}",
-                    description=(
-                        f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
-                        f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
-                        f"• Choose a villager from the menu to inject\n"
-                        f"• Use **🔍 Search Villager** to search by name or species\n"
-                        f"• Use **🎀 Sanrio / Amiibo** for special Sanrio villager injections\n"
-                        f"• Use **✏️ Type Any Name** to enter any name manually"
-                    ),
-                    color=PANEL_EMBED_COLOR,
-                )
-                embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+            if island := await self._gate(interaction):
+                embed = build_villager_picker_embed(island)
                 view = InteractiveVillagerPickerView(island_name=island, user_id=interaction.user.id)
-                if interaction.response.is_done():
-                    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-                else:
-                    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                await _send(interaction, embed=embed, view=view, ephemeral=True)
         except Exception as exc:
             logger.error("[DropBot] InjectVillagerButton error: %s", exc, exc_info=exc)
             await _reply(interaction, "❌ Something went wrong opening the villager picker.")
@@ -3607,8 +3750,9 @@ class RefreshButton(
         island, _ = resolved
 
         status_data = await fetch_island_live_status(island)
+        embed = await _build_panel_embed(island, status_data)
         await interaction.edit_original_response(
-            embed=_build_panel_embed(island, status_data),
+            embed=embed,
             view=IslandPanelView(island, status_data),
         )
 
@@ -3630,22 +3774,23 @@ class IslandPanelView(discord.ui.View):
         self.island_name = island_name
         is_running = True
         is_valid_dodo = True
+        monitoring_outage = False
         if status_data:
             is_running = bool(status_data.get("is_running", True))
-            raw_dodo = (status_data.get("dodo_code") or "").strip().upper()
-            is_valid_dodo = bool(raw_dodo and raw_dodo not in _INVALID_DODO_CODES)
+            monitoring_outage = bool(status_data.get("monitoring_outage", False))
+            is_valid_dodo = bool(status_data.get("is_dodo_valid", True))
 
         for item_cls in PANEL_ITEMS:
             btn = item_cls(island_name)
             if item_cls is GetDodoButton:
-                if not is_running:
-                    btn.disabled = True
-                    btn.label = "Bot Offline"
-                    btn.style = discord.ButtonStyle.secondary
-                elif not is_valid_dodo:
-                    btn.disabled = True
-                    btn.label = "Dodo refreshing…"
-                    btn.style = discord.ButtonStyle.secondary
+                if not is_running and not monitoring_outage:
+                    btn.item.disabled = True
+                    btn.item.label = "Bot Offline"
+                    btn.item.style = discord.ButtonStyle.secondary
+                elif not is_valid_dodo and not monitoring_outage:
+                    btn.item.disabled = True
+                    btn.item.label = "Dodo refreshing…"
+                    btn.item.style = discord.ButtonStyle.secondary
             self.add_item(btn)
         self.add_item(
             discord.ui.Button(
@@ -3660,6 +3805,14 @@ class IslandPanelView(discord.ui.View):
 
 # ─── DropBot Cog ──────────────────────────────────────────────────────────────
 
+@dataclass
+class _PanelSig:
+    sig: str
+    last_edit: float
+    is_running: bool
+    is_valid_dodo: bool
+
+
 class DropBotCog(commands.Cog, name="DropBot"):
     """
     Manages persistent interactive island control panels across sub-island channels.
@@ -3669,8 +3822,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._sigs: dict[str, tuple[str, float, tuple[bool, bool]]] = {}   # channel_id -> (embed signature, last edit time, dodo_state)
-        self._dead_panels: set[str] = set()              # channel_ids whose panel message no longer exists
+        self._sigs: dict[str, _PanelSig] = {}   # channel_id -> _PanelSig
+        self._dead_panels: set[str] = set()    # channel_ids whose panel message no longer exists
 
     async def cog_load(self) -> None:
         await asyncio.to_thread(_init_tables)
@@ -3730,35 +3883,92 @@ class DropBotCog(commands.Cog, name="DropBot"):
 
         async with sem:
             try:
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    try:
+                        channel = await self.bot.fetch_channel(channel_id)
+                    except (discord.NotFound, discord.Forbidden):
+                        self._dead_panels.add(cid)
+                        logger.warning(
+                            "[DropBot] Channel %s no longer accessible; skipping panel refreshes for %s.",
+                            cid, island,
+                        )
+                        return
+                    except Exception as exc:
+                        logger.warning("[DropBot] Could not fetch channel %s: %s", cid, exc)
+                        return
+
                 status = await fetch_island_live_status(island)
-                embed = _build_panel_embed(island, status)
+                embed = await _build_panel_embed(island, status)
                 sig = _embed_signature(embed)
                 now = time.monotonic()
                 prev = self._sigs.get(cid)
 
                 is_running = bool(status.get("is_running", True)) if status else True
-                raw_dodo = (status.get("dodo_code") or "").strip().upper() if status else ""
-                is_valid_dodo = bool(raw_dodo and raw_dodo not in _INVALID_DODO_CODES) if status else True
-                dodo_state = (is_running, is_valid_dodo)
+                is_valid_dodo = bool(status.get("is_dodo_valid", True)) if status else True
+                dodo_changed = (
+                    prev is None
+                    or prev.is_running != is_running
+                    or prev.is_valid_dodo != is_valid_dodo
+                )
 
-                if prev and prev[0] == sig and (len(prev) > 2 and prev[2] == dodo_state) and now - prev[1] < FORCE_EDIT_SECONDS:
+                if prev and prev.sig == sig and not dodo_changed and now - prev.last_edit < FORCE_EDIT_SECONDS:
                     return
 
-                partial = self.bot.get_partial_messageable(channel_id).get_partial_message(message_id)
-                kwargs: dict[str, Any] = {"embed": embed}
-                if prev is None or (len(prev) > 2 and prev[2] != dodo_state):
-                    # First edit or whenever dodo availability state flips: re-attach the updated view
-                    kwargs["view"] = IslandPanelView(island, status)
-                await partial.edit(**kwargs)
-                self._sigs[cid] = (sig, now, dodo_state)
-            except discord.NotFound:
-                self._dead_panels.add(cid)
-                logger.warning(
-                    "[DropBot] Panel message for %s (channel %s) is gone; will stop refreshing it. "
-                    "Run /dropbot setup-panel there to repost.", island, cid,
-                )
-            except discord.HTTPException as exc:
-                logger.debug("[DropBot] HTTP error updating panel for %s: %s", island, exc)
+                view_to_attach = IslandPanelView(island, status) if (prev is None or dodo_changed) else None
+
+                # 1. Edit known message id
+                if message_id:
+                    partial = channel.get_partial_message(message_id)
+                    kwargs: dict[str, Any] = {"embed": embed}
+                    if view_to_attach is not None:
+                        kwargs["view"] = view_to_attach
+                    try:
+                        await partial.edit(**kwargs)
+                        self._sigs[cid] = _PanelSig(sig, now, is_running, is_valid_dodo)
+                        return
+                    except discord.NotFound:
+                        logger.warning(
+                            "[DropBot] Panel message %s in %s not found; attempting recovery...",
+                            message_id, cid,
+                        )
+                    except discord.HTTPException as exc:
+                        if exc.status in (403, 429):
+                            logger.warning(
+                                "[DropBot] HTTP %s updating panel for %s in %s: %s",
+                                exc.status, island, cid, exc,
+                            )
+                        else:
+                            logger.warning("[DropBot] HTTP error updating panel for %s: %s", island, exc)
+                        return
+
+                # 2. Recover from recent channel history
+                if hasattr(channel, "history"):
+                    try:
+                        bot_id = getattr(self.bot.user, "id", None)
+                        async for candidate in channel.history(limit=25):
+                            if (
+                                candidate.author.id == bot_id
+                                and candidate.embeds
+                                and island.lower() in (candidate.embeds[0].title or "").lower()
+                            ):
+                                await candidate.edit(embed=embed, view=IslandPanelView(island, status))
+                                self._sigs[cid] = _PanelSig(sig, now, is_running, is_valid_dodo)
+                                await asyncio.to_thread(_upsert_panel, channel_id, island, candidate.id)
+                                logger.info("[DropBot] Recovered panel message %s in channel %s for %s", candidate.id, cid, island)
+                                return
+                    except Exception as exc:
+                        logger.debug("[DropBot] Error scanning history in %s: %s", cid, exc)
+
+                # 3. Auto-repost fresh panel
+                try:
+                    msg = await channel.send(embed=embed, view=IslandPanelView(island, status))
+                    self._sigs[cid] = _PanelSig(sig, now, is_running, is_valid_dodo)
+                    await asyncio.to_thread(_upsert_panel, channel_id, island, msg.id)
+                    logger.info("[DropBot] Auto-reposted panel message %s in channel %s for %s", msg.id, cid, island)
+                except Exception as exc:
+                    logger.warning("[DropBot] Failed to auto-repost panel in channel %s: %s", cid, exc)
+
             except Exception as exc:
                 logger.warning("[DropBot] Unexpected error auto-refreshing panel for %s: %s", island, exc, exc_info=exc)
 
@@ -3775,7 +3985,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
                 await (await channel.fetch_message(int(existing["message_id"]))).delete()
 
         status_data = await fetch_island_live_status(island)
-        embed = _build_panel_embed(island, status_data)
+        embed = await _build_panel_embed(island, status_data)
         panel_msg = await channel.send(embed=embed, view=IslandPanelView(island_name=island, status_data=status_data))
         await asyncio.to_thread(_upsert_panel, channel.id, island, panel_msg.id)
         self._dead_panels.discard(str(channel.id))
@@ -3787,6 +3997,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
     dropbot_group = app_commands.Group(
         name="dropbot",
         description="Island DropBot control panels and catalog search",
+        default_permissions=discord.Permissions(manage_messages=True),
         guild_only=True,
     )
 
@@ -3795,9 +4006,20 @@ class DropBotCog(commands.Cog, name="DropBot"):
     ) -> list[app_commands.Choice[str]]:
         cur = (current or "").strip().lower()
         islands = getattr(Config, "SUB_ISLANDS", []) or []
+        user = interaction.user
+        is_admin = False
+        if isinstance(user, discord.Member):
+            perms = user.guild_permissions
+            is_admin = bool(perms.administrator or perms.manage_guild or perms.manage_messages)
+
+        visible_islands = []
+        for i in islands:
+            if is_admin or await _user_can_target(interaction, i):
+                visible_islands.append(i)
+
         if not cur:
-            return [app_commands.Choice(name=i, value=i) for i in islands[:25]]
-        return [app_commands.Choice(name=i, value=i) for i in islands if cur in i.lower()][:25]
+            return [app_commands.Choice(name=i, value=i) for i in visible_islands[:25]]
+        return [app_commands.Choice(name=i, value=i) for i in visible_islands if cur in i.lower()][:25]
 
     async def item_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -3893,7 +4115,6 @@ class DropBotCog(commands.Cog, name="DropBot"):
 
     @dropbot_group.command(name="setup-panel", description="Post or refresh the DropBot control panel in this channel")
     @app_commands.describe(island="Island name (auto-detected from channel name if omitted)")
-    @app_commands.default_permissions(manage_messages=True)
     @app_commands.checks.has_permissions(manage_messages=True)
     @app_commands.autocomplete(island=island_autocomplete)
     async def setup_panel(self, interaction: discord.Interaction, island: str | None = None) -> None:
@@ -3937,7 +4158,6 @@ class DropBotCog(commands.Cog, name="DropBot"):
     # ── /dropbot setup-all ─────────────────────────────────────────────────────
 
     @dropbot_group.command(name="setup-all", description="Bulk-deploy DropBot panels to all sub-island channels")
-    @app_commands.default_permissions(manage_messages=True)
     @app_commands.checks.has_permissions(manage_messages=True)
     async def setup_all(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -3988,7 +4208,6 @@ class DropBotCog(commands.Cog, name="DropBot"):
     # ── /dropbot status ────────────────────────────────────────────────────────
 
     @dropbot_group.command(name="status", description="List all registered DropBot panels")
-    @app_commands.default_permissions(manage_messages=True)
     @app_commands.checks.has_permissions(manage_messages=True)
     async def status_cmd(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -4010,10 +4229,10 @@ class DropBotCog(commands.Cog, name="DropBot"):
             body = body[:1900] + "\n…(truncated)"
         await interaction.followup.send(f"**Registered DropBot Panels ({len(panels)}):**\n{body}", ephemeral=True)
 
-    # ── /dropbot catalog & /catalog ────────────────────────────────────────────
+    # ── Command implementations ───────────────────────────────────────────────
 
     async def _handle_catalog_search(self, interaction: discord.Interaction, query: str, island: str | None) -> None:
-        denied = await _access_denied(interaction.user, require_order_rules=True)
+        denied = await _access_denied(interaction.user)
         if denied:
             view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
             await _reply(interaction, embed=_err_embed(denied), view=view)
@@ -4034,7 +4253,6 @@ class DropBotCog(commands.Cog, name="DropBot"):
             target_island = await _infer_island(interaction.channel)
 
         query_str = query.strip()
-        # Clean prefix if chosen from autocomplete (📦 or 🐱)
         if query_str.startswith(("📦 ", "🐱 ")):
             query_str = query_str[2:].strip()
 
@@ -4044,42 +4262,6 @@ class DropBotCog(commands.Cog, name="DropBot"):
 
         await _show_catalog(interaction, target_island, query_str)
 
-    @dropbot_group.command(
-        name="catalog",
-        description="Search the ACNH catalog — browse items, drop items, or inject villagers",
-    )
-    @app_commands.describe(
-        query="Item or villager name to search for",
-        island="Target island (auto-detected from channel if omitted)",
-    )
-    @app_commands.autocomplete(query=catalog_autocomplete, island=island_autocomplete)
-    async def dropbot_catalog(
-        self,
-        interaction: discord.Interaction,
-        query: str = "",
-        island: str | None = None,
-    ) -> None:
-        await self._handle_catalog_search(interaction, query, island)
-
-    @app_commands.command(
-        name="catalog",
-        description="Search the ACNH catalog — browse items, drop items, or inject villagers",
-    )
-    @app_commands.describe(
-        query="Item or villager name to search for",
-        island="Target island (auto-detected from channel if omitted)",
-    )
-    @app_commands.autocomplete(query=catalog_autocomplete, island=island_autocomplete)
-    async def slash_catalog(
-        self,
-        interaction: discord.Interaction,
-        query: str = "",
-        island: str | None = None,
-    ) -> None:
-        await self._handle_catalog_search(interaction, query, island)
-
-    # ── /dropbot drop & /drop ──────────────────────────────────────────────────
-
     async def _handle_drop_cmd(
         self,
         interaction: discord.Interaction,
@@ -4087,7 +4269,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
         quantity: int | None,
         island: str | None,
     ) -> None:
-        denied = await _access_denied(interaction.user, require_order_rules=True)
+        denied = await _access_denied(interaction.user)
         if denied:
             view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
             await _reply(interaction, embed=_err_embed(denied), view=view)
@@ -4115,20 +4297,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
             )
             return
 
-        # If no item is specified, open the interactive drop picker view!
         if not item or not item.strip():
-            embed = discord.Embed(
-                title=f"📦 Drop Items — {target_island}",
-                description=(
-                    f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
-                    f"🏝️ **Target Island:** [{target_island}]({_island_url(target_island)})\n"
-                    f"• Pick an item preset from the dropdown for instant dropping\n"
-                    f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
-                    f"• Use **📝 Custom / Hex** to enter your own items or hex list"
-                ),
-                color=PANEL_EMBED_COLOR,
-            )
-            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+            embed = build_drop_picker_embed(target_island)
             view = InteractiveDropPickerView(island_name=target_island, user_id=interaction.user.id)
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
@@ -4148,57 +4318,16 @@ class DropBotCog(commands.Cog, name="DropBot"):
                 quantity = 1
 
         quantity = max(1, min(quantity, MAX_STACK))
-        drop_str = _format_item_for_sysbot(clean_item, quantity)
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         embed, _ = await _perform_drop(
             interaction.user,
             target_island,
-            drop_str,
+            [(clean_item, quantity)],
             heading="📦 Drop queued",
             contents=f"{clean_item} x{quantity}",
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @dropbot_group.command(
-        name="drop",
-        description="Drop items on a sub-island with live search autocomplete",
-    )
-    @app_commands.describe(
-        item="Item name to drop (search autocomplete)",
-        quantity="Quantity to drop (default: max stack size)",
-        island="Target island (auto-detected from channel if omitted)",
-    )
-    @app_commands.autocomplete(item=item_autocomplete, island=island_autocomplete)
-    async def dropbot_drop(
-        self,
-        interaction: discord.Interaction,
-        item: str | None = None,
-        quantity: int | None = None,
-        island: str | None = None,
-    ) -> None:
-        await self._handle_drop_cmd(interaction, item, quantity, island)
-
-    @app_commands.command(
-        name="drop",
-        description="Drop items on a sub-island with live search autocomplete",
-    )
-    @app_commands.describe(
-        item="Item name to drop (search autocomplete)",
-        quantity="Quantity to drop (default: max stack size)",
-        island="Target island (auto-detected from channel if omitted)",
-    )
-    @app_commands.autocomplete(item=item_autocomplete, island=island_autocomplete)
-    async def slash_drop(
-        self,
-        interaction: discord.Interaction,
-        item: str | None = None,
-        quantity: int | None = None,
-        island: str | None = None,
-    ) -> None:
-        await self._handle_drop_cmd(interaction, item, quantity, island)
-
-    # ── /dropbot inject & /inject ──────────────────────────────────────────────
 
     async def _handle_inject_cmd(
         self,
@@ -4207,7 +4336,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
         plot: int | None,
         island: str | None,
     ) -> None:
-        denied = await _access_denied(interaction.user, require_order_rules=True)
+        denied = await _access_denied(interaction.user)
         if denied:
             view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
             await _reply(interaction, embed=_err_embed(denied), view=view)
@@ -4235,21 +4364,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
             )
             return
 
-        # If no villager is specified, open the interactive villager picker view!
         if not villager or not villager.strip():
-            embed = discord.Embed(
-                title=f"🐱 Inject Villager — {target_island}",
-                description=(
-                    f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
-                    f"🏝️ **Target Island:** [{target_island}]({_island_url(target_island)})\n"
-                    f"• Choose a villager from the menu to inject\n"
-                    f"• Use **🔍 Search Villager** to search by name or species\n"
-                    f"• Use **🎀 Sanrio / Amiibo** for special Sanrio villager injections\n"
-                    f"• Use **✏️ Type Any Name** to enter any name manually"
-                ),
-                color=PANEL_EMBED_COLOR,
-            )
-            embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+            embed = build_villager_picker_embed(target_island)
             view = InteractiveVillagerPickerView(island_name=target_island, user_id=interaction.user.id)
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
@@ -4260,26 +4376,11 @@ class DropBotCog(commands.Cog, name="DropBot"):
         if " • " in clean_v:
             clean_v = clean_v.split(" • ")[0].strip()
 
-        if plot is not None and not (PLOT_MIN <= plot <= PLOT_MAX):
-            await _reply(interaction, embed=_err_embed(f"Plot must be between {PLOT_MIN} and {PLOT_MAX}."))
-            return
-
         await interaction.response.defer(ephemeral=True, thinking=True)
         exact, candidates = await asyncio.to_thread(_match_villagers, clean_v)
 
         if exact:
-            if is_sanrio_villager(exact):
-                canonical = get_canonical_sanrio_name(exact)
-                wizard = SanrioInjectionWizardView(
-                    island_name=target_island,
-                    user_id=interaction.user.id,
-                    target_villager=canonical,
-                )
-                await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
-                return
-
-            embed, _ = await _perform_injection(interaction.user, target_island, exact, plot)
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await _start_injection(interaction, target_island, exact, plot)
             return
 
         if not candidates:
@@ -4305,53 +4406,13 @@ class DropBotCog(commands.Cog, name="DropBot"):
         prompt.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         await interaction.followup.send(embed=prompt, view=view, ephemeral=True)
 
-    @dropbot_group.command(
-        name="inject",
-        description="Inject a villager into a sub-island with live search autocomplete",
-    )
-    @app_commands.describe(
-        villager="Villager name to inject (search autocomplete)",
-        plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)",
-        island="Target island (auto-detected from channel if omitted)",
-    )
-    @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
-    async def dropbot_inject(
-        self,
-        interaction: discord.Interaction,
-        villager: str | None = None,
-        plot: int | None = None,
-        island: str | None = None,
-    ) -> None:
-        await self._handle_inject_cmd(interaction, villager, plot, island)
-
-    @app_commands.command(
-        name="inject",
-        description="Inject a villager into a sub-island with live search autocomplete",
-    )
-    @app_commands.describe(
-        villager="Villager name to inject (search autocomplete)",
-        plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)",
-        island="Target island (auto-detected from channel if omitted)",
-    )
-    @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
-    async def slash_inject(
-        self,
-        interaction: discord.Interaction,
-        villager: str | None = None,
-        plot: int | None = None,
-        island: str | None = None,
-    ) -> None:
-        await self._handle_inject_cmd(interaction, villager, plot, island)
-
-    # ── /dropbot sanrio & /sanrio ──────────────────────────────────────────────
-
     async def _handle_sanrio_cmd(
         self,
         interaction: discord.Interaction,
         island: str | None,
         villager: str | None,
     ) -> None:
-        denied = await _access_denied(interaction.user, require_order_rules=True)
+        denied = await _access_denied(interaction.user)
         if denied:
             view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
             await _reply(interaction, embed=_err_embed(denied), view=view)
@@ -4389,9 +4450,9 @@ class DropBotCog(commands.Cog, name="DropBot"):
             exact, _ = await asyncio.to_thread(_match_villagers, clean_v)
             target_v = exact or clean_v
 
-        saved = await asyncio.to_thread(_load_sanrio_wizard_state, interaction.user.id)
+        saved = await asyncio.to_thread(_load_sanrio_wizard_state, interaction.user.id, target_island)
         if saved and saved.get("step1_done") and (not villager or not villager.strip()):
-            target_island = saved.get("island") or target_island
+            target_island = saved.get("island_name") or target_island
             target_v = saved.get("target_villager") or target_v
             placeholder_v = saved.get("placeholder_villager") or "Raymond"
             wizard = SanrioInjectionWizardView(
@@ -4411,36 +4472,52 @@ class DropBotCog(commands.Cog, name="DropBot"):
         wizard._orig_interaction = interaction
         await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
 
-    @dropbot_group.command(
-        name="sanrio",
-        description="Interactive 2-step wizard to inject Sanrio or Amiibo villagers",
-    )
-    @app_commands.describe(
-        villager="Target Sanrio/Amiibo villager (e.g. Chai, Chelsea, Marty, Étoile)",
-        island="Target island (auto-detected from channel if omitted)",
-    )
+    # ── Registered slash commands (/dropbot X and /X) ─────────────────────────
+
+    @dropbot_group.command(name="catalog", description="Search the ACNH catalog — browse items, drop items, or inject villagers")
+    @app_commands.describe(query="Item or villager name to search for", island="Target island (auto-detected from channel if omitted)")
+    @app_commands.autocomplete(query=catalog_autocomplete, island=island_autocomplete)
+    async def dropbot_catalog(self, interaction: discord.Interaction, query: str = "", island: str | None = None) -> None:
+        await self._handle_catalog_search(interaction, query, island)
+
+    @app_commands.command(name="catalog", description="Search the ACNH catalog — browse items, drop items, or inject villagers")
+    @app_commands.describe(query="Item or villager name to search for", island="Target island (auto-detected from channel if omitted)")
+    @app_commands.autocomplete(query=catalog_autocomplete, island=island_autocomplete)
+    async def slash_catalog(self, interaction: discord.Interaction, query: str = "", island: str | None = None) -> None:
+        await self._handle_catalog_search(interaction, query, island)
+
+    @dropbot_group.command(name="drop", description="Drop items on a sub-island with live search autocomplete")
+    @app_commands.describe(item="Item name to drop (search autocomplete)", quantity=f"Quantity (1–{MAX_STACK})", island="Target island (auto-detected if omitted)")
+    @app_commands.autocomplete(item=item_autocomplete, island=island_autocomplete)
+    async def dropbot_drop(self, interaction: discord.Interaction, item: str | None = None, quantity: app_commands.Range[int, 1, MAX_STACK] | None = None, island: str | None = None) -> None:
+        await self._handle_drop_cmd(interaction, item, quantity, island)
+
+    @app_commands.command(name="drop", description="Drop items on a sub-island with live search autocomplete")
+    @app_commands.describe(item="Item name to drop (search autocomplete)", quantity=f"Quantity (1–{MAX_STACK})", island="Target island (auto-detected if omitted)")
+    @app_commands.autocomplete(item=item_autocomplete, island=island_autocomplete)
+    async def slash_drop(self, interaction: discord.Interaction, item: str | None = None, quantity: app_commands.Range[int, 1, MAX_STACK] | None = None, island: str | None = None) -> None:
+        await self._handle_drop_cmd(interaction, item, quantity, island)
+
+    @dropbot_group.command(name="inject", description="Inject a villager into a sub-island with live search autocomplete")
+    @app_commands.describe(villager="Villager name to inject (search autocomplete)", plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)", island="Target island (auto-detected if omitted)")
     @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
-    async def dropbot_sanrio(
-        self,
-        interaction: discord.Interaction,
-        villager: str | None = None,
-        island: str | None = None,
-    ) -> None:
+    async def dropbot_inject(self, interaction: discord.Interaction, villager: str | None = None, plot: app_commands.Range[int, PLOT_MIN, PLOT_MAX] | None = None, island: str | None = None) -> None:
+        await self._handle_inject_cmd(interaction, villager, plot, island)
+
+    @app_commands.command(name="inject", description="Inject a villager into a sub-island with live search autocomplete")
+    @app_commands.describe(villager="Villager name to inject (search autocomplete)", plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)", island="Target island (auto-detected if omitted)")
+    @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
+    async def slash_inject(self, interaction: discord.Interaction, villager: str | None = None, plot: app_commands.Range[int, PLOT_MIN, PLOT_MAX] | None = None, island: str | None = None) -> None:
+        await self._handle_inject_cmd(interaction, villager, plot, island)
+
+    @dropbot_group.command(name="sanrio", description="Interactive 2-step wizard to inject Sanrio or Amiibo villagers")
+    @app_commands.describe(villager="Target Sanrio/Amiibo villager (e.g. Chai, Chelsea, Marty, Étoile)", island="Target island (auto-detected if omitted)")
+    @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
+    async def dropbot_sanrio(self, interaction: discord.Interaction, villager: str | None = None, island: str | None = None) -> None:
         await self._handle_sanrio_cmd(interaction, island, villager)
 
-    @app_commands.command(
-        name="sanrio",
-        description="Interactive 2-step wizard to inject Sanrio or Amiibo villagers",
-    )
-    @app_commands.describe(
-        villager="Target Sanrio/Amiibo villager (e.g. Chai, Chelsea, Marty, Étoile)",
-        island="Target island (auto-detected from channel if omitted)",
-    )
+    @app_commands.command(name="sanrio", description="Interactive 2-step wizard to inject Sanrio or Amiibo villagers")
+    @app_commands.describe(villager="Target Sanrio/Amiibo villager (e.g. Chai, Chelsea, Marty, Étoile)", island="Target island (auto-detected if omitted)")
     @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
-    async def slash_sanrio(
-        self,
-        interaction: discord.Interaction,
-        villager: str | None = None,
-        island: str | None = None,
-    ) -> None:
+    async def slash_sanrio(self, interaction: discord.Interaction, villager: str | None = None, island: str | None = None) -> None:
         await self._handle_sanrio_cmd(interaction, island, villager)
