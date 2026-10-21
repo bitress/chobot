@@ -111,6 +111,15 @@ SANRIO_NAMES_MAP: dict[str, str] = {
     "rilla": "Rilla",
     "toby": "Toby",
 }
+SANRIO_VILLAGER_CODES: dict[str, str] = {
+    "chai": "villager:elp11",
+    "chelsea": "villager:der10",
+    "etoile": "villager:shp14",
+    "étoile": "villager:shp14",
+    "marty": "villager:cbr18",
+    "rilla": "villager:gor11",
+    "toby": "villager:rbt20",
+}
 PLACEHOLDER_VILLAGERS: list[tuple[str, str, str]] = [
     ("Raymond", "Smug • Cat (Recommended)", "🐱"),
     ("Marshal", "Smug • Squirrel", "🐿️"),
@@ -1787,11 +1796,15 @@ async def _perform_injection(
 
     display_name = villager
     villager_code = villager
-    try:
-        from utils.data_manager import resolve_villager_code
-        villager_code = resolve_villager_code(villager)
-    except Exception:
-        pass
+    if is_sanrio_villager(villager):
+        display_name = get_canonical_sanrio_name(villager)
+        villager_code = SANRIO_VILLAGER_CODES.get(villager.strip().lower(), villager)
+    else:
+        try:
+            from utils.data_manager import resolve_villager_code
+            villager_code = resolve_villager_code(villager)
+        except Exception:
+            pass
 
     try:
         client = get_island_sysbot_client(island)
@@ -1815,12 +1828,15 @@ async def _perform_injection(
         str(result.get("message") or "Queued via Discord panel"),
     )
 
+    desc = f"**{display_name}** is queued for injection into **[{island}]({_island_url(island)})**.\n"
+    if is_sanrio_villager(villager):
+        desc += "Enter Plot 1's house on the island to invite them to move to your island! 🎀"
+    else:
+        desc += "You **must be on the island** for the injection to take effect."
+
     embed = discord.Embed(
         title="🐱 Villager injection queued",
-        description=(
-            f"**{display_name}** is queued for injection into **[{island}]({_island_url(island)})**.\n"
-            "You **must be on the island** for the injection to take effect."
-        ),
+        description=desc,
         color=PANEL_EMBED_COLOR,
     )
     if plot is not None:
@@ -1961,6 +1977,14 @@ class CustomAmiiboModal(discord.ui.Modal, title="✏️ Custom Amiibo / Villager
         if is_sanrio_villager(target):
             target = get_canonical_sanrio_name(target)
         self.wizard_view.target_villager = target
+        await asyncio.to_thread(
+            _save_sanrio_wizard_state,
+            self.wizard_view.user_id,
+            self.wizard_view.island_name,
+            self.wizard_view.target_villager,
+            self.wizard_view.placeholder_villager,
+            self.wizard_view.step1_done,
+        )
         self.wizard_view._rebuild_items()
         await interaction.response.edit_message(
             embed=self.wizard_view.build_embed(),
@@ -1985,6 +2009,14 @@ class CustomPlaceholderModal(discord.ui.Modal, title="✏️ Custom Plot 1 Place
         raw_name = self.name_input.value.strip()
         exact, _ = _match_villagers(raw_name)
         self.wizard_view.placeholder_villager = exact or raw_name.title()
+        await asyncio.to_thread(
+            _save_sanrio_wizard_state,
+            self.wizard_view.user_id,
+            self.wizard_view.island_name,
+            self.wizard_view.target_villager,
+            self.wizard_view.placeholder_villager,
+            self.wizard_view.step1_done,
+        )
         self.wizard_view._rebuild_items()
         await interaction.response.edit_message(
             embed=self.wizard_view.build_embed(),
@@ -2143,6 +2175,7 @@ class SanrioInjectionWizardView(_OwnedView):
         self.placeholder_villager = placeholder_villager.title()
         self.step1_done = step1_done
         self.step2_done = False
+        self.presence_warned = False
         self.last_status: str | None = None
         self._rebuild_items()
 
@@ -2267,6 +2300,14 @@ class SanrioInjectionWizardView(_OwnedView):
             )
             skip_btn.callback = self._on_skip_step1
             self.add_item(skip_btn)
+        elif self.step1_done and not self.step2_done and getattr(self, "presence_warned", False):
+            force_btn = discord.ui.Button(
+                label="⚠️ Confirm On Island, Inject",
+                style=discord.ButtonStyle.danger,
+                row=2,
+            )
+            force_btn.callback = self._on_force_step2
+            self.add_item(force_btn)
 
         # Row 3: Navigation Buttons
         back_btn = discord.ui.Button(
@@ -2414,17 +2455,52 @@ class SanrioInjectionWizardView(_OwnedView):
     async def _on_step2(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         from utils.island_presence import verify_user_on_island_async
+
+        is_admin = False
+        guild_perms = getattr(interaction.user, "guild_permissions", None)
+        if guild_perms and getattr(guild_perms, "administrator", None) is True:
+            is_admin = True
+
         is_present, _, _ = await verify_user_on_island_async(
             self.island_name, user=interaction.user, allow_admin_bypass=True
         )
-        if not is_present:
+        if not is_present and not is_admin and not getattr(self, "presence_warned", False):
+            self.presence_warned = True
             self.last_status = (
                 f"✈️ **Not detected on {self.island_name} yet!**\n"
-                f"Please fly into **{self.island_name}** and step outside the airport gates before running Step 2."
+                f"Please fly into **{self.island_name}** and step outside the airport gates before running Step 2.\n"
+                f"*If you are already outside the airport gates, click **⚠️ Confirm On Island, Inject**.*"
             )
+            self._rebuild_items()
             await interaction.edit_original_response(embed=self.build_embed(), view=self)
             return
 
+        embed_res, ok = await _perform_injection(
+            interaction.user,
+            self.island_name,
+            self.target_villager,
+            plot=1,
+            cooldown_key="sanrio2",
+        )
+        if ok:
+            self.step2_done = True
+            await asyncio.to_thread(_clear_sanrio_wizard_state, self.user_id, self.island_name)
+            self.last_status = (
+                f"🎉 **VILLAGER INJECTED!**\n\n"
+                f"🏠 **Go to Plot 1's house now!**\n"
+                f"• Enter Plot 1's house on the island.\n"
+                f"• Talk to the resident inside *(they will visually look like `{self.placeholder_villager}`)*.\n"
+                f"• Invite them to move to your island! 🎀"
+            )
+        else:
+            reason = embed_res.description or "Bot did not respond"
+            self.last_status = f"⚠️ **Step 2 Error:** {reason}"
+
+        self._rebuild_items()
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+
+    async def _on_force_step2(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         embed_res, ok = await _perform_injection(
             interaction.user,
             self.island_name,

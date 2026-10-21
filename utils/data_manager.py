@@ -619,8 +619,18 @@ def load_villagers_catalog() -> dict:
                     if code:
                         villagers_by_id[code] = {"id": code, "name": v_name}
                     if v_name:
-                        villagers_by_name[v_name.lower()] = {"id": code, "name": v_name}
-                        villagers_by_name[re.sub(r"[^a-z0-9]", "", v_name.lower())] = {"id": code, "name": v_name}
+                        v_lower = v_name.lower()
+                        villagers_by_name[v_lower] = {"id": code, "name": v_name}
+                        villagers_by_name[re.sub(r"[^a-z0-9]", "", v_lower)] = {"id": code, "name": v_name}
+                        try:
+                            import unicodedata
+                            decomposed = unicodedata.normalize('NFKD', v_lower)
+                            stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+                            if stripped != v_lower:
+                                villagers_by_name[stripped] = {"id": code, "name": v_name}
+                                villagers_by_name[re.sub(r"[^a-z0-9]", "", stripped)] = {"id": code, "name": v_name}
+                        except Exception:
+                            pass
                 logger.info(f"[DataManager] Loaded {len(villagers_by_id)} villagers from {min_path}")
             except Exception as exc:
                 logger.error(f"[DataManager] Failed to load villagers from acnh.min.json: {exc}")
@@ -830,6 +840,19 @@ def resolve_villager_code(villager_query: str) -> str:
     # Check direct ID match
     if query.lower() in villagers_by_id:
         return f"villager:{query.lower()}"
+
+    # Explicit Sanrio Amiibo mapping
+    sanrio_map = {
+        "chai": "elp11",
+        "chelsea": "der10",
+        "etoile": "shp14",
+        "étoile": "shp14",
+        "marty": "cbr18",
+        "rilla": "gor11",
+        "toby": "rbt20",
+    }
+    if query.lower() in sanrio_map:
+        return f"villager:{sanrio_map[query.lower()]}"
 
     # Check name match
     norm = re.sub(r"[^a-z0-9]", "", query.lower())
