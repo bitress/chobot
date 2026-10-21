@@ -5591,6 +5591,62 @@ def api_user_order_rules():
         conn.close()
 
 
+@app.route("/api/user/features/seen", methods=["GET", "POST"])
+@app.route("/api/user/features/dismiss", methods=["POST"])
+def api_user_features_seen():
+    """Tracks and persists feature announcement dismissals/acknowledgements."""
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"ok": False, "error": "Authentication required"}), 401
+
+    from utils.unified_auth import resolve_all_user_ids
+    cand_ids = resolve_all_user_ids(auth_user)
+
+    conn = get_db()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_features_seen (
+                user_id TEXT,
+                feature_id TEXT,
+                seen_at TEXT,
+                PRIMARY KEY (user_id, feature_id)
+            )
+        """)
+
+        if request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            feature_id = str(data.get("feature_id") or data.get("id") or "").strip()
+            if not feature_id:
+                return jsonify({"ok": False, "error": "feature_id required"}), 400
+
+            now_iso = datetime.utcnow().isoformat()
+            for uid in set(cand_ids):
+                conn.execute(
+                    "INSERT OR REPLACE INTO user_features_seen (user_id, feature_id, seen_at) VALUES (?, ?, ?)",
+                    (uid, feature_id, now_iso),
+                )
+            conn.commit()
+            return jsonify({"ok": True, "feature_id": feature_id, "seen_at": now_iso})
+
+        # GET: return dictionary of seen feature IDs
+        seen_features = {}
+        if cand_ids:
+            placeholders = ",".join("?" for _ in cand_ids)
+            rows = conn.execute(
+                f"SELECT feature_id, seen_at FROM user_features_seen WHERE user_id IN ({placeholders})",
+                cand_ids,
+            ).fetchall()
+            for r in rows:
+                seen_features[r["feature_id"]] = r["seen_at"]
+
+        return jsonify({"ok": True, "seen_features": seen_features})
+    except Exception as exc:
+        logger.warning("Error in api_user_features_seen: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        conn.close()
+
+
 @app.route("/api/user/nickname", methods=["POST"])
 @app.route("/api/profile/nickname", methods=["POST"])
 @app.route("/api/user/update-nickname", methods=["POST"])
