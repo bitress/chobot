@@ -2270,6 +2270,7 @@ def my_dodo_queue():
 # ============================================================================
 
 @app.route('/')
+@app.route('/api')
 def home():
     """API home with endpoint info and system status"""
     cache, last_update, _refresh_interval, source = _get_item_cache()
@@ -2340,13 +2341,33 @@ def home():
             },
             "island_map": {
                 "path": "/api/islands/<island_name>/map",
-                "description": "Get parsed item and sector layout for an island"
+                "description": "Get parsed item and sector layout for an island (powered by HttpApiServer live RAM map data)"
+            },
+            "island_map_data": {
+                "path": "/api/island/map/data",
+                "description": "Live compact island map items, paths, and player coordinates direct from Switch RAM via HttpApiServer"
             },
             "health": {
                 "path": "/api/health",
                 "description": "Detailed system health and synchronization metrics"
             }
-        }
+        },
+        "service_discovery": [
+            "GET  /api/islands",
+            "GET  /api/telemetry",
+            "GET  /api/players/live",
+            "GET  /api/island/map/data",
+            "GET  /api/island/map/image?scale=<scale>",
+            "GET  /api/island/items?query=<query>",
+            "GET  /api/find?q=<item>",
+            "GET  /api/items/search?query=<query>",
+            "GET  /api/recipes/search?query=<query>",
+            "GET  /api/items/customizations?item=<name>",
+            "GET  /api/villager?q=<name>",
+            "GET  /api/villagers/list",
+            "GET  /api/islands/<island_name>/map",
+            "GET  /api/health"
+        ]
     })
 
 @app.route('/health')
@@ -6321,30 +6342,156 @@ def api_presence_poll_waves():
 
 
 # -------------------------------------------------------------
-# ISLAND NHL MAP & SECTOR RADAR ROUTES
+# ISLAND MAP & SECTOR RADAR ROUTES (Powered by HttpApiServer.cs)
 # -------------------------------------------------------------
+
+def _convert_sysbot_map_data_to_website(raw_data: dict, island_name: str) -> dict:
+    """
+    Transforms SysBot HttpApiServer.cs compact map data (dots & names array)
+    into the full website schema expected by InteractiveIslandMapModal.
+    """
+    cols = ["A", "B", "C", "D", "E", "F", "G"]
+    rows = [1, 2, 3, 4, 5, 6]
+    gw = int(raw_data.get("gw") or 224)
+    gh = int(raw_data.get("gh") or 192)
+    names = raw_data.get("names") or []
+    dots = raw_data.get("dots") or []
+
+    items = []
+    sectors: dict = {}
+    category_counts: dict = {}
+
+    for dot in dots:
+        if not isinstance(dot, (list, tuple)) or len(dot) < 7:
+            continue
+        x, y, name_idx, count, is_diy, item_id_hex, category = dot[:7]
+        name = names[name_idx] if 0 <= name_idx < len(names) else f"Item #{item_id_hex}"
+        col_idx = min(6, max(0, int(x) // 32))
+        row_idx = min(5, max(0, int(y) // 32))
+        sector = f"{cols[col_idx]}{rows[row_idx]}"
+
+        cat_str = str(category or "other").lower()
+        category_counts[cat_str] = category_counts.get(cat_str, 0) + 1
+
+        item_obj = {
+            "name": name,
+            "category": cat_str,
+            "diy": bool(is_diy),
+            "itemIdHex": str(item_id_hex),
+            "x": int(x),
+            "y": int(y),
+            "sector": sector,
+            "count": int(count) if int(count) > 1 else 1,
+            "record_index": int(y) * gw + int(x),
+            "source": "HttpApiServer.cs",
+        }
+        items.append(item_obj)
+        sectors.setdefault(sector, []).append(item_obj)
+
+    sector_summary = {}
+    for sec, sec_items in sectors.items():
+        sec_cat_counts: dict = {}
+        for it in sec_items:
+            c = it["category"]
+            sec_cat_counts[c] = sec_cat_counts.get(c, 0) + 1
+        top_cats = sorted(sec_cat_counts.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        sector_summary[sec] = {
+            "total_items": len(sec_items),
+            "top_categories": [cat for cat, _ in top_cats],
+            "sample_items": [i["name"] for i in sec_items[:5]],
+        }
+
+    return {
+        "ok": True,
+        "island": island_name,
+        "status": "live_ram",
+        "file_found": True,
+        "source": "HttpApiServer.cs",
+        "grid": {
+            "width": gw,
+            "height": gh,
+            "acre_size": 32,
+            "cols": cols,
+            "rows": rows,
+        },
+        "stats": {
+            "total_items": len(items),
+            "unique_categories": len(category_counts),
+            "category_counts": category_counts,
+        },
+        "sector_summary": sector_summary,
+        "sectors": sectors,
+        "items": items,
+        "names": names,
+        "dots": dots,
+        "paths": raw_data.get("paths") or [],
+        "players": raw_data.get("players") or [],
+        "generated_at": raw_data.get("generated_at"),
+    }
+
+
 @app.route("/api/islands/<island_name>/map", methods=["GET"])
 def api_get_island_map(island_name: str):
     """
     Returns full parsed item and sector layout for an island.
-    Reads from VILLAGERS_DIR/<island_name>/nhl/maprefresh.nhl or
-    TWITCH_VILLAGERS_DIR/<island_name>/nhl/maprefresh.nhl.
-    """
-    from utils.nhl_map_parser import get_island_map_data
-    force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
-    data = get_island_map_data(island_name, force_refresh=force)
-    return jsonify({"ok": True, **data})
-
-
-@app.route("/api/islands/<island_name>/map/data", methods=["GET"])
-@app.route("/api/island/<island_name>/map/data", methods=["GET"])
-def api_get_island_map_data_live(island_name: str):
-    """
-    Returns live compact map data (RAM or cached).
-    Checks map_cache first, then polls SysBot /api/island/map/data if available,
-    falling back to parsed .nhl map data.
+    Primary: Queries HttpApiServer.cs GET /api/island/map/data from Switch RAM.
+    Fallback: Reads local .nhl file if SysBot is offline or unreachable.
     """
     from utils.cache import map_cache
+    force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+    norm = island_name.strip().lower()
+    cache_key = f"island_map_unified:{norm}"
+
+    if not force:
+        cached_val = map_cache.get(cache_key)
+        if cached_val is not None:
+            return jsonify(cached_val)
+
+    # 1. Primary: query SysBot HttpApiServer.cs live RAM map data
+    try:
+        from utils.sysbot_api import SysBotClientPool
+        client = SysBotClientPool.get_client(island_name)
+        if client and client.base_url:
+            data = client.get_island_map_data_sync()
+            if isinstance(data, dict) and data.get("dots") is not None and data.get("names") is not None:
+                converted = _convert_sysbot_map_data_to_website(data, island_name)
+                map_cache.set(cache_key, converted, ttl=30.0)
+                return jsonify(converted)
+    except Exception as exc:
+        logging.getLogger("flask_api").debug(f"SysBot HttpApiServer live map data query note for {island_name}: {exc}")
+
+    # 2. Fallback: parse local .nhl file if SysBot is offline/unreachable
+    try:
+        from utils.nhl_map_parser import get_island_map_data
+        data = get_island_map_data(island_name, force_refresh=force)
+        res = {"ok": True, **data}
+        map_cache.set(cache_key, res, ttl=30.0)
+        return jsonify(res)
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "island": island_name,
+            "status": "error",
+            "error": f"Failed to retrieve map data from HttpApiServer and .nhl: {exc}",
+            "items": [],
+            "sectors": {},
+            "sector_summary": {},
+        }), 500
+
+
+@app.route("/api/island/map/data", methods=["GET"])
+@app.route("/api/map/data", methods=["GET"])
+@app.route("/api/islands/<island_name>/map/data", methods=["GET"])
+@app.route("/api/island/<island_name>/map/data", methods=["GET"])
+def api_get_island_map_data_live(island_name: Optional[str] = None):
+    """
+    Returns live compact map data (RAM or cached).
+    Direct proxy/caching for HttpApiServer.cs GET /api/island/map/data.
+    """
+    from utils.cache import map_cache
+    if not island_name:
+        island_name = request.args.get("island") or request.args.get("name") or "Silakbo"
+
     norm = island_name.strip().lower()
     cache_key = f"live_map_data:{norm}"
     cached_val = map_cache.get(cache_key)
@@ -6355,18 +6502,22 @@ def api_get_island_map_data_live(island_name: str):
         from utils.sysbot_api import SysBotClientPool
         client = SysBotClientPool.get_client(island_name)
         if client and client.base_url:
-            data, code = client._get("/api/island/map/data")
-            if code == 200 and isinstance(data, dict) and data.get("success"):
-                map_cache.set(cache_key, data, ttl=60.0)
+            data = client.get_island_map_data_sync()
+            if isinstance(data, dict) and data.get("dots") is not None and data.get("names") is not None:
+                map_cache.set(cache_key, data, ttl=30.0)
                 return jsonify(data)
     except Exception as exc:
         logging.getLogger("flask_api").debug(f"SysBot live map data fetch note: {exc}")
 
-    from utils.nhl_map_parser import get_island_map_data
-    data = get_island_map_data(island_name)
-    res = {"ok": True, **data}
-    map_cache.set(cache_key, res, ttl=60.0)
-    return jsonify(res)
+    # Fallback to .nhl parser converted to dots if SysBot is offline
+    try:
+        from utils.nhl_map_parser import get_island_map_data
+        data = get_island_map_data(island_name)
+        res = {"ok": True, **data}
+        map_cache.set(cache_key, res, ttl=30.0)
+        return jsonify(res)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc), "island_name": island_name}), 500
 
 
 @app.route("/api/islands/<island_name>/map/search", methods=["GET"])

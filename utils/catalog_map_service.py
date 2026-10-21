@@ -415,9 +415,28 @@ def _overlay_live_players(img: Any, island_name: str) -> Any:
 
 
 def _overlay_ground_items(img: Any, island_name: str) -> Any:
-    """Overlay parsed .nhl on-ground item markers onto the radar map."""
+    """Overlay on-ground item markers onto the radar map (using HttpApiServer live RAM dots with NHL fallback)."""
     if not HAS_PIL or not img:
         return img
+    try:
+        from utils.sysbot_api import SysBotClientPool
+        client = SysBotClientPool.get_client(island_name)
+        if client and client.base_url:
+            data = client.get_island_map_data_sync()
+            dots = data.get("dots") if isinstance(data, dict) else None
+            if dots:
+                draw = ImageDraw.Draw(img)
+                scale_x = img.width / 224.0
+                scale_y = img.height / 192.0
+                for dot in dots[:2000]:
+                    if isinstance(dot, (list, tuple)) and len(dot) >= 2:
+                        px = int(dot[0] * scale_x)
+                        py = int(dot[1] * scale_y)
+                        draw.rectangle([px - 1, py - 1, px + 1, py + 1], fill=(255, 235, 60, 220))
+                return img
+    except Exception as exc:
+        logger.debug(f"[CatalogMapService] SysBot live overlay items note: {exc}")
+
     try:
         from utils.nhl_map_parser import get_island_map_data
         map_data = get_island_map_data(island_name)
@@ -426,9 +445,8 @@ def _overlay_ground_items(img: Any, island_name: str) -> Any:
             return img
 
         draw = ImageDraw.Draw(img)
-        # Standard ACNH radar island dimensions: 112 cols x 96 rows
-        scale_x = img.width / 112.0
-        scale_y = img.height / 96.0
+        scale_x = img.width / 224.0
+        scale_y = img.height / 192.0
 
         for it in items[:1500]:
             x = it.get("x")

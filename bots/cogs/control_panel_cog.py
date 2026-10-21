@@ -1104,10 +1104,26 @@ async def fetch_island_status(island_name: str) -> dict:
                 a_val = bool(data.get("echo_arrivals_enabled", True))
                 u_val = bool(data.get("echo_island_updates_enabled", True))
                 await asyncio.to_thread(_save_echo_settings, island_name, d_val, a_val, u_val)
+        if data.get("unreachable") or not data.get("success"):
+            saved_echo = await asyncio.to_thread(_get_echo_settings, island_name)
+            if saved_echo:
+                data.update(saved_echo)
+            else:
+                data.setdefault("echo_dodo_enabled", True)
+                data.setdefault("echo_arrivals_enabled", True)
+                data.setdefault("echo_island_updates_enabled", True)
         return data
     except Exception as exc:
         logger.warning("[ControlPanel] Failed to fetch status for %s: %s", island_name, exc)
-        return {"success": False, "unreachable": True, "error": str(exc), "island_name": island_name}
+        data = {"success": False, "unreachable": True, "error": str(exc), "island_name": island_name}
+        saved_echo = await asyncio.to_thread(_get_echo_settings, island_name)
+        if saved_echo:
+            data.update(saved_echo)
+        else:
+            data["echo_dodo_enabled"] = True
+            data["echo_arrivals_enabled"] = True
+            data["echo_island_updates_enabled"] = True
+        return data
 
 
 async def _update_panel_message(
@@ -1449,42 +1465,62 @@ class EchoSettingsView(discord.ui.View):
 
     async def _toggle_echo(self, interaction: discord.Interaction, echo_type: str) -> None:
         await interaction.response.defer()
+
+        # Determine current state from self.status (guaranteed boolean)
+        curr_dodo = self.status.get("echo_dodo_enabled") is True
+        curr_arr = self.status.get("echo_arrivals_enabled") is True
+        curr_upd = self.status.get("echo_island_updates_enabled") is True
+
+        if echo_type == "all":
+            want = not (curr_dodo and curr_arr and curr_upd)
+            new_dodo, new_arr, new_upd = want, want, want
+        elif echo_type == "dodo":
+            want = not curr_dodo
+            new_dodo, new_arr, new_upd = want, curr_arr, curr_upd
+        elif echo_type == "arrivals":
+            want = not curr_arr
+            new_dodo, new_arr, new_upd = curr_dodo, want, curr_upd
+        elif echo_type == "island_updates":
+            want = not curr_upd
+            new_dodo, new_arr, new_upd = curr_dodo, curr_arr, want
+        else:
+            want = True
+            new_dodo, new_arr, new_upd = True, True, True
+
+        # 1. Update in-memory state and persist to backend database FIRST
+        self.status["echo_dodo_enabled"] = new_dodo
+        self.status["echo_arrivals_enabled"] = new_arr
+        self.status["echo_island_updates_enabled"] = new_upd
+        await asyncio.to_thread(_save_echo_settings, self.island, new_dodo, new_arr, new_upd)
+
+        # 2. Push to SysBot if reachable
         ok, msg = False, ""
         try:
             client = get_island_sysbot_client(self.island)
-            if echo_type == "all":
-                want = not all(self.status.get(k) is True for k in KEYS.values())
-            else:
-                key_name = KEYS.get(echo_type)
-                want = (self.status.get(key_name) is not True) if key_name else True
-
             res = await asyncio.wait_for(client.toggle_echo(echo_type=echo_type, enabled=want), ACTION_TIMEOUT)
             ok, msg = _interpret(res)
+            if ok and isinstance(res, dict):
+                for k in KEYS.values():
+                    if res.get(k) is not None:
+                        self.status[k] = res[k]
         except asyncio.TimeoutError:
             msg = "SysBot didn't answer in time."
             logger.warning("[ControlPanel] Echo toggle timeout on %s", self.island)
         except Exception as exc:
-            msg = "Failed to communicate with SysBot."
-            logger.error("[ControlPanel] Error toggling echo on %s: %s", self.island, exc, exc_info=True)
+            msg = "SysBot is currently offline or unreachable."
+            logger.debug("[ControlPanel] Error toggling echo on %s: %s", self.island, exc)
         finally:
             await asyncio.to_thread(_log_audit, self.island, f"echo-{echo_type}", interaction.user, ok, msg)
 
-        # Re-fetch status and persist new settings to backend database
-        self.status = await fetch_island_status(self.island)
-        dodo_val = self.status.get("echo_dodo_enabled") is True
-        arr_val = self.status.get("echo_arrivals_enabled") is True
-        upd_val = self.status.get("echo_island_updates_enabled") is True
-        await asyncio.to_thread(_save_echo_settings, self.island, dodo_val, arr_val, upd_val)
-
         self._build_buttons()
         embed = build_echo_settings_embed(self.island, self.status)
-        if not ok:
-            embed.set_footer(text=f"⚠️ Action failed: {msg or 'Unknown error'}", icon_url=PANEL_FOOTER_ICON)
-        else:
+        if ok:
             embed.set_footer(text=f"💾 Saved to backend & synced to SysBot • {self.island}", icon_url=PANEL_FOOTER_ICON)
+        else:
+            embed.set_footer(text=f"💾 Saved to backend (SysBot offline, will auto-sync once online) • {self.island}", icon_url=PANEL_FOOTER_ICON)
         await interaction.edit_original_response(embed=embed, view=self)
 
-        if ok and self.parent_message:
+        if self.parent_message:
             try:
                 await _update_panel_message(self.parent_message, self.island, interaction.client)
             except Exception as exc:

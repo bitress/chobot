@@ -1102,32 +1102,26 @@ class SysBotClient:
         """Toggle or set echo state via POST /api/echo or POST /api/toggleecho."""
         payload: Dict[str, Any] = {}
         target = (echo_type or "all").strip().lower()
+        payload["type"] = target
+        if enabled is not None:
+            payload["enabled"] = enabled
+
         if target == "all":
-            payload["type"] = "all"
             if enabled is not None:
-                payload["enabled"] = enabled
                 payload["echo_dodo_enabled"] = enabled
                 payload["echo_arrivals_enabled"] = enabled
                 payload["echo_island_updates_enabled"] = enabled
         elif target == "dodo":
             if enabled is not None:
                 payload["echo_dodo_enabled"] = enabled
-            else:
-                payload["type"] = "dodo"
         elif target in ("arrivals", "arrival", "departures", "departure"):
+            payload["type"] = "arrivals"
             if enabled is not None:
                 payload["echo_arrivals_enabled"] = enabled
-            else:
-                payload["type"] = "arrivals"
         elif target in ("island_updates", "islandupdates", "updates", "island"):
+            payload["type"] = "island_updates"
             if enabled is not None:
                 payload["echo_island_updates_enabled"] = enabled
-            else:
-                payload["type"] = "island_updates"
-        else:
-            payload["type"] = echo_type
-            if enabled is not None:
-                payload["enabled"] = enabled
 
         payload.update(kwargs)
         res, code = self._post("/api/echo", payload)
@@ -1139,6 +1133,21 @@ class SysBotClient:
     async def toggle_echo(self, echo_type: str = "all", enabled: Optional[bool] = None, **kwargs) -> dict:
         """Toggle or set echo state asynchronously."""
         return await asyncio.to_thread(self.toggle_echo_sync, echo_type, enabled, **kwargs)
+
+    def get_island_map_data_sync(self) -> dict:
+        """Fetch live interactive island map item dots directly from Switch RAM via GET /api/island/map/data."""
+        res, code = self._get("/api/island/map/data")
+        if code == 200 and isinstance(res, dict):
+            return res
+        for alt_path in ("/api/map/data", "/island/map/data", "/map/data"):
+            res, code = self._get(alt_path)
+            if code == 200 and isinstance(res, dict):
+                return res
+        return res if isinstance(res, dict) else {"success": False, "error": f"HTTP {code}"}
+
+    async def get_island_map_data(self) -> dict:
+        """Fetch live interactive island map item dots asynchronously."""
+        return await asyncio.to_thread(self.get_island_map_data_sync)
 
     async def control_action(self, action: str, **kwargs) -> dict:
         """Execute control action asynchronously."""
@@ -1152,11 +1161,13 @@ class SysBotClient:
 class SysBotClientPool:
     """Connection pool and resolver for all 48 island SysBot endpoints."""
 
+    _instance: Optional["SysBotClientPool"] = None
+
     def __init__(self):
         self._clients: Dict[str, SysBotClient] = {}
         self._lock = threading.Lock()
 
-    def get_client(self, island_name: str, timeout: int = 5) -> SysBotClient:
+    def _get_client_impl(self, island_name: str, timeout: int = 5) -> SysBotClient:
         clean = re.sub(r"^sub\s+island\s+", "", (island_name or "").strip(), flags=re.IGNORECASE).strip().title()
         url = Config.get_island_sysbot_url(clean)
         cache_key = f"{clean.lower()}:{url}"
@@ -1168,6 +1179,19 @@ class SysBotClientPool:
                     timeout=timeout,
                 )
             return self._clients[cache_key]
+
+    def get_client(self, island_name: str, timeout: int = 5) -> SysBotClient:
+        # Supports being called on instance or as class method SysBotClientPool.get_client(...)
+        if isinstance(self, type):
+            return _GLOBAL_CLIENT_POOL._get_client_impl(island_name, timeout=timeout)
+        return self._get_client_impl(island_name, timeout=timeout)
+
+    def get_island_map_data(self, island_name: str) -> dict:
+        """Fetch live RAM island map data directly for the specified island."""
+        if isinstance(self, type):
+            return _GLOBAL_CLIENT_POOL.get_island_map_data(island_name)
+        client = self.get_client(island_name)
+        return client.get_island_map_data_sync()
 
 
 _GLOBAL_CLIENT_POOL = SysBotClientPool()

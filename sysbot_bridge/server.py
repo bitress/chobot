@@ -116,6 +116,12 @@ ALLOWED_PROXY_PREFIXES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/toggleecho"),
     ("GET", "/api/map"),
     ("POST", "/api/map"),
+    ("GET", "/api/island/map/data"),
+    ("GET", "/api/island/map/image"),
+    ("GET", "/api/island/items"),
+    ("GET", "/api/island/map"),
+    ("GET", "/api/island"),
+    ("GET", "/api/players/live"),
     ("GET", "/api/logs"),
 )
 
@@ -257,6 +263,7 @@ async def handle_root(request: web.Request) -> web.Response:
             "cluster_status": "/cluster/status",
             "cluster_telemetry": "/cluster/telemetry",
             "island_proxy": "/islands/{island}/{path}",
+            "island_map_data": "/islands/{island}/api/island/map/data",
         },
     })
 
