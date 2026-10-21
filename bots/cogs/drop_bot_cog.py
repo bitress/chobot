@@ -1808,7 +1808,11 @@ async def _perform_injection(
 
     try:
         client = get_island_sysbot_client(island)
-        result = await client.inject_villagers(villager_code, plot=plot)
+        result = await client.inject_villagers(
+            villager_code,
+            plot=plot,
+            allow_unadoptable=is_sanrio_villager(villager),
+        )
     except Exception:
         _pop_cooldown(user.id, island, cooldown_key)
         logger.exception("[DropBot] Injection failed island=%s user=%s", island, user.id)
@@ -1817,10 +1821,22 @@ async def _perform_injection(
 
     if _is_failure(result):
         _pop_cooldown(user.id, island, cooldown_key)
-        err = (result or {}).get("error") if isinstance(result, dict) else None
+        err: str | None = None
+        if isinstance(result, dict):
+            err = result.get("error")
+            if not err and result.get("errors"):
+                errs = result.get("errors")
+                err = errs[0] if isinstance(errs, list) and errs else str(errs)
+            if not err:
+                err = result.get("message")
         err = err or "unknown error"
         logger.warning("[DropBot] Injection rejected island=%s user=%s: %s", island, user.id, err)
         await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, str(err))
+        if "not adoptable" in str(err).lower() and is_sanrio_villager(villager):
+            return _err_embed(
+                f"The island bot rejected **{display_name}**: `{_sanitize_error_message(err)}`.\n"
+                f"The island bot's SysBot binary must be updated/restarted with Sanrio support enabled."
+            ), False
         return _err_embed(f"The injection was rejected: **{_sanitize_error_message(err)}**\nMake sure the island bot is online."), False
 
     await asyncio.to_thread(

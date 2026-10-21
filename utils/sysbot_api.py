@@ -801,6 +801,7 @@ class SysBotClient:
         self,
         villagers: Union[str, Dict[str, Any], List[Union[str, Dict[str, Any]]]],
         plot: Optional[int] = None,
+        allow_unadoptable: bool = False,
     ) -> dict:
         """Inject one or more villagers into island house plots via SysBot POST /api/villagers."""
         if not villagers:
@@ -810,6 +811,16 @@ class SysBotClient:
             from utils.data_manager import resolve_villager_code
         except Exception:
             resolve_villager_code = None
+
+        sanrio_codes = {"cbr18", "der10", "elp11", "gor11", "rbt20", "shp14"}
+
+        def _is_sanrio_code(c: Any) -> bool:
+            if not isinstance(c, str):
+                return False
+            clean = c.strip().lower()
+            if clean.startswith("villager:"):
+                clean = clean.split(":", 1)[1]
+            return clean in sanrio_codes
 
         payload: Any
         if isinstance(villagers, str):
@@ -825,16 +836,22 @@ class SysBotClient:
                     target_v = parts[1]
                 resolved_v = resolve_villager_code(target_v) if (resolve_villager_code and target_v) else (target_v or v_str)
                 p = target_plot if target_plot is not None else plot
+                payload = {"villager": resolved_v}
                 if p is not None:
-                    payload = {"villager": resolved_v, "plot": int(p)}
-                else:
-                    payload = {"villager": resolved_v}
+                    payload["plot"] = int(p)
+                if allow_unadoptable or _is_sanrio_code(resolved_v):
+                    payload["allow_unadoptable"] = True
+                    payload["force"] = True
+                    payload["sanrio"] = True
             else:
                 resolved_v = resolve_villager_code(v_str) if resolve_villager_code else v_str
+                payload = {"villager": resolved_v}
                 if plot is not None:
-                    payload = {"villager": resolved_v, "plot": int(plot)}
-                else:
-                    payload = {"villager": resolved_v}
+                    payload["plot"] = int(plot)
+                if allow_unadoptable or _is_sanrio_code(resolved_v):
+                    payload["allow_unadoptable"] = True
+                    payload["force"] = True
+                    payload["sanrio"] = True
         elif isinstance(villagers, dict):
             payload = dict(villagers)
             if "villager" in payload and resolve_villager_code:
@@ -843,8 +860,14 @@ class SysBotClient:
                 payload["villager_name"] = resolve_villager_code(str(payload["villager_name"]))
             if plot is not None and "plot" not in payload:
                 payload["plot"] = int(plot)
+            v_check = payload.get("villager") or payload.get("villager_name")
+            if allow_unadoptable or _is_sanrio_code(v_check):
+                payload.setdefault("allow_unadoptable", True)
+                payload.setdefault("force", True)
+                payload.setdefault("sanrio", True)
         elif isinstance(villagers, list):
             payload = []
+            has_sanrio = False
             for item in villagers:
                 if isinstance(item, dict):
                     item_copy = dict(item)
@@ -852,11 +875,22 @@ class SysBotClient:
                         item_copy["villager"] = resolve_villager_code(str(item_copy["villager"]))
                     elif "villager_name" in item_copy and resolve_villager_code:
                         item_copy["villager_name"] = resolve_villager_code(str(item_copy["villager_name"]))
+                    if _is_sanrio_code(item_copy.get("villager") or item_copy.get("villager_name")):
+                        has_sanrio = True
                     payload.append(item_copy)
                 elif isinstance(item, str) and resolve_villager_code:
-                    payload.append({"villager": resolve_villager_code(item)})
+                    res_c = resolve_villager_code(item)
+                    if _is_sanrio_code(res_c):
+                        has_sanrio = True
+                    payload.append({"villager": res_c})
                 else:
+                    if _is_sanrio_code(item):
+                        has_sanrio = True
                     payload.append(item)
+            if (allow_unadoptable or has_sanrio) and isinstance(payload, dict):
+                payload.setdefault("allow_unadoptable", True)
+                payload.setdefault("force", True)
+                payload.setdefault("sanrio", True)
         else:
             payload = str(villagers)
 
@@ -869,9 +903,10 @@ class SysBotClient:
         self,
         villagers: Union[str, Dict[str, Any], List[Union[str, Dict[str, Any]]]],
         plot: Optional[int] = None,
+        allow_unadoptable: bool = False,
     ) -> dict:
         """Inject one or more villagers into island house plots via SysBot POST /api/villagers."""
-        return await asyncio.to_thread(self.inject_villagers_sync, villagers, plot)
+        return await asyncio.to_thread(self.inject_villagers_sync, villagers, plot, allow_unadoptable)
 
     def get_events_sync(
         self,
