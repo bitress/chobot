@@ -1599,6 +1599,32 @@ async def _perform_drop(
     if wait:
         return _err_embed(f"Slow down — you can drop again {_cooldown_eta_ts(wait)}."), False
 
+    # Presence check: verify user is physically on the island before dropping
+    from utils.island_presence import verify_user_on_island_async
+    is_present, matched_ign, current_visitors = await verify_user_on_island_async(
+        island, user=user, allow_admin_bypass=True
+    )
+    if not is_present:
+        _pop_cooldown(user.id, island, "drop")
+        embed = discord.Embed(
+            title="✈️ Airport Gate Verification Failed",
+            description=(
+                f"You must be on **[{island}]({_island_url(island)})** before dropping items!\n\n"
+                f"We checked the island via the SysBot API, but your character was **not detected** on {island}.\n\n"
+                f"• Please fly to **{island}** first and step outside the airport gates.\n"
+                f"• Make sure your server nickname or profile character matches your in-game name (IGN)."
+            ),
+            color=PANEL_EMBED_COLOR_ERR,
+        )
+        if current_visitors:
+            embed.add_field(
+                name="Current Visitors On Island",
+                value=f"```{', '.join(current_visitors)[:300]}```",
+                inline=False,
+            )
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        return embed, False
+
     if isinstance(items_or_entries, list):
         sysbot_payload = build_drop_payload(items_or_entries)
     else:

@@ -364,6 +364,20 @@ def drop_sub_island():
     client = get_island_sysbot_client(clean, timeout=3)
 
     if command.startswith("!drop"):
+        # Presence check: verify user is physically on the island before dropping
+        from utils.island_presence import verify_user_on_island
+        is_present, matched_ign, current_visitors = verify_user_on_island(
+            clean, user=auth_user, request_data=data, allow_admin_bypass=True
+        )
+        if not is_present:
+            return jsonify({
+                "success": False,
+                "error": f"You must be on {clean} before dropping items. We checked via the SysBot API and your character was not detected on the island. Please fly to {clean} first and step outside the airport gates.",
+                "code": "not_on_island",
+                "island_name": clean,
+                "visitors": current_visitors,
+            }), 403
+
         items_part = command[5:].strip()
         from utils.data_manager import resolve_drop_items
         hex_str, hex_list = resolve_drop_items(items_part)

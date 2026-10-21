@@ -3157,6 +3157,20 @@ def api_island_drop(name):
     drop_type = body.get("type") or "items"
     count = body.get("count")
 
+    # Presence check: verify user is physically on the island before dropping
+    from utils.island_presence import verify_user_on_island
+    is_present, matched_ign, current_visitors = verify_user_on_island(
+        clean_name, user=user, request_data=body, allow_admin_bypass=True
+    )
+    if not is_present:
+        return jsonify({
+            "success": False,
+            "error": f"You must be on {clean_name} before dropping items. We checked via the SysBot API and your character was not detected on the island. Please fly to {clean_name} first and step outside the airport gates.",
+            "code": "not_on_island",
+            "island": clean_name,
+            "visitors": current_visitors,
+        }), 403
+
     from utils.data_manager import resolve_drop_items
     hex_items, _ = resolve_drop_items(items)
     if hex_items:
@@ -4571,6 +4585,20 @@ def order_drop():
                 "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before dropping items.",
                 "code": "missing_sub_rules_acceptance",
                 "requires_sub_rules": True,
+            }), 403
+
+        # Presence check: verify user is physically on the island before dropping
+        from utils.island_presence import verify_user_on_island
+        is_present, matched_ign, current_visitors = verify_user_on_island(
+            clean_name, user=auth_user, request_data=body, allow_admin_bypass=True
+        )
+        if not is_present:
+            return jsonify({
+                "success": False,
+                "error": f"You must be on {clean_name} before dropping items. We checked via the SysBot API and your character was not detected on the island. Please fly to {clean_name} first and step outside the airport gates.",
+                "code": "not_on_island",
+                "island": clean_name,
+                "visitors": current_visitors,
             }), 403
 
         from utils.sysbot_api import get_island_sysbot_client
