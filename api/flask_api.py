@@ -6600,6 +6600,40 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
     """
     from utils.cache import map_cache
     resolved_island, target_url, client = _resolve_target_island_and_client(island_name)
+
+    # When no island is specified or ?island=all, return all 48 islands
+    if not resolved_island or str(resolved_island).strip().lower() in ("all", "*"):
+        base_port = int(getattr(Config, "SYSBOT_BASE_PORT", 8201) or 8201)
+        telemetry = {}
+        try:
+            from utils.sysbot_telemetry import get_all_islands_health
+            telemetry = get_all_islands_health()
+        except Exception:
+            pass
+
+        all_islands_data = []
+        for idx, name in enumerate(Config.ALL_ISLAND_PORT_ORDER):
+            port = base_port + idx
+            category = "sub" if idx < 20 else ("free" if idx < 47 else "order_bot")
+            health = telemetry.get(name.lower(), {})
+            all_islands_data.append({
+                "name": name,
+                "port": port,
+                "category": category,
+                "is_online": health.get("is_online", False),
+                "visitors_count": health.get("visitors_count", 0),
+                "sysbot_url": Config.get_island_sysbot_url(name),
+                "map_data_url": f"/api/islands/{name}/map/data",
+                "map_url": f"/api/islands/{name}/map",
+            })
+        return jsonify({
+            "ok": True,
+            "success": True,
+            "total_islands": len(all_islands_data),
+            "count": len(all_islands_data),
+            "islands": all_islands_data,
+        })
+
     force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
     fmt = request.args.get("format", "").lower()
     norm = resolved_island.strip().lower()
