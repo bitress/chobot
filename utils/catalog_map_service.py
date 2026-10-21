@@ -17,13 +17,12 @@ import io
 import json
 import logging
 import os
-import re
 import threading
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -34,9 +33,9 @@ except ImportError:
     ImageFont = None  # type: ignore
     HAS_PIL = False
 
+from utils.cache import render_cache
 from utils.config import Config
 from utils.database import connect_db
-from utils.cache import render_cache, catalog_cache
 
 logger = logging.getLogger("CatalogMapService")
 
@@ -47,13 +46,13 @@ os.makedirs(_MAP_STORAGE_DIR, exist_ok=True)
 # In-memory cached indices
 _LOCK = threading.RLock()
 _ITEMS_LOADED = False
-_ITEMS_LIST: List[Dict[str, Any]] = []
-_ITEMS_BY_NAME: Dict[str, Dict[str, Any]] = {}
-_ITEMS_BY_ID: Dict[str, Dict[str, Any]] = {}
-_RECIPES_LIST: List[Dict[str, Any]] = []
-_TREASURE_ISLANDS: List[Dict[str, Any]] = []
-_TREASURE_BY_ITEM: Dict[str, List[Dict[str, Any]]] = {}
-_TREASURE_BY_ISLAND: Dict[str, List[Dict[str, Any]]] = {}
+_ITEMS_LIST: list[dict[str, Any]] = []
+_ITEMS_BY_NAME: dict[str, dict[str, Any]] = {}
+_ITEMS_BY_ID: dict[str, dict[str, Any]] = {}
+_RECIPES_LIST: list[dict[str, Any]] = []
+_TREASURE_ISLANDS: list[dict[str, Any]] = []
+_TREASURE_BY_ITEM: dict[str, list[dict[str, Any]]] = {}
+_TREASURE_BY_ISLAND: dict[str, list[dict[str, Any]]] = {}
 
 
 def _ensure_catalog_loaded() -> None:
@@ -76,7 +75,7 @@ def _ensure_catalog_loaded() -> None:
 
         if os.path.exists(items_detail_file):
             try:
-                with open(items_detail_file, "r", encoding="utf-8") as f:
+                with open(items_detail_file, encoding="utf-8") as f:
                     data = json.load(f)
                     _ITEMS_LIST = data.get("items", [])
                     _TREASURE_ISLANDS = data.get("treasureIslands", [])
@@ -103,7 +102,7 @@ def _ensure_catalog_loaded() -> None:
         acnh_min_file = os.path.join(_BASE_DIR, "data", "acnh.min.json")
         if os.path.exists(acnh_min_file):
             try:
-                with open(acnh_min_file, "r", encoding="utf-8") as f:
+                with open(acnh_min_file, encoding="utf-8") as f:
                     acnh_data = json.load(f)
                     _RECIPES_LIST = acnh_data.get("recipes", [])
             except Exception as exc:
@@ -122,10 +121,10 @@ def _ensure_catalog_loaded() -> None:
 
 def search_catalog_items(
     query: str,
-    category: Optional[str] = None,
+    category: str | None = None,
     limit: int = 50,
     offset: int = 0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Search items by name, category, or internal ID using nhl_map_parser."""
     from utils import nhl_map_parser
     return nhl_map_parser.search_catalog_items(query=query, category=category, limit=limit, offset=offset)
@@ -133,11 +132,11 @@ def search_catalog_items(
 
 def search_catalog_recipes(
     query: str,
-    category: Optional[str] = None,
-    material: Optional[str] = None,
+    category: str | None = None,
+    material: str | None = None,
     limit: int = 50,
     offset: int = 0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Search crafting DIY recipes by recipe name, crafted item, or material requirement using nhl_map_parser."""
     from utils import nhl_map_parser
     return nhl_map_parser.search_catalog_recipes(
@@ -145,7 +144,7 @@ def search_catalog_recipes(
     )
 
 
-def get_item_customizations(item_query: str) -> Dict[str, Any]:
+def get_item_customizations(item_query: str) -> dict[str, Any]:
     """Retrieve full customization kits, Cyrus price, and variations using nhl_map_parser."""
     from utils import nhl_map_parser
     return nhl_map_parser.get_item_customizations(item_query)
@@ -153,12 +152,12 @@ def get_item_customizations(item_query: str) -> Dict[str, Any]:
 
 def search_island_items_unified(
     query: str = "",
-    island_name: Optional[str] = None,
-    acre: Optional[str] = None,
-    category: Optional[str] = None,
+    island_name: str | None = None,
+    acre: str | None = None,
+    category: str | None = None,
     limit: int = 100,
     offset: int = 0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Unified search across live .nhl island maps and treasure islands databases."""
     from utils import nhl_map_parser
     return nhl_map_parser.search_island_items(
@@ -182,7 +181,7 @@ def render_island_map_image(
     overlay_items: bool = False,
     overlay_players: bool = True,
     format_type: str = "png",
-) -> Tuple[bytes, str]:
+) -> tuple[bytes, str]:
     """
     Renders or scales an island map image:
     1. Looks for cached CDN map at storage/maps/<island>.png or fetches from https://cdn.chopaeng.com/maps/<island>.png.
@@ -206,7 +205,7 @@ def render_island_map_image(
 
     local_cache_path = os.path.join(_MAP_STORAGE_DIR, f"{norm_name}.png")
 
-    img: Optional[Any] = None
+    img: Any | None = None
 
     # Step 1: Check local storage cache
     if os.path.exists(local_cache_path):
@@ -376,7 +375,6 @@ def _overlay_live_players(img: Any, island_name: str) -> Any:
 
         draw = ImageDraw.Draw(img)
         # Position radar pings around central plazas
-        col_width = img.width / 7.0
         row_height = img.height / 6.0
 
         center_x = img.width // 2
@@ -466,22 +464,22 @@ def _overlay_ground_items(img: Any, island_name: str) -> Any:
 # ============================================================================
 
 def build_telemetry_payload(
-    island_filter: Optional[str] = None,
-    viewer: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    island_filter: str | None = None,
+    viewer: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Assemble high-speed telemetry across all 48 ports.
     Respects user authorization via Unified Auth for sub-island Dodo reveals.
     """
-    from utils.sysbot_telemetry import (
-        get_all_cached_telemetry,
-        get_live_visitor_overview,
-        get_all_islands_health,
-        get_island_load_overview,
-        _is_sub_island,
-    )
     from utils import island_access
     from utils.nhl_map_parser import get_island_map_telemetry
+    from utils.sysbot_telemetry import (
+        _is_sub_island,
+        get_all_cached_telemetry,
+        get_all_islands_health,
+        get_island_load_overview,
+        get_live_visitor_overview,
+    )
 
     all_ports = getattr(Config, "ALL_ISLAND_PORT_ORDER", [])
     raw_telemetry = get_all_cached_telemetry(mask_sub_dodo=False)
@@ -490,7 +488,7 @@ def build_telemetry_payload(
     viewer_is_admin = bool(viewer and viewer.get("is_admin"))
     viewer_is_mod = bool(viewer and (viewer.get("is_mod") or viewer_is_admin or island_access.is_mod(viewer_roles)))
 
-    islands_result: Dict[str, Dict[str, Any]] = {}
+    islands_result: dict[str, dict[str, Any]] = {}
     online_count = 0
     total_visitors = 0
 
@@ -516,9 +514,7 @@ def build_telemetry_payload(
 
         # Check Dodo visibility based on unified auth
         can_see_dodo = False
-        if not is_sub:
-            can_see_dodo = True
-        elif viewer_is_mod or viewer_is_admin:
+        if not is_sub or viewer_is_mod or viewer_is_admin:
             can_see_dodo = True
         elif viewer:
             can_see_dodo = island_access.has_island_access(
@@ -579,9 +575,9 @@ def build_telemetry_payload(
 # ============================================================================
 
 def build_live_players_payload(
-    island_filter: Optional[str] = None,
-    viewer: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    island_filter: str | None = None,
+    viewer: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Retrieve real-time player presence across all islands.
     Cross-references SysBot active visitor lists with SQLite flight logs.
@@ -592,7 +588,7 @@ def build_live_players_payload(
     target_filter = (island_filter or "").strip().lower()
 
     # Pre-fetch recent arrival logs from DB for enrichment
-    recent_arrivals: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    recent_arrivals: dict[tuple[str, str], dict[str, Any]] = {}
     try:
         with connect_db() as conn:
             rows = conn.execute("""
@@ -613,8 +609,8 @@ def build_live_players_payload(
     except Exception as exc:
         logger.debug(f"[CatalogMapService] Arrivals enrichment note: {exc}")
 
-    players_list: List[Dict[str, Any]] = []
-    by_island: Dict[str, Dict[str, Any]] = {}
+    players_list: list[dict[str, Any]] = []
+    by_island: dict[str, dict[str, Any]] = {}
 
     total_online_islands = 0
 

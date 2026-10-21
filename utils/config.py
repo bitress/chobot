@@ -228,9 +228,35 @@ class Config:
     ]
 
     @classmethod
+    def get_island_name_from_port(cls, port: int | str) -> Optional[str]:
+        """Map a network port back to its configured island name."""
+        try:
+            p = int(port)
+        except (ValueError, TypeError):
+            return None
+        base_port = int(getattr(cls, "SYSBOT_BASE_PORT", 8201) or 8201)
+        idx = p - base_port
+        if 0 <= idx < len(cls.ALL_ISLAND_PORT_ORDER):
+            return cls.ALL_ISLAND_PORT_ORDER[idx]
+        return None
+
+    @classmethod
     def get_island_sysbot_url(cls, island_name: str) -> str:
         """Resolve the SysBot API endpoint for a given island."""
-        cleaned = re.sub(r"^sub\s+island\s+", "", (island_name or "").strip(), flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"^sub\s+island\s+", "", (str(island_name or "")).strip(), flags=re.IGNORECASE).strip()
+        if not cleaned:
+            return (getattr(cls, "SYSBOT_API_URL", "http://localhost:8248") or "http://localhost:8248").rstrip("/")
+
+        # Check if direct URL was supplied
+        if cleaned.lower().startswith(("http://", "https://")):
+            return cleaned.rstrip("/")
+
+        # Check if numeric port was supplied (e.g. 8220)
+        if cleaned.isdigit():
+            port_num = int(cleaned)
+            if 1024 <= port_num <= 65535:
+                return f"http://localhost:{port_num}"
+
         env_key = f"SYSBOT_API_{cleaned.upper()}"
         env_val = os.getenv(env_key)
         if env_val:

@@ -6345,6 +6345,99 @@ def api_presence_poll_waves():
 # ISLAND MAP & SECTOR RADAR ROUTES (Powered by HttpApiServer.cs)
 # -------------------------------------------------------------
 
+def _convert_website_items_to_compact_dots(nhl_data: dict, island_name: str) -> dict:
+    """
+    Converts full .nhl parsed item layout into compact {success: True, dots, names} format.
+    Used when live RAM is temporarily unreachable to ensure API contract compatibility.
+    """
+    items = nhl_data.get("items") or []
+    names: list[str] = []
+    name_to_idx: dict[str, int] = {}
+    dots: list[list[Any]] = []
+
+    for it in items:
+        x = it.get("x")
+        y = it.get("y")
+        if x is None or y is None:
+            continue
+        name = str(it.get("name") or "Unknown")
+        if name not in name_to_idx:
+            name_to_idx[name] = len(names)
+            names.append(name)
+        n_idx = name_to_idx[name]
+        count = int(it.get("count") or 1)
+        is_diy = 1 if it.get("diy") else 0
+        hex_id = str(it.get("itemIdHex") or "0000")
+        category = str(it.get("category") or "other")
+        dots.append([int(x), int(y), n_idx, count, is_diy, hex_id, category])
+
+    return {
+        "success": True,
+        "island_name": island_name,
+        "gw": 224,
+        "gh": 192,
+        "total_items": len(dots),
+        "names": names,
+        "dots": dots,
+        "paths": [],
+        "players": [],
+        "source": "nhl_fallback",
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+
+def _resolve_target_island_and_client(island_param: Optional[str] = None):
+    """
+    Intelligently resolves the target island name, target SysBot URL, and client instance.
+    Checks:
+    1. island_param or query args (?island=..., ?name=..., ?port=...)
+    2. Host header port (e.g. localhost:8220 -> Adhika on port 8220)
+    3. Numeric port input (e.g. island=8220 -> Adhika)
+    4. Active / configured SysBot instances or Config defaults
+    """
+    from utils.sysbot_api import SysBotClient, SysBotClientPool
+
+    raw_target = (
+        (island_param or "")
+        or request.args.get("island")
+        or request.args.get("name")
+        or request.args.get("port")
+        or ""
+    ).strip()
+
+    # Check host header port (e.g. localhost:8220 or 127.0.0.1:8220)
+    host_port = None
+    if request.host and ":" in request.host:
+        try:
+            host_port = int(request.host.split(":")[-1])
+        except (ValueError, TypeError):
+            host_port = None
+
+    resolved_island = None
+    target_url = None
+
+    if raw_target:
+        if raw_target.isdigit():
+            port_num = int(raw_target)
+            resolved_island = Config.get_island_name_from_port(port_num) or f"Port_{port_num}"
+            target_url = f"http://localhost:{port_num}"
+        elif raw_target.lower().startswith(("http://", "https://")):
+            target_url = raw_target.rstrip("/")
+            resolved_island = "Direct"
+        else:
+            resolved_island = raw_target
+            target_url = Config.get_island_sysbot_url(raw_target)
+    elif host_port and (8201 <= host_port <= 8248 or host_port == 8220):
+        resolved_island = Config.get_island_name_from_port(host_port) or "Adhika"
+        target_url = f"http://localhost:{host_port}"
+    else:
+        resolved_island = getattr(Config, "DEFAULT_ISLAND", None) or "Adhika"
+        target_url = Config.get_island_sysbot_url(resolved_island)
+
+    client = SysBotClientPool.get_client(resolved_island or target_url or "Adhika")
+    return resolved_island or "Adhika", target_url or "http://localhost:8220", client
+
+
 def _convert_sysbot_map_data_to_website(raw_data: dict, island_name: str) -> dict:
     """
     Transforms SysBot HttpApiServer.cs compact map data (dots & names array)
@@ -6373,6 +6466,15 @@ def _convert_sysbot_map_data_to_website(raw_data: dict, island_name: str) -> dic
         cat_str = str(category or "other").lower()
         category_counts[cat_str] = category_counts.get(cat_str, 0) + 1
 
+        img_url = ""
+        try:
+            from utils.nhl_map_parser import _get_catalog_item
+            cat_entry = _get_catalog_item(str(item_id_hex))
+            if cat_entry and cat_entry.get("imageUrl"):
+                img_url = cat_entry["imageUrl"]
+        except Exception:
+            pass
+
         item_obj = {
             "name": name,
             "category": cat_str,
@@ -6382,7 +6484,8 @@ def _convert_sysbot_map_data_to_website(raw_data: dict, island_name: str) -> dic
             "y": int(y),
             "sector": sector,
             "count": int(count) if int(count) > 1 else 1,
-            "record_index": int(y) * gw + int(x),
+            "record_index": int(x) * gh + int(y),
+            "imageUrl": img_url,
             "source": "HttpApiServer.cs",
         }
         items.append(item_obj)
@@ -6439,7 +6542,8 @@ def api_get_island_map(island_name: str):
     """
     from utils.cache import map_cache
     force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
-    norm = island_name.strip().lower()
+    resolved_island, target_url, client = _resolve_target_island_and_client(island_name)
+    norm = resolved_island.strip().lower()
     cache_key = f"island_map_unified:{norm}"
 
     if not force:
@@ -6449,28 +6553,26 @@ def api_get_island_map(island_name: str):
 
     # 1. Primary: query SysBot HttpApiServer.cs live RAM map data
     try:
-        from utils.sysbot_api import SysBotClientPool
-        client = SysBotClientPool.get_client(island_name)
         if client and client.base_url:
             data = client.get_island_map_data_sync()
             if isinstance(data, dict) and data.get("dots") is not None and data.get("names") is not None:
-                converted = _convert_sysbot_map_data_to_website(data, island_name)
+                converted = _convert_sysbot_map_data_to_website(data, resolved_island)
                 map_cache.set(cache_key, converted, ttl=30.0)
                 return jsonify(converted)
     except Exception as exc:
-        logging.getLogger("flask_api").debug(f"SysBot HttpApiServer live map data query note for {island_name}: {exc}")
+        logging.getLogger("flask_api").debug(f"SysBot HttpApiServer live map data query note for {resolved_island}: {exc}")
 
     # 2. Fallback: parse local .nhl file if SysBot is offline/unreachable
     try:
         from utils.nhl_map_parser import get_island_map_data
-        data = get_island_map_data(island_name, force_refresh=force)
+        data = get_island_map_data(resolved_island, force_refresh=force)
         res = {"ok": True, **data}
         map_cache.set(cache_key, res, ttl=30.0)
         return jsonify(res)
     except Exception as exc:
         return jsonify({
             "ok": False,
-            "island": island_name,
+            "island": resolved_island,
             "status": "error",
             "error": f"Failed to retrieve map data from HttpApiServer and .nhl: {exc}",
             "items": [],
@@ -6489,35 +6591,45 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
     Direct proxy/caching for HttpApiServer.cs GET /api/island/map/data.
     """
     from utils.cache import map_cache
-    if not island_name:
-        island_name = request.args.get("island") or request.args.get("name") or "Silakbo"
+    resolved_island, target_url, client = _resolve_target_island_and_client(island_name)
+    force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+    fmt = request.args.get("format", "").lower()
+    norm = resolved_island.strip().lower()
+    cache_key = f"live_map_data:{norm}:{fmt}"
 
-    norm = island_name.strip().lower()
-    cache_key = f"live_map_data:{norm}"
-    cached_val = map_cache.get(cache_key)
-    if cached_val is not None:
-        return jsonify(cached_val)
+    if not force:
+        cached_val = map_cache.get(cache_key)
+        if cached_val is not None:
+            return jsonify(cached_val)
 
+    # 1. Primary: Query SysBot HttpApiServer.cs live RAM
     try:
-        from utils.sysbot_api import SysBotClientPool
-        client = SysBotClientPool.get_client(island_name)
         if client and client.base_url:
             data = client.get_island_map_data_sync()
             if isinstance(data, dict) and data.get("dots") is not None and data.get("names") is not None:
+                if fmt in ("website", "unified", "modal"):
+                    converted = _convert_sysbot_map_data_to_website(data, resolved_island)
+                    map_cache.set(cache_key, converted, ttl=30.0)
+                    return jsonify(converted)
                 map_cache.set(cache_key, data, ttl=30.0)
                 return jsonify(data)
     except Exception as exc:
-        logging.getLogger("flask_api").debug(f"SysBot live map data fetch note: {exc}")
+        logging.getLogger("flask_api").debug(f"SysBot live map data fetch note for {resolved_island}: {exc}")
 
-    # Fallback to .nhl parser converted to dots if SysBot is offline
+    # 2. Fallback: Parse .nhl file if SysBot is offline/unreachable
     try:
         from utils.nhl_map_parser import get_island_map_data
-        data = get_island_map_data(island_name)
-        res = {"ok": True, **data}
-        map_cache.set(cache_key, res, ttl=30.0)
-        return jsonify(res)
+        data = get_island_map_data(resolved_island, force_refresh=force)
+        if fmt in ("website", "unified", "modal"):
+            res = {"ok": True, "source": "nhl_fallback", **data}
+            map_cache.set(cache_key, res, ttl=30.0)
+            return jsonify(res)
+
+        compact = _convert_website_items_to_compact_dots(data, resolved_island)
+        map_cache.set(cache_key, compact, ttl=30.0)
+        return jsonify(compact)
     except Exception as exc:
-        return jsonify({"success": False, "error": str(exc), "island_name": island_name}), 500
+        return jsonify({"success": False, "error": str(exc), "island_name": resolved_island}), 500
 
 
 @app.route("/api/islands/<island_name>/map/search", methods=["GET"])

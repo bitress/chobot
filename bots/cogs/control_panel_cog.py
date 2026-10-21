@@ -39,9 +39,9 @@ from utils.sysbot_api import _INVALID_DODO_CODES, get_island_sysbot_client
 
 try:
     from utils.sysbot_telemetry import (
-        parse_sysbot_visitors,
         get_cached_island_telemetry,
         get_recent_island_events,
+        parse_sysbot_visitors,
     )
 except ImportError:
     parse_sysbot_visitors = None  # type: ignore
@@ -819,15 +819,15 @@ def _build_island_logs_embed(island: str, limit: int = 20, status: dict | None =
         chunk = []
         chunk_len = 0
         part = 1
-        for l in lines:
-            if chunk_len + len(l) > 1000:
+        for line_item in lines:
+            if chunk_len + len(line_item) > 1000:
                 embed.add_field(name=f"📦 Drop Request History (Part {part})", value="\n".join(chunk), inline=False)
-                chunk = [l]
-                chunk_len = len(l)
+                chunk = [line_item]
+                chunk_len = len(line_item)
                 part += 1
             else:
-                chunk.append(l)
-                chunk_len += len(l)
+                chunk.append(line_item)
+                chunk_len += len(line_item)
         if chunk:
             embed.add_field(name=f"📦 Drop Request History (Part {part})", value="\n".join(chunk), inline=False)
 
@@ -971,10 +971,7 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
             if (cnt or 0) > len(names):
                 unresolved = (cnt or 0) - len(names)
                 extra = f"*+{unresolved} anonymous/loading*"
-                if rendered:
-                    visitors_display = f"{rendered}\n• {extra}"[:1024]
-                else:
-                    visitors_display = extra
+                visitors_display = f"{rendered}\n• {extra}"[:1024] if rendered else extra
             else:
                 visitors_display = rendered or "*No visitors on island*"
 

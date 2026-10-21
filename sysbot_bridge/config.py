@@ -99,6 +99,10 @@ def normalize_island_name(island_name: str) -> str:
 def get_island_port(island_name: str) -> int | None:
     """Retrieve the local port for a given island."""
     norm = normalize_island_name(island_name)
+    if norm.isdigit():
+        p = int(norm)
+        if 1024 <= p <= 65535:
+            return p
     return _ISLAND_PORT_MAP.get(norm)
 
 

@@ -367,7 +367,13 @@ async def proxy_island_request(request: web.Request) -> web.StreamResponse:
     island_param = request.match_info.get("island", "")
     subpath = request.match_info.get("subpath", "")
 
-    port = get_island_port(island_param)
+    if island_param.lower() == "api":
+        target = request.query.get("island") or request.query.get("name") or request.query.get("port") or "Adhika"
+        port = get_island_port(target)
+        island_param = target
+        subpath = "api/" + subpath
+    else:
+        port = get_island_port(island_param)
     if not port:
         return web.json_response(
             {"success": False, "error": f"Unknown island '{island_param}'. Check /islands for valid names."},
