@@ -1277,6 +1277,28 @@ async def _map_url_async(island: str, ttl: float = 3600) -> str:
     return fallback
 
 
+_PRESENCE_LINE_CACHE: dict[tuple[int, str], tuple[float, str]] = {}
+
+
+async def _presence_line(user: discord.abc.User | None, island: str) -> str:
+    """Check presence up front, cached for 15s to avoid spamming the status endpoint."""
+    if not user:
+        return ""
+    now = time.monotonic()
+    key = (user.id, island.lower())
+    cached = _PRESENCE_LINE_CACHE.get(key)
+    if cached and now < cached[0]:
+        return cached[1]
+    from utils.island_presence import verify_user_on_island_async
+    try:
+        ok, _, _ = await verify_user_on_island_async(island, user=user, allow_admin_bypass=True)
+        line = "✅ You're on the island." if ok else "✈️ Not detected yet. Fly in and step outside the airport first."
+    except Exception:
+        line = ""
+    _PRESENCE_LINE_CACHE[key] = (now + 15.0, line)
+    return line
+
+
 async def _build_panel_embed(island_name: str, status_data: dict | None = None) -> discord.Embed:
     url = _island_url(island_name)
 
@@ -1296,64 +1318,69 @@ async def _build_panel_embed(island_name: str, status_data: dict | None = None) 
             color = PANEL_EMBED_COLOR_WARN
         else:
             color = PANEL_EMBED_COLOR
-
-        status_part = f"{'🟢 Online' if is_running else '🔴 Offline'}"
-        dodo_part   = "✅ Dodo ready" if is_valid_dodo else "🔄 Refreshing…"
-        clock_part  = f"🕒 {game_time}" if game_time else ""
-        shop_part   = "🛒 Nook's Open" if is_nooks_open else ""
-        mode_part   = f"`{mode}`" if mode else ""
-        summary_parts = [p for p in [status_part, dodo_part, clock_part, shop_part, mode_part] if p]
-        summary = " · ".join(summary_parts)
     else:
         is_running    = False
         is_valid_dodo = False
         villagers     = []
         visitors      = []
+        game_time     = None
+        is_nooks_open = False
+        mode          = None
         color         = PANEL_EMBED_COLOR
-        summary       = "🔄 Loading live data…"
 
     theme_name = ISLAND_THEMES.get(island_name.lower(), island_name)
-    desc_lines = [
-        f"🏝  **{theme_name} Island**",
-        f"Map: **[Click Here]({url})**",
-        "",
-        f"*{summary}*",
-        "",
-        "New here? Press **📖 Guide** below for button instructions.",
-    ]
-
     embed = discord.Embed(
-        title=f"{island_name} Map",
+        title=f"{'🟢' if is_running else '🔴'} {island_name} Map",
         url=url,
-        description="\n".join(desc_lines),
+        description=f"🏝 **{theme_name} Island** · [Island page]({url})",
         color=color,
         timestamp=datetime.now(timezone.utc),
     )
 
-    # Villagers and visitors fields (compact layout)
+    embed.add_field(name="Status", value="🟢 Online" if is_running else "🔴 Offline", inline=True)
+    embed.add_field(
+        name="Dodo",
+        value="✅ Ready" if is_valid_dodo else ("⏳ Refreshing" if is_running else "❌ Bot Offline"),
+        inline=True,
+    )
+    embed.add_field(name="Island time", value=game_time or "—", inline=True)
+
     v_count = len(visitors)
     visitor_cap = status_data.get("visitor_cap") if status_data else None
     visitor_title = (
         f"🧳 Visitors ({v_count}/{visitor_cap})" if visitor_cap
         else f"🧳 Visitors ({v_count})"
     )
-    embed.add_field(name=f"🏡 Villagers ({len(villagers)})", value=_bullets(villagers), inline=True)
-    embed.add_field(name=visitor_title, value=_bullets(visitors), inline=True)
+    embed.add_field(name=f"🏡 Villagers ({len(villagers)}/10)", value=_bullets(villagers, 10), inline=True)
+    embed.add_field(name=visitor_title, value=_bullets(visitors, 8), inline=True)
+    embed.add_field(name="\u200b", value=f"-# Updated <t:{int(time.time())}:R> · 📖 Guide for help", inline=False)
 
-    # Map image as thumbnail (upper right - "second to below")
+    # Map image as thumbnail (upper right)
     embed.set_thumbnail(url=await _map_url_async(island_name))
 
-    # Dodo GIF at bottom of embed
-    embed.set_image(url=DODO_GIF)
-
-    embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+    footer_parts = [PANEL_FOOTER_TEXT]
+    if is_nooks_open:
+        footer_parts.append("🛒 Nook's Open")
+    if mode:
+        footer_parts.append(f"Mode: {mode}")
+    embed.set_footer(text=" • ".join(footer_parts), icon_url=PANEL_FOOTER_ICON)
     return embed
 
 
 def _embed_signature(embed: discord.Embed) -> str:
-    """Stable fingerprint of an embed ignoring its timestamp, to skip no-op edits."""
+    """Stable fingerprint of an embed ignoring its timestamp and freshness subtext, to skip no-op edits."""
     d = embed.to_dict()
     d.pop("timestamp", None)
+    fields = d.get("fields", [])
+    filtered_fields = []
+    for f in fields:
+        val = f.get("value", "")
+        if "Updated <t:" in val:
+            val = re.sub(r"Updated <t:\d+:R>", "Updated", val)
+            filtered_fields.append({**f, "value": val})
+        else:
+            filtered_fields.append(f)
+    d["fields"] = filtered_fields
     return json.dumps(d, sort_keys=True)
 
 
@@ -1366,6 +1393,16 @@ def _build_guide_embed(island: str) -> discord.Embed:
             "Click any of the buttons below the island panel to interact with DropBot:"
         ),
         color=PANEL_EMBED_COLOR,
+    )
+    embed.add_field(
+        name="🛫 How to get in",
+        value=(
+            f"1. Click **🦤 Get Dodo** to view the live Dodo code.\n"
+            f"2. Fly via Dodo Airlines at your airport.\n"
+            f"3. Step outside the airport gate on [{island}]({_island_url(island)}) to activate presence.\n"
+            f"4. Use **📦 Drop Items** or **🔍 Search Catalog** to queue drops!"
+        ),
+        inline=False,
     )
     embed.add_field(
         name="🦤 Get Dodo",
@@ -1397,6 +1434,7 @@ def _build_guide_embed(island: str) -> discord.Embed:
         name="🐱 Inject Villager",
         value=(
             f"Enter a villager's name and, optionally, a plot ({PLOT_MIN}–{PLOT_MAX}). "
+            "Adds a villager to your island's next open plot. "
             "Misspelled it? I'll suggest close matches before anything happens."
         ),
         inline=False,
@@ -1423,22 +1461,31 @@ def _build_guide_embed(island: str) -> discord.Embed:
     return embed
 
 
-def _err_embed(text: str) -> discord.Embed:
-    embed = discord.Embed(description=f"❌ {text}", color=PANEL_EMBED_COLOR_ERR)
+def _err_embed(text: str, *, title: str = "Something's off", hint: str | None = None) -> discord.Embed:
+    embed = discord.Embed(title=f"❌ {title}", description=text, color=PANEL_EMBED_COLOR_ERR)
+    if hint:
+        embed.add_field(name="What to do", value=hint, inline=False)
     embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
     return embed
 
 
-def build_drop_picker_embed(island: str) -> discord.Embed:
+async def build_drop_picker_embed(island: str, user: discord.abc.User | None = None) -> discord.Embed:
+    p_line = await _presence_line(user, island) if user else ""
+    desc = (
+        f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
+        f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
+    )
+    if p_line:
+        desc += f"📍 **Presence:** {p_line}\n\n"
+    desc += (
+        f"• Pick an item preset from the dropdown for instant dropping\n"
+        f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
+        f"• Use **📝 Custom / Hex** to enter your own items or hex list\n"
+        f"• *Inject Villager adds a villager to your island's next open plot.*"
+    )
     embed = discord.Embed(
         title=f"📦 Drop Items — {island}",
-        description=(
-            f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
-            f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
-            f"• Pick an item preset from the dropdown for instant dropping\n"
-            f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
-            f"• Use **📝 Custom / Hex** to enter your own items or hex list"
-        ),
+        description=desc,
         color=PANEL_EMBED_COLOR,
     )
     embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
@@ -1597,7 +1644,11 @@ async def _perform_drop(
 
     wait = _cooldown_left(user.id, island, "drop")
     if wait:
-        return _err_embed(f"Slow down — you can drop again {_cooldown_eta_ts(wait)}."), False
+        return _err_embed(
+            f"You can drop again {_cooldown_eta_ts(wait)}.",
+            title="Cooldown Active",
+            hint=f"Drops have a short cooldown. Try again {_cooldown_eta_ts(wait)}.",
+        ), False
 
     # Presence check: verify user is physically on the island before dropping
     from utils.island_presence import verify_user_on_island_async
@@ -1610,7 +1661,7 @@ async def _perform_drop(
             title="✈️ Airport Gate Verification Failed",
             description=(
                 f"You must be on **[{island}]({_island_url(island)})** before dropping items!\n\n"
-                f"We checked the island via the SysBot API, but your character was **not detected** on {island}.\n\n"
+                f"I have checked the island, but your character was **not detected** on {island}.\n\n"
                 f"• Please fly to **{island}** first and step outside the airport gates.\n"
                 f"• Make sure your server nickname or profile character matches your in-game name (IGN)."
             ),
@@ -1728,7 +1779,11 @@ async def _perform_injection(
 
     wait = _cooldown_left(user.id, island, cooldown_key)
     if wait:
-        return _err_embed(f"Slow down — you can inject again {_cooldown_eta_ts(wait)}."), False
+        return _err_embed(
+            f"You can inject again {_cooldown_eta_ts(wait)}.",
+            title="Cooldown Active",
+            hint=f"Injections have a short cooldown. Try again {_cooldown_eta_ts(wait)}.",
+        ), False
 
     display_name = villager
     villager_code = villager
@@ -2056,10 +2111,16 @@ class _OwnedView(discord.ui.View):
         target = self._interaction or self._orig_interaction
         if target:
             with contextlib.suppress(Exception):
-                await target.edit_original_response(view=self)
+                await target.edit_original_response(
+                    content="⌛ This menu expired. Press the button on the panel to open it again.",
+                    view=self,
+                )
         elif hasattr(self, "message") and self.message:
             with contextlib.suppress(Exception):
-                await self.message.edit(view=self)
+                await self.message.edit(
+                    content="⌛ This menu expired. Press the button on the panel to open it again.",
+                    view=self,
+                )
 
 
 class SanrioInjectionWizardView(_OwnedView):
@@ -2227,16 +2288,12 @@ class SanrioInjectionWizardView(_OwnedView):
         self.add_item(close_btn)
 
     def build_embed(self) -> discord.Embed:
-        target_emoji = "🎀"
-        for name, _, emoji in SANRIO_VILLAGERS:
-            if name.lower() == self.target_villager.lower():
-                target_emoji = emoji
-                break
-
-        s1 = "✅" if self.step1_done else "⬜"
-        s2 = "✅" if self.step2_done else ("👉" if self.step1_done else "⬜")
-        s3 = "✅" if self.step2_done else "⬜"
-        s4 = "👉" if self.step2_done else "⬜"
+        if not self.step1_done and not self.step2_done:
+            s1, s2, s3, s4 = "👉", "⬜", "⬜", "⬜"
+        elif self.step1_done and not self.step2_done:
+            s1, s2, s3, s4 = "✅", "👉", "⬜", "⬜"
+        else:
+            s1, s2, s3, s4 = "✅", "✅", "✅", "👉"
 
         tracker = (
             f"{s1} **1.** Inject {self.placeholder_villager} → Plot 1\n"
@@ -2247,19 +2304,11 @@ class SanrioInjectionWizardView(_OwnedView):
 
         embed = discord.Embed(
             title=f"🎀 Sanrio & Amiibo Injection Wizard — {self.island_name}",
-            description=tracker,
+            description=(
+                f"{tracker}\n\n"
+                f"⚠️ **Important:** Don't leave Plot 1 empty or move the placeholder out before Step 2."
+            ),
             color=SANRIO_EMBED_COLOR,
-        )
-
-        embed.add_field(
-            name="🎯 Target Amiibo",
-            value=f"{target_emoji} **{self.target_villager}**",
-            inline=True,
-        )
-        embed.add_field(
-            name="📦 Plot 1 Placeholder",
-            value=f"🐱 **{self.placeholder_villager}**",
-            inline=True,
         )
 
         if not self.step1_done and not self.step2_done:
@@ -2364,6 +2413,18 @@ class SanrioInjectionWizardView(_OwnedView):
 
     async def _on_step2(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+        from utils.island_presence import verify_user_on_island_async
+        is_present, _, _ = await verify_user_on_island_async(
+            self.island_name, user=interaction.user, allow_admin_bypass=True
+        )
+        if not is_present:
+            self.last_status = (
+                f"✈️ **Not detected on {self.island_name} yet!**\n"
+                f"Please fly into **{self.island_name}** and step outside the airport gates before running Step 2."
+            )
+            await interaction.edit_original_response(embed=self.build_embed(), view=self)
+            return
+
         embed_res, ok = await _perform_injection(
             interaction.user,
             self.island_name,
@@ -2566,14 +2627,30 @@ async def _show_catalog(
         await _reply(interaction, embed=_err_embed("The catalog search failed. Please try again."))
         return
 
+    is_staff = False
+    if isinstance(interaction.user, discord.Member):
+        perms = interaction.user.guild_permissions
+        is_staff = bool(perms.administrator or perms.manage_guild or perms.manage_messages)
+    elif interaction.permissions and interaction.permissions.manage_messages:
+        is_staff = True
+
     if parent is not None:
+        parent.is_staff = is_staff
         parent.apply_search(query, items, villagers)
         await interaction.edit_original_response(embed=parent.build_search_embed(), view=parent)
         return
 
     view = CatalogSearchView(
-        island_name=island, query=query, items=items, villagers=villagers, user_id=interaction.user.id
+        island_name=island,
+        query=query,
+        items=items,
+        villagers=villagers,
+        user_id=interaction.user.id,
+        is_staff=is_staff,
     )
+    view._orig_interaction = interaction
+    if island:
+        view._presence_status = await _presence_line(interaction.user, island)
     view.message = await interaction.followup.send(embed=view.build_search_embed(), view=view, ephemeral=True)
 
 
@@ -2599,16 +2676,18 @@ class CatalogSearchModal(discord.ui.Modal, title="🔍 Search ACNH Catalog"):
 
 
 class CartEditModal(discord.ui.Modal, title="🛒 Edit Drop Cart"):
-    """Edit quantities in bulk. One 'Item: quantity' per line; 0 removes the item."""
+    """Edit quantities in bulk. One 'N. Item: quantity' per line; 0 removes the item."""
 
     def __init__(self, parent: "CatalogSearchView"):
         super().__init__()
         self.parent_view = parent
+        self._keys: list[str] = list(parent.cart.keys())
         lines = []
-        for key, e in parent.cart.items():
-            lines.append(f"{e.item.display_name} [{key}]: {e.qty}")
+        for idx, key in enumerate(self._keys, 1):
+            e = parent.cart[key]
+            lines.append(f"{idx}. {e.item.display_name}: {e.qty}")
         self.lines = discord.ui.TextInput(
-            label=f"Item: quantity  (1–{MAX_STACK}, 0 removes)",
+            label=f"N. Item: quantity  (1–{MAX_STACK}, 0 removes)",
             style=discord.TextStyle.paragraph,
             default="\n".join(lines)[:4000],
             max_length=4000,
@@ -2626,25 +2705,29 @@ class CartEditModal(discord.ui.Modal, title="🛒 Edit Drop Cart"):
             name_part, sep, qty_s = raw.rpartition(":")
             qty_s = qty_s.strip()
             if not sep or not qty_s.isdigit():
-                await _reply(interaction, embed=_err_embed(f"I couldn't read “{raw[:50]}”. Use `Item: quantity`."))
+                await _reply(interaction, embed=_err_embed(f"I couldn't read “{raw[:50]}”. Use `N. Item: quantity`."))
                 return
             qty = int(qty_s)
             if qty > MAX_STACK:
                 await _reply(interaction, embed=_err_embed(f"Quantity can't exceed {MAX_STACK}."))
                 return
             key = None
-            if "[" in name_part and name_part.endswith("]"):
-                candidate_key = name_part[name_part.rfind("[") + 1 : -1].strip()
-                if candidate_key in cart:
-                    key = candidate_key
+            clean_name = name_part.strip()
+            m = re.match(r"^(\d+)\.\s*(.*)$", clean_name)
+            if m:
+                line_idx = int(m.group(1)) - 1
+                if 0 <= line_idx < len(self._keys):
+                    key = self._keys[line_idx]
+                target_name = m.group(2).strip().lower()
+            else:
+                target_name = clean_name.lower()
             if not key:
-                clean_name = name_part.split("[")[0].strip().lower()
                 for k, e in cart.items():
-                    if e.item.display_name.lower() == clean_name:
+                    if e.item.display_name.lower() == target_name:
                         key = k
                         break
             if not key or key not in cart:
-                await _reply(interaction, embed=_err_embed(f"I couldn't find “{name_part.strip()[:40]}” in your cart."))
+                await _reply(interaction, embed=_err_embed(f"I couldn't find “{clean_name[:40]}” in your cart."))
                 return
             updates[key] = qty
 
@@ -2679,6 +2762,7 @@ class CatalogSearchView(_OwnedView):
         villagers: list[CatalogVillager] | None = None,
         user_id: int | None = None,
         page_size: int = 10,
+        is_staff: bool = False,
     ):
         super().__init__(user_id=user_id or 0, timeout=300)
         self.island_name = island_name
@@ -2696,6 +2780,8 @@ class CatalogSearchView(_OwnedView):
         self.cart: dict[str, _CartEntry] = {}
         self.message: discord.Message | None = None
         self._busy = False
+        self.is_staff = is_staff
+        self._presence_status: str | None = None
         self._rebuild()
 
     # ── state ──
@@ -2729,10 +2815,10 @@ class CatalogSearchView(_OwnedView):
     # ── components ──
     def _rebuild(self) -> None:
         self.clear_items()
-        row = 0
         page_items = self.page_items()
+        counts = Counter(i.category for i in self.all_items if i.category)
 
-        # Items dropdown
+        # Row 0: Items dropdown
         if page_items:
             options: list[discord.SelectOption] = []
             seen_values: set[str] = set()
@@ -2766,103 +2852,206 @@ class CatalogSearchView(_OwnedView):
                 min_values=1,
                 max_values=min(len(options), MAX_DROP_SLOTS),
                 options=options[:25],
-                row=row,
+                row=0,
             )
             item_select.callback = self.on_item_select  # type: ignore[assignment]
             self.add_item(item_select)
-            row += 1
 
-        # Villagers dropdown (first page only)
-        if self.villagers and self.page == 0:
-            v_options = []
-            seen_v: set[str] = set()
-            for idx, v in enumerate(self.villagers[:10]):
-                val = f"v_{v.villager_id}"
-                if val in seen_v:
-                    val = f"{val}_{idx}"
-                seen_v.add(val)
-                v_options.append(
+        if self.cart:
+            # Row 1: Remove-item select
+            rm_select = discord.ui.Select(
+                placeholder="Remove an item from cart…",
+                options=[
                     discord.SelectOption(
-                        label=v.display_name[:100],
-                        description=f"ID: {v.villager_id} • {v.personality}"[:100],
-                        value=val[:100],
-                        emoji="🐱",
+                        label=e.item.display_name[:100],
+                        description=f"×{e.qty}",
+                        value=k[:100],
                     )
-                )
-            villager_select = discord.ui.Select(
-                placeholder=(f"Inject a villager into {self.island_name}…" if self.island_name
-                             else "Select villager to inspect…")[:100],
-                min_values=1,
-                max_values=1,
-                options=v_options[:25],
-                row=row,
+                    for k, e in list(self.cart.items())[:25]
+                ],
+                row=1,
             )
-            villager_select.callback = self.on_villager_select  # type: ignore[assignment]
-            self.add_item(villager_select)
-            row += 1
+            rm_select.callback = self.on_remove_item  # type: ignore[assignment]
+            self.add_item(rm_select)
 
-        # Category filter
-        counts = Counter(i.category for i in self.all_items if i.category)
-        if len(counts) > 1:
-            cat_options = [
-                discord.SelectOption(
-                    label=f"All categories ({len(self.all_items)})", value="__all__", default=self.category is None
+            # Row 2: Villagers (page 0) or Category filter
+            if self.villagers and self.page == 0:
+                v_options = []
+                seen_v: set[str] = set()
+                for idx, v in enumerate(self.villagers[:10]):
+                    val = f"v_{v.villager_id}"
+                    if val in seen_v:
+                        val = f"{val}_{idx}"
+                    seen_v.add(val)
+                    v_options.append(
+                        discord.SelectOption(
+                            label=v.display_name[:100],
+                            description=f"ID: {v.villager_id} • {v.personality}"[:100],
+                            value=val[:100],
+                            emoji="🐱",
+                        )
+                    )
+                villager_select = discord.ui.Select(
+                    placeholder=(f"Inject a villager into {self.island_name}…" if self.island_name
+                                 else "Select villager to inspect…")[:100],
+                    min_values=1,
+                    max_values=1,
+                    options=v_options[:25],
+                    row=2,
                 )
-            ]
-            for cat, n in counts.most_common(24):
-                cat_options.append(
+                villager_select.callback = self.on_villager_select  # type: ignore[assignment]
+                self.add_item(villager_select)
+            elif len(counts) > 1:
+                cat_options = [
                     discord.SelectOption(
-                        label=str(cat)[:100], description=f"{n} item(s)", value=str(cat)[:100],
-                        default=(cat == self.category),
+                        label=f"All categories ({len(self.all_items)})", value="__all__", default=self.category is None
                     )
+                ]
+                for cat, n in counts.most_common(24):
+                    cat_options.append(
+                        discord.SelectOption(
+                            label=str(cat)[:100], description=f"{n} item(s)", value=str(cat)[:100],
+                            default=(cat == self.category),
+                        )
+                    )
+                cat_select = discord.ui.Select(
+                    placeholder="Filter by category…", min_values=1, max_values=1, options=cat_options[:25], row=2
                 )
-            cat_select = discord.ui.Select(
-                placeholder="Filter by category…", min_values=1, max_values=1, options=cat_options[:25], row=row
-            )
-            cat_select.callback = self.on_category_select  # type: ignore[assignment]
-            self.add_item(cat_select)
-            row += 1
+                cat_select.callback = self.on_category_select  # type: ignore[assignment]
+                self.add_item(cat_select)
 
-        # Navigation
-        prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=self.page <= 0, row=row)
-        prev_btn.callback = self.on_prev_page  # type: ignore[assignment]
-        self.add_item(prev_btn)
-        self.add_item(
-            discord.ui.Button(
-                label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.secondary, disabled=True, row=row
+            # Row 3: Navigation buttons
+            prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=self.page <= 0, row=3)
+            prev_btn.callback = self.on_prev_page  # type: ignore[assignment]
+            self.add_item(prev_btn)
+            next_btn = discord.ui.Button(
+                label="▶", style=discord.ButtonStyle.secondary, disabled=self.page >= self.total_pages - 1, row=3
             )
-        )
-        next_btn = discord.ui.Button(
-            label="▶", style=discord.ButtonStyle.secondary, disabled=self.page >= self.total_pages - 1, row=row
-        )
-        next_btn.callback = self.on_next_page  # type: ignore[assignment]
-        self.add_item(next_btn)
-        search_btn = discord.ui.Button(label="Search", emoji="🔍", style=discord.ButtonStyle.primary, row=row)
-        search_btn.callback = self.on_search_button  # type: ignore[assignment]
-        self.add_item(search_btn)
-        close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=row)
-        close_btn.callback = self.on_close  # type: ignore[assignment]
-        self.add_item(close_btn)
-        row += 1
+            next_btn.callback = self.on_next_page  # type: ignore[assignment]
+            self.add_item(next_btn)
+            search_btn = discord.ui.Button(label="Search", emoji="🔍", style=discord.ButtonStyle.primary, row=3)
+            search_btn.callback = self.on_search_button  # type: ignore[assignment]
+            self.add_item(search_btn)
+            clear_btn = discord.ui.Button(label="Clear", emoji="🗑️", style=discord.ButtonStyle.danger, row=3)
+            clear_btn.callback = self.on_clear_cart  # type: ignore[assignment]
+            self.add_item(clear_btn)
+            close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=3)
+            close_btn.callback = self.on_close  # type: ignore[assignment]
+            self.add_item(close_btn)
 
-        # Cart actions (only when a target island is set)
-        if self.island_name:
+            # Row 4: Drop Cart and quantity presets
             n = len(self.cart)
             drop_btn = discord.ui.Button(
-                label=f"Drop Cart ({n})", emoji="📦", style=discord.ButtonStyle.success, disabled=n == 0, row=row
+                label=f"Drop Cart ({n})", emoji="📦", style=discord.ButtonStyle.success, disabled=n == 0, row=4
             )
             drop_btn.callback = self.on_drop_cart  # type: ignore[assignment]
             self.add_item(drop_btn)
-            edit_btn = discord.ui.Button(
-                label="Edit Qty", emoji="✏️", style=discord.ButtonStyle.secondary, disabled=n == 0, row=row
-            )
+
+            q1_btn = discord.ui.Button(label="×1", style=discord.ButtonStyle.secondary, row=4)
+            q1_btn.callback = self.on_qty_1  # type: ignore[assignment]
+            self.add_item(q1_btn)
+
+            q10_btn = discord.ui.Button(label="×10", style=discord.ButtonStyle.secondary, row=4)
+            q10_btn.callback = self.on_qty_10  # type: ignore[assignment]
+            self.add_item(q10_btn)
+
+            qmax_btn = discord.ui.Button(label=f"×{MAX_STACK}", style=discord.ButtonStyle.secondary, row=4)
+            qmax_btn.callback = self.on_qty_max  # type: ignore[assignment]
+            self.add_item(qmax_btn)
+
+            edit_btn = discord.ui.Button(label="Edit", emoji="✏️", style=discord.ButtonStyle.secondary, row=4)
             edit_btn.callback = self.on_edit_cart  # type: ignore[assignment]
             self.add_item(edit_btn)
-            clear_btn = discord.ui.Button(
-                label="Clear", emoji="🗑️", style=discord.ButtonStyle.danger, disabled=n == 0, row=row
+
+        else:
+            row = 1
+            # Empty cart layout: standard selects and rows
+            if self.villagers and self.page == 0:
+                v_options = []
+                seen_v: set[str] = set()
+                for idx, v in enumerate(self.villagers[:10]):
+                    val = f"v_{v.villager_id}"
+                    if val in seen_v:
+                        val = f"{val}_{idx}"
+                    seen_v.add(val)
+                    v_options.append(
+                        discord.SelectOption(
+                            label=v.display_name[:100],
+                            description=f"ID: {v.villager_id} • {v.personality}"[:100],
+                            value=val[:100],
+                            emoji="🐱",
+                        )
+                    )
+                villager_select = discord.ui.Select(
+                    placeholder=(f"Inject a villager into {self.island_name}…" if self.island_name
+                                 else "Select villager to inspect…")[:100],
+                    min_values=1,
+                    max_values=1,
+                    options=v_options[:25],
+                    row=row,
+                )
+                villager_select.callback = self.on_villager_select  # type: ignore[assignment]
+                self.add_item(villager_select)
+                row += 1
+
+            if len(counts) > 1 and row < 4:
+                cat_options = [
+                    discord.SelectOption(
+                        label=f"All categories ({len(self.all_items)})", value="__all__", default=self.category is None
+                    )
+                ]
+                for cat, n in counts.most_common(24):
+                    cat_options.append(
+                        discord.SelectOption(
+                            label=str(cat)[:100], description=f"{n} item(s)", value=str(cat)[:100],
+                            default=(cat == self.category),
+                        )
+                    )
+                cat_select = discord.ui.Select(
+                    placeholder="Filter by category…", min_values=1, max_values=1, options=cat_options[:25], row=row
+                )
+                cat_select.callback = self.on_category_select  # type: ignore[assignment]
+                self.add_item(cat_select)
+                row += 1
+
+            nav_row = min(row, 3)
+            prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=self.page <= 0, row=nav_row)
+            prev_btn.callback = self.on_prev_page  # type: ignore[assignment]
+            self.add_item(prev_btn)
+            self.add_item(
+                discord.ui.Button(
+                    label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.secondary, disabled=True, row=nav_row
+                )
             )
-            clear_btn.callback = self.on_clear_cart  # type: ignore[assignment]
-            self.add_item(clear_btn)
+            next_btn = discord.ui.Button(
+                label="▶", style=discord.ButtonStyle.secondary, disabled=self.page >= self.total_pages - 1, row=nav_row
+            )
+            next_btn.callback = self.on_next_page  # type: ignore[assignment]
+            self.add_item(next_btn)
+            search_btn = discord.ui.Button(label="Search", emoji="🔍", style=discord.ButtonStyle.primary, row=nav_row)
+            search_btn.callback = self.on_search_button  # type: ignore[assignment]
+            self.add_item(search_btn)
+            close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=nav_row)
+            close_btn.callback = self.on_close  # type: ignore[assignment]
+            self.add_item(close_btn)
+
+            if self.island_name and nav_row < 4:
+                cart_row = nav_row + 1
+                drop_btn = discord.ui.Button(
+                    label="Drop Cart (0)", emoji="📦", style=discord.ButtonStyle.success, disabled=True, row=cart_row
+                )
+                drop_btn.callback = self.on_drop_cart  # type: ignore[assignment]
+                self.add_item(drop_btn)
+                edit_btn = discord.ui.Button(
+                    label="Edit Qty", emoji="✏️", style=discord.ButtonStyle.secondary, disabled=True, row=cart_row
+                )
+                edit_btn.callback = self.on_edit_cart  # type: ignore[assignment]
+                self.add_item(edit_btn)
+                clear_btn = discord.ui.Button(
+                    label="Clear", emoji="🗑️", style=discord.ButtonStyle.danger, disabled=True, row=cart_row
+                )
+                clear_btn.callback = self.on_clear_cart  # type: ignore[assignment]
+                self.add_item(clear_btn)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if self.user_id and interaction.user.id != self.user_id:
@@ -2879,6 +3068,8 @@ class CatalogSearchView(_OwnedView):
         desc += f"\n**Page:** `{self.page + 1} / {self.total_pages}`"
         if self.island_name:
             desc += f"\n🏝️ **Target island:** [{self.island_name}]({_island_url(self.island_name)})"
+            if self._presence_status:
+                desc += f"\n📍 **Presence:** {self._presence_status}"
             desc += "\n*Pick items to add them to your cart, then press **Drop Cart**.*"
         else:
             desc += "\n*Use the dropdowns to inspect items and villagers.*"
@@ -2899,7 +3090,7 @@ class CatalogSearchView(_OwnedView):
                 cart_mark = "🛒 " if _cart_key(it) in self.cart else ""
                 diy_badge = " *(DIY)*" if it.diy else ""
                 hex_code = it.to_hex()
-                hex_part = f" • `{hex_code}`" if hex_code else ""
+                hex_part = f" • `{hex_code}`" if (hex_code and self.is_staff) else ""
                 lines.append(f"`{i:02d}.` {cart_mark}**{it.display_name}**{diy_badge} — `{it.category}`{hex_part}")
 
             chunk: list[str] = []
@@ -2926,10 +3117,10 @@ class CatalogSearchView(_OwnedView):
             embed.add_field(name="🐱 Matching Villagers", value="\n".join(v_lines)[:1024], inline=False)
 
         if self.island_name and self.cart:
-            cart_lines = [f"• **{e.item.display_name}** ×{e.qty}" for e in self.cart.values()]
+            cart_summary = ", ".join(f"**{e.item.display_name}** ×{e.qty}" for e in self.cart.values())
             embed.add_field(
                 name=f"🛒 Drop Cart ({len(self.cart)}/{MAX_DROP_SLOTS})",
-                value="\n".join(cart_lines)[:1024],
+                value=cart_summary[:1024],
                 inline=False,
             )
 
@@ -3007,7 +3198,7 @@ class CatalogSearchView(_OwnedView):
                     added += 1
             notes = []
             if added:
-                notes.append(f"🛒 Added **{added}** item(s) to your cart. *(Default stack amounts added — use **Edit Qty** to adjust)*")
+                notes.append(f"🛒 Added **{added}** item(s) to your cart. *(Default stack amounts added — use **Edit** or **×1/×10/×Max** to adjust)*")
             if already:
                 notes.append(f"{already} already in cart.")
             if skipped:
@@ -3043,6 +3234,31 @@ class CatalogSearchView(_OwnedView):
             return
         await interaction.response.send_modal(CartEditModal(self))
 
+    async def on_remove_item(self, interaction: discord.Interaction) -> None:
+        values = (interaction.data or {}).get("values", [])
+        if values and values[0] in self.cart:
+            removed = self.cart.pop(values[0])
+            await self._refresh(interaction, f"🗑️ Removed **{removed.item.display_name}** from cart.")
+        else:
+            await interaction.response.defer()
+
+    async def on_qty_1(self, interaction: discord.Interaction) -> None:
+        await self._set_all_qty(interaction, 1)
+
+    async def on_qty_10(self, interaction: discord.Interaction) -> None:
+        await self._set_all_qty(interaction, 10)
+
+    async def on_qty_max(self, interaction: discord.Interaction) -> None:
+        await self._set_all_qty(interaction, MAX_STACK)
+
+    async def _set_all_qty(self, interaction: discord.Interaction, qty: int) -> None:
+        if not self.cart:
+            await interaction.response.defer()
+            return
+        for e in self.cart.values():
+            e.qty = qty
+        await self._refresh(interaction, f"✏️ Set all cart items to ×{qty}.")
+
     async def on_clear_cart(self, interaction: discord.Interaction) -> None:
         self.cart.clear()
         await self._refresh(interaction, "🗑️ Cart cleared.")
@@ -3054,6 +3270,7 @@ class CatalogSearchView(_OwnedView):
         self._busy = True
         try:
             await interaction.response.defer()   # silent ack; we edit the search message below
+            self._presence_status = await _presence_line(interaction.user, self.island_name)
             entries = list(self.cart.values())
             drop_entries = [
                 (e.item.to_hex() or e.item.internal_id or e.item.name, e.qty)
@@ -3106,7 +3323,7 @@ class CatalogSearchView(_OwnedView):
                 return
             prompt = discord.Embed(
                 title="Inject this villager?",
-                description=f"**{v.name}** → **{self.island_name}** (next available plot)",
+                description=f"**{v.name}** → **{self.island_name}** (next available plot)\n\n*Adds {v.name} to your island's next open plot.*",
                 color=PANEL_EMBED_COLOR_WARN,
             )
             if v.photo_url:
@@ -3135,12 +3352,7 @@ class CatalogSearchView(_OwnedView):
         await _reply(interaction, "❌ Something went wrong. Please try again.")
 
     async def on_timeout(self) -> None:
-        for child in self.children:
-            if hasattr(child, "disabled"):
-                child.disabled = True  # type: ignore[union-attr]
-        if self.message:
-            with contextlib.suppress(Exception):
-                await self.message.edit(view=self)
+        await super().on_timeout()
 
 
 # ─── Interactive Drop & Villager Pickers ───────────────────────────────────────
@@ -3157,7 +3369,7 @@ class DropFollowupView(_OwnedView):
 
     @discord.ui.button(label="Drop Again", emoji="🔁", style=discord.ButtonStyle.primary)
     async def on_repeat(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer()
         embed, _ = await _perform_drop(
             interaction.user,
             self.island_name,
@@ -3166,13 +3378,18 @@ class DropFollowupView(_OwnedView):
             contents=self.display_name,
         )
         followup = DropFollowupView(self.island_name, self.user_id, self.last_drop, self.display_name)
-        await interaction.followup.send(embed=embed, view=followup, ephemeral=True)
+        await interaction.edit_original_response(
+            embed=embed,
+            view=followup,
+        )
+        self.stop()
 
     @discord.ui.button(label="New Drop Menu", emoji="📦", style=discord.ButtonStyle.secondary)
     async def on_new_drop(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         picker = InteractiveDropPickerView(self.island_name, self.user_id)
-        embed = build_drop_picker_embed(self.island_name)
-        await interaction.response.send_message(embed=embed, view=picker, ephemeral=True)
+        embed = await build_drop_picker_embed(self.island_name, user=interaction.user)
+        await interaction.response.edit_message(embed=embed, view=picker)
+        self.stop()
 
 
 class PresetDropConfirmView(_OwnedView):
@@ -3187,7 +3404,7 @@ class PresetDropConfirmView(_OwnedView):
 
     @discord.ui.button(label="Drop Now", emoji="📦", style=discord.ButtonStyle.success)
     async def on_confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer()
         embed, _ = await _perform_drop(
             interaction.user,
             self.island_name,
@@ -3195,14 +3412,16 @@ class PresetDropConfirmView(_OwnedView):
             heading="📦 Drop queued",
             contents=self.label,
         )
-        followup = DropFollowupView(self.island_name, self.user_id, self.item_code, self.label)
-        await interaction.followup.send(embed=embed, view=followup, ephemeral=True)
+        await interaction.edit_original_response(
+            embed=embed,
+            view=DropFollowupView(self.island_name, self.user_id, self.item_code, self.label),
+        )
         self.stop()
 
     @discord.ui.button(label="Back", emoji="🔙", style=discord.ButtonStyle.secondary)
     async def on_back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         picker = InteractiveDropPickerView(self.island_name, self.user_id)
-        embed = build_drop_picker_embed(self.island_name)
+        embed = await build_drop_picker_embed(self.island_name, user=interaction.user)
         await interaction.response.edit_message(embed=embed, view=picker)
         self.stop()
 
@@ -3497,29 +3716,16 @@ class InteractiveVillagerPickerView(_OwnedView):
 
     async def _on_sanrio_wizard(self, interaction: discord.Interaction) -> None:
         saved = await asyncio.to_thread(_load_sanrio_wizard_state, self.user_id, self.island_name)
-        if saved and saved.get("step1_done"):
-            wizard = SanrioInjectionWizardView(
-                island_name=saved.get("island_name") or self.island_name,
-                user_id=self.user_id,
-                target_villager=saved.get("target_villager") or "Chai",
-                placeholder_villager=saved.get("placeholder_villager") or "Raymond",
-                step1_done=True,
-            )
-            wizard.last_status = "✈️ **Resumed Session (Step 2 Ready):** Pick up right where you left off!"
-        else:
-            wizard = SanrioInjectionWizardView(island_name=self.island_name, user_id=self.user_id)
-        await interaction.response.edit_message(embed=wizard.build_embed(), view=wizard)
-        if saved and saved.get("step1_done"):
-            wizard = SanrioInjectionWizardView(
-                island_name=saved.get("island") or self.island_name,
-                user_id=self.user_id,
-                target_villager=saved.get("target_villager") or "Chai",
-                placeholder_villager=saved.get("placeholder_villager") or "Raymond",
-                step1_done=True,
-            )
-            wizard.last_status = "✈️ **Resumed Session (Step 2 Ready):** Pick up right where you left off!"
-        else:
-            wizard = SanrioInjectionWizardView(island_name=self.island_name, user_id=self.user_id)
+        resumed = bool(saved and saved.get("step1_done"))
+        wizard = SanrioInjectionWizardView(
+            island_name=(saved or {}).get("island_name") or self.island_name,
+            user_id=self.user_id,
+            target_villager=(saved or {}).get("target_villager") or "Chai",
+            placeholder_villager=(saved or {}).get("placeholder_villager") or "Raymond",
+            step1_done=resumed,
+        )
+        if resumed:
+            wizard.last_status = "✈️ **Resumed (Step 2 ready):** pick up where you left off."
         await interaction.response.edit_message(embed=wizard.build_embed(), view=wizard)
 
     async def _on_search_villager(self, interaction: discord.Interaction) -> None:
@@ -3660,22 +3866,12 @@ class GetDodoButton(
             title=f"🦤 Dodo Code — {island}",
             url=_island_url(island),
             description=(
-                f"Here is your **private** Dodo code for **{island}**.\n"
-                "⚠️ _Do NOT share this with anyone outside the queue._"
+                f"# `{dodo}`\n\n"
+                f"**[Visit {island} Page]({_island_url(island)})**\n\n"
+                "-# ⚠️ Private code • Walk to airport to leave • Character | Island nick • Don't litter"
             ),
             color=PANEL_EMBED_COLOR,
         )
-        embed.add_field(name="✈️ Dodo Code", value=f"```{dodo}```", inline=False)
-        embed.add_field(
-            name="📋 Reminders",
-            value=(
-                "• **Do NOT press minus (−)** to leave — walk to the airport!\n"
-                "• Change your nickname to `Character | Island` format.\n"
-                "• Do not litter — use the trash bins on the island."
-            ),
-            inline=False,
-        )
-        embed.add_field(name="🌐 Island Page", value=f"[View {island} on chopaeng.com]({_island_url(island)})", inline=False)
         embed.set_image(url=DODO_GIF)
         embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -3718,7 +3914,7 @@ class DropItemsButton(
     async def callback(self, interaction: discord.Interaction) -> None:
         try:
             if island := await self._gate(interaction):
-                embed = build_drop_picker_embed(island)
+                embed = await build_drop_picker_embed(island, user=interaction.user)
                 view = InteractiveDropPickerView(island_name=island, user_id=interaction.user.id)
                 await _send(interaction, embed=embed, view=view, ephemeral=True)
         except Exception as exc:
@@ -3835,7 +4031,7 @@ class IslandPanelView(discord.ui.View):
                     btn.item.style = discord.ButtonStyle.secondary
                 elif not is_valid_dodo and not monitoring_outage:
                     btn.item.disabled = True
-                    btn.item.label = "Dodo refreshing…"
+                    btn.item.label = "Dodo not ready"
                     btn.item.style = discord.ButtonStyle.secondary
             self.add_item(btn)
         self.add_item(
@@ -4057,11 +4253,29 @@ class DropBotCog(commands.Cog, name="DropBot"):
         if isinstance(user, discord.Member):
             perms = user.guild_permissions
             is_admin = bool(perms.administrator or perms.manage_guild or perms.manage_messages)
+        elif interaction.permissions and interaction.permissions.manage_messages:
+            is_admin = True
 
-        visible_islands = []
-        for i in islands:
-            if is_admin or await _user_can_target(interaction, i):
-                visible_islands.append(i)
+        if is_admin:
+            visible_islands = list(islands)
+        else:
+            current_island = await _infer_island(interaction.channel)
+            guild, member = interaction.guild, interaction.user
+
+            async def _check_island(isl: str) -> bool:
+                if isl == current_island:
+                    return True
+                if not guild or not isinstance(member, discord.Member):
+                    return False
+                cids = await asyncio.to_thread(_panel_channel_ids_cached, isl)
+                for cid in cids:
+                    ch = guild.get_channel(cid)
+                    if ch and ch.permissions_for(member).view_channel:
+                        return True
+                return False
+
+            checks = await asyncio.gather(*[_check_island(i) for i in islands])
+            visible_islands = [i for i, ok in zip(islands, checks) if ok]
 
         if not cur:
             return [app_commands.Choice(name=i, value=i) for i in visible_islands[:25]]
@@ -4344,7 +4558,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
             return
 
         if not item or not item.strip():
-            embed = build_drop_picker_embed(target_island)
+            embed = await build_drop_picker_embed(target_island, user=interaction.user)
             view = InteractiveDropPickerView(island_name=target_island, user_id=interaction.user.id)
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
