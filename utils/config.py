@@ -3,6 +3,7 @@ Configuration Module
 Loads and validates all environment variables
 """
 
+from typing import Optional
 import os
 import re
 import logging
