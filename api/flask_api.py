@@ -6427,15 +6427,15 @@ def _resolve_target_island_and_client(island_param: Optional[str] = None):
         else:
             resolved_island = raw_target
             target_url = Config.get_island_sysbot_url(raw_target)
-    elif host_port and (8201 <= host_port <= 8248 or host_port == 8220):
-        resolved_island = Config.get_island_name_from_port(host_port) or "Adhika"
+    elif host_port and (8201 <= host_port <= 8248):
+        resolved_island = Config.get_island_name_from_port(host_port)
         target_url = f"http://localhost:{host_port}"
     else:
-        resolved_island = getattr(Config, "DEFAULT_ISLAND", None) or "Adhika"
-        target_url = Config.get_island_sysbot_url(resolved_island)
+        resolved_island = getattr(Config, "DEFAULT_ISLAND", None)
+        target_url = Config.get_island_sysbot_url(resolved_island) if resolved_island else None
 
-    client = SysBotClientPool.get_client(resolved_island or target_url or "Adhika")
-    return resolved_island or "Adhika", target_url or "http://localhost:8220", client
+    client = SysBotClientPool.get_client(resolved_island) if resolved_island else None
+    return resolved_island, target_url, client
 
 
 def _convert_sysbot_map_data_to_website(raw_data: dict, island_name: str) -> dict:
@@ -6543,6 +6543,14 @@ def api_get_island_map(island_name: str):
     from utils.cache import map_cache
     force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
     resolved_island, target_url, client = _resolve_target_island_and_client(island_name)
+    if not resolved_island or str(resolved_island).strip().lower() in ("all", "*"):
+        return jsonify({
+            "ok": False,
+            "error": "Island name is required (e.g. /api/islands/<island_name>/map or ?island=<name>).",
+            "total_islands": len(Config.ALL_ISLAND_PORT_ORDER),
+            "available_islands": Config.ALL_ISLAND_PORT_ORDER,
+        }), 400
+
     norm = resolved_island.strip().lower()
     cache_key = f"island_map_unified:{norm}"
 

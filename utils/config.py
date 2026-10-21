@@ -145,11 +145,17 @@ class Config:
     SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "")
     DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-    MYSQL_HOST = os.getenv("MYSQL_HOST") or os.getenv("MARIADB_HOST", "localhost")
-    MYSQL_PORT = _get_int("MYSQL_PORT", _get_int("MARIADB_PORT", 3306))
-    MYSQL_USER = os.getenv("MYSQL_USER") or os.getenv("MARIADB_USER", "chobot")
-    MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD") or os.getenv("MARIADB_PASSWORD", "")
-    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE") or os.getenv("MARIADB_DATABASE", "chobot")
+    MYSQL_HOST = os.getenv("MYSQL_HOST") or os.getenv("DB_HOST") or os.getenv("MARIADB_HOST", "localhost")
+    MYSQL_PORT = _get_int("MYSQL_PORT", _get_int("DB_PORT", _get_int("MARIADB_PORT", 3306)))
+    MYSQL_USER = os.getenv("MYSQL_USER") or os.getenv("DB_USER") or os.getenv("MARIADB_USER", "root")
+    MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD") or os.getenv("DB_PASSWORD") or os.getenv("MARIADB_PASSWORD", "")
+    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE") or os.getenv("DB_NAME") or os.getenv("DB_DATABASE") or os.getenv("MARIADB_DATABASE", "chobot")
+
+    DB_HOST = MYSQL_HOST
+    DB_PORT = MYSQL_PORT
+    DB_USER = MYSQL_USER
+    DB_PASSWORD = MYSQL_PASSWORD
+    DB_NAME = MYSQL_DATABASE
 
     MARIADB_HOST = MYSQL_HOST
     MARIADB_PORT = MYSQL_PORT

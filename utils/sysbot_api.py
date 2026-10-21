@@ -1180,17 +1180,15 @@ class SysBotClientPool:
                 )
             return self._clients[cache_key]
 
-    def get_client(self, island_name: str, timeout: int = 5) -> SysBotClient:
-        # Supports being called on instance or as class method SysBotClientPool.get_client(...)
-        if isinstance(self, type):
-            return _GLOBAL_CLIENT_POOL._get_client_impl(island_name, timeout=timeout)
-        return self._get_client_impl(island_name, timeout=timeout)
+    @classmethod
+    def get_client(cls, island_name: str, timeout: int = 5) -> SysBotClient:
+        """Obtain a pooled SysBotClient instance for the given island."""
+        return _GLOBAL_CLIENT_POOL._get_client_impl(island_name, timeout=timeout)
 
-    def get_island_map_data(self, island_name: str) -> dict:
+    @classmethod
+    def get_island_map_data(cls, island_name: str) -> dict:
         """Fetch live RAM island map data directly for the specified island."""
-        if isinstance(self, type):
-            return _GLOBAL_CLIENT_POOL.get_island_map_data(island_name)
-        client = self.get_client(island_name)
+        client = cls.get_client(island_name)
         return client.get_island_map_data_sync()
 
 
