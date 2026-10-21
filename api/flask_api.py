@@ -1425,14 +1425,23 @@ def auth_discord():
     if not Config.DISCORD_CLIENT_ID:
         return jsonify({"error": "Discord OAuth not configured (DISCORD_CLIENT_ID missing)"}), 503
 
-    state = _secrets.token_hex(16)
-    session["sub_oauth_state"] = state
-    session["sub_return_to"] = return_to
+    from api.sub_islands import make_oauth_state
 
     # Capture linking token if existing user is connecting their Discord
-    auth_token = request.args.get("auth_token", "")
+    auth_token = request.args.get("auth_token", "").strip()
+    active_user_id = None
     if auth_token:
+        try:
+            curr_user = get_auth_user(auth_token)
+            if curr_user:
+                active_user_id = curr_user.get("user_id")
+        except Exception:
+            pass
         session["sub_link_token"] = auth_token
+
+    state = make_oauth_state(return_to, active_user_id=active_user_id, link_token=auth_token)
+    session["sub_oauth_state"] = state
+    session["sub_return_to"] = return_to
 
     callback_url = getattr(Config, "DISCORD_REDIRECT_URI", "") or url_for("auth_callback", _external=True)
     params = urllib.parse.urlencode({
@@ -1448,21 +1457,34 @@ def auth_discord():
 @app.route("/api/auth/callback")
 def auth_callback():
     """Handle Discord OAuth callback: authenticate user, sync guild roles, and provision unified account."""
-    return_to = session.get("sub_return_to", "https://www.chopaeng.com/auth/callback")
+    from api.sub_islands import verify_oauth_state
+
+    sess_return = session.get("sub_return_to", "https://www.chopaeng.com/auth/callback")
     try:
         error = request.args.get("error")
         if error:
             session.pop("sub_return_to", None)
-            return redirect(f"{return_to}?error={urllib.parse.quote(error)}")
+            session.pop("sub_oauth_state", None)
+            session.pop("sub_link_token", None)
+            return redirect(f"{sess_return}?error={urllib.parse.quote(error)}")
 
         state = request.args.get("state", "")
-        if state != session.pop("sub_oauth_state", ""):
+        saved_state = session.pop("sub_oauth_state", None)
+        sess_return = session.pop("sub_return_to", sess_return)
+        sess_link_token = session.pop("sub_link_token", None)
+
+        is_valid, return_to, state_uid, state_link_token = verify_oauth_state(
+            state, fallback_return=sess_return, saved_state=saved_state
+        )
+        if not is_valid:
             session.pop("sub_return_to", None)
             return redirect(f"{return_to}?error=invalid_state")
 
         code = request.args.get("code", "")
-        return_to = session.pop("sub_return_to", return_to)
-        link_token = session.pop("sub_link_token", None)
+        if not code:
+            return redirect(f"{return_to}?error=missing_code")
+
+        link_token = sess_link_token or state_link_token
 
         callback_url = getattr(Config, "DISCORD_REDIRECT_URI", "") or url_for("auth_callback", _external=True)
         try:
@@ -1560,6 +1582,8 @@ def auth_callback():
                     active_user_id = tok_payload.get("user_id")
             except Exception:
                 pass
+        if not active_user_id and state_uid:
+            active_user_id = state_uid
 
         from utils.unified_auth import provision_or_link_unified_account
         unified_user = None

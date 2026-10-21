@@ -608,44 +608,78 @@ def unlink_account(provider: str):
 # MULTI-PROVIDER OAUTH: YOUTUBE, PATREON, TWITCH
 # ============================================================================
 
-def make_oauth_state(return_to: str, active_user_id: Optional[str] = None) -> str:
-    """Pack return_to and optional active_user_id into a tamper-proof signed state token."""
+def make_oauth_state(
+    return_to: str,
+    active_user_id: Optional[str] = None,
+    link_token: Optional[str] = None,
+) -> str:
+    """Pack return_to, optional active_user_id, and optional link_token into a tamper-proof signed state token."""
     payload = {
         "nonce": secrets.token_hex(12),
         "ret": return_to,
         "uid": active_user_id or "",
+        "link": link_token or "",
         "ts": int(time.time()),
     }
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    secret = (getattr(Config, "FLASK_SECRET_KEY", None) or "cp_secret").encode("utf-8")
+    secret = (getattr(Config, "FLASK_SECRET_KEY", None) or getattr(Config, "DASHBOARD_SECRET", None) or "cp_secret").encode("utf-8")
     sig = hmac.new(secret, raw, hashlib.sha256).hexdigest()[:16]
     b64 = base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
     return f"{b64}.{sig}"
 
 
-def parse_oauth_state(state_str: Optional[str], fallback_return: str = "https://www.chopaeng.com/auth/callback") -> Tuple[str, Optional[str]]:
+def verify_oauth_state(
+    state_str: Optional[str],
+    fallback_return: str = "https://www.chopaeng.com/auth/callback",
+    saved_state: Optional[str] = None,
+) -> Tuple[bool, str, Optional[str], Optional[str]]:
+    """Verify OAuth state token statelessly via HMAC, with optional session fallback.
+
+    Returns:
+        (is_valid, return_to, active_user_id, link_token)
+    """
+    if not state_str:
+        return False, fallback_return, None, None
+
+    # 1. Stateless cryptographic HMAC verification
+    if "." in state_str:
+        try:
+            b64, sig = state_str.split(".", 1)
+            padding = "=" * ((4 - len(b64) % 4) % 4)
+            raw = base64.urlsafe_b64decode(b64 + padding)
+            secret = (getattr(Config, "FLASK_SECRET_KEY", None) or getattr(Config, "DASHBOARD_SECRET", None) or "cp_secret").encode("utf-8")
+            expected_sig = hmac.new(secret, raw, hashlib.sha256).hexdigest()[:16]
+            if hmac.compare_digest(sig, expected_sig):
+                payload = json.loads(raw.decode("utf-8"))
+                # Valid within 2 hours (7200s)
+                if time.time() - payload.get("ts", 0) <= 7200:
+                    ret = payload.get("ret") or fallback_return
+                    uid = payload.get("uid") or None
+                    link = payload.get("link") or None
+                    return True, ret, uid, link
+                else:
+                    logger.warning("[OAuth State] Expired state token (ts=%s)", payload.get("ts"))
+            else:
+                logger.warning("[OAuth State] HMAC signature mismatch")
+        except Exception as ex:
+            logger.warning("[OAuth State] HMAC parse failed: %s", ex)
+
+    # 2. Session-stored state fallback (backward compatibility with active sessions)
+    if saved_state and hmac.compare_digest(state_str, saved_state):
+        return True, fallback_return, None, None
+
+    return False, fallback_return, None, None
+
+
+def parse_oauth_state(
+    state_str: Optional[str],
+    fallback_return: str = "https://www.chopaeng.com/auth/callback",
+) -> Tuple[str, Optional[str]]:
     """Verify and unpack signed state token. Returns (return_to, active_user_id)."""
-    if not state_str or "." not in state_str:
+    is_valid, ret, uid, _ = verify_oauth_state(state_str, fallback_return=fallback_return)
+    if not is_valid:
         return fallback_return, None
-    try:
-        b64, sig = state_str.split(".", 1)
-        padding = "=" * ((4 - len(b64) % 4) % 4)
-        raw = base64.urlsafe_b64decode(b64 + padding)
-        secret = (getattr(Config, "FLASK_SECRET_KEY", None) or "cp_secret").encode("utf-8")
-        expected_sig = hmac.new(secret, raw, hashlib.sha256).hexdigest()[:16]
-        if not hmac.compare_digest(sig, expected_sig):
-            logger.warning("[OAuth State] Signature mismatch")
-            return fallback_return, None
-        payload = json.loads(raw.decode("utf-8"))
-        if time.time() - payload.get("ts", 0) > 7200:
-            logger.warning("[OAuth State] Expired state")
-            return fallback_return, None
-        ret = payload.get("ret") or fallback_return
-        uid = payload.get("uid") or None
-        return ret, uid
-    except Exception as ex:
-        logger.warning("[OAuth State] Parse failed: %s", ex)
-        return fallback_return, None
+    return ret, uid
 
 
 # ── 1. YouTube OAuth (Google) ────────────────────────────────────────────────
@@ -663,7 +697,7 @@ def auth_youtube():
         if curr_user:
             active_user_id = curr_user.get("user_id")
 
-    state = make_oauth_state(return_to, active_user_id)
+    state = make_oauth_state(return_to, active_user_id, link_token=auth_token)
     session["oauth_state_yt"] = state
     session["oauth_return_to_yt"] = return_to
     if active_user_id:
@@ -692,10 +726,12 @@ def auth_youtube_callback():
     sess_return = session.pop("oauth_return_to_yt", "https://www.chopaeng.com/auth/callback")
     sess_uid = session.pop("oauth_active_uid_yt", None)
 
-    return_to, state_uid = parse_oauth_state(state, fallback_return=sess_return)
+    is_valid, return_to, state_uid, _ = verify_oauth_state(
+        state, fallback_return=sess_return, saved_state=saved_state
+    )
     active_uid = state_uid or sess_uid
 
-    if not state or (state_uid is None and (not saved_state or state != saved_state)):
+    if not is_valid:
         return redirect(f"{return_to}?error=invalid_state")
     if not code:
         return redirect(f"{return_to}?error=missing_code")
@@ -792,7 +828,7 @@ def auth_patreon():
         if curr_user:
             active_user_id = curr_user.get("user_id")
 
-    state = make_oauth_state(return_to, active_user_id)
+    state = make_oauth_state(return_to, active_user_id, link_token=auth_token)
     session["oauth_state_patreon"] = state
     session["oauth_return_to_patreon"] = return_to
     if active_user_id:
@@ -819,10 +855,12 @@ def auth_patreon_callback():
     sess_return = session.pop("oauth_return_to_patreon", "https://www.chopaeng.com/auth/callback")
     sess_uid = session.pop("oauth_active_uid_patreon", None)
 
-    return_to, state_uid = parse_oauth_state(state, fallback_return=sess_return)
+    is_valid, return_to, state_uid, _ = verify_oauth_state(
+        state, fallback_return=sess_return, saved_state=saved_state
+    )
     active_uid = state_uid or sess_uid
 
-    if not state or (state_uid is None and (not saved_state or state != saved_state)):
+    if not is_valid:
         return redirect(f"{return_to}?error=invalid_state")
     if not code:
         return redirect(f"{return_to}?error=missing_code")
@@ -912,7 +950,7 @@ def auth_twitch():
         if curr_user:
             active_user_id = curr_user.get("user_id")
 
-    state = make_oauth_state(return_to, active_user_id)
+    state = make_oauth_state(return_to, active_user_id, link_token=auth_token)
     session["oauth_state_twitch"] = state
     session["oauth_return_to_twitch"] = return_to
     if active_user_id:
@@ -939,10 +977,12 @@ def auth_twitch_callback():
     sess_return = session.pop("oauth_return_to_twitch", "https://www.chopaeng.com/auth/callback")
     sess_uid = session.pop("oauth_active_uid_twitch", None)
 
-    return_to, state_uid = parse_oauth_state(state, fallback_return=sess_return)
+    is_valid, return_to, state_uid, _ = verify_oauth_state(
+        state, fallback_return=sess_return, saved_state=saved_state
+    )
     active_uid = state_uid or sess_uid
 
-    if not state or (state_uid is None and (not saved_state or state != saved_state)):
+    if not is_valid:
         return redirect(f"{return_to}?error=invalid_state")
     if not code:
         return redirect(f"{return_to}?error=missing_code")
