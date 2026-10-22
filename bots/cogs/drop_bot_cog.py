@@ -2797,14 +2797,13 @@ def _unique(seq: list[str]) -> list[str]:
     return list(dict.fromkeys(seq))
 
 
-class CartHexModal(discord.ui.Modal, title="#️⃣ Custom Item Hex"):
-    """Override the hex that a single cart item drops as. Blank resets to the catalog hex."""
+class ItemHexModal(discord.ui.Modal, title="#️⃣ Custom Item Hex"):
+    """Override the hex that an item drops as. Blank resets to the catalog hex."""
 
-    def __init__(self, editor: "CartItemEditorView"):
+    def __init__(self, item_view: "ItemDetailView"):
         super().__init__()
-        self.editor = editor
-        entry = editor.entry
-        current = entry.drop_hex if entry else ""
+        self.item_view = item_view
+        current = item_view.drop_hex
         self.hex_input = discord.ui.TextInput(
             label="Hex ID to drop (4 or 16 characters)",
             placeholder="e.g. 0B64 or 0000002000003A5E (blank = reset)",
@@ -2815,17 +2814,13 @@ class CartHexModal(discord.ui.Modal, title="#️⃣ Custom Item Hex"):
         self.add_item(self.hex_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        entry = self.editor.entry
-        if entry is None:
-            await self.editor.back_to_search(interaction, "⚠️ That item is no longer in your cart.")
-            return
         raw = re.sub(r"[\s_\-]", "", self.hex_input.value or "").upper()
         if raw.startswith("0X"):
             raw = raw[2:]
-        catalog_hex = (entry.item.to_hex() or "").upper()
+        catalog_hex = (self.item_view.current_item.to_hex() or "").upper()
         if not raw or raw == catalog_hex:
-            entry.hex_override = None
-            notice = f"↩️ Using the catalog hex `{catalog_hex or entry.drop_hex}`."
+            self.item_view.hex_override = None
+            notice = f"↩️ Reset to catalog hex `{catalog_hex or self.item_view.drop_hex}`."
         elif not _HEX_INPUT_RE.match(raw):
             await _reply(interaction, embed=_err_embed(
                 f"`{raw[:24]}` isn't a valid item hex.",
@@ -2833,39 +2828,80 @@ class CartHexModal(discord.ui.Modal, title="#️⃣ Custom Item Hex"):
             ))
             return
         else:
-            entry.hex_override = raw
-            notice = f"#️⃣ This item will now drop as `{raw}`."
-        await self.editor.refresh(interaction, notice)
+            self.item_view.hex_override = raw
+            notice = f"#️⃣ Custom drop hex set to `{raw}`."
+        await self.item_view.refresh(interaction, notice)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
-        logger.error("[DropBot] CartHexModal error: %s", error, exc_info=error)
-        await _reply(interaction, "❌ Something went wrong. Please try again.")
+        logger.error("[DropBot] ItemHexModal error: %s", error, exc_info=error)
+        await _reply(interaction, "❌ Something went wrong setting the hex code.")
 
 
-class CartItemEditorView(_OwnedView):
+class ItemDetailView(_OwnedView):
     """
-    Per-item cart editor shown in place of the catalog view: pick colour and pattern
-    (which re-computes the hex that gets dropped), adjust quantity, set a custom hex, or remove.
+    Focused Item Detail Card (ChoPaeng Command Builder style):
+    - Live thumbnail & hex preview
+    - Color dropdown & pattern dropdown
+    - Quantity stepper: [ − ] [ ×qty ] [ + ] [ ×1 ] [ ×Max ]
+    - Actions:
+      ⚡ Drop Now (1-click drop without needing a cart)
+      🛒 Add to Cart (or Update Cart)
+      🔙 Back to Results
+      #️⃣ Custom Hex
+      🗑️ Remove (if editing an existing cart item)
     """
 
-    def __init__(self, search_view: "CatalogSearchView", key: str):
+    def __init__(
+        self,
+        search_view: "CatalogSearchView",
+        item: CatalogItem,
+        *,
+        cart_key: str | None = None,
+        initial_qty: int | None = None,
+        initial_hex_override: str | None = None,
+    ):
         super().__init__(user_id=search_view.user_id, timeout=300)
         self.search_view = search_view
-        self.key = key
-        entry = self.entry
-        self.variants: list[_Variant] = _item_variants(entry.item) if entry else []
+        self.base_item = item
+        self.cart_key = cart_key
+        self.variants: list[_Variant] = _item_variants(item)
+
+        if self.variants:
+            idx = _match_variant_index(item, self.variants)
+            self.current_variant: _Variant | None = self.variants[idx]
+            self.current_item: CatalogItem = self.variants[idx].item
+        else:
+            self.current_variant = None
+            self.current_item = item
+
+        if initial_qty is not None:
+            self.qty = max(1, min(MAX_STACK, initial_qty))
+        elif cart_key and cart_key in search_view.cart:
+            self.qty = search_view.cart[cart_key].qty
+        else:
+            self.qty = _default_qty(self.current_item)
+
+        if initial_hex_override is not None:
+            self.hex_override: str | None = initial_hex_override
+        elif cart_key and cart_key in search_view.cart:
+            self.hex_override = search_view.cart[cart_key].hex_override
+        else:
+            self.hex_override = None
+
         self._rebuild()
 
-    # ── state ──
     @property
-    def entry(self) -> _CartEntry | None:
-        return self.search_view.cart.get(self.key)
+    def drop_hex(self) -> str:
+        return self.hex_override or self.current_item.to_hex() or self.current_item.internal_id or self.current_item.name
 
-    def _current(self) -> _Variant | None:
-        entry = self.entry
-        if not entry or not self.variants:
-            return None
-        return self.variants[_match_variant_index(entry.item, self.variants)]
+    @property
+    def current_key(self) -> str:
+        return _cart_key(self.current_item)
+
+    @property
+    def is_in_cart(self) -> bool:
+        return (bool(self.cart_key and self.cart_key in self.search_view.cart) or
+                (self.current_key in self.search_view.cart))
 
     @property
     def bodies(self) -> list[str]:
@@ -2882,50 +2918,12 @@ class CartItemEditorView(_OwnedView):
         return next((v for v in self.variants if v.body == body), None) if body else \
             next((v for v in self.variants if v.pattern == pattern), None)
 
-    def _apply_variant(self, variant: _Variant) -> str:
-        """Swap the cart entry to `variant`, re-keying the cart (keeps order). Returns a notice."""
-        cart = self.search_view.cart
-        entry = cart.get(self.key)
-        if entry is None:
-            return "⚠️ That item is no longer in your cart."
-        new_item = variant.item
-        new_key = _cart_key(new_item)
-        label = new_item.variation or new_item.name
-
-        if new_key == self.key:
-            entry.item = new_item
-            entry.hex_override = None
-            return f"🎨 Switched to **{label}**."
-
-        if new_key in cart:   # that colour is already in the cart: merge quantities
-            other = cart[new_key]
-            other.qty = min(MAX_STACK, other.qty + entry.qty)
-            other.hex_override = None
-            cart.pop(self.key, None)
-            self.key = new_key
-            return f"🎨 **{label}** was already in your cart — quantities merged (×{other.qty})."
-
-        entries = list(cart.items())
-        cart.clear()
-        for k, e in entries:
-            if k == self.key:
-                e.item = new_item
-                e.hex_override = None   # a picked colour replaces any hand-typed hex
-                cart[new_key] = e
-            else:
-                cart[k] = e
-        self.key = new_key
-        return f"🎨 Switched to **{label}** — hex `{new_item.to_hex()}`."
-
-    # ── components ──
     def _rebuild(self) -> None:
         self.clear_items()
-        entry = self.entry
-        if entry is None:
-            return
-        cur = self._current()
         bodies, patterns = self.bodies, self.patterns
+        cur = self.current_variant
 
+        # Row 0: Color Select (if > 1 color)
         if len(bodies) > 1:
             opts = []
             for idx, body in enumerate(bodies[:25]):
@@ -2933,15 +2931,19 @@ class CartItemEditorView(_OwnedView):
                 opts.append(discord.SelectOption(
                     label=body[:100],
                     value=str(idx),
-                    description=(f"Hex {sample.item.to_hex()}" if not sample.pattern or len(patterns) <= 1
+                    description=(f"Hex: {sample.item.to_hex()}" if not sample.pattern or len(patterns) <= 1
                                  else f"{sum(1 for v in self.variants if v.body == body)} pattern(s)")[:100],
                     default=bool(cur and cur.body == body),
                 ))
-            sel = discord.ui.Select(placeholder=f"🎨 Color: {cur.body if cur else 'pick one'}"[:100],
-                                    options=opts, row=0)
+            sel = discord.ui.Select(
+                placeholder=f"🎨 Color: {cur.body if cur else 'Pick color'}"[:100],
+                options=opts,
+                row=0,
+            )
             sel.callback = self.on_body_select  # type: ignore[assignment]
             self.add_item(sel)
 
+        # Row 1: Pattern Select (if > 1 pattern)
         if len(patterns) > 1:
             opts = []
             for idx, pat in enumerate(patterns[:25]):
@@ -2951,103 +2953,131 @@ class CartItemEditorView(_OwnedView):
                     default=bool(cur and cur.pattern == pat),
                 ))
             sel = discord.ui.Select(
-                placeholder=f"🖌️ Pattern: {(cur.pattern or _NO_PATTERN_LABEL) if cur else 'pick one'}"[:100],
-                options=opts, row=1,
+                placeholder=f"🖌️ Pattern: {(cur.pattern or _NO_PATTERN_LABEL) if cur else 'Pick pattern'}"[:100],
+                options=opts,
+                row=1,
             )
             sel.callback = self.on_pattern_select  # type: ignore[assignment]
             self.add_item(sel)
 
-        minus = discord.ui.Button(label="−", style=discord.ButtonStyle.secondary, disabled=entry.qty <= 1, row=2)
+        # Row 2: Quantity buttons
+        minus = discord.ui.Button(label="−", style=discord.ButtonStyle.secondary, disabled=self.qty <= 1, row=2)
         minus.callback = self.on_minus  # type: ignore[assignment]
         self.add_item(minus)
-        self.add_item(discord.ui.Button(label=f"×{entry.qty}", style=discord.ButtonStyle.secondary, disabled=True, row=2))
-        plus = discord.ui.Button(label="+", style=discord.ButtonStyle.secondary, disabled=entry.qty >= MAX_STACK, row=2)
+
+        self.add_item(discord.ui.Button(label=f"×{self.qty}", style=discord.ButtonStyle.secondary, disabled=True, row=2))
+
+        plus = discord.ui.Button(label="+", style=discord.ButtonStyle.secondary, disabled=self.qty >= MAX_STACK, row=2)
         plus.callback = self.on_plus  # type: ignore[assignment]
         self.add_item(plus)
-        one = discord.ui.Button(label="×1", style=discord.ButtonStyle.secondary, disabled=entry.qty == 1, row=2)
+
+        one = discord.ui.Button(label="×1", style=discord.ButtonStyle.secondary, disabled=self.qty == 1, row=2)
         one.callback = self.on_qty_one  # type: ignore[assignment]
         self.add_item(one)
-        mx = discord.ui.Button(label=f"×{MAX_STACK}", style=discord.ButtonStyle.secondary,
-                               disabled=entry.qty >= MAX_STACK, row=2)
+
+        mx = discord.ui.Button(label=f"×{MAX_STACK}", style=discord.ButtonStyle.secondary, disabled=self.qty >= MAX_STACK, row=2)
         mx.callback = self.on_qty_max  # type: ignore[assignment]
         self.add_item(mx)
 
-        done = discord.ui.Button(label="Done", emoji="✅", style=discord.ButtonStyle.success, row=3)
-        done.callback = self.on_done  # type: ignore[assignment]
-        self.add_item(done)
-        hex_btn = discord.ui.Button(label="Custom Hex", emoji="#️⃣", style=discord.ButtonStyle.primary, row=3)
+        # Row 3: Action Buttons
+        row_act = 3
+        if self.search_view.island_name:
+            drop_btn = discord.ui.Button(label=f"Drop Now (×{self.qty})", emoji="⚡", style=discord.ButtonStyle.success, row=row_act)
+            drop_btn.callback = self.on_drop_now  # type: ignore[assignment]
+            self.add_item(drop_btn)
+
+            cart_label = "Update Cart" if self.is_in_cart else "Add to Cart"
+            cart_btn = discord.ui.Button(label=cart_label, emoji="🛒", style=discord.ButtonStyle.primary, row=row_act)
+            cart_btn.callback = self.on_add_to_cart  # type: ignore[assignment]
+            self.add_item(cart_btn)
+
+        back_btn = discord.ui.Button(label="Back to Results", emoji="🔙", style=discord.ButtonStyle.secondary, row=row_act)
+        back_btn.callback = self.on_back_to_search  # type: ignore[assignment]
+        self.add_item(back_btn)
+
+        # Row 4: Tools
+        row_tools = 4
+        hex_btn = discord.ui.Button(label="Custom Hex", emoji="#️⃣", style=discord.ButtonStyle.secondary, row=row_tools)
         hex_btn.callback = self.on_custom_hex  # type: ignore[assignment]
         self.add_item(hex_btn)
-        if entry.hex_override:
-            reset = discord.ui.Button(label="Reset Hex", emoji="↩️", style=discord.ButtonStyle.secondary, row=3)
-            reset.callback = self.on_reset_hex  # type: ignore[assignment]
-            self.add_item(reset)
-        remove = discord.ui.Button(label="Remove", emoji="🗑️", style=discord.ButtonStyle.danger, row=3)
-        remove.callback = self.on_remove  # type: ignore[assignment]
-        self.add_item(remove)
 
-    # ── embed ──
+        if self.hex_override:
+            reset_btn = discord.ui.Button(label="Reset Hex", emoji="↩️", style=discord.ButtonStyle.secondary, row=row_tools)
+            reset_btn.callback = self.on_reset_hex  # type: ignore[assignment]
+            self.add_item(reset_btn)
+
+        if self.is_in_cart:
+            rm_btn = discord.ui.Button(label="Remove from Cart", emoji="🗑️", style=discord.ButtonStyle.danger, row=row_tools)
+            rm_btn.callback = self.on_remove_from_cart  # type: ignore[assignment]
+            self.add_item(rm_btn)
+
     def build_embed(self, notice: str | None = None) -> discord.Embed:
-        entry = self.entry
-        if entry is None:
-            return _err_embed("That item is no longer in your cart.")
-        it = entry.item
-        cur = self._current()
-        lines = [f"**Item:** {it.name}"]
+        it = self.current_item
+        cur = self.current_variant
+        lines = [
+            f"**Item:** {it.name}",
+            f"**Category:** `{it.category}`" + (" *(DIY Recipe)*" if it.diy else ""),
+        ]
         if cur:
-            lines.append(f"**Color:** {cur.body}")
+            lines.append(f"**Selected Color:** **{cur.body}**")
             if len(self.patterns) > 1:
-                lines.append(f"**Pattern:** {cur.pattern or _NO_PATTERN_LABEL}")
-        lines.append(f"**Quantity:** ×{entry.qty}")
-        hex_line = f"**Hex to drop:** `{entry.drop_hex}`"
-        if entry.hex_override:
-            hex_line += f" *(custom — catalog hex is `{it.to_hex() or '—'}`)*"
+                lines.append(f"**Pattern:** **{cur.pattern or _NO_PATTERN_LABEL}**")
+        lines.append(f"**Quantity:** **×{self.qty}** (Stack size: {it.stack_size or 1})")
+
+        hex_line = f"**Drop Hex:** `{self.drop_hex}`"
+        if self.hex_override:
+            hex_line += f" *(Custom override — catalog hex is `{it.to_hex() or '—'}`)*"
         lines.append(hex_line)
+
         if self.search_view.island_name:
             lines.append(f"🏝️ **Island:** [{self.search_view.island_name}]({_island_url(self.search_view.island_name)})")
-        if not self.variants:
-            lines.append("\n*This item only comes in one look — you can still set a custom hex.*")
-        else:
-            lines.append("\n*Pick a color/pattern below; the hex updates automatically.*")
+
+        if self.is_in_cart:
+            lines.append("🛒 *This item is in your drop cart.*")
+
+        if self.search_view.island_name:
+            lines.append("\n• **⚡ Drop Now**: Drops immediately near you on the island.")
+            lines.append("• **🛒 Add to Cart**: Keeps this item in your cart while you browse.")
+
         desc = "\n".join(lines)
         if notice:
             desc = f"{notice}\n\n{desc}"
 
-        embed = discord.Embed(title=f"🎨 Customize — {it.display_name}"[:256], description=desc, color=PANEL_EMBED_COLOR)
+        embed = discord.Embed(
+            title=f"📦 {it.display_name}",
+            description=desc,
+            color=PANEL_EMBED_COLOR,
+        )
+        if it.image_url:
+            embed.set_thumbnail(url=it.image_url)
+
         if len(self.bodies) > 1:
             embed.add_field(
-                name=f"🎨 Colors ({len(self.bodies)})",
+                name=f"🎨 Available Colors ({len(self.bodies)})",
                 value=" · ".join(f"**▸{b}**" if cur and b == cur.body else b for b in self.bodies)[:1024],
                 inline=False,
             )
         if len(self.patterns) > 1:
             embed.add_field(
-                name=f"🖌️ Patterns ({len(self.patterns)})",
+                name=f"🖌️ Available Patterns ({len(self.patterns)})",
                 value=" · ".join(
                     f"**▸{p or _NO_PATTERN_LABEL}**" if cur and p == cur.pattern else (p or _NO_PATTERN_LABEL)
                     for p in self.patterns
                 )[:1024],
                 inline=False,
             )
-        if it.image_url:
-            embed.set_thumbnail(url=it.image_url)
-        embed.set_footer(text=f"{PANEL_FOOTER_TEXT} • Cart {len(self.search_view.cart)}/{MAX_DROP_SLOTS}",
-                         icon_url=PANEL_FOOTER_ICON)
+
+        n_cart = len(self.search_view.cart)
+        embed.set_footer(
+            text=f"{PANEL_FOOTER_TEXT} • Cart: {n_cart}/{MAX_DROP_SLOTS} slots",
+            icon_url=PANEL_FOOTER_ICON,
+        )
         return embed
 
     async def refresh(self, interaction: discord.Interaction, notice: str | None = None) -> None:
-        if self.entry is None:
-            await self.back_to_search(interaction, "⚠️ That item is no longer in your cart.")
-            return
         self._rebuild()
         await interaction.response.edit_message(embed=self.build_embed(notice), view=self)
 
-    async def back_to_search(self, interaction: discord.Interaction, notice: str | None = None) -> None:
-        self.stop()
-        self.search_view._rebuild()
-        await interaction.response.edit_message(embed=self.search_view.build_search_embed(notice), view=self.search_view)
-
-    # ── handlers ──
     async def on_body_select(self, interaction: discord.Interaction) -> None:
         val = (interaction.data or {}).get("values", ["0"])[0]
         bodies = self.bodies
@@ -3056,9 +3086,20 @@ class CartItemEditorView(_OwnedView):
         except (ValueError, IndexError):
             await interaction.response.defer()
             return
-        cur = self._current()
+        cur = self.current_variant
         variant = self._find(body, cur.pattern if cur else "")
-        await self.refresh(interaction, self._apply_variant(variant) if variant else None)
+        if variant:
+            self.current_variant = variant
+            self.current_item = variant.item
+            self.hex_override = None
+            if self.cart_key and self.cart_key in self.search_view.cart:
+                self.search_view.cart.pop(self.cart_key, None)
+                new_key = _cart_key(self.current_item)
+                self.search_view.cart[new_key] = _CartEntry(self.current_item, self.qty, None)
+                self.cart_key = new_key
+            await self.refresh(interaction, f"🎨 Color changed to **{variant.body}**.")
+        else:
+            await interaction.response.defer()
 
     async def on_pattern_select(self, interaction: discord.Interaction) -> None:
         val = (interaction.data or {}).get("values", ["0"])[0]
@@ -3068,50 +3109,210 @@ class CartItemEditorView(_OwnedView):
         except (ValueError, IndexError):
             await interaction.response.defer()
             return
-        cur = self._current()
+        cur = self.current_variant
         body = cur.body if cur else ""
         variant = next((v for v in self.variants if v.body == body and v.pattern == pattern), None) \
             or next((v for v in self.variants if v.pattern == pattern), None)
-        await self.refresh(interaction, self._apply_variant(variant) if variant else None)
-
-    async def _set_qty(self, interaction: discord.Interaction, qty: int) -> None:
-        entry = self.entry
-        if entry is not None:
-            entry.qty = max(1, min(MAX_STACK, qty))
-        await self.refresh(interaction)
+        if variant:
+            self.current_variant = variant
+            self.current_item = variant.item
+            self.hex_override = None
+            if self.cart_key and self.cart_key in self.search_view.cart:
+                self.search_view.cart.pop(self.cart_key, None)
+                new_key = _cart_key(self.current_item)
+                self.search_view.cart[new_key] = _CartEntry(self.current_item, self.qty, None)
+                self.cart_key = new_key
+            pat_name = variant.pattern or _NO_PATTERN_LABEL
+            await self.refresh(interaction, f"🖌️ Pattern changed to **{pat_name}**.")
+        else:
+            await interaction.response.defer()
 
     async def on_minus(self, interaction: discord.Interaction) -> None:
-        await self._set_qty(interaction, (self.entry.qty if self.entry else 1) - 1)
+        self.qty = max(1, self.qty - 1)
+        if self.cart_key and self.cart_key in self.search_view.cart:
+            self.search_view.cart[self.cart_key].qty = self.qty
+        await self.refresh(interaction)
 
     async def on_plus(self, interaction: discord.Interaction) -> None:
-        await self._set_qty(interaction, (self.entry.qty if self.entry else 1) + 1)
+        self.qty = min(MAX_STACK, self.qty + 1)
+        if self.cart_key and self.cart_key in self.search_view.cart:
+            self.search_view.cart[self.cart_key].qty = self.qty
+        await self.refresh(interaction)
 
     async def on_qty_one(self, interaction: discord.Interaction) -> None:
-        await self._set_qty(interaction, 1)
+        self.qty = 1
+        if self.cart_key and self.cart_key in self.search_view.cart:
+            self.search_view.cart[self.cart_key].qty = 1
+        await self.refresh(interaction)
 
     async def on_qty_max(self, interaction: discord.Interaction) -> None:
-        await self._set_qty(interaction, MAX_STACK)
+        self.qty = MAX_STACK
+        if self.cart_key and self.cart_key in self.search_view.cart:
+            self.search_view.cart[self.cart_key].qty = MAX_STACK
+        await self.refresh(interaction)
+
+    async def on_drop_now(self, interaction: discord.Interaction) -> None:
+        if not self.search_view.island_name:
+            await interaction.response.defer()
+            return
+        await interaction.response.defer(ephemeral=True)
+        summary = f"{self.current_item.display_name} ×{self.qty}"
+        drop_entries = [(self.drop_hex, self.qty)]
+        embed, ok = await _perform_drop(
+            interaction.user,
+            self.search_view.island_name,
+            drop_entries,
+            heading="⚡ Quick Drop Queued",
+            contents=summary,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def on_add_to_cart(self, interaction: discord.Interaction) -> None:
+        cart = self.search_view.cart
+        new_key = _cart_key(self.current_item)
+        if self.cart_key and self.cart_key in cart and self.cart_key != new_key:
+            cart.pop(self.cart_key, None)
+
+        if len(cart) >= MAX_DROP_SLOTS and new_key not in cart:
+            await self.refresh(interaction, f"⚠️ Cart is full ({MAX_DROP_SLOTS}/{MAX_DROP_SLOTS}). Drop or clear first.")
+            return
+
+        cart[new_key] = _CartEntry(self.current_item, self.qty, self.hex_override)
+        self.cart_key = new_key
+        notice = f"✅ Added **{self.current_item.display_name} ×{self.qty}** to your cart! ({len(cart)}/{MAX_DROP_SLOTS} slots)"
+        await self.refresh(interaction, notice)
+
+    async def on_back_to_search(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        self.search_view._rebuild()
+        await interaction.response.edit_message(embed=self.search_view.build_search_embed(), view=self.search_view)
 
     async def on_custom_hex(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_modal(CartHexModal(self))
+        await interaction.response.send_modal(ItemHexModal(self))
 
     async def on_reset_hex(self, interaction: discord.Interaction) -> None:
-        if self.entry is not None:
-            self.entry.hex_override = None
-        await self.refresh(interaction, "↩️ Custom hex cleared.")
+        self.hex_override = None
+        if self.cart_key and self.cart_key in self.search_view.cart:
+            self.search_view.cart[self.cart_key].hex_override = None
+        await self.refresh(interaction, "↩️ Reset to catalog hex.")
 
-    async def on_remove(self, interaction: discord.Interaction) -> None:
-        removed = self.search_view.cart.pop(self.key, None)
-        name = removed.item.display_name if removed else "item"
-        await self.back_to_search(interaction, f"🗑️ Removed **{name}** from cart.")
-
-    async def on_done(self, interaction: discord.Interaction) -> None:
-        entry = self.entry
-        notice = f"✅ **{entry.item.display_name}** ×{entry.qty} saved — drops as `{entry.drop_hex}`." if entry else None
-        await self.back_to_search(interaction, notice)
+    async def on_remove_from_cart(self, interaction: discord.Interaction) -> None:
+        cart = self.search_view.cart
+        if self.cart_key and self.cart_key in cart:
+            cart.pop(self.cart_key, None)
+        elif self.current_key in cart:
+            cart.pop(self.current_key, None)
+        self.cart_key = None
+        await self.refresh(interaction, f"🗑️ Removed **{self.current_item.display_name}** from cart.")
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
-        logger.error("[DropBot] CartItemEditorView error: %s", error, exc_info=error)
+        logger.error("[DropBot] ItemDetailView error: %s", error, exc_info=error)
+        await _reply(interaction, "❌ Something went wrong. Please try again.")
+
+
+class CartManagerView(_OwnedView):
+    """Clean Cart overview: lists all items, select one to edit/customize, or drop cart."""
+
+    def __init__(self, search_view: "CatalogSearchView"):
+        super().__init__(user_id=search_view.user_id, timeout=300)
+        self.search_view = search_view
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        cart = self.search_view.cart
+
+        if cart:
+            opts = []
+            for k, e in list(cart.items())[:25]:
+                n_colors = len(_item_variants(e.item))
+                desc = f"×{e.qty} • Hex: {e.drop_hex}"
+                opts.append(
+                    discord.SelectOption(
+                        label=e.item.display_name[:100],
+                        description=desc[:100],
+                        value=k[:100],
+                        emoji="🎨" if n_colors else "📦",
+                    )
+                )
+            sel = discord.ui.Select(
+                placeholder="Tap an item to change color, quantity, or remove…",
+                options=opts,
+                row=0,
+            )
+            sel.callback = self.on_select_item  # type: ignore[assignment]
+            self.add_item(sel)
+
+        n = len(cart)
+        drop_btn = discord.ui.Button(label=f"Drop Cart ({n})", emoji="📦", style=discord.ButtonStyle.success, disabled=n == 0, row=1)
+        drop_btn.callback = self.on_drop_cart  # type: ignore[assignment]
+        self.add_item(drop_btn)
+
+        clear_btn = discord.ui.Button(label="Clear Cart", emoji="🗑️", style=discord.ButtonStyle.danger, disabled=n == 0, row=1)
+        clear_btn.callback = self.on_clear_cart  # type: ignore[assignment]
+        self.add_item(clear_btn)
+
+        back_btn = discord.ui.Button(label="Back to Search", emoji="🔙", style=discord.ButtonStyle.secondary, row=1)
+        back_btn.callback = self.on_back  # type: ignore[assignment]
+        self.add_item(back_btn)
+
+    def build_embed(self, notice: str | None = None) -> discord.Embed:
+        cart = self.search_view.cart
+        lines = []
+        if not cart:
+            lines.append("*Your drop cart is empty. Pick items from the search catalog to add them here.*")
+        else:
+            for idx, (k, e) in enumerate(cart.items(), 1):
+                custom_tag = " `(custom hex)`" if e.hex_override else ""
+                lines.append(f"`{idx:02d}.` **{e.item.display_name}** ×{e.qty} — `{e.drop_hex}`{custom_tag}")
+
+        if self.search_view.island_name:
+            lines.append(f"\n🏝️ **Target island:** [{self.search_view.island_name}]({_island_url(self.search_view.island_name)})")
+
+        desc = "\n".join(lines)
+        if notice:
+            desc = f"{notice}\n\n{desc}"
+
+        embed = discord.Embed(
+            title=f"🛒 Drop Cart ({len(cart)}/{MAX_DROP_SLOTS} Slots)",
+            description=desc,
+            color=PANEL_EMBED_COLOR,
+        )
+        embed.set_footer(text=f"{PANEL_FOOTER_TEXT} • Tap an item above to customize", icon_url=PANEL_FOOTER_ICON)
+        return embed
+
+    async def on_select_item(self, interaction: discord.Interaction) -> None:
+        values = (interaction.data or {}).get("values", [])
+        if not values or values[0] not in self.search_view.cart:
+            await interaction.response.defer()
+            return
+        key = values[0]
+        entry = self.search_view.cart[key]
+        view = ItemDetailView(
+            self.search_view,
+            entry.item,
+            cart_key=key,
+            initial_qty=entry.qty,
+            initial_hex_override=entry.hex_override,
+        )
+        view._orig_interaction = self.search_view._orig_interaction
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+    async def on_drop_cart(self, interaction: discord.Interaction) -> None:
+        await self.search_view.on_drop_cart(interaction)
+
+    async def on_clear_cart(self, interaction: discord.Interaction) -> None:
+        self.search_view.cart.clear()
+        self._rebuild()
+        await interaction.response.edit_message(embed=self.build_embed("🗑️ Cart cleared."), view=self)
+
+    async def on_back(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        self.search_view._rebuild()
+        await interaction.response.edit_message(embed=self.search_view.build_search_embed(), view=self.search_view)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        logger.error("[DropBot] CartManagerView error: %s", error, exc_info=error)
         await _reply(interaction, "❌ Something went wrong. Please try again.")
 
 
@@ -3183,83 +3384,13 @@ class CatalogSearchModal(discord.ui.Modal, title="🔍 Search ACNH Catalog"):
         await _reply(interaction, "❌ Something went wrong while searching the catalog.")
 
 
-class CartEditModal(discord.ui.Modal, title="🛒 Edit Drop Cart"):
-    """Edit quantities in bulk. One 'N. Item: quantity' per line; 0 removes the item."""
-
-    def __init__(self, parent: "CatalogSearchView"):
-        super().__init__()
-        self.parent_view = parent
-        self._keys: list[str] = list(parent.cart.keys())
-        lines = []
-        for idx, key in enumerate(self._keys, 1):
-            e = parent.cart[key]
-            lines.append(f"{idx}. {e.item.display_name}: {e.qty}")
-        self.lines = discord.ui.TextInput(
-            label=f"N. Item: quantity  (1–{MAX_STACK}, 0 removes)",
-            style=discord.TextStyle.paragraph,
-            default="\n".join(lines)[:4000],
-            max_length=4000,
-            required=True,
-        )
-        self.add_item(self.lines)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        cart = self.parent_view.cart
-        updates: dict[str, int] = {}
-        for raw in self.lines.value.splitlines():
-            raw = raw.strip()
-            if not raw:
-                continue
-            name_part, sep, qty_s = raw.rpartition(":")
-            qty_s = qty_s.strip()
-            if not sep or not qty_s.isdigit():
-                await _reply(interaction, embed=_err_embed(f"I couldn't read “{raw[:50]}”. Use `N. Item: quantity`."))
-                return
-            qty = int(qty_s)
-            if qty > MAX_STACK:
-                await _reply(interaction, embed=_err_embed(f"Quantity can't exceed {MAX_STACK}."))
-                return
-            key = None
-            clean_name = name_part.strip()
-            m = re.match(r"^(\d+)\.\s*(.*)$", clean_name)
-            if m:
-                line_idx = int(m.group(1)) - 1
-                if 0 <= line_idx < len(self._keys):
-                    key = self._keys[line_idx]
-                target_name = m.group(2).strip().lower()
-            else:
-                target_name = clean_name.lower()
-            if not key:
-                for k, e in cart.items():
-                    if e.item.display_name.lower() == target_name:
-                        key = k
-                        break
-            if not key or key not in cart:
-                await _reply(interaction, embed=_err_embed(f"I couldn't find “{clean_name[:40]}” in your cart."))
-                return
-            updates[key] = qty
-
-        for key, qty in updates.items():
-            if qty == 0:
-                cart.pop(key, None)
-            else:
-                cart[key].qty = qty
-
-        self.parent_view._rebuild()
-        await interaction.response.edit_message(
-            embed=self.parent_view.build_search_embed("✏️ Cart updated."), view=self.parent_view
-        )
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
-        logger.error("[DropBot] CartEditModal error: %s", error, exc_info=error)
-        await _reply(interaction, "❌ Something went wrong. Please try again.")
-
-
 class CatalogSearchView(_OwnedView):
     """
-    Catalog results with: category filter, pagination, a drop cart (add many items, edit quantities,
-    then one explicit Drop), villager confirm-before-inject, and thumbnails.
-    Without a target island it is read-only (inspect hex codes / villager info).
+    Streamlined Catalog Search View:
+    - Row 0: Tap an item to open ItemDetailView (color, quantity, drop now, add to cart)
+    - Row 1: Category filter OR Villagers select (if matching query)
+    - Row 2: Navigation (◀, 1/N, ▶, Search, Close)
+    - Row 3: Cart bar (Drop Cart, View Cart, Clear) when cart has items
     """
 
     def __init__(
@@ -3354,9 +3485,9 @@ class CatalogSearchView(_OwnedView):
                     )
                 )
             placeholder = (
-                "Add item(s) to your drop cart…"
+                "📦 Select item to customize color, qty, or drop…"
                 if self.island_name
-                else f"Select item(s) to inspect (page {self.page + 1}/{self.total_pages})…"
+                else f"Select item to inspect (page {self.page + 1}/{self.total_pages})…"
             )
             item_select = discord.ui.Select(
                 placeholder=placeholder[:100],
@@ -3368,211 +3499,96 @@ class CatalogSearchView(_OwnedView):
             item_select.callback = self.on_item_select  # type: ignore[assignment]
             self.add_item(item_select)
 
-        if self.cart:
-            # Row 1: Cart item select → opens the per-item editor (color / pattern / qty / hex / remove)
-            cart_opts: list[discord.SelectOption] = []
-            for k, e in list(self.cart.items())[:25]:
-                n_colors = len(_item_variants(e.item))
-                bits = [f"×{e.qty}"]
-                if n_colors:
-                    bits.append(f"🎨 {n_colors} colors")
-                if e.hex_override:
-                    bits.append(f"#{e.hex_override}")
-                bits.append("edit or remove")
-                cart_opts.append(
+        # Row 1: Villagers (page 0) OR Category filter
+        if self.villagers and self.page == 0:
+            v_options = []
+            seen_v: set[str] = set()
+            for idx, v in enumerate(self.villagers[:10]):
+                val = f"v_{v.villager_id}"
+                if val in seen_v:
+                    val = f"{val}_{idx}"
+                seen_v.add(val)
+                v_options.append(
                     discord.SelectOption(
-                        label=e.item.display_name[:100],
-                        description=" • ".join(bits)[:100],
-                        value=k[:100],
-                        emoji="🎨" if n_colors else "🛒",
+                        label=v.display_name[:100],
+                        description=f"ID: {v.villager_id} • {v.personality}"[:100],
+                        value=val[:100],
+                        emoji="🐱",
                     )
                 )
-            rm_select = discord.ui.Select(
-                placeholder="🎨 Change color / hex / qty, or remove a cart item…",
-                options=cart_opts,
+            villager_select = discord.ui.Select(
+                placeholder=(f"🐱 Inject a villager into {self.island_name}…" if self.island_name
+                             else "Select villager to inspect…")[:100],
+                min_values=1,
+                max_values=1,
+                options=v_options[:25],
                 row=1,
             )
-            rm_select.callback = self.on_cart_item_select  # type: ignore[assignment]
-            self.add_item(rm_select)
-
-            # Row 2: Villagers (page 0) or Category filter
-            if self.villagers and self.page == 0:
-                v_options = []
-                seen_v: set[str] = set()
-                for idx, v in enumerate(self.villagers[:10]):
-                    val = f"v_{v.villager_id}"
-                    if val in seen_v:
-                        val = f"{val}_{idx}"
-                    seen_v.add(val)
-                    v_options.append(
-                        discord.SelectOption(
-                            label=v.display_name[:100],
-                            description=f"ID: {v.villager_id} • {v.personality}"[:100],
-                            value=val[:100],
-                            emoji="🐱",
-                        )
-                    )
-                villager_select = discord.ui.Select(
-                    placeholder=(f"Inject a villager into {self.island_name}…" if self.island_name
-                                 else "Select villager to inspect…")[:100],
-                    min_values=1,
-                    max_values=1,
-                    options=v_options[:25],
-                    row=2,
+            villager_select.callback = self.on_villager_select  # type: ignore[assignment]
+            self.add_item(villager_select)
+        elif len(counts) > 1:
+            cat_options = [
+                discord.SelectOption(
+                    label=f"All categories ({len(self.all_items)})", value="__all__", default=self.category is None
                 )
-                villager_select.callback = self.on_villager_select  # type: ignore[assignment]
-                self.add_item(villager_select)
-            elif len(counts) > 1:
-                cat_options = [
+            ]
+            for cat, n in counts.most_common(24):
+                cat_options.append(
                     discord.SelectOption(
-                        label=f"All categories ({len(self.all_items)})", value="__all__", default=self.category is None
+                        label=str(cat)[:100], description=f"{n} item(s)", value=str(cat)[:100],
+                        default=(cat == self.category),
                     )
-                ]
-                for cat, n in counts.most_common(24):
-                    cat_options.append(
-                        discord.SelectOption(
-                            label=str(cat)[:100], description=f"{n} item(s)", value=str(cat)[:100],
-                            default=(cat == self.category),
-                        )
-                    )
-                cat_select = discord.ui.Select(
-                    placeholder="Filter by category…", min_values=1, max_values=1, options=cat_options[:25], row=2
                 )
-                cat_select.callback = self.on_category_select  # type: ignore[assignment]
-                self.add_item(cat_select)
-
-            # Row 3: Navigation buttons
-            prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=self.page <= 0, row=3)
-            prev_btn.callback = self.on_prev_page  # type: ignore[assignment]
-            self.add_item(prev_btn)
-            next_btn = discord.ui.Button(
-                label="▶", style=discord.ButtonStyle.secondary, disabled=self.page >= self.total_pages - 1, row=3
+            cat_select = discord.ui.Select(
+                placeholder="🗂️ Filter by category…", min_values=1, max_values=1, options=cat_options[:25], row=1
             )
-            next_btn.callback = self.on_next_page  # type: ignore[assignment]
-            self.add_item(next_btn)
-            search_btn = discord.ui.Button(label="Search", emoji="🔍", style=discord.ButtonStyle.primary, row=3)
-            search_btn.callback = self.on_search_button  # type: ignore[assignment]
-            self.add_item(search_btn)
-            clear_btn = discord.ui.Button(label="Clear", emoji="🗑️", style=discord.ButtonStyle.danger, row=3)
-            clear_btn.callback = self.on_clear_cart  # type: ignore[assignment]
-            self.add_item(clear_btn)
-            close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=3)
-            close_btn.callback = self.on_close  # type: ignore[assignment]
-            self.add_item(close_btn)
+            cat_select.callback = self.on_category_select  # type: ignore[assignment]
+            self.add_item(cat_select)
 
-            # Row 4: Drop Cart and quantity presets
+        # Row 2: Navigation & Search
+        prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=self.page <= 0, row=2)
+        prev_btn.callback = self.on_prev_page  # type: ignore[assignment]
+        self.add_item(prev_btn)
+
+        page_btn = discord.ui.Button(
+            label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.secondary, disabled=True, row=2
+        )
+        self.add_item(page_btn)
+
+        next_btn = discord.ui.Button(
+            label="▶", style=discord.ButtonStyle.secondary, disabled=self.page >= self.total_pages - 1, row=2
+        )
+        next_btn.callback = self.on_next_page  # type: ignore[assignment]
+        self.add_item(next_btn)
+
+        search_btn = discord.ui.Button(label="Search", emoji="🔍", style=discord.ButtonStyle.primary, row=2)
+        search_btn.callback = self.on_search_button  # type: ignore[assignment]
+        self.add_item(search_btn)
+
+        close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=2)
+        close_btn.callback = self.on_close  # type: ignore[assignment]
+        self.add_item(close_btn)
+
+        # Row 3: Cart Actions (Only shown when cart has items)
+        if self.island_name and self.cart:
             n = len(self.cart)
             drop_btn = discord.ui.Button(
-                label=f"Drop Cart ({n})", emoji="📦", style=discord.ButtonStyle.success, disabled=n == 0, row=4
+                label=f"Drop Cart ({n})", emoji="📦", style=discord.ButtonStyle.success, row=3
             )
             drop_btn.callback = self.on_drop_cart  # type: ignore[assignment]
             self.add_item(drop_btn)
 
-            q1_btn = discord.ui.Button(label="×1", style=discord.ButtonStyle.secondary, row=4)
-            q1_btn.callback = self.on_qty_1  # type: ignore[assignment]
-            self.add_item(q1_btn)
-
-            q10_btn = discord.ui.Button(label="×10", style=discord.ButtonStyle.secondary, row=4)
-            q10_btn.callback = self.on_qty_10  # type: ignore[assignment]
-            self.add_item(q10_btn)
-
-            qmax_btn = discord.ui.Button(label=f"×{MAX_STACK}", style=discord.ButtonStyle.secondary, row=4)
-            qmax_btn.callback = self.on_qty_max  # type: ignore[assignment]
-            self.add_item(qmax_btn)
-
-            edit_btn = discord.ui.Button(label="Edit", emoji="✏️", style=discord.ButtonStyle.secondary, row=4)
-            edit_btn.callback = self.on_edit_cart  # type: ignore[assignment]
-            self.add_item(edit_btn)
-
-        else:
-            row = 1
-            # Empty cart layout: standard selects and rows
-            if self.villagers and self.page == 0:
-                v_options = []
-                seen_v: set[str] = set()
-                for idx, v in enumerate(self.villagers[:10]):
-                    val = f"v_{v.villager_id}"
-                    if val in seen_v:
-                        val = f"{val}_{idx}"
-                    seen_v.add(val)
-                    v_options.append(
-                        discord.SelectOption(
-                            label=v.display_name[:100],
-                            description=f"ID: {v.villager_id} • {v.personality}"[:100],
-                            value=val[:100],
-                            emoji="🐱",
-                        )
-                    )
-                villager_select = discord.ui.Select(
-                    placeholder=(f"Inject a villager into {self.island_name}…" if self.island_name
-                                 else "Select villager to inspect…")[:100],
-                    min_values=1,
-                    max_values=1,
-                    options=v_options[:25],
-                    row=row,
-                )
-                villager_select.callback = self.on_villager_select  # type: ignore[assignment]
-                self.add_item(villager_select)
-                row += 1
-
-            if len(counts) > 1 and row < 4:
-                cat_options = [
-                    discord.SelectOption(
-                        label=f"All categories ({len(self.all_items)})", value="__all__", default=self.category is None
-                    )
-                ]
-                for cat, n in counts.most_common(24):
-                    cat_options.append(
-                        discord.SelectOption(
-                            label=str(cat)[:100], description=f"{n} item(s)", value=str(cat)[:100],
-                            default=(cat == self.category),
-                        )
-                    )
-                cat_select = discord.ui.Select(
-                    placeholder="Filter by category…", min_values=1, max_values=1, options=cat_options[:25], row=row
-                )
-                cat_select.callback = self.on_category_select  # type: ignore[assignment]
-                self.add_item(cat_select)
-                row += 1
-
-            nav_row = min(row, 3)
-            prev_btn = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary, disabled=self.page <= 0, row=nav_row)
-            prev_btn.callback = self.on_prev_page  # type: ignore[assignment]
-            self.add_item(prev_btn)
-            self.add_item(
-                discord.ui.Button(
-                    label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.secondary, disabled=True, row=nav_row
-                )
+            view_cart_btn = discord.ui.Button(
+                label="View Cart", emoji="🛒", style=discord.ButtonStyle.primary, row=3
             )
-            next_btn = discord.ui.Button(
-                label="▶", style=discord.ButtonStyle.secondary, disabled=self.page >= self.total_pages - 1, row=nav_row
-            )
-            next_btn.callback = self.on_next_page  # type: ignore[assignment]
-            self.add_item(next_btn)
-            search_btn = discord.ui.Button(label="Search", emoji="🔍", style=discord.ButtonStyle.primary, row=nav_row)
-            search_btn.callback = self.on_search_button  # type: ignore[assignment]
-            self.add_item(search_btn)
-            close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=nav_row)
-            close_btn.callback = self.on_close  # type: ignore[assignment]
-            self.add_item(close_btn)
+            view_cart_btn.callback = self.on_open_cart_manager  # type: ignore[assignment]
+            self.add_item(view_cart_btn)
 
-            if self.island_name and nav_row < 4:
-                cart_row = nav_row + 1
-                drop_btn = discord.ui.Button(
-                    label="Drop Cart (0)", emoji="📦", style=discord.ButtonStyle.success, disabled=True, row=cart_row
-                )
-                drop_btn.callback = self.on_drop_cart  # type: ignore[assignment]
-                self.add_item(drop_btn)
-                edit_btn = discord.ui.Button(
-                    label="Edit Qty", emoji="✏️", style=discord.ButtonStyle.secondary, disabled=True, row=cart_row
-                )
-                edit_btn.callback = self.on_edit_cart  # type: ignore[assignment]
-                self.add_item(edit_btn)
-                clear_btn = discord.ui.Button(
-                    label="Clear", emoji="🗑️", style=discord.ButtonStyle.danger, disabled=True, row=cart_row
-                )
-                clear_btn.callback = self.on_clear_cart  # type: ignore[assignment]
-                self.add_item(clear_btn)
+            clear_btn = discord.ui.Button(
+                label="Clear", emoji="🗑️", style=discord.ButtonStyle.danger, row=3
+            )
+            clear_btn.callback = self.on_clear_cart  # type: ignore[assignment]
+            self.add_item(clear_btn)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if self.user_id and interaction.user.id != self.user_id:
@@ -3591,9 +3607,9 @@ class CatalogSearchView(_OwnedView):
             desc += f"\n🏝️ **Target island:** [{self.island_name}]({_island_url(self.island_name)})"
             if self._presence_status:
                 desc += f"\n📍 **Presence:** {self._presence_status}"
-            desc += "\n*Pick items to add them to your cart, then press **Drop Cart**.*"
+            desc += "\n*Tap an item below to pick color, stack size, and drop or add to cart.*"
         else:
-            desc += "\n*Use the dropdowns to inspect items and villagers.*"
+            desc += "\n*Select an item below to inspect variations and hex codes.*"
         if notice:
             desc = f"{notice}\n\n{desc}"
 
@@ -3610,9 +3626,11 @@ class CatalogSearchView(_OwnedView):
             for i, it in enumerate(page_items, start_num):
                 cart_mark = "🛒 " if _cart_key(it) in self.cart else ""
                 diy_badge = " *(DIY)*" if it.diy else ""
+                n_colors = len(_item_variants(it))
+                color_badge = f" • *{n_colors} colors*" if n_colors > 1 else ""
                 hex_code = it.to_hex()
                 hex_part = f" • `{hex_code}`" if (hex_code and self.is_staff) else ""
-                lines.append(f"`{i:02d}.` {cart_mark}**{it.display_name}**{diy_badge} — `{it.category}`{hex_part}")
+                lines.append(f"`{i:02d}.` {cart_mark}**{it.display_name}**{diy_badge} — `{it.category}`{color_badge}{hex_part}")
 
             chunk: list[str] = []
             c_len = 0
@@ -3643,8 +3661,8 @@ class CatalogSearchView(_OwnedView):
                 for e in self.cart.values()
             )
             embed.add_field(
-                name=f"🛒 Drop Cart ({len(self.cart)}/{MAX_DROP_SLOTS})",
-                value=cart_summary[:1024],
+                name=f"🛒 Drop Cart ({len(self.cart)}/{MAX_DROP_SLOTS} slots)",
+                value=f"{cart_summary[:950]}\n*Press **Drop Cart** to drop all, or **View Cart** to customize.*",
                 inline=False,
             )
 
@@ -3689,9 +3707,13 @@ class CatalogSearchView(_OwnedView):
         except discord.HTTPException:
             pass
 
-    # ── items ──
+    # ── item selection ──
     async def on_item_select(self, interaction: discord.Interaction) -> None:
         values = (interaction.data or {}).get("values", [])
+        if not values:
+            await interaction.response.defer()
+            return
+
         chosen: list[CatalogItem] = []
         for val in values:
             it = self._items_by_key.get(val)
@@ -3709,6 +3731,24 @@ class CatalogSearchView(_OwnedView):
             await interaction.response.defer()
             return
 
+        # Single item selected → Open Item Detail Card immediately (ChoPaeng Command Builder style!)
+        if len(chosen) == 1:
+            it = chosen[0]
+            cart_key = _cart_key(it)
+            initial_qty = self.cart[cart_key].qty if cart_key in self.cart else _default_qty(it)
+            initial_hex = self.cart[cart_key].hex_override if cart_key in self.cart else None
+            detail_view = ItemDetailView(
+                self,
+                it,
+                cart_key=cart_key if cart_key in self.cart else None,
+                initial_qty=initial_qty,
+                initial_hex_override=initial_hex,
+            )
+            detail_view._orig_interaction = self._orig_interaction
+            await interaction.response.edit_message(embed=detail_view.build_embed(), view=detail_view)
+            return
+
+        # Multiple items selected → Batch add directly to cart
         if self.island_name:
             added, already, skipped = 0, 0, 0
             for it in chosen:
@@ -3722,17 +3762,15 @@ class CatalogSearchView(_OwnedView):
                     added += 1
             notes = []
             if added:
-                notes.append(f"🛒 Added **{added}** item(s) to your cart. *(Default stack amounts added — use **Edit** or **×1/×10/×Max** to adjust)*")
+                notes.append(f"🛒 Added **{added}** items to your drop cart.")
             if already:
                 notes.append(f"{already} already in cart.")
             if skipped:
-                notes.append(f"⚠️ Cart is full ({MAX_DROP_SLOTS} max) — {skipped} not added.")
-            if added and any(_item_variants(it) for it in chosen):
-                notes.append("\n🎨 Some items come in other colors — pick them in the **cart menu** to change color.")
+                notes.append(f"⚠️ Cart full — {skipped} skipped.")
             await self._refresh(interaction, " ".join(notes))
             return
 
-        # Inspect mode (no target island)
+        # Inspect mode with multiple selections (no island)
         embed = discord.Embed(
             title=f"📦 Selected Items ({len(chosen)})",
             description="Catalog details and hex codes for your selection:",
@@ -3744,7 +3782,7 @@ class CatalogSearchView(_OwnedView):
             value = f"• Category: `{it.category}`\n• Hex Code: `{hex_code}`\n• Stack Size: `{it.stack_size}`"
             variants = _item_variants(it)
             if variants:
-                colors = ", ".join(f"{v.item.variation} `{v.item.to_hex()}`" for v in variants)
+                colors = ", ".join(f"{v.item.variation} `{v.item.to_hex()}`" for v in variants[:8])
                 value += f"\n• Colors ({len(variants)}): {colors}"
             embed.add_field(
                 name=f"{it.display_name}{diy_txt}",
@@ -3753,52 +3791,14 @@ class CatalogSearchView(_OwnedView):
             )
         if chosen[0].image_url:
             embed.set_thumbnail(url=chosen[0].image_url)
-        embed.set_footer(
-            text="💡 Tip: use /catalog inside an island channel, or the Search Catalog button on a panel, to drop directly."
-        )
+        embed.set_footer(text="💡 Tip: Tap a single item to view its dedicated customizer.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ── cart ──
-    async def on_edit_cart(self, interaction: discord.Interaction) -> None:
-        if not self.cart:
-            await interaction.response.defer()
-            return
-        await interaction.response.send_modal(CartEditModal(self))
-
-    async def on_cart_item_select(self, interaction: discord.Interaction) -> None:
-        """Open the per-item editor (color / pattern / qty / custom hex / remove) in place."""
-        values = (interaction.data or {}).get("values", [])
-        if not values or values[0] not in self.cart:
-            await interaction.response.defer()
-            return
-        editor = CartItemEditorView(self, values[0])
-        editor._orig_interaction = self._orig_interaction
-        await interaction.response.edit_message(embed=editor.build_embed(), view=editor)
-
-    async def on_remove_item(self, interaction: discord.Interaction) -> None:
-        values = (interaction.data or {}).get("values", [])
-        if values and values[0] in self.cart:
-            removed = self.cart.pop(values[0])
-            await self._refresh(interaction, f"🗑️ Removed **{removed.item.display_name}** from cart.")
-        else:
-            await interaction.response.defer()
-
-    async def on_qty_1(self, interaction: discord.Interaction) -> None:
-        await self._set_all_qty(interaction, 1)
-
-    async def on_qty_10(self, interaction: discord.Interaction) -> None:
-        await self._set_all_qty(interaction, 10)
-
-    async def on_qty_max(self, interaction: discord.Interaction) -> None:
-        await self._set_all_qty(interaction, MAX_STACK)
-
-    async def _set_all_qty(self, interaction: discord.Interaction, qty: int) -> None:
-        if not self.cart:
-            await interaction.response.defer()
-            return
-        for e in self.cart.values():
-            e.qty = qty
-        await self._refresh(interaction, f"✏️ Set all cart items to ×{qty}.")
+    # ── cart actions ──
+    async def on_open_cart_manager(self, interaction: discord.Interaction) -> None:
+        cart_view = CartManagerView(self)
+        cart_view._orig_interaction = self._orig_interaction
+        await interaction.response.edit_message(embed=cart_view.build_embed(), view=cart_view)
 
     async def on_clear_cart(self, interaction: discord.Interaction) -> None:
         self.cart.clear()
@@ -3810,7 +3810,7 @@ class CatalogSearchView(_OwnedView):
             return
         self._busy = True
         try:
-            await interaction.response.defer()   # silent ack; we edit the search message below
+            await interaction.response.defer()
             self._presence_status = await _presence_line(interaction.user, self.island_name)
             entries = list(self.cart.values())
             drop_entries = [(e.drop_hex, e.qty) for e in entries]
