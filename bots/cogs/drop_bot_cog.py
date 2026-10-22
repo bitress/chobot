@@ -4,7 +4,8 @@ DropBot Cog — Integrated island control panels for Discord.
 Provides persistent, interaction-only UI panels in sub-island channels:
   • 🦤 Get Dodo        – fetches the live Dodo from SysBot, sends it ephemerally, logs to webhook
   • 📦 Drop Items      – modal for custom item/hex code drops (validated)
-  • 🔍 Search Catalog  – browse the ACNH catalog, build a drop cart, inject villagers
+  • 🔍 Search Catalog  – browse the ACNH catalog, build a drop cart (pick item colors/patterns,
+                         which re-computes the dropped hex, or set a custom hex), inject villagers
   • 🐱 Inject Villager – modal with fuzzy villager matching and a confirm step
   • 📖 Guide           – ephemeral how-to for the island panel
   • 🌐 Island Page     – link button to the island's page on chopaeng.com
@@ -1435,6 +1436,8 @@ def _build_guide_embed(island: str) -> discord.Embed:
         value=(
             "Search by item or villager name. Pick items to add them to your **drop cart**, "
             "tweak amounts with **Edit Qty**, then press **Drop Cart**. "
+            "Pick an item in the cart menu to **change its color/pattern** (the hex updates "
+            "automatically) or set a **custom hex**. "
             "Use the category menu to narrow results. Your cart survives new searches."
         ),
         inline=False,
@@ -2680,6 +2683,11 @@ class VillagerChoiceView(_OwnedView):
 class _CartEntry:
     item: CatalogItem
     qty: int
+    hex_override: str | None = None   # hand-typed hex; wins over the catalog hex when dropping
+
+    @property
+    def drop_hex(self) -> str:
+        return self.hex_override or self.item.to_hex() or self.item.internal_id or self.item.name
 
 
 def _default_qty(it: CatalogItem) -> int:
@@ -2697,6 +2705,414 @@ def _cart_key(it: CatalogItem) -> str:
     if it.internal_id or it.variant_id or it.variation:
         return f"{it.internal_id}:{it.variant_id or it.variation or ''}"
     return f"it_{abs(hash((it.name, it.category))):08x}"
+
+
+# ─── Item colours / patterns (mirrors the chopaeng.com Command Builder) ───────
+
+_PATTERN_VARIANT_RE = re.compile(r"^\d+_\d+$")
+_HEX_INPUT_RE = re.compile(r"^(?:[0-9A-F]{4}|[0-9A-F]{16})$")
+_NO_PATTERN_LABEL = "Default"
+
+
+@dataclass
+class _Variant:
+    item: CatalogItem   # a CatalogItem for exactly this colour/pattern (its to_hex() is the drop hex)
+    body: str           # colour name, e.g. "Silver"
+    pattern: str        # pattern name, "" when the variant has none
+
+
+def _clean_variant_text(value: Any) -> str:
+    s = str(value or "").strip()
+    return "" if s.upper() in ("NA", "NONE") else s
+
+
+def _item_variants(it: CatalogItem) -> list[_Variant]:
+    """
+    Every colour/pattern of `it`, or [] if it only comes in one look.
+    Hex rules match the web Command Builder (generateFullItemHex):
+      • pattern variants ("body_pattern", e.g. "1_3") share one internal id and are encoded
+        into a 16-char hex (0000<variant>0000<id>, fences use their own layout);
+      • colours with their own internal id (clothing, accessories…) drop as that 4-char id.
+    """
+    if it.category == "Recipes":
+        return []
+    raw = it.raw_data or {}
+    variations = raw.get("variations") or []
+    if len(variations) < 2:
+        return []
+
+    base_name = raw.get("name") or it.name
+    out: list[_Variant] = []
+    for v in variations:
+        if not isinstance(v, dict):
+            continue
+        raw_id = v.get("internalId", raw.get("internalId"))
+        if raw_id is None:
+            continue
+        try:
+            internal_id = f"{int(raw_id):04X}"
+        except (TypeError, ValueError):
+            internal_id = str(raw_id).strip().upper().zfill(4)
+
+        body = _clean_variant_text(v.get("variation"))
+        pattern = _clean_variant_text(v.get("pattern"))
+        label = f"{body} / {pattern}" if body and pattern else (body or pattern)
+        vid = str(v.get("variantId") or "").strip()
+
+        out.append(_Variant(
+            item=CatalogItem(
+                name=base_name,
+                category=it.category,
+                internal_id=internal_id,
+                image_url=v.get("image") or v.get("storageImage") or v.get("closetImage") or it.image_url,
+                variation=label,
+                variant_id=vid if _PATTERN_VARIANT_RE.match(vid) else "NA",
+                stack_size=it.stack_size,
+                diy=it.diy,
+                raw_data=raw,
+            ),
+            body=body or _NO_PATTERN_LABEL,
+            pattern=pattern,
+        ))
+    return out if len(out) > 1 else []
+
+
+def _match_variant_index(it: CatalogItem, variants: list[_Variant]) -> int:
+    """Index of the variant `it` currently represents (0 if it can't be told apart)."""
+    hx = it.to_hex()
+    for i, v in enumerate(variants):
+        if v.item.to_hex() == hx:
+            return i
+    cur = (it.variation or "").strip().lower()
+    for i, v in enumerate(variants):
+        if v.item.internal_id == it.internal_id and v.item.variation.lower() == cur:
+            return i
+    for i, v in enumerate(variants):
+        if v.item.internal_id == it.internal_id:
+            return i
+    return 0
+
+
+def _unique(seq: list[str]) -> list[str]:
+    return list(dict.fromkeys(seq))
+
+
+class CartHexModal(discord.ui.Modal, title="#️⃣ Custom Item Hex"):
+    """Override the hex that a single cart item drops as. Blank resets to the catalog hex."""
+
+    def __init__(self, editor: "CartItemEditorView"):
+        super().__init__()
+        self.editor = editor
+        entry = editor.entry
+        current = entry.drop_hex if entry else ""
+        self.hex_input = discord.ui.TextInput(
+            label="Hex ID to drop (4 or 16 characters)",
+            placeholder="e.g. 0B64 or 0000002000003A5E (blank = reset)",
+            default=current or None,
+            max_length=24,
+            required=False,
+        )
+        self.add_item(self.hex_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        entry = self.editor.entry
+        if entry is None:
+            await self.editor.back_to_search(interaction, "⚠️ That item is no longer in your cart.")
+            return
+        raw = re.sub(r"[\s_\-]", "", self.hex_input.value or "").upper()
+        if raw.startswith("0X"):
+            raw = raw[2:]
+        catalog_hex = (entry.item.to_hex() or "").upper()
+        if not raw or raw == catalog_hex:
+            entry.hex_override = None
+            notice = f"↩️ Using the catalog hex `{catalog_hex or entry.drop_hex}`."
+        elif not _HEX_INPUT_RE.match(raw):
+            await _reply(interaction, embed=_err_embed(
+                f"`{raw[:24]}` isn't a valid item hex.",
+                hint="Use exactly **4** or **16** hex characters (0–9, A–F), e.g. `0B64` or `0000002000003A5E`.",
+            ))
+            return
+        else:
+            entry.hex_override = raw
+            notice = f"#️⃣ This item will now drop as `{raw}`."
+        await self.editor.refresh(interaction, notice)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logger.error("[DropBot] CartHexModal error: %s", error, exc_info=error)
+        await _reply(interaction, "❌ Something went wrong. Please try again.")
+
+
+class CartItemEditorView(_OwnedView):
+    """
+    Per-item cart editor shown in place of the catalog view: pick colour and pattern
+    (which re-computes the hex that gets dropped), adjust quantity, set a custom hex, or remove.
+    """
+
+    def __init__(self, search_view: "CatalogSearchView", key: str):
+        super().__init__(user_id=search_view.user_id, timeout=300)
+        self.search_view = search_view
+        self.key = key
+        entry = self.entry
+        self.variants: list[_Variant] = _item_variants(entry.item) if entry else []
+        self._rebuild()
+
+    # ── state ──
+    @property
+    def entry(self) -> _CartEntry | None:
+        return self.search_view.cart.get(self.key)
+
+    def _current(self) -> _Variant | None:
+        entry = self.entry
+        if not entry or not self.variants:
+            return None
+        return self.variants[_match_variant_index(entry.item, self.variants)]
+
+    @property
+    def bodies(self) -> list[str]:
+        return _unique([v.body for v in self.variants])
+
+    @property
+    def patterns(self) -> list[str]:
+        return _unique([v.pattern for v in self.variants])
+
+    def _find(self, body: str, pattern: str) -> _Variant | None:
+        exact = next((v for v in self.variants if v.body == body and v.pattern == pattern), None)
+        if exact:
+            return exact
+        return next((v for v in self.variants if v.body == body), None) if body else \
+            next((v for v in self.variants if v.pattern == pattern), None)
+
+    def _apply_variant(self, variant: _Variant) -> str:
+        """Swap the cart entry to `variant`, re-keying the cart (keeps order). Returns a notice."""
+        cart = self.search_view.cart
+        entry = cart.get(self.key)
+        if entry is None:
+            return "⚠️ That item is no longer in your cart."
+        new_item = variant.item
+        new_key = _cart_key(new_item)
+        label = new_item.variation or new_item.name
+
+        if new_key == self.key:
+            entry.item = new_item
+            entry.hex_override = None
+            return f"🎨 Switched to **{label}**."
+
+        if new_key in cart:   # that colour is already in the cart: merge quantities
+            other = cart[new_key]
+            other.qty = min(MAX_STACK, other.qty + entry.qty)
+            other.hex_override = None
+            cart.pop(self.key, None)
+            self.key = new_key
+            return f"🎨 **{label}** was already in your cart — quantities merged (×{other.qty})."
+
+        entries = list(cart.items())
+        cart.clear()
+        for k, e in entries:
+            if k == self.key:
+                e.item = new_item
+                e.hex_override = None   # a picked colour replaces any hand-typed hex
+                cart[new_key] = e
+            else:
+                cart[k] = e
+        self.key = new_key
+        return f"🎨 Switched to **{label}** — hex `{new_item.to_hex()}`."
+
+    # ── components ──
+    def _rebuild(self) -> None:
+        self.clear_items()
+        entry = self.entry
+        if entry is None:
+            return
+        cur = self._current()
+        bodies, patterns = self.bodies, self.patterns
+
+        if len(bodies) > 1:
+            opts = []
+            for idx, body in enumerate(bodies[:25]):
+                sample = next(v for v in self.variants if v.body == body)
+                opts.append(discord.SelectOption(
+                    label=body[:100],
+                    value=str(idx),
+                    description=(f"Hex {sample.item.to_hex()}" if not sample.pattern or len(patterns) <= 1
+                                 else f"{sum(1 for v in self.variants if v.body == body)} pattern(s)")[:100],
+                    default=bool(cur and cur.body == body),
+                ))
+            sel = discord.ui.Select(placeholder=f"🎨 Color: {cur.body if cur else 'pick one'}"[:100],
+                                    options=opts, row=0)
+            sel.callback = self.on_body_select  # type: ignore[assignment]
+            self.add_item(sel)
+
+        if len(patterns) > 1:
+            opts = []
+            for idx, pat in enumerate(patterns[:25]):
+                opts.append(discord.SelectOption(
+                    label=(pat or _NO_PATTERN_LABEL)[:100],
+                    value=str(idx),
+                    default=bool(cur and cur.pattern == pat),
+                ))
+            sel = discord.ui.Select(
+                placeholder=f"🖌️ Pattern: {(cur.pattern or _NO_PATTERN_LABEL) if cur else 'pick one'}"[:100],
+                options=opts, row=1,
+            )
+            sel.callback = self.on_pattern_select  # type: ignore[assignment]
+            self.add_item(sel)
+
+        minus = discord.ui.Button(label="−", style=discord.ButtonStyle.secondary, disabled=entry.qty <= 1, row=2)
+        minus.callback = self.on_minus  # type: ignore[assignment]
+        self.add_item(minus)
+        self.add_item(discord.ui.Button(label=f"×{entry.qty}", style=discord.ButtonStyle.secondary, disabled=True, row=2))
+        plus = discord.ui.Button(label="+", style=discord.ButtonStyle.secondary, disabled=entry.qty >= MAX_STACK, row=2)
+        plus.callback = self.on_plus  # type: ignore[assignment]
+        self.add_item(plus)
+        one = discord.ui.Button(label="×1", style=discord.ButtonStyle.secondary, disabled=entry.qty == 1, row=2)
+        one.callback = self.on_qty_one  # type: ignore[assignment]
+        self.add_item(one)
+        mx = discord.ui.Button(label=f"×{MAX_STACK}", style=discord.ButtonStyle.secondary,
+                               disabled=entry.qty >= MAX_STACK, row=2)
+        mx.callback = self.on_qty_max  # type: ignore[assignment]
+        self.add_item(mx)
+
+        done = discord.ui.Button(label="Done", emoji="✅", style=discord.ButtonStyle.success, row=3)
+        done.callback = self.on_done  # type: ignore[assignment]
+        self.add_item(done)
+        hex_btn = discord.ui.Button(label="Custom Hex", emoji="#️⃣", style=discord.ButtonStyle.primary, row=3)
+        hex_btn.callback = self.on_custom_hex  # type: ignore[assignment]
+        self.add_item(hex_btn)
+        if entry.hex_override:
+            reset = discord.ui.Button(label="Reset Hex", emoji="↩️", style=discord.ButtonStyle.secondary, row=3)
+            reset.callback = self.on_reset_hex  # type: ignore[assignment]
+            self.add_item(reset)
+        remove = discord.ui.Button(label="Remove", emoji="🗑️", style=discord.ButtonStyle.danger, row=3)
+        remove.callback = self.on_remove  # type: ignore[assignment]
+        self.add_item(remove)
+
+    # ── embed ──
+    def build_embed(self, notice: str | None = None) -> discord.Embed:
+        entry = self.entry
+        if entry is None:
+            return _err_embed("That item is no longer in your cart.")
+        it = entry.item
+        cur = self._current()
+        lines = [f"**Item:** {it.name}"]
+        if cur:
+            lines.append(f"**Color:** {cur.body}")
+            if len(self.patterns) > 1:
+                lines.append(f"**Pattern:** {cur.pattern or _NO_PATTERN_LABEL}")
+        lines.append(f"**Quantity:** ×{entry.qty}")
+        hex_line = f"**Hex to drop:** `{entry.drop_hex}`"
+        if entry.hex_override:
+            hex_line += f" *(custom — catalog hex is `{it.to_hex() or '—'}`)*"
+        lines.append(hex_line)
+        if self.search_view.island_name:
+            lines.append(f"🏝️ **Island:** [{self.search_view.island_name}]({_island_url(self.search_view.island_name)})")
+        if not self.variants:
+            lines.append("\n*This item only comes in one look — you can still set a custom hex.*")
+        else:
+            lines.append("\n*Pick a color/pattern below; the hex updates automatically.*")
+        desc = "\n".join(lines)
+        if notice:
+            desc = f"{notice}\n\n{desc}"
+
+        embed = discord.Embed(title=f"🎨 Customize — {it.display_name}"[:256], description=desc, color=PANEL_EMBED_COLOR)
+        if len(self.bodies) > 1:
+            embed.add_field(
+                name=f"🎨 Colors ({len(self.bodies)})",
+                value=" · ".join(f"**▸{b}**" if cur and b == cur.body else b for b in self.bodies)[:1024],
+                inline=False,
+            )
+        if len(self.patterns) > 1:
+            embed.add_field(
+                name=f"🖌️ Patterns ({len(self.patterns)})",
+                value=" · ".join(
+                    f"**▸{p or _NO_PATTERN_LABEL}**" if cur and p == cur.pattern else (p or _NO_PATTERN_LABEL)
+                    for p in self.patterns
+                )[:1024],
+                inline=False,
+            )
+        if it.image_url:
+            embed.set_thumbnail(url=it.image_url)
+        embed.set_footer(text=f"{PANEL_FOOTER_TEXT} • Cart {len(self.search_view.cart)}/{MAX_DROP_SLOTS}",
+                         icon_url=PANEL_FOOTER_ICON)
+        return embed
+
+    async def refresh(self, interaction: discord.Interaction, notice: str | None = None) -> None:
+        if self.entry is None:
+            await self.back_to_search(interaction, "⚠️ That item is no longer in your cart.")
+            return
+        self._rebuild()
+        await interaction.response.edit_message(embed=self.build_embed(notice), view=self)
+
+    async def back_to_search(self, interaction: discord.Interaction, notice: str | None = None) -> None:
+        self.stop()
+        self.search_view._rebuild()
+        await interaction.response.edit_message(embed=self.search_view.build_search_embed(notice), view=self.search_view)
+
+    # ── handlers ──
+    async def on_body_select(self, interaction: discord.Interaction) -> None:
+        val = (interaction.data or {}).get("values", ["0"])[0]
+        bodies = self.bodies
+        try:
+            body = bodies[int(val)]
+        except (ValueError, IndexError):
+            await interaction.response.defer()
+            return
+        cur = self._current()
+        variant = self._find(body, cur.pattern if cur else "")
+        await self.refresh(interaction, self._apply_variant(variant) if variant else None)
+
+    async def on_pattern_select(self, interaction: discord.Interaction) -> None:
+        val = (interaction.data or {}).get("values", ["0"])[0]
+        patterns = self.patterns
+        try:
+            pattern = patterns[int(val)]
+        except (ValueError, IndexError):
+            await interaction.response.defer()
+            return
+        cur = self._current()
+        body = cur.body if cur else ""
+        variant = next((v for v in self.variants if v.body == body and v.pattern == pattern), None) \
+            or next((v for v in self.variants if v.pattern == pattern), None)
+        await self.refresh(interaction, self._apply_variant(variant) if variant else None)
+
+    async def _set_qty(self, interaction: discord.Interaction, qty: int) -> None:
+        entry = self.entry
+        if entry is not None:
+            entry.qty = max(1, min(MAX_STACK, qty))
+        await self.refresh(interaction)
+
+    async def on_minus(self, interaction: discord.Interaction) -> None:
+        await self._set_qty(interaction, (self.entry.qty if self.entry else 1) - 1)
+
+    async def on_plus(self, interaction: discord.Interaction) -> None:
+        await self._set_qty(interaction, (self.entry.qty if self.entry else 1) + 1)
+
+    async def on_qty_one(self, interaction: discord.Interaction) -> None:
+        await self._set_qty(interaction, 1)
+
+    async def on_qty_max(self, interaction: discord.Interaction) -> None:
+        await self._set_qty(interaction, MAX_STACK)
+
+    async def on_custom_hex(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(CartHexModal(self))
+
+    async def on_reset_hex(self, interaction: discord.Interaction) -> None:
+        if self.entry is not None:
+            self.entry.hex_override = None
+        await self.refresh(interaction, "↩️ Custom hex cleared.")
+
+    async def on_remove(self, interaction: discord.Interaction) -> None:
+        removed = self.search_view.cart.pop(self.key, None)
+        name = removed.item.display_name if removed else "item"
+        await self.back_to_search(interaction, f"🗑️ Removed **{name}** from cart.")
+
+    async def on_done(self, interaction: discord.Interaction) -> None:
+        entry = self.entry
+        notice = f"✅ **{entry.item.display_name}** ×{entry.qty} saved — drops as `{entry.drop_hex}`." if entry else None
+        await self.back_to_search(interaction, notice)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        logger.error("[DropBot] CartItemEditorView error: %s", error, exc_info=error)
+        await _reply(interaction, "❌ Something went wrong. Please try again.")
 
 
 async def _show_catalog(
@@ -2926,6 +3342,9 @@ class CatalogSearchView(_OwnedView):
                     bits.append("✅ In cart")
                 bits.append(str(it.category or "Item"))
                 bits.append(f"×{_default_qty(it)}")
+                n_colors = len(_item_variants(it))
+                if n_colors:
+                    bits.append(f"🎨 {n_colors} colors")
                 options.append(
                     discord.SelectOption(
                         label=it.display_name[:100],
@@ -2950,20 +3369,30 @@ class CatalogSearchView(_OwnedView):
             self.add_item(item_select)
 
         if self.cart:
-            # Row 1: Remove-item select
-            rm_select = discord.ui.Select(
-                placeholder="Remove an item from cart…",
-                options=[
+            # Row 1: Cart item select → opens the per-item editor (color / pattern / qty / hex / remove)
+            cart_opts: list[discord.SelectOption] = []
+            for k, e in list(self.cart.items())[:25]:
+                n_colors = len(_item_variants(e.item))
+                bits = [f"×{e.qty}"]
+                if n_colors:
+                    bits.append(f"🎨 {n_colors} colors")
+                if e.hex_override:
+                    bits.append(f"#{e.hex_override}")
+                bits.append("edit or remove")
+                cart_opts.append(
                     discord.SelectOption(
                         label=e.item.display_name[:100],
-                        description=f"×{e.qty}",
+                        description=" • ".join(bits)[:100],
                         value=k[:100],
+                        emoji="🎨" if n_colors else "🛒",
                     )
-                    for k, e in list(self.cart.items())[:25]
-                ],
+                )
+            rm_select = discord.ui.Select(
+                placeholder="🎨 Change color / hex / qty, or remove a cart item…",
+                options=cart_opts,
                 row=1,
             )
-            rm_select.callback = self.on_remove_item  # type: ignore[assignment]
+            rm_select.callback = self.on_cart_item_select  # type: ignore[assignment]
             self.add_item(rm_select)
 
             # Row 2: Villagers (page 0) or Category filter
@@ -3209,7 +3638,10 @@ class CatalogSearchView(_OwnedView):
             embed.add_field(name="🐱 Matching Villagers", value="\n".join(v_lines)[:1024], inline=False)
 
         if self.island_name and self.cart:
-            cart_summary = ", ".join(f"**{e.item.display_name}** ×{e.qty}" for e in self.cart.values())
+            cart_summary = ", ".join(
+                f"**{e.item.display_name}** ×{e.qty}" + (f" `#{e.hex_override}`" if e.hex_override else "")
+                for e in self.cart.values()
+            )
             embed.add_field(
                 name=f"🛒 Drop Cart ({len(self.cart)}/{MAX_DROP_SLOTS})",
                 value=cart_summary[:1024],
@@ -3295,6 +3727,8 @@ class CatalogSearchView(_OwnedView):
                 notes.append(f"{already} already in cart.")
             if skipped:
                 notes.append(f"⚠️ Cart is full ({MAX_DROP_SLOTS} max) — {skipped} not added.")
+            if added and any(_item_variants(it) for it in chosen):
+                notes.append("\n🎨 Some items come in other colors — pick them in the **cart menu** to change color.")
             await self._refresh(interaction, " ".join(notes))
             return
 
@@ -3307,9 +3741,14 @@ class CatalogSearchView(_OwnedView):
         for it in chosen:
             diy_txt = " *(DIY Recipe)*" if it.diy else ""
             hex_code = it.to_hex() or it.internal_id or "N/A"
+            value = f"• Category: `{it.category}`\n• Hex Code: `{hex_code}`\n• Stack Size: `{it.stack_size}`"
+            variants = _item_variants(it)
+            if variants:
+                colors = ", ".join(f"{v.item.variation} `{v.item.to_hex()}`" for v in variants)
+                value += f"\n• Colors ({len(variants)}): {colors}"
             embed.add_field(
                 name=f"{it.display_name}{diy_txt}",
-                value=f"• Category: `{it.category}`\n• Hex Code: `{hex_code}`\n• Stack Size: `{it.stack_size}`",
+                value=value[:1024],
                 inline=False,
             )
         if chosen[0].image_url:
@@ -3325,6 +3764,16 @@ class CatalogSearchView(_OwnedView):
             await interaction.response.defer()
             return
         await interaction.response.send_modal(CartEditModal(self))
+
+    async def on_cart_item_select(self, interaction: discord.Interaction) -> None:
+        """Open the per-item editor (color / pattern / qty / custom hex / remove) in place."""
+        values = (interaction.data or {}).get("values", [])
+        if not values or values[0] not in self.cart:
+            await interaction.response.defer()
+            return
+        editor = CartItemEditorView(self, values[0])
+        editor._orig_interaction = self._orig_interaction
+        await interaction.response.edit_message(embed=editor.build_embed(), view=editor)
 
     async def on_remove_item(self, interaction: discord.Interaction) -> None:
         values = (interaction.data or {}).get("values", [])
@@ -3364,10 +3813,7 @@ class CatalogSearchView(_OwnedView):
             await interaction.response.defer()   # silent ack; we edit the search message below
             self._presence_status = await _presence_line(interaction.user, self.island_name)
             entries = list(self.cart.values())
-            drop_entries = [
-                (e.item.to_hex() or e.item.internal_id or e.item.name, e.qty)
-                for e in entries
-            ]
+            drop_entries = [(e.drop_hex, e.qty) for e in entries]
             summary = ", ".join(f"{e.item.display_name} ×{e.qty}" for e in entries)
             embed, ok = await _perform_drop(
                 interaction.user,
