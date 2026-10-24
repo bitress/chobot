@@ -487,6 +487,10 @@ def _island_url(island: str) -> str:
     return f"{WEBSITE_BASE}/island/{urllib.parse.quote(island.lower(), safe='')}"
 
 
+def _interactive_map_url(island: str) -> str:
+    return f"{WEBSITE_BASE}/interactive-map/{urllib.parse.quote(island.lower(), safe='')}"
+
+
 def _infer_island_from_channel(channel) -> str | None:
     """
     Resolve island name from a Discord channel object (blocking: touches the DB).
@@ -1309,6 +1313,40 @@ async def _presence_line(user: discord.abc.User | None, island: str) -> str:
     return line
 
 
+_ISLAND_DB_INFO_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
+
+
+def _get_island_db_info(island_name: str, ttl: float = 60.0) -> dict[str, str]:
+    """Fetch island description, type, and map_url from the database, cached for `ttl` seconds."""
+    slug = island_name.lower().strip()
+    now = time.monotonic()
+    cached = _ISLAND_DB_INFO_CACHE.get(slug)
+    if cached and now < cached[0]:
+        return cached[1]
+
+    info: dict[str, str] = {"description": "", "type": "", "map_url": ""}
+    try:
+        with connect_db() as conn:
+            row = conn.execute(
+                "SELECT description, type, map_url FROM islands WHERE LOWER(id) = ? OR LOWER(name) = ? LIMIT 1",
+                (slug, slug),
+            ).fetchone()
+            if row:
+                info["description"] = (row.get("description") or "").strip()
+                info["type"] = (row.get("type") or "").strip()
+                info["map_url"] = (row.get("map_url") or "").strip()
+    except Exception as exc:
+        logger.debug("[DropBot] Could not fetch island info for %s from DB: %s", island_name, exc)
+
+    _ISLAND_DB_INFO_CACHE[slug] = (now + ttl, info)
+    return info
+
+
+async def _get_island_db_info_async(island_name: str, ttl: float = 60.0) -> dict[str, str]:
+    """Async wrapper for _get_island_db_info to avoid blocking the event loop."""
+    return await asyncio.to_thread(_get_island_db_info, island_name, ttl)
+
+
 async def _build_panel_embed(island_name: str, status_data: dict | None = None) -> discord.Embed:
     url = _island_url(island_name)
 
@@ -1338,11 +1376,27 @@ async def _build_panel_embed(island_name: str, status_data: dict | None = None) 
         mode          = None
         color         = PANEL_EMBED_COLOR
 
+    db_info = await _get_island_db_info_async(island_name)
+    island_desc = db_info.get("description") or ""
+    island_type = db_info.get("type") or ""
+    db_map_url = db_info.get("map_url") or ""
+
     theme_name = ISLAND_THEMES.get(island_name.lower(), island_name)
+    interactive_url = _interactive_map_url(island_name)
+    header_parts = [f"🏝 **{theme_name} Island**"]
+    if island_type:
+        header_parts.append(f"Type: **{island_type}**")
+    header_parts.append(f"[Island page]({url})")
+    header_parts.append(f"[Interactive Map]({interactive_url})")
+
+    desc_lines = [" · ".join(header_parts)]
+    if island_desc:
+        desc_lines.append(f"\n{island_desc[:1000]}")
+
     embed = discord.Embed(
         title=f"{'🟢' if is_running else '🔴'} {island_name} Map",
         url=url,
-        description=f"🏝 **{theme_name} Island** · [Island page]({url})",
+        description="\n".join(desc_lines),
         color=color,
         timestamp=datetime.now(timezone.utc),
     )
@@ -1365,8 +1419,9 @@ async def _build_panel_embed(island_name: str, status_data: dict | None = None) 
     embed.add_field(name=visitor_title, value=_bullets(visitors, 8), inline=True)
     embed.add_field(name="\u200b", value=f"-# Updated <t:{int(time.time())}:R> · 📖 Guide for help", inline=False)
 
-    # Map image as thumbnail (upper right)
-    embed.set_thumbnail(url=await _map_url_async(island_name))
+    # Map image as thumbnail (upper right): prefer DB map_url if set, otherwise fetch from CDN
+    thumbnail_url = db_map_url if db_map_url else await _map_url_async(island_name)
+    embed.set_thumbnail(url=thumbnail_url)
 
     footer_parts = [PANEL_FOOTER_TEXT]
     if is_nooks_open:
@@ -1399,7 +1454,8 @@ def _build_guide_embed(island: str) -> discord.Embed:
         title=f"📖 DropBot Guide — {island}",
         description=(
             "Everything on this panel is **private to you** — results only show up for you.\n"
-            f"Island page: [{island} on chopaeng.com]({_island_url(island)})\n\n"
+            f"Island page: [{island} on chopaeng.com]({_island_url(island)})\n"
+            f"Interactive map: [{island} map]({_interactive_map_url(island)})\n\n"
             "Click any of the buttons below the island panel to interact with DropBot:"
         ),
         color=PANEL_EMBED_COLOR,
@@ -4578,6 +4634,15 @@ class IslandPanelView(discord.ui.View):
                 emoji="🌐",
                 style=discord.ButtonStyle.link,
                 url=_island_url(island_name),
+                row=1,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Interactive Map",
+                emoji="🗺️",
+                style=discord.ButtonStyle.link,
+                url=_interactive_map_url(island_name),
                 row=1,
             )
         )
