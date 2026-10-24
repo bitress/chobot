@@ -1492,7 +1492,6 @@ async def _build_panel_embed(island_name: str, status_data: dict | None = None) 
         visitors      = []
         game_time     = None
         is_nooks_open = False
-        mode          = None
         color         = PANEL_EMBED_COLOR
 
     db_info = await _get_island_db_info_async(island_name)
@@ -1500,14 +1499,13 @@ async def _build_panel_embed(island_name: str, status_data: dict | None = None) 
     island_type = db_info.get("type") or ""
     db_map_url = db_info.get("map_url") or ""
 
-    interactive_url = _interactive_map_url(island_name)
     header_parts = []
     if island_type:
-        header_parts.append(f"**{island_type}**")
+        header_parts.append(f"🏝 **{island_type}**")
 
     desc_lines = [" · ".join(header_parts)]
     if island_desc:
-        desc_lines.append(f"\n{island_desc[:1000]}")
+        desc_lines.append(island_desc[:1000])
 
     embed = discord.Embed(
         title=f"{'🟢' if is_running else '🔴'} {island_name} Map",
