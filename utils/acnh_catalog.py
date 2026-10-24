@@ -102,6 +102,7 @@ class CatalogItem:
         stack_size: int = 1,
         diy: bool = False,
         raw_data: Optional[Dict[str, Any]] = None,
+        series: Optional[str] = None,
     ):
         self.name = name
         self.category = category
@@ -112,6 +113,7 @@ class CatalogItem:
         self.stack_size = stack_size
         self.diy = diy
         self.raw_data = raw_data or {}
+        self.series = series or ""
 
     @property
     def display_name(self) -> str:
@@ -141,6 +143,7 @@ class CatalogItem:
             "variant_id": self.variant_id,
             "stack_size": self.stack_size,
             "diy": self.diy,
+            "series": self.series,
         }
 
 
@@ -301,6 +304,8 @@ class ACNHCatalog:
         self.villagers: List[CatalogVillager] = []
 
         self._items_by_name: Dict[str, List[CatalogItem]] = {}
+        self._items_by_series: Dict[str, List[CatalogItem]] = {}
+        self._series_list: List[str] = []
         self._villagers_by_name: Dict[str, CatalogVillager] = {}
         self._villagers_by_id: Dict[str, CatalogVillager] = {}
         self._categories: List[str] = []
@@ -384,6 +389,7 @@ class ACNHCatalog:
 
                 diy = bool(it.get("diy"))
                 stack_size = int(it.get("stackSize") or 1)
+                series = str(it.get("series") or "").strip()
 
                 item_obj = CatalogItem(
                     name=name,
@@ -395,6 +401,7 @@ class ACNHCatalog:
                     stack_size=stack_size,
                     diy=diy,
                     raw_data=it,
+                    series=series,
                 )
                 self.items.append(item_obj)
 
@@ -402,6 +409,12 @@ class ACNHCatalog:
                 if norm_name not in self._items_by_name:
                     self._items_by_name[norm_name] = []
                 self._items_by_name[norm_name].append(item_obj)
+
+                if series:
+                    norm_s = self.normalize_text(series)
+                    if norm_s not in self._items_by_series:
+                        self._items_by_series[norm_s] = []
+                    self._items_by_series[norm_s].append(item_obj)
 
             # 2. Load DIY Recipes
             raw_recipes = raw_data.get("recipes", [])
@@ -419,6 +432,7 @@ class ACNHCatalog:
                     internal_id = ""
 
                 image_url = rec.get("image") or rec.get("imageSh") or ""
+                series = str(rec.get("series") or "").strip()
                 item_obj = CatalogItem(
                     name=f"{name} (DIY Recipe)",
                     category="Recipes",
@@ -427,6 +441,7 @@ class ACNHCatalog:
                     stack_size=1,
                     diy=True,
                     raw_data=rec,
+                    series=series,
                 )
                 self.recipes.append(item_obj)
 
@@ -436,6 +451,14 @@ class ACNHCatalog:
                     if key not in self._items_by_name:
                         self._items_by_name[key] = []
                     self._items_by_name[key].append(item_obj)
+
+                if series:
+                    norm_s = self.normalize_text(series)
+                    if norm_s not in self._items_by_series:
+                        self._items_by_series[norm_s] = []
+                    self._items_by_series[norm_s].append(item_obj)
+
+            self._series_list = sorted(list(self._items_by_series.keys()))
 
             # 3. Load Villagers
             raw_villagers = raw_data.get("villagers", [])
@@ -574,11 +597,12 @@ class ACNHCatalog:
 
         for it in dataset:
             it_norm = self.normalize_text(it.name)
-            if it_norm == norm_q:
+            it_series = self.normalize_text(it.series) if it.series else ""
+            if it_norm == norm_q or (it_series and (norm_q == it_series or norm_q in it_series or it_series in norm_q)):
                 exact_matches.append(it)
-            elif it_norm.startswith(norm_q):
+            elif it_norm.startswith(norm_q) or (it_series and it_series.startswith(norm_q)):
                 prefix_matches.append(it)
-            elif norm_q in it_norm:
+            elif norm_q in it_norm or (it_series and norm_q in it_series):
                 contains_matches.append(it)
             else:
                 score = fuzz.partial_ratio(norm_q, it_norm)
@@ -596,6 +620,87 @@ class ACNHCatalog:
                 seen.add(key)
                 deduped.append(it)
         return deduped[:limit]
+
+    def get_popular_series(self) -> List[Tuple[str, str, str]]:
+        """
+        Dynamically return popular catalog series.
+        Returns list of (display_label, search_keyword, emoji).
+        """
+        preferred: List[Tuple[str, str, str]] = [
+            ("Cherry Blossom", "cherry blossom", "🌸"),
+            ("Mushroom", "mushroom", "🍄"),
+            ("Celeste & Star", "star", "⭐"),
+            ("Ironwood", "ironwood", "🪵"),
+            ("Golden Series", "golden", "👑"),
+            ("Spooky", "spooky", "🎃"),
+            ("Festive & Frozen", "festive", "🎄"),
+            ("Mermaid", "mermaid", "🧜"),
+            ("Sanrio", "sanrio", "🎀"),
+            ("Glowing Moss & Vine", "glowing moss", "🌿"),
+        ]
+        return preferred
+
+    def get_pocket_bundles(self) -> List[Tuple[str, str, str, str]]:
+        """
+        Return curated and official pocket bundles:
+        list of (name, description, drop_code, emoji).
+        Loads curated templates from 'data/pocket_bundles.json' and appends
+        any official custom bundles from the database 'pocket_bundles' table.
+        """
+        bundles: List[Tuple[str, str, str, str]] = self._load_json_pocket_bundles()
+        try:
+            from utils.database import connect_db
+            with connect_db() as conn:
+                rows = conn.execute(
+                    "SELECT name, description, category, items_json FROM pocket_bundles WHERE is_official = 1 ORDER BY created_at DESC LIMIT 15"
+                ).fetchall()
+                for r in rows:
+                    name = r.get("name")
+                    desc = r.get("description") or f"{r.get('category') or 'Official'} Bundle"
+                    items_raw = r.get("items_json") or "[]"
+                    try:
+                        items_list = json.loads(items_raw) if isinstance(items_raw, str) else items_raw
+                        tokens = []
+                        for it in items_list[:9]:
+                            if isinstance(it, dict):
+                                nm = it.get("name") or it.get("id") or ""
+                                qty = it.get("quantity") or it.get("count") or 1
+                                tokens.append(f"{nm} {qty}".strip())
+                            elif isinstance(it, str):
+                                tokens.append(it)
+                        if tokens:
+                            code = ", ".join(tokens)
+                            bundles.append((name, desc[:100], code, "🎒"))
+                    except Exception:
+                        continue
+        except Exception as exc:
+            logger.debug("[ACNHCatalog] Could not fetch DB pocket bundles: %s", exc)
+
+        return bundles
+
+    def _load_json_pocket_bundles(self) -> List[Tuple[str, str, str, str]]:
+        candidates = [
+            os.path.join(os.path.dirname(self.data_path), "pocket_bundles.json"),
+            os.path.abspath("data/pocket_bundles.json"),
+            os.path.join(os.path.dirname(__file__), "..", "data", "pocket_bundles.json"),
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                try:
+                    with open(c, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    return [
+                        (
+                            b.get("name", "Bundle"),
+                            b.get("description", ""),
+                            b.get("items", ""),
+                            b.get("emoji", "🎒"),
+                        )
+                        for b in data
+                    ]
+                except Exception as e:
+                    logger.warning("[ACNHCatalog] Failed to load %s: %s", c, e)
+        return []
 
     def get_drop_presets(self) -> List[Tuple[str, str, str, str]]:
         """Return popular item drop presets: list of (label, description, drop_code, emoji)."""

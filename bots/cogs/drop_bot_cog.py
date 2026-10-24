@@ -69,25 +69,13 @@ DODO_GIF  = "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
 LOGO_URL  = "https://www.chopaeng.com/assets/logo-C5oO0bbj.webp"
 MAP_CDN_BASE = "https://cdn.chopaeng.com/maps"
 
-ISLAND_THEMES: dict[str, str] = {
-    "giliw": "Pink",
-    "bahaghari": "Rainbow",
-    "bituin": "Star",
-    "alapaap": "Cloud",
-    "kalangitan": "Sky",
-    "marahuyo": "Enchanted",
-    "likha": "Art & DIY",
-    "bonita": "Catalog",
-    "hiraya": "Dreams",
-}
-
 # Island pages live at <WEBSITE_BASE>/island/<island_name>
 WEBSITE_BASE = "https://www.chopaeng.com"
 
 # Limits (enforced for custom item drops)
 MAX_DROP_SLOTS = 9      # different items per drop, matches the site's 9-slot Drop Bot
 MAX_STACK      = 30     # highest quantity per item
-MAX_ITEM_NAME  = 40
+MAX_ITEM_NAME  = 60
 
 # Villager plots: 1 through 10 (matching in-game plots and API backend).
 PLOT_MIN = 1
@@ -4331,74 +4319,16 @@ class PresetDropConfirmView(_OwnedView):
 
 
 # ─── Popular Catalog Series & Pocket Bundles ──────────────────────────────────
+# Dynamically sourced via DataManager & ACNHCatalog (no hardcoding in Cog)
 
-POPULAR_CATALOG_SERIES: list[tuple[str, str, str]] = [
-    ("Cherry Blossom", "cherry blossom", "🌸"),
-    ("Mushroom", "mushroom", "🍄"),
-    ("Celeste & Star", "star", "⭐"),
-    ("Ironwood", "ironwood", "🪵"),
-    ("Golden Series", "golden", "👑"),
-    ("Spooky", "spooky", "🎃"),
-    ("Festive & Frozen", "festive", "🎄"),
-    ("Mermaid", "mermaid", "🧜"),
-    ("Sanrio", "sanrio", "🎀"),
-    ("Glowing Moss & Vine", "glowing moss", "🌿"),
-]
-
-CURATED_POCKET_BUNDLES: list[tuple[str, str, str, str]] = [
-    (
-        "Golden Tools Set",
-        "All 6 unbreakable gold tools (Axe, Shovel, Net, Rod, Can, Slingshot)",
-        "Golden axe, Golden shovel, Golden net, Golden rod, Golden watering can, Golden slingshot",
-        "🛠️",
-    ),
-    (
-        "Island Wealth Pack",
-        "Royal Crowns + NMTs + Gold Nuggets (Max Bells & Travel)",
-        "Royal Crown 3, Nook Miles Ticket 30, Gold nugget 30",
-        "👑",
-    ),
-    (
-        "Crafting Essentials Pack",
-        "30x of Wood, Hardwood, Softwood, Iron, Clay, Stone",
-        "Wood 30, Hardwood 30, Softwood 30, Iron nugget 30, Clay 30, Stone 30",
-        "🪵",
-    ),
-    (
-        "Celeste Star Gazer Pack",
-        "Star fragments, Large star fragments, Zodiac fragments",
-        "Star fragment 30, Large star fragment 10, Aries fragment 10, Taurus fragment 10",
-        "⭐",
-    ),
-    (
-        "Sakura Cherry-Blossom Pack",
-        "Cherry blossom petals + Young spring bamboo stacks",
-        "Cherry-blossom petal 30, Cherry-blossom petal 30, Young spring bamboo 30, Bamboo piece 30",
-        "🌸",
-    ),
-    (
-        "Mushroom Forest Pack",
-        "Round, Skinny, Flat, and Rare forest mushrooms",
-        "Round mushroom 30, Skinny mushroom 30, Flat mushroom 30, Rare mushroom 10",
-        "🍄",
-    ),
-    (
-        "Ironwood Kitchenette Kit",
-        "Ironwood DIY recipes + Iron nuggets + Wood",
-        "Ironwood DIY workbench (DIY Recipe), Ironwood dresser (DIY Recipe), Ironwood kitchenette (DIY Recipe), Wood 30, Iron nugget 30",
-        "🍳",
-    ),
-    (
-        "Sanrio Specialty Pack",
-        "Cinnamoroll, My Melody, Pompompurin, Hello Kitty specialty items",
-        "Cinnamoroll sofa, My Melody bed, Pompompurin pudding, Hello Kitty planter",
-        "🎀",
-    ),
-]
+def _get_popular_catalog_series() -> list[tuple[str, str, str]]:
+    """Return popular series dynamically from ACNHCatalog."""
+    return ACNHCatalog.get_instance().get_popular_series()
 
 
 def _get_pocket_bundles() -> list[tuple[str, str, str, str]]:
-    bundles = list(CURATED_POCKET_BUNDLES)
+    """Return official and curated pocket bundles dynamically from database or data manager."""
+    bundles = list(ACNHCatalog.get_instance()._load_json_pocket_bundles())
     try:
         with connect_db() as conn:
             rows = conn.execute(
@@ -4428,6 +4358,11 @@ def _get_pocket_bundles() -> list[tuple[str, str, str, str]]:
     return bundles
 
 
+# Backward-compatible references for external tests / legacy imports
+POPULAR_CATALOG_SERIES: list[tuple[str, str, str]] = _get_popular_catalog_series()
+CURATED_POCKET_BUNDLES: list[tuple[str, str, str, str]] = _get_pocket_bundles()
+
+
 class SeriesFilterView(_OwnedView):
     """Popular collection/series quick selector."""
 
@@ -4442,7 +4377,7 @@ class SeriesFilterView(_OwnedView):
                 emoji=emoji,
                 value=kw,
             )
-            for label, kw, emoji in POPULAR_CATALOG_SERIES
+            for label, kw, emoji in _get_popular_catalog_series()
         ]
 
         select = discord.ui.Select(

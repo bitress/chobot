@@ -950,3 +950,20 @@ DataManager.resolve_item_hex = staticmethod(resolve_item_hex)
 DataManager.resolve_villager_code = staticmethod(resolve_villager_code)
 DataManager.resolve_drop_items = staticmethod(resolve_drop_items)
 
+
+def get_popular_series() -> list[tuple[str, str, str]]:
+    """Return popular catalog series from ACNHCatalog."""
+    from utils.acnh_catalog import ACNHCatalog
+    return ACNHCatalog.get_instance().get_popular_series()
+
+
+def get_pocket_bundles() -> list[tuple[str, str, str, str]]:
+    """Return pocket bundles from ACNHCatalog (DB + fallback JSON)."""
+    from utils.acnh_catalog import ACNHCatalog
+    return ACNHCatalog.get_instance().get_pocket_bundles()
+
+
+DataManager.get_popular_series = staticmethod(get_popular_series)
+DataManager.get_pocket_bundles = staticmethod(get_pocket_bundles)
+
+
