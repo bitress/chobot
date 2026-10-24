@@ -2341,7 +2341,7 @@ class _OwnedView(discord.ui.View):
         self._interaction: discord.Interaction | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
+        if self.user_id and interaction.user.id != self.user_id:
             await interaction.response.send_message("This menu isn't yours.", ephemeral=True)
             return False
         self._interaction = interaction
@@ -3893,7 +3893,7 @@ class CatalogSearchView(_OwnedView):
             clear_btn.callback = self.on_clear_cart  # type: ignore[assignment]
             self.add_item(clear_btn)
 
-    async def on_toggle_type_filter(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def on_toggle_type_filter(self, interaction: discord.Interaction, button: Any = None) -> None:
         if self.type_filter == "all":
             self.type_filter = "items"
         elif self.type_filter == "items":
@@ -3904,8 +3904,9 @@ class CatalogSearchView(_OwnedView):
         self._rebuild()
         await interaction.response.edit_message(embed=self.build_search_embed(), view=self)
 
-    async def on_open_series_filter(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def on_open_series_filter(self, interaction: discord.Interaction, button: Any = None) -> None:
         view = SeriesFilterView(self)
+        view._orig_interaction = getattr(self, "_orig_interaction", None)
         embed = discord.Embed(
             title="🌟 Popular Collections & Series",
             description="Select a popular ACNH series from the dropdown to instantly search matching items and DIY recipes.",
@@ -3914,11 +3915,12 @@ class CatalogSearchView(_OwnedView):
         embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         await interaction.response.edit_message(embed=embed, view=view)
 
-    async def on_open_saved_pockets(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def on_open_saved_pockets(self, interaction: discord.Interaction, button: Any = None) -> None:
         view = SavedPocketPickerView(self.island_name or "Island", self.user_id, parent_view=self)
+        view._orig_interaction = getattr(self, "_orig_interaction", None)
         await interaction.response.edit_message(embed=view.build_embed(), view=view)
 
-    async def on_load_last_cart(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def on_load_last_cart(self, interaction: discord.Interaction, button: Any = None) -> None:
         last = _get_user_last_drop(self.user_id)
         if not last:
             await interaction.response.send_message("No previous drop found to restore.", ephemeral=True)
