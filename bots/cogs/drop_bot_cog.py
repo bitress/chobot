@@ -439,6 +439,125 @@ def _log_drop(island: str, user_id: int, items: str, ok: bool, message: str) -> 
         logger.warning("[DropBot] Failed to write drop audit log: %s", exc)
 
 
+# Last successful drop per user, for "Re-drop Last Cart" / "Load Last Cart".
+#   payload: the exact string sent to SysBot (re-sent verbatim on re-drop)
+#   entries: [(item name or hex, qty), ...] when known (needed to rebuild a cart), else None
+_USER_LAST_DROPS: dict[int, dict[str, Any]] = {}
+_LAST_DROP_MISSES: dict[int, float] = {}
+LAST_DROP_CACHE_MAX = 2000
+LAST_DROP_MISS_TTL = 300.0
+_AUDIT_ITEMS_MAX = 500   # island_drops_log.items is truncated to this many characters
+
+
+def _record_user_drop(
+    user_id: int,
+    island: str,
+    payload: str,
+    display_name: str,
+    entries: list[tuple[str, int]] | None = None,
+) -> None:
+    """Remember a user's last successful drop (in memory, bounded)."""
+    _USER_LAST_DROPS.pop(user_id, None)   # re-insert so dict order tracks recency
+    _USER_LAST_DROPS[user_id] = {
+        "island": island,
+        "payload": payload,
+        "display_name": display_name or "Previous drop",
+        "entries": list(entries) if entries else None,
+        "time": time.time(),
+    }
+    _LAST_DROP_MISSES.pop(user_id, None)
+    while len(_USER_LAST_DROPS) > LAST_DROP_CACHE_MAX:
+        _USER_LAST_DROPS.pop(next(iter(_USER_LAST_DROPS)))
+
+
+def _peek_user_last_drop(user_id: int) -> dict[str, Any] | None:
+    """Memory-only lookup; safe to call from view constructors and _rebuild()."""
+    return _USER_LAST_DROPS.get(user_id)
+
+
+def _get_user_last_drop(user_id: int) -> dict[str, Any] | None:
+    """Retrieve user's last drop from memory, or fallback to database audit log."""
+    hit = _USER_LAST_DROPS.get(user_id)
+    if hit:
+        return hit
+    try:
+        with connect_db() as conn:
+            cursor = conn.execute(
+                """
+                SELECT island_name, items, response_message, created_at FROM island_drops_log
+                WHERE requested_by_user_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (str(user_id),),
+            )
+            row = cursor.fetchone()
+            if row:
+                island = row.get("island_name") or ""
+                payload = (row.get("items") or "").strip()
+                display = row.get("response_message") or (f"Previous drop on {island}" if island else "Previous drop")
+                drop_info = {
+                    "island": island,
+                    "payload": payload,
+                    "display_name": display,
+                    "entries": None,
+                    "time": time.time(),
+                }
+                _USER_LAST_DROPS[user_id] = drop_info
+                return drop_info
+    except Exception as exc:
+        logger.debug("[DropBot] Could not fetch last drop from DB for user %s: %s", user_id, exc)
+    return None
+
+
+def _fetch_last_drop_from_db(user_id: int) -> dict[str, Any] | None:
+    """Blocking: newest successful drop in the audit log. Only the raw payload is recoverable."""
+    with connect_db() as conn:
+        row = conn.execute(
+            """
+            SELECT island_name, items FROM island_drops_log
+            WHERE requested_by_user_id = ? AND status = 'queued'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (str(user_id),),
+        ).fetchone()
+    if not row:
+        return None
+    payload = (row.get("items") or "").strip()
+    # The audit column is truncated; a payload at the limit may be cut mid-item, so never resend it.
+    if not payload or len(payload) >= _AUDIT_ITEMS_MAX:
+        return None
+    island = row.get("island_name") or ""
+    return {
+        "island": island,
+        "payload": payload,
+        "display_name": f"Previous drop on {island}" if island else "Previous drop",
+        "entries": None,
+        "time": time.time(),
+    }
+
+
+async def _load_user_last_drop(user_id: int) -> dict[str, Any] | None:
+    """Memory first, then the audit log (off the event loop). Misses are cached for a few minutes."""
+    hit = _USER_LAST_DROPS.get(user_id)
+    if hit:
+        return hit
+    miss_at = _LAST_DROP_MISSES.get(user_id)
+    if miss_at and time.monotonic() - miss_at < LAST_DROP_MISS_TTL:
+        return None
+    try:
+        info = await asyncio.to_thread(_fetch_last_drop_from_db, user_id)
+    except Exception as exc:
+        logger.debug("[DropBot] Could not fetch last drop for user %s: %s", user_id, exc)
+        info = None
+    if info:
+        _record_user_drop(user_id, info["island"], info["payload"], info["display_name"], None)
+        return _USER_LAST_DROPS[user_id]
+    if len(_LAST_DROP_MISSES) > LAST_DROP_CACHE_MAX:
+        _LAST_DROP_MISSES.clear()
+    _LAST_DROP_MISSES[user_id] = time.monotonic()
+    return None
+
+
 def _log_injection(island: str, villager: str, plot: int | None, user_id: int, ok: bool, message: str) -> None:
     try:
         with connect_db() as conn:
@@ -1545,9 +1664,18 @@ async def build_drop_picker_embed(island: str, user: discord.abc.User | None = N
     )
     if p_line:
         desc += f"📍 **Presence:** {p_line}\n\n"
+    if user:
+        last = await _load_user_last_drop(user.id)
+        if last:
+            where = f" on {last['island']}" if last.get("island") and last["island"] != island else ""
+            desc += (
+                f"🔁 **Last order{where}:** `{last['display_name'][:60]}` "
+                "*(press **Re-drop Last Cart** to repeat it here)*\n\n"
+            )
     desc += (
         f"• Pick an item preset from the dropdown for instant dropping\n"
-        f"• Use **🔍 Search Catalog** to search 6,000+ items and build a cart\n"
+        f"• Use **🎒 Saved Pockets** for full curated inventory sets\n"
+        f"• Use **🔍 Search Catalog** to search 6,000+ items, series, and recipes\n"
         f"• Use **📝 Custom / Hex** to enter your own items or hex list\n"
         f"• *Inject Villager adds a villager to your island's next open plot.*"
     )
@@ -1687,8 +1815,12 @@ async def _perform_drop(
     *,
     heading: str,
     contents: str,
+    raw_payload: bool = False,
 ) -> tuple[discord.Embed, bool]:
-    """Returns (embed to show, whether the drop was queued)."""
+    """
+    Returns (embed to show, whether the drop was queued).
+    raw_payload=True sends a string verbatim (a previously built SysBot payload) without re-parsing it.
+    """
     denied = await _access_denied(user)
     if denied:
         return _err_embed(denied), False
@@ -1744,11 +1876,16 @@ async def _perform_drop(
         embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         return embed, False
 
+    recorded_entries: list[tuple[str, int]] | None = None
     if isinstance(items_or_entries, list):
-        sysbot_payload = build_drop_payload(items_or_entries)
+        recorded_entries = list(items_or_entries)
+        sysbot_payload = build_drop_payload(recorded_entries)
+    elif raw_payload:
+        sysbot_payload = items_or_entries
     else:
         parsed, _ = parse_drop_items(items_or_entries)
         if parsed:
+            recorded_entries = parsed
             sysbot_payload = build_drop_payload(parsed)
         else:
             sysbot_payload = items_or_entries
@@ -1801,6 +1938,7 @@ async def _perform_drop(
 
     # Audit log uses hex payload; success message shows human-readable names
     await asyncio.to_thread(_log_drop, island, user.id, sysbot_payload, True, str(result.get("message") or "queued"))
+    _record_user_drop(user.id, island, sysbot_payload, contents, recorded_entries)
 
     embed = discord.Embed(
         title=heading,
@@ -3440,6 +3578,79 @@ class CatalogSearchModal(discord.ui.Modal, title="🔍 Search ACNH Catalog"):
         await _reply(interaction, "❌ Something went wrong while searching the catalog.")
 
 
+class CartEditModal(discord.ui.Modal, title="🛒 Edit Drop Cart"):
+    """Edit quantities in bulk. One 'N. Item: quantity' per line; 0 removes the item."""
+
+    def __init__(self, parent: "CatalogSearchView"):
+        super().__init__()
+        self.parent_view = parent
+        self._keys: list[str] = list(parent.cart.keys())
+        lines = []
+        for idx, key in enumerate(self._keys, 1):
+            e = parent.cart[key]
+            lines.append(f"{idx}. {e.item.display_name}: {e.qty}")
+        self.lines = discord.ui.TextInput(
+            label=f"N. Item: quantity  (1–{MAX_STACK}, 0 removes)",
+            style=discord.TextStyle.paragraph,
+            default="\n".join(lines)[:4000],
+            max_length=4000,
+            required=True,
+        )
+        self.add_item(self.lines)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        cart = self.parent_view.cart
+        updates: dict[str, int] = {}
+        for raw in self.lines.value.splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            name_part, sep, qty_s = raw.rpartition(":")
+            qty_s = qty_s.strip()
+            if not sep or not qty_s.isdigit():
+                await _reply(interaction, embed=_err_embed(f"I couldn't read “{raw[:50]}”. Use `N. Item: quantity`."))
+                return
+            qty = int(qty_s)
+            if qty > MAX_STACK:
+                await _reply(interaction, embed=_err_embed(f"Quantity can't exceed {MAX_STACK}."))
+                return
+            key = None
+            clean_name = name_part.strip()
+            m = re.match(r"^(\d+)\.\s*(.*)$", clean_name)
+            if m:
+                line_idx = int(m.group(1)) - 1
+                if 0 <= line_idx < len(self._keys):
+                    key = self._keys[line_idx]
+                target_name = m.group(2).strip().lower()
+            else:
+                target_name = clean_name.lower()
+            if not key:
+                for k, e in cart.items():
+                    if e.item.display_name.lower() == target_name:
+                        key = k
+                        break
+            if not key or key not in cart:
+                await _reply(interaction, embed=_err_embed(f"I couldn't find “{clean_name[:40]}” in your cart."))
+                return
+            updates[key] = qty
+
+        for key, qty in updates.items():
+            if qty == 0:
+                cart.pop(key, None)
+            else:
+                cart[key].qty = qty
+
+        self.parent_view._rebuild()
+        if hasattr(self.parent_view, "build_search_embed"):
+            await interaction.response.edit_message(
+                embed=self.parent_view.build_search_embed("✏️ Cart updated."), view=self.parent_view
+            )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logger.error("[DropBot] CartEditModal error: %s", error, exc_info=error)
+        await _reply(interaction, "❌ Something went wrong. Please try again.")
+
+
 class CatalogSearchView(_OwnedView):
     """
     Streamlined Catalog Search View:
@@ -3472,11 +3683,13 @@ class CatalogSearchView(_OwnedView):
         self.page_size = page_size
         self.page = 0
         self.category: str | None = None
+        self.type_filter: str = "all"  # 'all', 'items', 'recipes'
         self.cart: dict[str, _CartEntry] = {}
         self.message: discord.Message | None = None
         self._busy = False
         self.is_staff = is_staff
         self._presence_status: str | None = None
+        self._apply_filters()
         self._rebuild()
 
     # ── state ──
@@ -3488,23 +3701,32 @@ class CatalogSearchView(_OwnedView):
         start = self.page * self.page_size
         return self.items[start : start + self.page_size]
 
+    def _apply_filters(self) -> None:
+        filtered = self.all_items
+        if self.category:
+            filtered = [i for i in filtered if i.category == self.category]
+        if self.type_filter == "items":
+            filtered = [i for i in filtered if not i.diy]
+        elif self.type_filter == "recipes":
+            filtered = [i for i in filtered if i.diy]
+        self.items = filtered
+        self.page = 0
+
     def apply_search(self, query: str, items: list[CatalogItem], villagers: list[CatalogVillager]) -> None:
         self.query = query
         self.all_items = list(items)
-        self.items = self.all_items
         self.villagers = list(villagers)
         self._items_by_key = {}
         for idx, i in enumerate(self.all_items):
             k = _cart_key(i) or f"item_{idx}"
             self._items_by_key[k] = i
         self.category = None
-        self.page = 0
+        self._apply_filters()
         self._rebuild()
 
     def _set_category(self, category: str | None) -> None:
         self.category = category
-        self.items = [i for i in self.all_items if i.category == category] if category else self.all_items
-        self.page = 0
+        self._apply_filters()
         self._rebuild()
 
     # ── components ──
@@ -3625,26 +3847,112 @@ class CatalogSearchView(_OwnedView):
         close_btn.callback = self.on_close  # type: ignore[assignment]
         self.add_item(close_btn)
 
-        # Row 3: Cart Actions (Only shown when cart has items)
+        # Row 3: Smart filters & Pockets & Last Cart
+        type_labels = {
+            "all": ("Type: All", "🏷️"),
+            "items": ("Type: Items", "📦"),
+            "recipes": ("Type: DIYs", "📜"),
+        }
+        lbl, emj = type_labels.get(self.type_filter, ("Type: All", "🏷️"))
+        type_btn = discord.ui.Button(label=lbl, emoji=emj, style=discord.ButtonStyle.secondary, row=3)
+        type_btn.callback = self.on_toggle_type_filter  # type: ignore[assignment]
+        self.add_item(type_btn)
+
+        series_btn = discord.ui.Button(label="Series", emoji="🌟", style=discord.ButtonStyle.secondary, row=3)
+        series_btn.callback = self.on_open_series_filter  # type: ignore[assignment]
+        self.add_item(series_btn)
+
+        if self.island_name:
+            pockets_btn = discord.ui.Button(label="Pockets", emoji="🎒", style=discord.ButtonStyle.secondary, row=3)
+            pockets_btn.callback = self.on_open_saved_pockets  # type: ignore[assignment]
+            self.add_item(pockets_btn)
+
+            if not self.cart and _get_user_last_drop(self.user_id):
+                last_cart_btn = discord.ui.Button(label="Load Last Cart", emoji="🔁", style=discord.ButtonStyle.secondary, row=3)
+                last_cart_btn.callback = self.on_load_last_cart  # type: ignore[assignment]
+                self.add_item(last_cart_btn)
+
+        # Row 4: Cart Actions (Only shown when cart has items)
         if self.island_name and self.cart:
             n = len(self.cart)
             drop_btn = discord.ui.Button(
-                label=f"Drop Cart ({n})", emoji="📦", style=discord.ButtonStyle.success, row=3
+                label=f"Drop Cart ({n})", emoji="📦", style=discord.ButtonStyle.success, row=4
             )
             drop_btn.callback = self.on_drop_cart  # type: ignore[assignment]
             self.add_item(drop_btn)
 
             view_cart_btn = discord.ui.Button(
-                label="View Cart", emoji="🛒", style=discord.ButtonStyle.primary, row=3
+                label="View Cart", emoji="🛒", style=discord.ButtonStyle.primary, row=4
             )
             view_cart_btn.callback = self.on_open_cart_manager  # type: ignore[assignment]
             self.add_item(view_cart_btn)
 
             clear_btn = discord.ui.Button(
-                label="Clear", emoji="🗑️", style=discord.ButtonStyle.danger, row=3
+                label="Clear", emoji="🗑️", style=discord.ButtonStyle.danger, row=4
             )
             clear_btn.callback = self.on_clear_cart  # type: ignore[assignment]
             self.add_item(clear_btn)
+
+    async def on_toggle_type_filter(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if self.type_filter == "all":
+            self.type_filter = "items"
+        elif self.type_filter == "items":
+            self.type_filter = "recipes"
+        else:
+            self.type_filter = "all"
+        self._apply_filters()
+        self._rebuild()
+        await interaction.response.edit_message(embed=self.build_search_embed(), view=self)
+
+    async def on_open_series_filter(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        view = SeriesFilterView(self)
+        embed = discord.Embed(
+            title="🌟 Popular Collections & Series",
+            description="Select a popular ACNH series from the dropdown to instantly search matching items and DIY recipes.",
+            color=PANEL_EMBED_COLOR,
+        )
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    async def on_open_saved_pockets(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        view = SavedPocketPickerView(self.island_name or "Island", self.user_id, parent_view=self)
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+    async def on_load_last_cart(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        last = _get_user_last_drop(self.user_id)
+        if not last:
+            await interaction.response.send_message("No previous drop found to restore.", ephemeral=True)
+            return
+
+        payload = last.get("payload") or ""
+        parsed, _ = parse_drop_items(payload)
+        catalog = ACNHCatalog.get_instance()
+        loaded_count = 0
+        if parsed:
+            for name_or_hex, qty in parsed:
+                it = catalog.get_item(name_or_hex)
+                if not it:
+                    it = CatalogItem(
+                        name=name_or_hex,
+                        category="Restored",
+                        internal_id=name_or_hex if len(name_or_hex) in (4, 16) else "",
+                    )
+                k = _cart_key(it)
+                self.cart[k] = _CartEntry(
+                    item=it,
+                    qty=qty,
+                    hex_override=name_or_hex if len(name_or_hex) in (4, 16) else None,
+                )
+                loaded_count += 1
+                if len(self.cart) >= MAX_DROP_SLOTS:
+                    break
+
+        self._rebuild()
+        msg = f"✅ Restored **{loaded_count}** item(s) from your previous order!" if loaded_count else "Could not restore items."
+        await interaction.response.edit_message(
+            embed=self.build_search_embed(notice=msg),
+            view=self,
+        )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if self.user_id and interaction.user.id != self.user_id:
@@ -3656,8 +3964,15 @@ class CatalogSearchView(_OwnedView):
     def build_search_embed(self, notice: str | None = None) -> discord.Embed:
         page_items = self.page_items()
         desc = f"Found **{len(self.all_items)}** items and **{len(self.villagers)}** villagers."
+        filter_parts = []
         if self.category:
-            desc += f"\n🗂️ Filter: **{self.category}** ({len(self.items)} shown)"
+            filter_parts.append(f"🗂️ {self.category}")
+        if self.type_filter == "items":
+            filter_parts.append("📦 Items Only")
+        elif self.type_filter == "recipes":
+            filter_parts.append("📜 DIY Recipes Only")
+        if filter_parts:
+            desc += f"\n**Filter:** {' · '.join(filter_parts)} ({len(self.items)} shown)"
         desc += f"\n**Page:** `{self.page + 1} / {self.total_pages}`"
         if self.island_name:
             desc += f"\n🏝️ **Target island:** [{self.island_name}]({_island_url(self.island_name)})"
@@ -4020,6 +4335,232 @@ class PresetDropConfirmView(_OwnedView):
         self.stop()
 
 
+# ─── Popular Catalog Series & Pocket Bundles ──────────────────────────────────
+
+POPULAR_CATALOG_SERIES: list[tuple[str, str, str]] = [
+    ("Cherry Blossom", "cherry blossom", "🌸"),
+    ("Mushroom", "mushroom", "🍄"),
+    ("Celeste & Star", "star", "⭐"),
+    ("Ironwood", "ironwood", "🪵"),
+    ("Golden Series", "golden", "👑"),
+    ("Spooky", "spooky", "🎃"),
+    ("Festive & Frozen", "festive", "🎄"),
+    ("Mermaid", "mermaid", "🧜"),
+    ("Sanrio", "sanrio", "🎀"),
+    ("Glowing Moss & Vine", "glowing moss", "🌿"),
+]
+
+CURATED_POCKET_BUNDLES: list[tuple[str, str, str, str]] = [
+    (
+        "Golden Tools Set",
+        "All 6 unbreakable gold tools (Axe, Shovel, Net, Rod, Can, Slingshot)",
+        "Golden axe, Golden shovel, Golden net, Golden rod, Golden watering can, Golden slingshot",
+        "🛠️",
+    ),
+    (
+        "Island Wealth Pack",
+        "Royal Crowns + NMTs + Gold Nuggets (Max Bells & Travel)",
+        "Royal Crown 3, Nook Miles Ticket 30, Gold nugget 30",
+        "👑",
+    ),
+    (
+        "Crafting Essentials Pack",
+        "30x of Wood, Hardwood, Softwood, Iron, Clay, Stone",
+        "Wood 30, Hardwood 30, Softwood 30, Iron nugget 30, Clay 30, Stone 30",
+        "🪵",
+    ),
+    (
+        "Celeste Star Gazer Pack",
+        "Star fragments, Large star fragments, Zodiac fragments",
+        "Star fragment 30, Large star fragment 10, Aries fragment 10, Taurus fragment 10",
+        "⭐",
+    ),
+    (
+        "Sakura Cherry-Blossom Pack",
+        "Cherry blossom petals + Young spring bamboo stacks",
+        "Cherry-blossom petal 30, Cherry-blossom petal 30, Young spring bamboo 30, Bamboo piece 30",
+        "🌸",
+    ),
+    (
+        "Mushroom Forest Pack",
+        "Round, Skinny, Flat, and Rare forest mushrooms",
+        "Round mushroom 30, Skinny mushroom 30, Flat mushroom 30, Rare mushroom 10",
+        "🍄",
+    ),
+    (
+        "Ironwood Kitchenette Kit",
+        "Ironwood DIY recipes + Iron nuggets + Wood",
+        "Ironwood DIY workbench (DIY Recipe), Ironwood dresser (DIY Recipe), Ironwood kitchenette (DIY Recipe), Wood 30, Iron nugget 30",
+        "🍳",
+    ),
+    (
+        "Sanrio Specialty Pack",
+        "Cinnamoroll, My Melody, Pompompurin, Hello Kitty specialty items",
+        "Cinnamoroll sofa, My Melody bed, Pompompurin pudding, Hello Kitty planter",
+        "🎀",
+    ),
+]
+
+
+def _get_pocket_bundles() -> list[tuple[str, str, str, str]]:
+    bundles = list(CURATED_POCKET_BUNDLES)
+    try:
+        with connect_db() as conn:
+            rows = conn.execute(
+                "SELECT name, description, category, items_json FROM pocket_bundles WHERE is_official = 1 ORDER BY created_at DESC LIMIT 15"
+            ).fetchall()
+            for r in rows:
+                name = r.get("name")
+                desc = r.get("description") or f"{r.get('category') or 'Official'} Bundle"
+                items_raw = r.get("items_json") or "[]"
+                try:
+                    items_list = json.loads(items_raw) if isinstance(items_raw, str) else items_raw
+                    tokens = []
+                    for it in items_list[:MAX_DROP_SLOTS]:
+                        if isinstance(it, dict):
+                            nm = it.get("name") or it.get("id") or ""
+                            qty = it.get("quantity") or it.get("count") or 1
+                            tokens.append(f"{nm} {qty}".strip())
+                        elif isinstance(it, str):
+                            tokens.append(it)
+                    if tokens:
+                        code = ", ".join(tokens)
+                        bundles.append((name, desc[:100], code, "🎒"))
+                except Exception:
+                    continue
+    except Exception as exc:
+        logger.debug("[DropBot] Could not fetch DB pocket bundles: %s", exc)
+    return bundles
+
+
+class SeriesFilterView(_OwnedView):
+    """Popular collection/series quick selector."""
+
+    def __init__(self, search_view: "CatalogSearchView"):
+        super().__init__(user_id=search_view.user_id, timeout=120)
+        self.search_view = search_view
+
+        options = [
+            discord.SelectOption(
+                label=label,
+                description=f"Quick search for {label} items & DIYs",
+                emoji=emoji,
+                value=kw,
+            )
+            for label, kw, emoji in POPULAR_CATALOG_SERIES
+        ]
+
+        select = discord.ui.Select(
+            placeholder="🌟 Select a popular series / collection…",
+            options=options,
+            row=0,
+        )
+        select.callback = self.on_select_series
+        self.add_item(select)
+
+        back_btn = discord.ui.Button(label="Back to Search", emoji="🔙", style=discord.ButtonStyle.secondary, row=1)
+        back_btn.callback = self.on_back
+        self.add_item(back_btn)
+
+    async def on_select_series(self, interaction: discord.Interaction) -> None:
+        vals = (interaction.data or {}).get("values", [])
+        kw = vals[0] if vals else ""
+        items, villagers = await asyncio.to_thread(_search_catalog, kw)
+        self.search_view.apply_search(kw, items, villagers)
+        await interaction.response.edit_message(embed=self.search_view.build_search_embed(), view=self.search_view)
+        self.stop()
+
+    async def on_back(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(embed=self.search_view.build_search_embed(), view=self.search_view)
+        self.stop()
+
+
+class SavedPocketPickerView(_OwnedView):
+    """Browse and drop curated & saved pocket bundles (full inventory sets)."""
+
+    def __init__(self, island_name: str, user_id: int, parent_view: discord.ui.View | None = None):
+        super().__init__(user_id=user_id, timeout=180)
+        self.island_name = island_name
+        self.parent_view = parent_view
+        self.bundles = _get_pocket_bundles()
+
+        options = [
+            discord.SelectOption(
+                label=name[:100],
+                description=desc[:100],
+                emoji=emoji,
+                value=f"bundle_{idx}",
+            )
+            for idx, (name, desc, code, emoji) in enumerate(self.bundles[:25])
+        ]
+
+        if options:
+            bundle_select = discord.ui.Select(
+                placeholder="🎒 Choose a Saved Pocket Bundle to drop…",
+                options=options,
+                row=0,
+            )
+            bundle_select.callback = self.on_bundle_select
+            self.add_item(bundle_select)
+
+        back_btn = discord.ui.Button(label="Back", emoji="🔙", style=discord.ButtonStyle.secondary, row=1)
+        back_btn.callback = self.on_back
+        self.add_item(back_btn)
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🎒 Saved Pocket Bundles — {self.island_name}",
+            description=(
+                f"Select a pre-assembled pocket bundle to drop onto **[{self.island_name}]({_island_url(self.island_name)})**.\n\n"
+                "• **Curated Sets:** Complete toolsets, crafting materials, and seasonal packs\n"
+                "• **1-Click Drop:** Choose a bundle from the dropdown to review and drop\n"
+                "• **Safe Drops:** Items drop near your character once verified on the island"
+            ),
+            color=PANEL_EMBED_COLOR,
+        )
+        for idx, (name, desc, code, emoji) in enumerate(self.bundles[:6]):
+            sample_items = [s.strip() for s in code.split(",")[:3]]
+            preview = ", ".join(sample_items)
+            if len(code.split(",")) > 3:
+                preview += "…"
+            embed.add_field(name=f"{emoji} {name}", value=f"{desc}\n`{preview[:50]}`", inline=True)
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        return embed
+
+    async def on_bundle_select(self, interaction: discord.Interaction) -> None:
+        vals = (interaction.data or {}).get("values", [])
+        val = vals[0] if vals else ""
+        if not val.startswith("bundle_"):
+            return
+        idx = int(val.replace("bundle_", ""))
+        name, desc, item_code, emoji = self.bundles[idx]
+
+        confirm_embed = discord.Embed(
+            title=f"🎒 Confirm Pocket Drop — {name}",
+            description=(
+                f"You are about to drop **{emoji} {name}** on **[{self.island_name}]({_island_url(self.island_name)})**.\n\n"
+                f"**Contents:**\n```{item_code[:300]}```\n"
+                "👉 **Make sure you are standing outside the airport on the island!**"
+            ),
+            color=PANEL_EMBED_COLOR,
+        )
+        confirm_embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        confirm_view = PresetDropConfirmView(self.island_name, self.user_id, item_code, name, emoji)
+        await interaction.response.edit_message(embed=confirm_embed, view=confirm_view)
+
+    async def on_back(self, interaction: discord.Interaction) -> None:
+        if self.parent_view and hasattr(self.parent_view, "build_search_embed"):
+            await interaction.response.edit_message(embed=self.parent_view.build_search_embed(), view=self.parent_view)
+        elif self.parent_view:
+            embed = await build_drop_picker_embed(self.island_name, user=interaction.user)
+            await interaction.response.edit_message(embed=embed, view=self.parent_view)
+        else:
+            picker = InteractiveDropPickerView(self.island_name, self.user_id)
+            embed = await build_drop_picker_embed(self.island_name, user=interaction.user)
+            await interaction.response.edit_message(embed=embed, view=picker)
+        self.stop()
+
+
 class InteractiveDropPickerView(_OwnedView):
     """Interactive item drop picker: presets dropdown, search catalog, browse all, or custom text."""
 
@@ -4050,21 +4591,59 @@ class InteractiveDropPickerView(_OwnedView):
             preset_select.callback = self._on_preset_select
             self.add_item(preset_select)
 
+        # Row 1: Search, Pockets, Re-drop
         search_btn = discord.ui.Button(label="Search Catalog", emoji="🔍", style=discord.ButtonStyle.primary, row=1)
         search_btn.callback = self._on_search_catalog
         self.add_item(search_btn)
 
-        browse_btn = discord.ui.Button(label="Browse All Items", emoji="📦", style=discord.ButtonStyle.secondary, row=1)
+        pockets_btn = discord.ui.Button(label="Saved Pockets", emoji="🎒", style=discord.ButtonStyle.primary, row=1)
+        pockets_btn.callback = self._on_saved_pockets
+        self.add_item(pockets_btn)
+
+        last_drop = _get_user_last_drop(self.user_id)
+        if last_drop:
+            redrop_btn = discord.ui.Button(label="Re-drop Last Cart", emoji="🔁", style=discord.ButtonStyle.success, row=1)
+            redrop_btn.callback = self._on_redrop_last
+            self.add_item(redrop_btn)
+
+        # Row 2: Browse all, Custom, Close
+        browse_btn = discord.ui.Button(label="Browse All Items", emoji="📦", style=discord.ButtonStyle.secondary, row=2)
         browse_btn.callback = self._on_browse_all
         self.add_item(browse_btn)
 
-        custom_btn = discord.ui.Button(label="Custom / Hex", emoji="📝", style=discord.ButtonStyle.secondary, row=1)
+        custom_btn = discord.ui.Button(label="Custom / Hex", emoji="📝", style=discord.ButtonStyle.secondary, row=2)
         custom_btn.callback = self._on_custom_modal
         self.add_item(custom_btn)
 
-        close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=1)
+        close_btn = discord.ui.Button(label="Close", emoji="✖", style=discord.ButtonStyle.secondary, row=2)
         close_btn.callback = self._on_close
         self.add_item(close_btn)
+
+    async def _on_saved_pockets(self, interaction: discord.Interaction) -> None:
+        view = SavedPocketPickerView(self.island_name, self.user_id, parent_view=self)
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+    async def _on_redrop_last(self, interaction: discord.Interaction) -> None:
+        last = _get_user_last_drop(self.user_id)
+        if not last:
+            await interaction.response.send_message("No previous drop found.", ephemeral=True)
+            return
+
+        confirm_embed = discord.Embed(
+            title="🔁 Confirm Re-Drop Previous Cart",
+            description=(
+                f"You are about to re-drop your previous order on **[{self.island_name}]({_island_url(self.island_name)})**.\n\n"
+                f"**Items:**\n```{last['display_name'][:300]}```\n"
+                "👉 **Make sure you are standing on the island before confirming!**\n"
+                "Items will drop near your character in a few seconds."
+            ),
+            color=PANEL_EMBED_COLOR,
+        )
+        confirm_embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        confirm_view = PresetDropConfirmView(
+            self.island_name, self.user_id, last["payload"], f"Last Order ({last['display_name'][:30]})", emoji="🔁"
+        )
+        await interaction.response.edit_message(embed=confirm_embed, view=confirm_view)
 
     async def _on_preset_select(self, interaction: discord.Interaction) -> None:
         vals = (interaction.data or {}).get("values", [])
