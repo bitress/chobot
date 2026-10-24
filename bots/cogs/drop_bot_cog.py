@@ -1500,13 +1500,10 @@ async def _build_panel_embed(island_name: str, status_data: dict | None = None) 
     island_type = db_info.get("type") or ""
     db_map_url = db_info.get("map_url") or ""
 
-    theme_name = ISLAND_THEMES.get(island_name.lower(), island_name)
     interactive_url = _interactive_map_url(island_name)
-    header_parts = [f"🏝 **{theme_name} Island**"]
+    header_parts = []
     if island_type:
-        header_parts.append(f"Type: **{island_type}**")
-    header_parts.append(f"[Island page]({url})")
-    header_parts.append(f"[Interactive Map]({interactive_url})")
+        header_parts.append(f"**{island_type}**")
 
     desc_lines = [" · ".join(header_parts)]
     if island_desc:
@@ -1545,8 +1542,6 @@ async def _build_panel_embed(island_name: str, status_data: dict | None = None) 
     footer_parts = [PANEL_FOOTER_TEXT]
     if is_nooks_open:
         footer_parts.append("🛒 Nook's Open")
-    if mode:
-        footer_parts.append(f"Mode: {mode}")
     embed.set_footer(text=" • ".join(footer_parts), icon_url=PANEL_FOOTER_ICON)
     return embed
 
