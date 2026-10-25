@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -5672,9 +5672,9 @@ def api_user_features_seen():
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_features_seen (
-                user_id TEXT,
-                feature_id TEXT,
-                seen_at TEXT,
+                user_id VARCHAR(64) NOT NULL,
+                feature_id VARCHAR(128) NOT NULL,
+                seen_at VARCHAR(64),
                 PRIMARY KEY (user_id, feature_id)
             )
         """)
@@ -5685,7 +5685,7 @@ def api_user_features_seen():
             if not feature_id:
                 return jsonify({"ok": False, "error": "feature_id required"}), 400
 
-            now_iso = datetime.utcnow().isoformat()
+            now_iso = datetime.now(timezone.utc).isoformat()
             for uid in set(cand_ids):
                 conn.execute(
                     "INSERT OR REPLACE INTO user_features_seen (user_id, feature_id, seen_at) VALUES (?, ?, ?)",

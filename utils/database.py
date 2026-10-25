@@ -420,6 +420,9 @@ def _adapt_mysql_ddl(sql: str) -> str:
         (r"\bkind\s+TEXT\s+NOT\s+NULL\b", "kind VARCHAR(64) NOT NULL"),
         (r"\bchannel_id\s+TEXT\s+PRIMARY\s+KEY\b", "channel_id VARCHAR(64) PRIMARY KEY"),
         (r"\bchannel_id\s+TEXT\b", "channel_id VARCHAR(64)"),
+        (r"\bfeature_id\s+TEXT\s+NOT\s+NULL\b", "feature_id VARCHAR(128) NOT NULL"),
+        (r"\bfeature_id\s+TEXT\b", "feature_id VARCHAR(128)"),
+        (r"\bisland_name\s+TEXT\s+PRIMARY\s+KEY\b", "island_name VARCHAR(128) PRIMARY KEY"),
     ]
     for pattern, replacement in replacements:
         sql = re.sub(pattern, replacement, sql, flags=re.I)
