@@ -558,6 +558,9 @@ def link_account(provider: str):
         return jsonify({"success": False, "error": "Authentication required"}), 401
 
     provider = provider.lower()
+    if provider == "discord":
+        return jsonify({"success": False, "error": "Discord is your primary account and cannot be linked as a secondary platform."}), 400
+
     token_param = f"&auth_token={urllib.parse.quote(token)}" if token else ""
     return jsonify({
         "success": True,
@@ -578,6 +581,9 @@ def unlink_account(provider: str):
         return jsonify({"success": False, "error": "Authentication required"}), 401
 
     provider = provider.lower()
+    if provider == "discord":
+        return jsonify({"success": False, "error": "Discord is your primary account and cannot be unlinked."}), 400
+
     user_id = str(auth_user.get("user_id") or "")
 
     # Perform DB unlink on unified account
@@ -691,6 +697,11 @@ def auth_youtube():
 
     return_to = request.args.get("return_to", "https://www.chopaeng.com/auth/callback")
     auth_token = request.args.get("auth_token", "").strip()
+    if not auth_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            auth_token = auth_header[len("Bearer "):].strip()
+
     active_user_id = None
     if auth_token:
         curr_user = get_auth_user(auth_token)
@@ -726,10 +737,17 @@ def auth_youtube_callback():
     sess_return = session.pop("oauth_return_to_yt", "https://www.chopaeng.com/auth/callback")
     sess_uid = session.pop("oauth_active_uid_yt", None)
 
-    is_valid, return_to, state_uid, _ = verify_oauth_state(
+    is_valid, return_to, state_uid, state_link_token = verify_oauth_state(
         state, fallback_return=sess_return, saved_state=saved_state
     )
     active_uid = state_uid or sess_uid
+    if not active_uid and state_link_token:
+        try:
+            tok_payload = get_auth_user(state_link_token)
+            if tok_payload:
+                active_uid = tok_payload.get("user_id")
+        except Exception:
+            pass
 
     if not is_valid:
         return redirect(f"{return_to}?error=invalid_state")
@@ -807,6 +825,11 @@ def auth_youtube_callback():
             active_user_id=active_uid,
         )
         token = make_auth_token(unified_user)
+        if state_link_token:
+            try:
+                update_auth_user(state_link_token, unified_user)
+            except Exception:
+                pass
         return redirect(f"{return_to}?token={urllib.parse.quote(token)}")
     except Exception as exc:
         logger.error("[YouTube OAuth] Failed: %s", exc)
@@ -822,6 +845,11 @@ def auth_patreon():
 
     return_to = request.args.get("return_to", "https://www.chopaeng.com/auth/callback")
     auth_token = request.args.get("auth_token", "").strip()
+    if not auth_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            auth_token = auth_header[len("Bearer "):].strip()
+
     active_user_id = None
     if auth_token:
         curr_user = get_auth_user(auth_token)
@@ -855,10 +883,17 @@ def auth_patreon_callback():
     sess_return = session.pop("oauth_return_to_patreon", "https://www.chopaeng.com/auth/callback")
     sess_uid = session.pop("oauth_active_uid_patreon", None)
 
-    is_valid, return_to, state_uid, _ = verify_oauth_state(
+    is_valid, return_to, state_uid, state_link_token = verify_oauth_state(
         state, fallback_return=sess_return, saved_state=saved_state
     )
     active_uid = state_uid or sess_uid
+    if not active_uid and state_link_token:
+        try:
+            tok_payload = get_auth_user(state_link_token)
+            if tok_payload:
+                active_uid = tok_payload.get("user_id")
+        except Exception:
+            pass
 
     if not is_valid:
         return redirect(f"{return_to}?error=invalid_state")
@@ -929,6 +964,11 @@ def auth_patreon_callback():
             active_user_id=active_uid,
         )
         token = make_auth_token(unified_user)
+        if state_link_token:
+            try:
+                update_auth_user(state_link_token, unified_user)
+            except Exception:
+                pass
         return redirect(f"{return_to}?token={urllib.parse.quote(token)}")
     except Exception as exc:
         logger.error("[Patreon OAuth] Failed: %s", exc)
@@ -944,6 +984,11 @@ def auth_twitch():
 
     return_to = request.args.get("return_to", "https://www.chopaeng.com/auth/callback")
     auth_token = request.args.get("auth_token", "").strip()
+    if not auth_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            auth_token = auth_header[len("Bearer "):].strip()
+
     active_user_id = None
     if auth_token:
         curr_user = get_auth_user(auth_token)
@@ -977,10 +1022,17 @@ def auth_twitch_callback():
     sess_return = session.pop("oauth_return_to_twitch", "https://www.chopaeng.com/auth/callback")
     sess_uid = session.pop("oauth_active_uid_twitch", None)
 
-    is_valid, return_to, state_uid, _ = verify_oauth_state(
+    is_valid, return_to, state_uid, state_link_token = verify_oauth_state(
         state, fallback_return=sess_return, saved_state=saved_state
     )
     active_uid = state_uid or sess_uid
+    if not active_uid and state_link_token:
+        try:
+            tok_payload = get_auth_user(state_link_token)
+            if tok_payload:
+                active_uid = tok_payload.get("user_id")
+        except Exception:
+            pass
 
     if not is_valid:
         return redirect(f"{return_to}?error=invalid_state")
@@ -1057,6 +1109,11 @@ def auth_twitch_callback():
             active_user_id=active_uid,
         )
         token = make_auth_token(unified_user)
+        if state_link_token:
+            try:
+                update_auth_user(state_link_token, unified_user)
+            except Exception:
+                pass
         return redirect(f"{return_to}?token={urllib.parse.quote(token)}")
     except Exception as exc:
         logger.error("[Twitch OAuth] Failed: %s", exc)

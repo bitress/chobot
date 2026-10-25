@@ -479,7 +479,12 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
     if not force_refresh and not should_refresh(user):
         return user
 
-    if user.get("provider") != "discord" or not getattr(Config, "DISCORD_LOGIN_ENABLED", False):
+    has_discord_link = (
+        user.get("provider") == "discord" or
+        bool(user.get("discord_id")) or
+        "discord" in (user.get("connected_providers") or [])
+    )
+    if not has_discord_link or not getattr(Config, "DISCORD_LOGIN_ENABLED", False):
         try:
             from utils.unified_auth import get_unified_account_by_id
             unified = get_unified_account_by_id(user.get("user_id"))
@@ -1667,17 +1672,26 @@ def auth_me():
     try:
         unified = get_unified_account_by_id(user.get("user_id"))
         if unified:
-            for k in ("connected_providers", "connected_accounts", "roles", "email", "provider", "has_password", "is_subscriber", "username"):
+            has_discord = "discord" in (unified.get("connected_providers") or []) or bool(unified.get("discord_id"))
+            keys_to_copy = ["connected_providers", "connected_accounts", "roles", "email", "has_password", "is_subscriber", "sub_tier"]
+            if not has_discord:
+                keys_to_copy.extend(["provider", "username"])
+            for k in keys_to_copy:
                 if unified.get(k) is not None:
                     user[k] = unified[k]
             if unified.get("is_admin"):
                 user["is_admin"] = True
             if unified.get("is_mod"):
                 user["is_mod"] = True
-            if unified.get("avatar") and not user.get("avatar"):
+            if not has_discord and unified.get("avatar") and not user.get("avatar"):
                 user["avatar"] = unified["avatar"]
-            if unified.get("sub_tier"):
-                user["sub_tier"] = unified["sub_tier"]
+            if has_discord:
+                user["provider"] = "discord"
+                if unified.get("discord_id"):
+                    user["discord_id"] = unified["discord_id"]
+                disc_acc = (unified.get("connected_accounts") or {}).get("discord") or {}
+                if disc_acc.get("username"):
+                    user["discord_name"] = disc_acc["username"]
     except Exception as ex:
         logger.debug("Unified enrich note in auth_me: %s", ex)
 

@@ -139,9 +139,19 @@ def fetch_guild_member_snapshot(user_id: str) -> dict:
 
 def refresh_user_payload(user: dict) -> dict:
     """Return a user dict updated with live Discord guild membership."""
-    snapshot = fetch_guild_member_snapshot(str(user.get("user_id") or ""))
+    target_id = str(user.get("discord_id") or user.get("user_id") or "").strip()
+    if not target_id.isdigit():
+        conn_disc = (user.get("connected_accounts") or {}).get("discord") or {}
+        if conn_disc.get("id") and str(conn_disc["id"]).strip().isdigit():
+            target_id = str(conn_disc["id"]).strip()
+    if not target_id.isdigit():
+        return user
+
+    snapshot = fetch_guild_member_snapshot(target_id)
     refreshed = dict(user)
     for key, value in snapshot.items():
+        if key == "user_id" and user.get("user_id") and not str(user["user_id"]).isdigit():
+            continue
         refreshed[key] = value
     if refreshed.get("joined_at"):
         try:

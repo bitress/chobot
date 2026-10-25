@@ -367,7 +367,36 @@ def find_unified_user_id(
       3. Existing link or native account matching the verified email
     """
     if active_user_id and active_user_id.strip():
-        return active_user_id.strip()
+        act_id = active_user_id.strip()
+        conn = connect_db()
+        try:
+            _ensure_unified_auth_tables(conn)
+            # 1a. Check if active_user_id matches a unified_user_id directly
+            u_chk = conn.execute(
+                "SELECT unified_user_id FROM unified_accounts WHERE unified_user_id = ?",
+                (act_id,),
+            ).fetchone()
+            if u_chk:
+                return str(u_chk["unified_user_id"])
+
+            # 1b. Check if active_user_id is a provider_user_id (e.g. Discord snowflake)
+            p_chk = conn.execute(
+                "SELECT unified_user_id FROM user_provider_links WHERE provider_user_id = ? LIMIT 1",
+                (act_id,),
+            ).fetchone()
+            if p_chk:
+                return str(p_chk["unified_user_id"])
+
+            try:
+                cp_chk = conn.execute("SELECT id FROM chopaeng_users WHERE id = ? LIMIT 1", (act_id,)).fetchone()
+                if cp_chk:
+                    return str(cp_chk["id"])
+            except Exception:
+                pass
+
+            return act_id
+        finally:
+            conn.close()
 
     conn = connect_db()
     try:
@@ -476,6 +505,11 @@ def provision_or_link_unified_account(
             )
         else:
             logger.info("JIT Linking provider %s:%s to unified account %s", provider, username, unified_uid)
+            account_row_chk = conn.execute(
+                "SELECT 1 FROM unified_accounts WHERE unified_user_id = ?",
+                (unified_uid,),
+            ).fetchone()
+
             is_native = False
             try:
                 cp_chk = conn.execute("SELECT 1 FROM chopaeng_users WHERE id = ?", (unified_uid,)).fetchone()
@@ -484,7 +518,26 @@ def provision_or_link_unified_account(
             except Exception:
                 pass
 
-            if is_native:
+            # Check if Discord is already linked to this unified account
+            has_discord = conn.execute(
+                "SELECT username, avatar, email FROM user_provider_links WHERE unified_user_id = ? AND provider = 'discord'",
+                (unified_uid,),
+            ).fetchone()
+
+            if not account_row_chk:
+                p_prov = "native" if is_native else ("discord" if (has_discord or provider == "discord") else provider)
+                p_user = (has_discord["username"] if has_discord else username)
+                p_av = (has_discord["avatar"] if has_discord else avatar)
+                p_em = (has_discord["email"] if has_discord else clean_email)
+                conn.execute(
+                    """
+                    INSERT INTO unified_accounts
+                    (unified_user_id, primary_username, primary_avatar, primary_email, primary_provider, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (unified_uid, p_user, p_av, p_em, p_prov, now, now),
+                )
+            elif is_native:
                 conn.execute(
                     """
                     UPDATE unified_accounts
@@ -494,6 +547,22 @@ def provision_or_link_unified_account(
                     WHERE unified_user_id = ?
                     """,
                     (now, avatar, unified_uid),
+                )
+            elif has_discord or provider == "discord":
+                # Discord is main! Ensure primary_provider remains 'discord' and Discord username/avatar take priority
+                disc_name = has_discord["username"] if has_discord else (username if provider == "discord" else "")
+                disc_av = has_discord["avatar"] if has_discord else (avatar if provider == "discord" else "")
+                conn.execute(
+                    """
+                    UPDATE unified_accounts
+                    SET updated_at = ?,
+                        primary_provider = 'discord',
+                        primary_username = CASE WHEN (? != '') THEN ? ELSE primary_username END,
+                        primary_avatar = CASE WHEN (? != '') THEN ? ELSE primary_avatar END,
+                        primary_email  = CASE WHEN (primary_email IS NULL OR primary_email = '') THEN ? ELSE primary_email END
+                    WHERE unified_user_id = ?
+                    """,
+                    (now, disc_name, disc_name, disc_av, disc_av, clean_email, unified_uid),
                 )
             else:
                 conn.execute(
@@ -564,6 +633,9 @@ def unlink_provider_from_unified_account(unified_user_id: str, provider: str) ->
         return None
 
     provider = provider.lower()
+    if provider == "discord":
+        logger.warning("Attempted to unlink primary provider 'discord' from unified account %s; rejected", unified_user_id)
+        return None
     conn = connect_db()
     try:
         _ensure_unified_auth_tables(conn)
@@ -683,6 +755,16 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
         if not primary_avatar and link["avatar"]:
             primary_avatar = link["avatar"]
 
+    # Discord is the main provider! If Discord is connected, it takes priority over secondary platforms
+    discord_acc = connected_accounts.get("discord")
+    if discord_acc:
+        if primary_provider != "native":
+            primary_provider = "discord"
+            if discord_acc.get("username"):
+                primary_name = discord_acc["username"]
+            if discord_acc.get("avatar"):
+                primary_avatar = discord_acc["avatar"]
+
     # De-duplicate and expand roles
     unique_roles = expand_roles(aggregated_roles)
 
@@ -704,15 +786,20 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
         is_mod = True
 
     discord_id = (
-        connected_accounts.get("discord", {}).get("id")
+        (discord_acc.get("id") if discord_acc else None)
         or (unified_uid if primary_provider == "discord" else None)
+    )
+    discord_name = (
+        (discord_acc.get("username") if discord_acc else None)
+        or primary_name
+        or unified_uid
     )
 
     return {
         "user_id": unified_uid,
         "discord_id": discord_id,
         "username": primary_name or unified_uid,
-        "discord_name": primary_name or unified_uid,
+        "discord_name": discord_name,
         "email": primary_email,
         "avatar": primary_avatar,
         "provider": primary_provider,
