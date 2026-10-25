@@ -944,26 +944,55 @@ def resolve_drop_items(
     return result_str, result_hexes
 
 
-# Attach static methods to DataManager class for object-level access
-DataManager.generate_full_item_hex = staticmethod(generate_full_item_hex)
-DataManager.resolve_item_hex = staticmethod(resolve_item_hex)
-DataManager.resolve_villager_code = staticmethod(resolve_villager_code)
-DataManager.resolve_drop_items = staticmethod(resolve_drop_items)
-
-
 def get_popular_series() -> list[tuple[str, str, str]]:
     """Return popular catalog series from ACNHCatalog."""
     from utils.acnh_catalog import ACNHCatalog
     return ACNHCatalog.get_instance().get_popular_series()
 
 
-def get_pocket_bundles() -> list[tuple[str, str, str, str]]:
-    """Return pocket bundles from ACNHCatalog (DB + fallback JSON)."""
-    from utils.acnh_catalog import ACNHCatalog
-    return ACNHCatalog.get_instance().get_pocket_bundles()
+def get_pocket_bundles(max_slots: int = 9, connect_db_func=None) -> list[tuple[str, str, str, str]]:
+    """Return official pocket bundles directly from the database table (no hardcoded bundles)."""
+    bundles: list[tuple[str, str, str, str]] = []
+    try:
+        if connect_db_func is None:
+            from utils.database import connect_db
+            connect_db_func = connect_db
+        with connect_db_func() as conn:
+            rows = conn.execute(
+                "SELECT name, description, category, items_json FROM pocket_bundles WHERE is_official = 1 ORDER BY created_at DESC LIMIT 25"
+            ).fetchall()
+            for r in rows:
+                name = r.get("name")
+                desc = r.get("description") or f"{r.get('category') or 'Official'} Bundle"
+                items_raw = r.get("items_json") or "[]"
+                try:
+                    items_list = json.loads(items_raw) if isinstance(items_raw, str) else items_raw
+                    tokens = []
+                    for it in items_list[:max_slots]:
+                        if isinstance(it, dict):
+                            nm = it.get("name") or it.get("id") or ""
+                            qty = it.get("quantity") or it.get("count") or 1
+                            tokens.append(f"{nm} {qty}".strip())
+                        elif isinstance(it, str):
+                            tokens.append(it)
+                    if tokens:
+                        code = ", ".join(tokens)
+                        bundles.append((name, desc[:100], code, "🎒"))
+                except Exception:
+                    continue
+    except Exception as exc:
+        logger.debug("[DataManager] Could not fetch DB pocket bundles: %s", exc)
+    return bundles
 
 
+# Attach static methods to DataManager class for object-level access
+DataManager.generate_full_item_hex = staticmethod(generate_full_item_hex)
+DataManager.resolve_item_hex = staticmethod(resolve_item_hex)
+DataManager.resolve_villager_code = staticmethod(resolve_villager_code)
+DataManager.resolve_drop_items = staticmethod(resolve_drop_items)
 DataManager.get_popular_series = staticmethod(get_popular_series)
 DataManager.get_pocket_bundles = staticmethod(get_pocket_bundles)
+
+
 
 

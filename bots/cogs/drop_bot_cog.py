@@ -4327,35 +4327,9 @@ def _get_popular_catalog_series() -> list[tuple[str, str, str]]:
 
 
 def _get_pocket_bundles() -> list[tuple[str, str, str, str]]:
-    """Return official and curated pocket bundles dynamically from database or data manager."""
-    bundles = list(ACNHCatalog.get_instance()._load_json_pocket_bundles())
-    try:
-        with connect_db() as conn:
-            rows = conn.execute(
-                "SELECT name, description, category, items_json FROM pocket_bundles WHERE is_official = 1 ORDER BY created_at DESC LIMIT 15"
-            ).fetchall()
-            for r in rows:
-                name = r.get("name")
-                desc = r.get("description") or f"{r.get('category') or 'Official'} Bundle"
-                items_raw = r.get("items_json") or "[]"
-                try:
-                    items_list = json.loads(items_raw) if isinstance(items_raw, str) else items_raw
-                    tokens = []
-                    for it in items_list[:MAX_DROP_SLOTS]:
-                        if isinstance(it, dict):
-                            nm = it.get("name") or it.get("id") or ""
-                            qty = it.get("quantity") or it.get("count") or 1
-                            tokens.append(f"{nm} {qty}".strip())
-                        elif isinstance(it, str):
-                            tokens.append(it)
-                    if tokens:
-                        code = ", ".join(tokens)
-                        bundles.append((name, desc[:100], code, "🎒"))
-                except Exception:
-                    continue
-    except Exception as exc:
-        logger.debug("[DropBot] Could not fetch DB pocket bundles: %s", exc)
-    return bundles
+    """Return official pocket bundles dynamically from DataManager and database."""
+    from utils.data_manager import get_pocket_bundles
+    return get_pocket_bundles(max_slots=MAX_DROP_SLOTS, connect_db_func=connect_db)
 
 
 # Backward-compatible references for external tests / legacy imports

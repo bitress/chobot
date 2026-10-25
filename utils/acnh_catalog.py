@@ -642,65 +642,11 @@ class ACNHCatalog:
 
     def get_pocket_bundles(self) -> List[Tuple[str, str, str, str]]:
         """
-        Return curated and official pocket bundles:
+        Return curated and official pocket bundles from DataManager and database:
         list of (name, description, drop_code, emoji).
-        Loads curated templates from 'data/pocket_bundles.json' and appends
-        any official custom bundles from the database 'pocket_bundles' table.
         """
-        bundles: List[Tuple[str, str, str, str]] = self._load_json_pocket_bundles()
-        try:
-            from utils.database import connect_db
-            with connect_db() as conn:
-                rows = conn.execute(
-                    "SELECT name, description, category, items_json FROM pocket_bundles WHERE is_official = 1 ORDER BY created_at DESC LIMIT 15"
-                ).fetchall()
-                for r in rows:
-                    name = r.get("name")
-                    desc = r.get("description") or f"{r.get('category') or 'Official'} Bundle"
-                    items_raw = r.get("items_json") or "[]"
-                    try:
-                        items_list = json.loads(items_raw) if isinstance(items_raw, str) else items_raw
-                        tokens = []
-                        for it in items_list[:9]:
-                            if isinstance(it, dict):
-                                nm = it.get("name") or it.get("id") or ""
-                                qty = it.get("quantity") or it.get("count") or 1
-                                tokens.append(f"{nm} {qty}".strip())
-                            elif isinstance(it, str):
-                                tokens.append(it)
-                        if tokens:
-                            code = ", ".join(tokens)
-                            bundles.append((name, desc[:100], code, "🎒"))
-                    except Exception:
-                        continue
-        except Exception as exc:
-            logger.debug("[ACNHCatalog] Could not fetch DB pocket bundles: %s", exc)
-
-        return bundles
-
-    def _load_json_pocket_bundles(self) -> List[Tuple[str, str, str, str]]:
-        candidates = [
-            os.path.join(os.path.dirname(self.data_path), "pocket_bundles.json"),
-            os.path.abspath("data/pocket_bundles.json"),
-            os.path.join(os.path.dirname(__file__), "..", "data", "pocket_bundles.json"),
-        ]
-        for c in candidates:
-            if os.path.exists(c):
-                try:
-                    with open(c, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    return [
-                        (
-                            b.get("name", "Bundle"),
-                            b.get("description", ""),
-                            b.get("items", ""),
-                            b.get("emoji", "🎒"),
-                        )
-                        for b in data
-                    ]
-                except Exception as e:
-                    logger.warning("[ACNHCatalog] Failed to load %s: %s", c, e)
-        return []
+        from utils.data_manager import get_pocket_bundles
+        return get_pocket_bundles()
 
     def get_drop_presets(self) -> List[Tuple[str, str, str, str]]:
         """Return popular item drop presets: list of (label, description, drop_code, emoji)."""
