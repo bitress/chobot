@@ -500,6 +500,17 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
 
     try:
         refreshed = refresh_user_payload(user)
+        # Linked Patreon/YouTube/Twitch tiers from the DB, so lapsed ones stop counting
+        # even on a token issued long ago
+        try:
+            from utils.unified_auth import get_unified_account_by_id
+            unified = get_unified_account_by_id(user.get("user_id"))
+            if unified:
+                refreshed["connected_accounts"] = unified.get("connected_accounts") or {}
+                refreshed["connected_providers"] = unified.get("connected_providers") or []
+                refreshed["sub_tier"] = unified.get("sub_tier")
+        except Exception as ex:
+            logger.debug("Linked account refresh note: %s", ex)
         update_auth_user(token, refreshed)
         return refreshed
     except DiscordNotGuildMember:

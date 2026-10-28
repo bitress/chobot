@@ -26,6 +26,13 @@ from utils.auth_tokens import get_auth_user
 from utils.config import Config
 from utils.database import connect_db, get_backend
 from utils.helpers import clean_text
+from utils.website_identity import (
+    SAVED_CHARACTERS_SQL,
+    account_label,
+    saved_character_owners,
+    website_only_account,
+    website_verdict,
+)
 
 logger = logging.getLogger("ControlPanel")
 
@@ -186,6 +193,8 @@ def _apply_control_panel_migrations() -> None:
             for col_name, col_def in [
                 ("acknowledged_at", "BIGINT DEFAULT NULL"),
                 ("mod_name", "VARCHAR(255) DEFAULT NULL"),
+                # Website accounts outside Discord (user_id is a numeric Discord ID)
+                ("web_user_id", "VARCHAR(64) DEFAULT NULL"),
             ]:
                 if col_name.lower() not in warn_cols:
                     try:
@@ -193,6 +202,11 @@ def _apply_control_panel_migrations() -> None:
                         conn.commit()
                     except Exception:
                         pass
+            try:
+                conn.execute("CREATE INDEX ix_warnings_web_user_id ON warnings(web_user_id)")
+                conn.commit()
+            except Exception:
+                pass  # Index already exists
 
             # 4. user_moderation_status extensions (mod_name)
             mod_status_cols = set()
@@ -366,10 +380,10 @@ def get_user_moderation_notices(user_or_id: Any) -> dict:
                     f"""
                     SELECT id, reason, mod_id, timestamp, action_type, acknowledged_at, mod_name, visit_id
                     FROM warnings
-                    WHERE user_id IN ({placeholders})
+                    WHERE user_id IN ({placeholders}) OR web_user_id IN ({placeholders})
                     ORDER BY timestamp DESC
                     """,
-                    cand_ids,
+                    cand_ids + cand_ids,
                 )
                 rows = cur.fetchall()
                 for r in rows:
@@ -592,6 +606,20 @@ REJOIN_MERGE_SECONDS = 1800
 # anonymous request reports every sub island with status "SUB ONLY".
 SUB_ISLAND_CACHE_SECONDS = 300
 _sub_island_cache: dict[str, Any] = {"names": None, "fetched_at": 0.0}
+
+
+def _web_strikes(conn) -> dict[str, int]:
+    """Strike counts for website accounts outside Discord, keyed like the Discord ones."""
+    try:
+        return {
+            str(r[0]): r[1]
+            for r in conn.execute(
+                "SELECT web_user_id, COUNT(*) FROM warnings WHERE web_user_id IS NOT NULL "
+                "AND action_type IN ('WARN', 'TIMEOUT', 'BAN') GROUP BY web_user_id"
+            ).fetchall()
+        }
+    except Exception:
+        return {}  # Column not migrated yet
 
 
 # Verdicts written by bots/flight_logger.py -> how the dashboard presents them
@@ -1153,15 +1181,9 @@ def _match_flight_like_logger(conn, flight: dict) -> tuple[str, dict, str | None
 
     # 2. Website saved characters: IGN + island, then IGN only
     if not found:
-        ign_clean, origin_clean = clean_text(ign), clean_text(origin)
-        rows = conn.execute(
-            "SELECT user_id, ign, island_name FROM user_saved_characters WHERE TRIM(ign) != '' "
-            "ORDER BY is_default DESC, updated_at DESC LIMIT 200"
-        ).fetchall()
-        exact = [r for r in rows if clean_text(r[1]) == ign_clean and origin_clean and clean_text(r[2]) == origin_clean]
-        loose = [r for r in rows if clean_text(r[1]) == ign_clean]
-        for r in (exact or loose)[:1]:
-            found, found_via = [{"id": str(r[0]), "name": f"{r[1]} from {r[2]}"}], "saved_character"
+        owners = saved_character_owners(conn.execute(SAVED_CHARACTERS_SQL).fetchall(), ign, origin)
+        if owners:
+            found, found_via = [{"id": owners[0], "name": f"{ign} from {origin}"}], "saved_character"
 
     # 3. Dodo reveal for this island in the last 2 hours
     if not found:
@@ -1262,16 +1284,16 @@ def _role_check_like_logger(member_id: str, destination: str) -> tuple[str, dict
             "subs": [names.get(r, r) for r in member_subs],
         }
 
-    # 2. Subscribed, but not to a tier that opens this island
+    # 2. No sub, or no tier that opens this island (the island access role alone is not enough)
     required = {
         r for r in island_access.effective_island_required_roles("member", None, "VIP", destination)
         if str(r).isdigit()
     }
-    if required and member_subs and not (set(member_subs) & required):
+    if required and not snap.get("is_mod") and not (set(member_subs) & required):
         have = [names.get(r, r) for r in member_subs]
         need = [names.get(r, r) for r in sorted(required)]
         return "island_access_mismatch", {
-            "reason": f"No subscription role for destination island (has: {', '.join(have)}; needs: {', '.join(need)})",
+            "reason": f"No subscription role for destination island (has: {', '.join(have) or 'none'}; needs: {', '.join(need)})",
             "member": member,
             "subs": have,
             "required_roles": need,
@@ -1284,8 +1306,11 @@ def _announce_web_verdict(conn, flight: dict, verdict: str, detail: dict, user_i
     from utils import flight_discord, island_access
 
     try:
-        if LOGGER_VERDICT_KIND.get(verdict) == "verified":
-            member_name, has_access, island_subs = (detail.get("member") or {}).get("name"), False, []
+        member = detail.get("member") or {}
+        if LOGGER_VERDICT_KIND.get(verdict) == "verified" and member.get("kind") == "website":
+            flight_discord.post_verified_website_flight(flight, member.get("name") or "", detail.get("subs") or [])
+        elif LOGGER_VERDICT_KIND.get(verdict) == "verified":
+            member_name, has_access, island_subs = member.get("name"), False, []
             if str(user_id or "").isdigit():
                 from utils.discord_membership import fetch_guild_member_snapshot
                 try:
@@ -1341,7 +1366,18 @@ def auto_check_unchecked_visits(force: bool = False, only_ids: list[int] | None 
             for r in rows:
                 flight = {"id": r[0], "ign": r[1] or "", "origin_island": r[2] or "", "destination": r[3] or "", "timestamp": r[4] or 0}
                 verdict, detail, user_id = _match_flight_like_logger(conn, flight)
-                if user_id and verdict in ("verified", "ambiguous_resolved"):
+                # Saved characters and Dodo reveals can belong to accounts outside Discord:
+                # their website subscription decides, like it did for the Dodo reveal.
+                account = (
+                    website_only_account(user_id)
+                    if verdict == "verified" and detail.get("found_via") in ("saved_character", "dodo_reveal")
+                    else None
+                )
+                if account:
+                    verdict, detail = website_verdict(account, flight["destination"], detail.get("found_via"))
+                    detail["checked_by"] = "web"
+                    user_id = None
+                elif user_id and verdict in ("verified", "ambiguous_resolved"):
                     flagged = _role_check_like_logger(user_id, flight["destination"])
                     if flagged:
                         verdict, extra = flagged
@@ -1358,7 +1394,7 @@ def auto_check_unchecked_visits(force: bool = False, only_ids: list[int] | None 
                         "authorised" if authorised else "pending",
                         # Like the logger: a matched member keeps authorized = 1 even when
                         # flagged, so their next flights count as previously verified.
-                        1 if user_id else 0,
+                        1 if user_id or (account and authorised) else 0,
                         int(user_id) if user_id and str(user_id).isdigit() else None,
                         verdict,
                         json.dumps(detail),
@@ -1473,6 +1509,7 @@ def get_live_feed():
             """
         )
         strikes_map = {str(row[0]): row[1] for row in cur.fetchall()}
+        strikes_map.update(_web_strikes(conn))
 
         # The website's own Dodo-reveal / saved-character match is not run here: it only
         # feeds Investigate (GET /flight/<id>/investigate), so 8s refreshes stay cheap.
@@ -1628,6 +1665,7 @@ def _website_check(conn, flight: dict) -> dict:
             "SELECT user_id, COUNT(*) FROM warnings WHERE action_type IN ('WARN', 'TIMEOUT', 'BAN') GROUP BY user_id"
         ).fetchall()
     }
+    strikes_map.update(_web_strikes(conn))
     active_restr_by_user: dict[str, dict] = {}
     for ar in conn.execute(
         """
@@ -1960,12 +1998,25 @@ def execute_action():
             return jsonify({"error": f"Invalid action: {action}. Must be one of {valid_actions}"}), 400
         merged_ids = [int(i) for i in (data.get("merged_ids") or []) if str(i).isdigit()]
 
+        # A website account outside the Discord server (e.g. cp_usr_…) has no Discord ID
+        web_user_id = next((v for v in (user_id, discord_id) if v and not v.isdigit()), "")
+        if not discord_id.isdigit():
+            discord_id = ""
+
         user = _get_current_user() or {}
         mod_name = user.get("username") or user.get("user_id") or "Moderator"
         mod_id = str(user.get("user_id") or "system")
-        warn_user_id = int(discord_id) if str(discord_id).isdigit() else (int(user_id) if str(user_id).isdigit() else 0)
+        # NULL rather than 0 when there is no Discord ID: MySQL compares 'cp_usr_…' = 0 as true
+        warn_user_id = int(discord_id) if discord_id else (int(user_id) if user_id.isdigit() else None)
         warn_mod_id = int(user.get("discord_id")) if str(user.get("discord_id") or "").isdigit() else (int(mod_id) if str(mod_id).isdigit() else 0)
         now = int(time.time())
+
+        def add_warning_row(action_type: str) -> None:
+            conn.execute(
+                "INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type, mod_name, web_user_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id, action_type, mod_name, web_user_id or None),
+            )
 
         # Check optimistic concurrency
         cur = conn.execute(
@@ -1984,13 +2035,7 @@ def execute_action():
         if action == "note":
             if not str(data.get("reason") or "").strip():
                 return jsonify({"error": "Note text is required"}), 400
-            conn.execute(
-                """
-                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type, mod_name)
-                VALUES (?, ?, ?, ?, ?, ?, 'NOTE', ?)
-                """,
-                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id, mod_name),
-            )
+            add_warning_row('NOTE')
             conn.commit()
             return jsonify({
                 "success": True,
@@ -2050,13 +2095,7 @@ def execute_action():
                 "UPDATE island_visits SET review_status = 'actioned', handled_by = ?, handled_at = ? WHERE id = ?",
                 (mod_name, now, visit_id),
             )
-            conn.execute(
-                """
-                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type, mod_name)
-                VALUES (?, ?, ?, ?, ?, ?, 'WARN', ?)
-                """,
-                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id, mod_name),
-            )
+            add_warning_row('WARN')
         elif action == "timeout":
             status_to_set = "actioned"
             duration_hours = max(1, duration_hours or 24)
@@ -2066,13 +2105,7 @@ def execute_action():
                 "UPDATE island_visits SET review_status = 'actioned', handled_by = ?, handled_at = ? WHERE id = ?",
                 (mod_name, now, visit_id),
             )
-            conn.execute(
-                """
-                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type, mod_name)
-                VALUES (?, ?, ?, ?, ?, ?, 'TIMEOUT', ?)
-                """,
-                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id, mod_name),
-            )
+            add_warning_row('TIMEOUT')
             conn.execute(
                 """
                 INSERT INTO user_moderation_status
@@ -2088,13 +2121,7 @@ def execute_action():
                 "UPDATE island_visits SET review_status = 'actioned', authorized = 0, has_island_access = 0, handled_by = ?, handled_at = ? WHERE id = ?",
                 (mod_name, now, visit_id),
             )
-            conn.execute(
-                """
-                INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type, mod_name)
-                VALUES (?, ?, ?, ?, ?, ?, 'BAN', ?)
-                """,
-                (warn_user_id, Config.GUILD_ID or 0, reason, warn_mod_id, now, visit_id, mod_name),
-            )
+            add_warning_row('BAN')
             conn.execute(
                 """
                 INSERT INTO user_moderation_status
@@ -2214,6 +2241,8 @@ def execute_action():
         # #flight-logs alert closed ("CASE CLOSED" + "Action Taken") so nobody handles it twice.
         from utils.flight_discord import warn_count as _warn_count
 
+        # Members outside the server get no DM; the case log and alert name their website account
+        web_account = website_only_account(web_user_id) if web_user_id and not target_discord_id else None
         threading.Thread(
             target=_sync_action_to_discord,
             kwargs={
@@ -2226,7 +2255,9 @@ def execute_action():
                 "alert_channel": alert_channel,
                 "alert_message": alert_message,
                 "expires_at": expires_at,
-                "warn_count": _warn_count(conn, target_discord_id) if case_id else 0,
+                "warn_count": _warn_count(conn, target_discord_id, web_user_id=web_user_id) if case_id else 0,
+                "web_user_id": web_user_id if web_account else None,
+                "web_name": account_label(web_account) if web_account else None,
             },
             daemon=True,
         ).start()
@@ -2289,12 +2320,20 @@ def _sync_action_to_discord(
     alert_message,
     expires_at: int | None,
     warn_count: int,
+    web_user_id: str | None = None,
+    web_name: str | None = None,
 ) -> None:
-    """Send the flight logger's Discord messages for a web action (runs in a thread)."""
+    """Send the flight logger's Discord messages for a web action (runs in a thread).
+
+    For a website account outside the server (web_user_id), there is no DM or mention:
+    the case log and the closed alert name the website account instead.
+    """
     from utils import flight_discord
     from utils.discord_membership import fetch_guild_member_snapshot
 
-    member_name, has_access = None, None
+    member_name, has_access = web_name, None
+    if web_user_id and not discord_id:
+        discord_id = web_user_id
     if discord_id.isdigit():
         try:
             snap = fetch_guild_member_snapshot(discord_id)
@@ -2345,18 +2384,20 @@ def acknowledge_notice():
     warning_id = data.get("warning_id")
     now = int(time.time())
 
+    init_control_panel_db()  # warnings.web_user_id
     conn = connect_db()
     try:
         placeholders = ",".join("?" for _ in cand_ids)
+        owner = f"(user_id IN ({placeholders}) OR web_user_id IN ({placeholders}))"
         if warning_id:
             conn.execute(
-                f"UPDATE warnings SET acknowledged_at = ? WHERE id = ? AND user_id IN ({placeholders})",
-                [now, warning_id] + cand_ids,
+                f"UPDATE warnings SET acknowledged_at = ? WHERE id = ? AND {owner}",
+                [now, warning_id] + cand_ids + cand_ids,
             )
         else:
             conn.execute(
-                f"UPDATE warnings SET acknowledged_at = ? WHERE acknowledged_at IS NULL AND user_id IN ({placeholders})",
-                [now] + cand_ids,
+                f"UPDATE warnings SET acknowledged_at = ? WHERE acknowledged_at IS NULL AND {owner}",
+                [now] + cand_ids + cand_ids,
             )
         conn.commit()
         return jsonify({"success": True, "acknowledged_at": now})
@@ -2704,15 +2745,18 @@ def user_inspect():
 
         # 2. Warnings history
         numeric_uid = int(user_id) if str(user_id).isdigit() else 0
+        # Website accounts outside Discord: warnings carry web_user_id, flights carry the
+        # account in their verdict (island_visits.user_id is a numeric Discord ID).
+        web_uid = user_id if user_id and not numeric_uid else ""
         cur = conn.execute(
             """
             SELECT w.id, w.reason, w.mod_id, w.timestamp, w.action_type, w.mod_name
             FROM warnings w
             LEFT JOIN island_visits iv ON w.visit_id = iv.id
-            WHERE (w.user_id = ? AND ? > 0) OR (? <> '' AND LOWER(iv.ign) = LOWER(?))
+            WHERE (w.user_id = ? AND ? > 0) OR (? <> '' AND w.web_user_id = ?) OR (? <> '' AND LOWER(iv.ign) = LOWER(?))
             ORDER BY w.id DESC LIMIT 20
             """,
-            (numeric_uid, numeric_uid, ign, ign),
+            (numeric_uid, numeric_uid, web_uid, web_uid, ign, ign),
         )
         warnings_list = [
             {"id": r[0], "reason": r[1], "mod_id": r[2], "timestamp": r[3], "action_type": r[4], "mod_name": r[5]}
@@ -2722,12 +2766,12 @@ def user_inspect():
         # 3. Recent flights
         cur = conn.execute(
             """
-            SELECT id, ign, origin_island, destination, review_status, timestamp 
-            FROM island_visits 
-            WHERE ((? > 0 AND user_id = ?) OR LOWER(ign) = LOWER(?))
+            SELECT id, ign, origin_island, destination, review_status, timestamp
+            FROM island_visits
+            WHERE ((? > 0 AND user_id = ?) OR (? <> '' AND logger_detail LIKE ?) OR LOWER(ign) = LOWER(?))
             ORDER BY id DESC LIMIT 15
             """,
-            (numeric_uid, numeric_uid, ign or ""),
+            (numeric_uid, numeric_uid, web_uid, f'%"id": "{web_uid}"%', ign or ""),
         )
         recent_flights = [
             {"id": r[0], "ign": r[1], "origin_island": r[2], "destination": r[3], "review_status": r[4], "timestamp": r[5]}
@@ -2759,6 +2803,19 @@ def user_inspect():
             except Exception as exc:
                 logger.debug("[ControlPanel] Discord lookup failed for %s: %s", numeric_uid, exc)
 
+        # 6. Website account for members outside Discord (what the logger checks instead of roles)
+        website_account = None
+        if web_uid:
+            from utils.website_identity import account_tiers, is_website_only, load_website_account
+            account = load_website_account(web_uid)
+            if account:
+                website_account = {
+                    "name": account_label(account),
+                    "providers": account.get("connected_providers") or [],
+                    "tiers": account_tiers(account),
+                    "website_only": is_website_only(account),
+                }
+
         return jsonify({
             "user_id": user_id,
             "ign": ign,
@@ -2767,6 +2824,7 @@ def user_inspect():
             "recent_flights": recent_flights,
             "active_restriction": active_restriction,
             "discord_member": discord_member,
+            "website_account": website_account,
         })
     finally:
         conn.close()

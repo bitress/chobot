@@ -321,22 +321,22 @@ def revoke_sub_rules_acceptance(user_id: int | str) -> bool:
     if not role_ids:
         role_ids = [str(1077997850165772398)]
 
-    discord_uids = [cid for cid in cand_ids if str(cid).isdigit()]
-    if not discord_uids:
-        try:
-            from utils.database import connect_db
-            with connect_db() as conn:
-                del_ph = ",".join("?" for _ in cand_ids)
-                rows = conn.execute(
-                    f"SELECT provider_user_id FROM user_provider_links WHERE provider = 'discord' AND unified_user_id IN ({del_ph})",
-                    cand_ids,
-                ).fetchall()
-                for r in rows:
-                    p_uid = str(r["provider_user_id"] or "").strip()
-                    if p_uid.isdigit():
-                        discord_uids.append(p_uid)
-        except Exception:
-            pass
+    # Only real Discord IDs: the aliases also hold numeric Twitch/YouTube/Patreon IDs.
+    discord_uids = [uid] if uid.isdigit() else []
+    try:
+        from utils.database import connect_db
+        with connect_db() as conn:
+            del_ph = ",".join("?" for _ in cand_ids)
+            rows = conn.execute(
+                f"SELECT provider_user_id FROM user_provider_links WHERE provider = 'discord' AND unified_user_id IN ({del_ph})",
+                cand_ids,
+            ).fetchall()
+            for r in rows:
+                p_uid = str(r["provider_user_id"] or "").strip()
+                if p_uid.isdigit():
+                    discord_uids.append(p_uid)
+    except Exception:
+        pass
 
     for d_uid in set(discord_uids):
         for role_id in role_ids:

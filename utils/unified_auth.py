@@ -731,9 +731,22 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
         except Exception:
             link_roles = []
 
+        # Patreon/YouTube/Twitch tiers are only checked when the account is linked, so they
+        # lapse after LINKED_TIER_MAX_AGE_DAYS until the member links it again.
+        tier_checked_at = link.get("updated_at")
+        tier_expired = False
+        if p_name != "discord" and link_roles:
+            from utils.island_access import linked_tier_is_current
+            if not linked_tier_is_current(tier_checked_at):
+                link_roles, tier_expired = [], True
+
         aggregated_roles.extend(link_roles)
 
-        sub_t = link.get("sub_tier") or (link_roles[0] if link_roles else None)
+        if p_name == "discord":
+            # Discord links store every guild role and no tier; live roles are checked elsewhere
+            sub_t = None
+        else:
+            sub_t = (link.get("sub_tier") or link_roles[0]) if link_roles else None
         if sub_t:
             cur_p = tier_priority.get(highest_tier, 0) if highest_tier else 0
             new_p = tier_priority.get(sub_t, 0)
@@ -747,6 +760,8 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
             "email": link["email"],
             "roles": link_roles,
             "sub_tier": sub_t,
+            "tier_checked_at": tier_checked_at,
+            "tier_expired": tier_expired,
             "linked_at": link["created_at"],
         }
 
@@ -860,7 +875,8 @@ def resolve_all_user_ids(user_or_id: Any) -> List[str]:
     elif user_or_id:
         cands.append(str(user_or_id).strip())
 
-    cp_uids = [c for c in cands if c.startswith("cp_usr_")]
+    # Unified accounts: native (cp_usr_…) and YouTube/Twitch/Patreon logins (u_<provider>_<id>)
+    cp_uids = [c for c in cands if c.startswith(("cp_usr_", "u_"))]
     if cp_uids:
         try:
             with connect_db() as conn:

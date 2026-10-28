@@ -154,6 +154,9 @@ def _user_label(user_id: Any, name: str | None = None) -> str:
     """Matches the logger's '_format_user_for_embed': 'Name (<@id>)'."""
     if not user_id:
         return name or "Visitor (unlinked)"
+    if not str(user_id).isdigit():
+        # A website account outside the Discord server: there is no member to mention
+        return f"{name or user_id} (website account)"
     return f"{name} (<@{user_id}>)" if name else f"<@{user_id}>"
 
 
@@ -321,6 +324,30 @@ def post_verified_flight(visit: dict, member_id: str, member_name: str, has_acce
     return message_url(_send(Config.XLOG_VERBOSE_CHANNEL_ID, {"embeds": [embed], "components": VERIFIED_FLAG_COMPONENTS}))
 
 
+def post_verified_website_flight(visit: dict, account_name: str, tiers: list[str]) -> str | None:
+    """'Verified Flight' in #xlog-verbose for a website account that is not in the server."""
+    lines = [
+        f"Website Account: **{account_name or 'Unknown'}** (not in the Discord server)",
+        f"{EMOJI_HEART} **Subscription(s):** {', '.join(tiers) or 'None'}",
+        "\nLog details matched a website account.",
+    ]
+    embed = {
+        "title": f"{EMOJI_CHECK} Verified Flight",
+        "description": "\n".join(lines),
+        "color": COLOR_SUCCESS,
+        "fields": [
+            {"name": "IGN", "value": f"```yaml\n{visit['ign']}```", "inline": True},
+            {"name": "Island Name", "value": f"```yaml\n{(visit['origin_island'] or '?').title()}```", "inline": True},
+            {"name": "Destination", "value": island_channel_link(visit["destination"]), "inline": True},
+            {"name": "Visit ID", "value": f"`#{visit['id']}`", "inline": True},
+        ],
+        "image": {"url": Config.FOOTER_LINE},
+        "footer": _footer("Chopaeng Camp™ • Match Log (website check)"),
+        "timestamp": datetime.fromtimestamp(visit["timestamp"], tz=timezone.utc).isoformat(),
+    }
+    return message_url(_send(Config.XLOG_VERBOSE_CHANNEL_ID, {"embeds": [embed]}))
+
+
 def post_flight_alert(visit: dict, verdict: str, detail: dict) -> dict | None:
     """The logger's review alert in #flight-logs, with its action buttons. Returns the message."""
     dest = island_channel_link(visit["destination"])
@@ -446,13 +473,20 @@ def run_async(fn, *args, **kwargs) -> None:
     threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()
 
 
-def warn_count(conn, discord_id: Any, days: int = 3) -> int:
-    """Active warnings in the logger's sense (WARN_EXPIRY_DAYS = 3)."""
-    if not str(discord_id or "").isdigit():
-        return 0
+def warn_count(conn, discord_id: Any, days: int = 3, web_user_id: str | None = None) -> int:
+    """Active warnings in the logger's sense (WARN_EXPIRY_DAYS = 3).
+
+    Members outside the Discord server are counted by their website account instead.
+    """
     cutoff = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+    if str(discord_id or "").isdigit():
+        column, value = "user_id", int(discord_id)
+    elif web_user_id:
+        column, value = "web_user_id", str(web_user_id)
+    else:
+        return 0
     row = conn.execute(
-        "SELECT COUNT(*) FROM warnings WHERE user_id = ? AND timestamp > ? AND action_type IN ('WARN', 'TIMEOUT', 'BAN')",
-        (int(discord_id), cutoff),
+        f"SELECT COUNT(*) FROM warnings WHERE {column} = ? AND timestamp > ? AND action_type IN ('WARN', 'TIMEOUT', 'BAN')",
+        (value, cutoff),
     ).fetchone()
     return int(row[0]) if row else 0

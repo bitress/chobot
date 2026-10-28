@@ -120,9 +120,12 @@ class Warning(Base):
     timestamp: Mapped[int | None] = mapped_column(BigInteger, index=True)
     visit_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     action_type: Mapped[str] = mapped_column(String(64), nullable=False, default="WARN", index=True)
+    # Website account (e.g. cp_usr_…) for members outside the Discord server
+    web_user_id: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (
         Index("ix_warnings_user_guild_ts", "user_id", "guild_id", "timestamp"),
+        Index("ix_warnings_web_user_id", "web_user_id"),
     )
 
 

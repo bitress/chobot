@@ -19,6 +19,7 @@ from discord.ui import View, UserSelect, Select, button
 from utils.config import Config
 from utils.database import connect_async_db, get_backend
 from utils.helpers import clean_text
+from utils import island_access
 from utils.flight_matching import (
     LEGACY_TWO_IDENTITY_CUTOFF_UTC,
     LEGACY_TWO_IDENTITY_LIMIT,
@@ -35,6 +36,13 @@ from utils.sysbot_telemetry import (
     is_valid_origin_island,
     register_flight_event_listener,
     unregister_flight_event_listener,
+)
+from utils.website_identity import (
+    SAVED_CHARACTERS_SQL,
+    account_label,
+    saved_character_owners,
+    website_only_account,
+    website_verdict,
 )
 
 logger = logging.getLogger("FlightLogger")
@@ -1620,49 +1628,50 @@ class FlightLoggerCog(commands.Cog):
         """Match traveler's IGN and island against user_saved_characters in database."""
         if not guild:
             return None
-        ign_clean = clean_text(ign)
-        origin_clean = clean_text(origin)
-        if not ign_clean:
-            return None
+        for user_id_raw in await self._saved_character_owners(ign, origin):
+            if not user_id_raw.isdigit():
+                continue
+            member = await self._resolve_member(guild, int(user_id_raw))
+            if member:
+                return member
+        return None
 
+    async def _saved_character_owners(self, ign: str, origin: str) -> list[str]:
+        """Website accounts with a saved character matching the flight (IGN + island first)."""
         try:
             async with connect_async_db() as db:
-                cur = await db.execute(
-                    """
-                    SELECT user_id, ign, island_name, is_default
-                    FROM user_saved_characters
-                    WHERE TRIM(ign) != ''
-                    ORDER BY is_default DESC, updated_at DESC
-                    LIMIT 200
-                    """
-                )
+                cur = await db.execute(SAVED_CHARACTERS_SQL)
                 rows = await cur.fetchall()
         except Exception as exc:
             logger.warning(f"[FLIGHT] user_saved_characters lookup failed: {exc}")
+            return []
+        return saved_character_owners(rows, ign, origin)
+
+    async def find_website_traveler(self, ign: str, origin: str, destination: str) -> tuple[dict, str, str | None] | None:
+        """A website-only account (no Discord link) behind the flight: (account, found_via, reveal_url)."""
+        for user_id in await self._saved_character_owners(ign, origin):
+            account = await asyncio.to_thread(website_only_account, user_id)
+            if account:
+                return account, "saved_character", None
+
+        dest_clean = clean_text(destination)
+        cutoff = int(discord.utils.utcnow().timestamp()) - 7200
+        try:
+            async with connect_async_db() as db:
+                cur = await db.execute(
+                    "SELECT user_id, message_url, username, nickname FROM dodo_reveal_messages "
+                    "WHERE island_clean = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 40",
+                    (dest_clean, cutoff),
+                )
+                rows = await cur.fetchall()
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] dodo_reveal_messages website lookup failed: {exc}")
             return None
-
-        # 1. Exact match on both IGN and island
-        for user_id_raw, c_ign, c_isl, _ in rows:
-            if clean_text(c_ign) == ign_clean and origin_clean and clean_text(c_isl) == origin_clean:
-                try:
-                    uid = int(user_id_raw)
-                    member = await self._resolve_member(guild, uid)
-                    if member:
-                        return member
-                except (ValueError, TypeError):
-                    continue
-
-        # 2. Fallback: match on IGN only
-        for user_id_raw, c_ign, c_isl, _ in rows:
-            if clean_text(c_ign) == ign_clean:
-                try:
-                    uid = int(user_id_raw)
-                    member = await self._resolve_member(guild, uid)
-                    if member:
-                        return member
-                except (ValueError, TypeError):
-                    continue
-
+        for user_id, message_url, username, nickname in rows:
+            if ign_matches_dodo_reveal(ign, username, nickname):
+                account = await asyncio.to_thread(website_only_account, user_id)
+                if account:
+                    return account, "dodo_reveal", message_url
         return None
 
     def _get_db(self):
@@ -3104,9 +3113,106 @@ class FlightLoggerCog(commands.Cog):
                         found = [member]
                         match_source = "recent_authorization"
 
+            # 5. A website account that is not in the Discord server
+            if not found:
+                website = await self.find_website_traveler(ign_raw, island_raw, dest_raw)
+                if website:
+                    account, via, reveal_url = website
+                    await self.log_website_result(
+                        account, via, ign_raw, island_raw, dest_raw,
+                        message_url=message_url or reveal_url, message_content=message_content,
+                    )
+                    return
+
             await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub', message_url=message_url, message_content=message_content, match_source=match_source)
         except Exception as e:
             logger.error(f"[FLIGHT] Pipeline error for {ign_raw}: {e}", exc_info=True)
+
+    async def log_website_result(self, account, found_via, ign, island, destination, message_url=None, message_content=None):
+        """Log a flight by a website account that is not in the Discord server.
+
+        There are no Discord roles to check, so the account's subscription tier decides,
+        exactly as it did when the website revealed the Dodo code.
+        """
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if guild is None:
+            logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} unavailable, aborting website log for {ign}")
+            return
+        guild_icon = guild.icon.url if guild.icon else None
+        now = discord.utils.utcnow()
+        verdict, detail = website_verdict(account, destination, found_via)
+        verified = verdict == "verified"
+        visit_id = await self.record_island_visit(
+            ign, island, destination, [], guild.id, int(now.timestamp()), authorized=1 if verified else 0,
+        )
+        await self.set_visit_verdict(visit_id, verdict, detail)
+
+        name = account_label(account)
+        member_line = f"**{name}** (website account · not in the Discord server)"
+        tiers_text = ", ".join(detail.get("subs") or []) or "None"
+        destination_link = self.get_island_channel_link(destination)
+        source = {"saved_character": "saved character", "dodo_reveal": "Dodo reveal"}.get(found_via, found_via)
+        logger.info(f"[FLIGHT] Website account match: {ign} -> {account.get('user_id')} ({verdict}, via {found_via})")
+
+        alert_msg = None
+        if not verified:
+            output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
+            if output_channel:
+                alert_embed = discord.Embed(
+                    description=(
+                        "### <a:CampWarning:1172346431542140961> Island Access Mismatch\n"
+                        f"Website account {member_line} matched this flight for **{destination_link}**, "
+                        "but its subscription does not include that island.\n"
+                        f"**Subscription(s):** {tiers_text}\n"
+                        "This member is not in the server: warn, timeout or ban them from the web dashboard."
+                    ),
+                    color=COLOR_INVESTIGATION,
+                    timestamp=now,
+                )
+                alert_embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
+                alert_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+                alert_embed.add_field(name="Destination", value=destination_link, inline=True)
+                alert_embed.add_field(name="Detected", value=f"<t:{int(now.timestamp())}:R>", inline=True)
+                alert_embed.add_field(name="Status", value="<:Cho_Investigate:1474310726381338666> **PENDING REVIEW**", inline=True)
+                if visit_id:
+                    alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+                alert_embed.set_image(url=Config.FOOTER_LINE)
+                alert_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
+                alert_msg = await output_channel.send(embed=alert_embed, view=TravelerActionView(self.bot, ign, visit_id=visit_id))
+                await self.set_visit_alert(visit_id, alert_msg)
+
+        xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        if not xlog_channel:
+            return
+        desc_lines = []
+        if message_url:
+            preview = (message_content or "View original message").strip()
+            desc_lines.append(f"[{preview[:97] + '...' if len(preview) > 100 else preview}]({message_url})")
+        desc_lines.append(f"Website Account: {member_line}")
+        desc_lines.append(f"<a:heartside:784055539881214002> **Subscription(s):** {tiers_text}")
+        if verified:
+            desc_lines.append(f"\nLog details matched a website account via {source}.")
+        else:
+            desc_lines.append(f"\n**Auto-Flag:** {detail.get('reason')}")
+        xlog_embed = discord.Embed(
+            title="<:Cho_Check:1456715827213504593> Verified Flight" if verified else "Flagged Flight",
+            description="\n".join(desc_lines),
+            color=COLOR_SUCCESS if verified else COLOR_INVESTIGATION,
+            timestamp=now,
+        )
+        xlog_embed.add_field(name="IGN", value=f"```yaml\n{ign}```", inline=True)
+        xlog_embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
+        xlog_embed.add_field(name="Destination", value=destination_link, inline=True)
+        if visit_id:
+            xlog_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+        xlog_embed.set_image(url=Config.FOOTER_LINE)
+        xlog_embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
+        xlog_view = discord.ui.View()
+        if message_url:
+            xlog_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
+        if alert_msg:
+            xlog_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
+        await xlog_channel.send(embed=xlog_embed, view=xlog_view)
 
     async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub', message_url=None, message_content=None, match_source=None):
         if status == "JOINING" and not is_valid_origin_island(island):
@@ -3234,7 +3340,10 @@ class FlightLoggerCog(commands.Cog):
                     )
                     return
 
-                if sub_roles and all_member_subs and not current_island_subs:
+                # Members with no sub at all are flagged too: the island access role alone
+                # (rules accepted) does not open a sub island.
+                is_staff = island_access.is_mod([str(r.id) for r in member.roles]) or member.guild_permissions.administrator
+                if sub_roles and not current_island_subs and not is_staff:
                     await self._trigger_island_access_mismatch_flag(
                         ign,
                         island,

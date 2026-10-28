@@ -57,6 +57,9 @@ class Config:
     # Role required to see #chorder-bot and related order channels.
     ANIMAL_CROSSING_ROLE_ID = _get_int('ANIMAL_CROSSING_ROLE_ID', 890283161471295488)
     SUB_RULES_ROLE_ID = _get_int('SUB_RULES_ROLE_ID', 1077997850165772398)
+    # Tiers from a linked Patreon/YouTube/Twitch account stop counting this many days
+    # after the member last linked it (we cannot re-check those platforms later).
+    LINKED_TIER_MAX_AGE_DAYS = _get_int('LINKED_TIER_MAX_AGE_DAYS', 35)
     ORDER_RULES_ROLE_ID = _get_int('ORDER_RULES_ROLE_ID', 1176191811438510231)
     AI_LEARN_CHANNEL_ID = _get_int('AI_LEARN_CHANNEL_ID', 907642922906845264)
     FREE_DODO_BOARD_CHANNEL_ID = _get_int('FREE_DODO_BOARD_CHANNEL_ID', 1500493205672825056)
