@@ -478,7 +478,11 @@ def _adapt_mysql_upsert(sql: str) -> str:
 
     before = sql[: marker.start()]
     assignments = sql[marker.end():]
-    assignments = re.sub(r"\bexcluded\.([A-Za-z_][A-Za-z0-9_]*)", r"VALUES(\1)", assignments)
+    assignments = re.sub(
+        r"\bexcluded\.(`?)([A-Za-z_][A-Za-z0-9_]*)\1",
+        lambda match: f"VALUES({match.group(1)}{match.group(2)}{match.group(1)})",
+        assignments,
+    )
     return f"{before} ON DUPLICATE KEY UPDATE {assignments}"
 
 

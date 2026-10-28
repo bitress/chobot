@@ -702,16 +702,14 @@ def _check_access(discord_user_id: int) -> str | None:
 
     if ENFORCE_BLOCKLIST:
         try:
+            # Only an *active* ban blocks (pardons and undos deactivate it). Discord-button
+            # bans are synced into user_moderation_status by the flight logger.
             with connect_db() as conn:
                 row = conn.execute(
-                    "SELECT 1 FROM warnings WHERE (user_id = ? OR user_id = ?) AND action_type = 'BAN' LIMIT 1",
-                    (uid, int(discord_user_id)),
+                    "SELECT 1 FROM user_moderation_status WHERE (discord_id = ? OR user_id = ?) "
+                    "AND action_type = 'BAN' AND is_active = 1 LIMIT 1",
+                    (uid, uid),
                 ).fetchone()
-                if not row:
-                    row = conn.execute(
-                        "SELECT 1 FROM user_moderation_status WHERE discord_id = ? AND action_type = 'BAN' AND is_active = 1 LIMIT 1",
-                        (uid,),
-                    ).fetchone()
             if row:
                 return (
                     "You can't use island controls right now. "
@@ -1132,7 +1130,7 @@ async def _get_console_api_islands() -> list[dict]:
     async with _CONSOLE_API_LOCK:   # parallel panel refreshes share one fetch
         if fresh():
             return _CONSOLE_API_CACHE[1]
-        url = getattr(Config, "ISLANDS_API_URL", "") or "https://console.chopaeng.com/api/islands"
+        url = getattr(Config, "ISLANDS_API_URL", "") or f"{Config.API_BASE_URL}/api/islands"
         items: list[dict] = []
         try:
             async with _http().get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:

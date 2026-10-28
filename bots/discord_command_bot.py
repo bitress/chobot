@@ -2215,31 +2215,10 @@ class DiscordCommandCog(commands.Cog):
 
     async def _fetch_islands_api_data(self) -> tuple[list[dict], datetime | None] | tuple[None, None]:
         """Fetch raw island snapshot data from the SysBot API / console."""
-        primary_url = f"{Config.API_BASE_URL}/api/islands"
-        remote_url = "https://console.chopaeng.com/api/islands"
+        url = f"{Config.API_BASE_URL}/api/islands"
 
         def _get_json():
-            # If primary URL is configured, attempt it first
-            if primary_url:
-                try:
-                    response = requests.get(primary_url, timeout=8)
-                    if response.ok:
-                        payload = response.json()
-                        items = payload.get("data", []) if isinstance(payload, dict) else []
-                        # If localhost returns no online bots, fallback to remote production console
-                        if ("localhost" in primary_url or "127.0.0.1" in primary_url) and not any(i.get("bot_online") for i in items):
-                            try:
-                                rem = requests.get(remote_url, timeout=8)
-                                if rem.ok:
-                                    return rem.json()
-                            except Exception:
-                                pass
-                        return payload
-                except Exception as exc:
-                    logger.debug(f"[DISCORD] Primary island API failed ({primary_url}): {exc}")
-
-            # Fallback to remote console
-            response = requests.get(remote_url, timeout=8)
+            response = requests.get(url, timeout=8)
             response.raise_for_status()
             return response.json()
 

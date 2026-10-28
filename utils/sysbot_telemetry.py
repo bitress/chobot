@@ -598,16 +598,19 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                     "formatted_time": formatted_time,
                 })
 
+                # Sub-island arrivals stay 'unchecked' until the Discord flight logger
+                # verifies them (it takes over this row); free islands need no review.
                 visits_to_insert.append((
                     p_clean,
                     origin_clean,
                     clean_name,
                     None,
                     None,
-                    1 if not is_sub else 1,
+                    0 if is_sub else 1,
                     int(time.time()),
                     "sub" if is_sub else "free",
-                    1,
+                    0 if is_sub else 1,
+                    "unchecked" if is_sub else "authorised",
                 ))
 
                 new_events_to_insert.append((
@@ -632,10 +635,19 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                     """, new_events_to_insert)
 
                 if visits_to_insert:
+                    # Skip sub arrivals the flight logger already recorded (it can win the race)
+                    visits_to_insert = [
+                        v for v in visits_to_insert
+                        if v[7] != "sub" or not conn.execute(
+                            "SELECT 1 FROM island_visits WHERE LOWER(ign) = LOWER(?) AND LOWER(destination) = LOWER(?) "
+                            "AND timestamp BETWEEN ? AND ? LIMIT 1",
+                            (v[0], v[2], v[6] - 180, v[6] + 180),
+                        ).fetchone()
+                    ]
                     conn.executemany("""
                         INSERT INTO island_visits
-                        (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_island_access)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_island_access, review_status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, visits_to_insert)
         except Exception as exc:
             logger.debug(f"[SysBotTelemetry] Ingest error for {clean_name}: {exc}")

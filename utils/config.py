@@ -179,7 +179,7 @@ class Config:
     ORDER_BOT_DISCORD_ID = _get_int('ORDER_BOT_DISCORD_ID', 1175671093445537802)
     ORDER_BOT_TWITCH_CHANNEL = os.getenv('ORDER_BOT_TWITCH_CHANNEL') or TWITCH_CHANNEL
 
-    # ChoPaeng Console Order API (https://console.chopaeng.com/api/order)
+    # ChoPaeng Console Order API ({API_BASE_URL}/api/order)
     ORDER_API_URL = (os.getenv('ORDER_API_URL') or '').rstrip('/') or f"{API_BASE_URL}/api/order"
 
     # SysBot.ACNHOrders HTTP REST API

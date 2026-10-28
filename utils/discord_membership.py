@@ -218,13 +218,8 @@ def remove_guild_member_role(user_id: int | str, role_id: int | str) -> bool:
         return False
 
 
-def revoke_sub_rules_acceptance(user_id: int | str) -> bool:
-    """Revoke user_sub_rules_accepted and remove SUB_RULES_ROLE_ID when warned."""
-    uid = str(user_id).strip()
-    if not uid:
-        return False
-
-    # 1. Resolve all candidate user IDs linked to this user
+def _sub_rules_candidate_ids(uid: str) -> list[str]:
+    """All user IDs linked to this user (Discord ID, unified ID, provider aliases)."""
     cand_ids = [uid]
     try:
         from utils.unified_auth import resolve_all_user_ids
@@ -233,8 +228,77 @@ def revoke_sub_rules_acceptance(user_id: int | str) -> bool:
             cand_ids = list(set(cand_ids + resolved))
     except Exception:
         pass
+    return cand_ids
 
-    # 2. Delete from user_sub_rules_accepted in SQLite
+
+def _island_gate_role_ids() -> list[str]:
+    """The island-access gate role(s) revoked on warn/timeout/ban (never subscriber tiers)."""
+    role_ids: list[str] = []
+    for candidate in (getattr(Config, "ISLAND_ACCESS_ROLE", None), getattr(Config, "SUB_RULES_ROLE_ID", None)):
+        value = str(candidate or "").strip()
+        if value and value not in {"0", "None"} and value not in role_ids:
+            role_ids.append(value)
+    return role_ids or [str(1077997850165772398)]
+
+
+def snapshot_sub_rules_acceptance(user_id: int | str) -> dict:
+    """Record what revoke_sub_rules_acceptance is about to remove, so an undo can put it back."""
+    uid = str(user_id).strip()
+    snapshot: dict = {"acceptance": [], "gate_roles": []}
+    if not uid:
+        return snapshot
+    cand_ids = _sub_rules_candidate_ids(uid)
+    try:
+        from utils.database import connect_db
+        with connect_db() as conn:
+            ph = ",".join("?" for _ in cand_ids)
+            rows = conn.execute(
+                f"SELECT user_id, accepted_at FROM user_sub_rules_accepted WHERE user_id IN ({ph})", cand_ids
+            ).fetchall()
+            snapshot["acceptance"] = [{"user_id": str(r[0]), "accepted_at": r[1]} for r in rows]
+    except Exception as exc:
+        logger.warning("Failed to snapshot user_sub_rules_accepted for %s: %s", uid, exc)
+    if uid.isdigit():
+        try:
+            roles = set(fetch_guild_member_snapshot(uid).get("roles", []))
+            snapshot["gate_roles"] = [rid for rid in _island_gate_role_ids() if rid in roles]
+        except Exception as exc:
+            logger.debug("Could not snapshot gate roles for %s: %s", uid, exc)
+    return snapshot
+
+
+def restore_sub_rules_acceptance(discord_id: int | str | None, snapshot: dict | None) -> bool:
+    """Undo revoke_sub_rules_acceptance using a snapshot taken before it ran."""
+    snapshot = snapshot or {}
+    restored = False
+    try:
+        from utils.database import connect_db
+        with connect_db() as conn:
+            for row in snapshot.get("acceptance") or []:
+                conn.execute(
+                    "INSERT OR REPLACE INTO user_sub_rules_accepted (user_id, accepted_at) VALUES (?, ?)",
+                    (row["user_id"], row["accepted_at"]),
+                )
+                restored = True
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Failed to restore user_sub_rules_accepted for %s: %s", discord_id, exc)
+    if discord_id and str(discord_id).isdigit():
+        for role_id in snapshot.get("gate_roles") or []:
+            restored = add_guild_member_role(discord_id, role_id) or restored
+    return restored
+
+
+def revoke_sub_rules_acceptance(user_id: int | str) -> bool:
+    """Revoke website island-access acceptance without stripping subscriber tiers."""
+    uid = str(user_id).strip()
+    if not uid:
+        return False
+
+    # 1. Resolve all candidate user IDs linked to this user.
+    cand_ids = _sub_rules_candidate_ids(uid)
+
+    # 2. Delete from user_sub_rules_accepted in SQLite.
     try:
         from utils.database import connect_db
         with connect_db() as conn:
@@ -246,8 +310,17 @@ def revoke_sub_rules_acceptance(user_id: int | str) -> bool:
     except Exception as exc:
         logger.warning("Failed to delete user_sub_rules_accepted for %s: %s", uid, exc)
 
-    # 3. Remove Discord role 1077997850165772398
-    role_id = getattr(Config, "SUB_RULES_ROLE_ID", 1077997850165772398) or 1077997850165772398
+    # 3. Remove the configured island-access gate role(s), not subscriber tiers.
+    island_access_role = getattr(Config, "ISLAND_ACCESS_ROLE", None)
+    sub_rules_role = getattr(Config, "SUB_RULES_ROLE_ID", None)
+    role_ids: list[str] = []
+    for candidate in (island_access_role, sub_rules_role):
+        value = str(candidate or "").strip()
+        if value and value not in {"0", "None"} and value not in role_ids:
+            role_ids.append(value)
+    if not role_ids:
+        role_ids = [str(1077997850165772398)]
+
     discord_uids = [cid for cid in cand_ids if str(cid).isdigit()]
     if not discord_uids:
         try:
@@ -266,7 +339,8 @@ def revoke_sub_rules_acceptance(user_id: int | str) -> bool:
             pass
 
     for d_uid in set(discord_uids):
-        remove_guild_member_role(d_uid, role_id)
+        for role_id in role_ids:
+            remove_guild_member_role(d_uid, role_id)
 
     return True
 

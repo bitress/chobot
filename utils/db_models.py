@@ -90,7 +90,13 @@ class IslandVisit(Base):
     timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     island_type: Mapped[str] = mapped_column(String(64), nullable=False, default="sub", index=True)
     has_island_access: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    review_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+        index=True,
+    )
     handled_by: Mapped[str | None] = mapped_column(String(255))
     handled_at: Mapped[int | None] = mapped_column(BigInteger)
     match_score: Mapped[int | None] = mapped_column(Integer)
@@ -539,5 +545,4 @@ class IslandDropbotPanel(Base):
     island_name: Mapped[str] = mapped_column(String(128), nullable=False)
     message_id: Mapped[str | None] = mapped_column(String(64))
     updated_at: Mapped[str | None] = mapped_column(String(64))
-
 

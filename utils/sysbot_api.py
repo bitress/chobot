@@ -23,7 +23,7 @@ from utils.cache import bundles_cache, bot_status_cache
 
 logger = logging.getLogger("SysBotAPI")
 
-BUNDLES_API_URL = "https://console.chopaeng.com/api/bundles"
+BUNDLES_API_URL = f"{Config.API_BASE_URL}/api/bundles"
 _INVALID_DODO_CODES = frozenset({"00000", "-----", "null", "None", ""})
 
 _SYSBOT_STATUS_MAP = {
@@ -610,7 +610,7 @@ class SysBotClient:
         return []
 
     async def get_bundles(self) -> List[Dict[str, Any]]:
-        """Fetch official bundles from https://console.chopaeng.com/api/bundles."""
+        """Fetch official bundles from {API_BASE_URL}/api/bundles."""
         now = time.time()
         if self._bundles_cache and (now - self._bundles_cache_time) < self._bundles_cache_ttl:
             return self._bundles_cache

@@ -14,6 +14,8 @@ import threading
 import time
 from typing import Optional
 
+from utils.config import Config
+
 logger = logging.getLogger("ChopaengAI")
 if os.getenv("CHOPAENG_AI_DEBUG", "false").lower() in ("true", "1", "yes") or os.getenv("LOG_LEVEL", "").upper() == "DEBUG":
     logger.setLevel(logging.DEBUG)
@@ -30,10 +32,10 @@ _CHAT_LOG_PATH = os.path.join(
 # ---------------------------------------------------------------------------
 # Live API endpoints + cache
 # ---------------------------------------------------------------------------
-_ISLANDS_API_URL   = "https://console.chopaeng.com/api/islands"
-_VILLAGERS_API_URL = "https://console.chopaeng.com/api/villagers/list"
-_FIND_ITEM_API_URL = "https://console.chopaeng.com/api/find"
-_FIND_VILLAGER_API_URL = "https://console.chopaeng.com/api/villager"
+_ISLANDS_API_URL   = f"{Config.API_BASE_URL}/api/islands"
+_VILLAGERS_API_URL = f"{Config.API_BASE_URL}/api/villagers/list"
+_FIND_ITEM_API_URL = f"{Config.API_BASE_URL}/api/find"
+_FIND_VILLAGER_API_URL = f"{Config.API_BASE_URL}/api/villager"
 _LIVE_CACHE_TTL    = 300  # seconds — refresh every 5 minutes
 _REQUEST_HELP_CHANNEL = "782872507551055892"
 

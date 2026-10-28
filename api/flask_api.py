@@ -5529,6 +5529,24 @@ def api_user_sub_rules():
     from utils.unified_auth import resolve_all_user_ids
     cand_ids = resolve_all_user_ids(auth_user)
 
+    if request.method == "POST":
+        # A warn only removes access until the rules are re-accepted; an active
+        # timeout or ban must not be undone by accepting them again.
+        from api.control_panel import check_user_active_restriction
+        active_rest = check_user_active_restriction(
+            auth_user.get("user_id"),
+            auth_user.get("discord_id") or auth_user.get("id"),
+        )
+        if active_rest:
+            return jsonify({
+                "ok": False,
+                "error": (
+                    f"Your island access is suspended ({active_rest['action_type']}). "
+                    "You can accept the rules again once it ends."
+                ),
+                "active_restriction": active_rest,
+            }), 403
+
     conn = get_db()
     try:
         conn.execute("CREATE TABLE IF NOT EXISTS user_sub_rules_accepted (user_id TEXT PRIMARY KEY, accepted_at TEXT)")
@@ -6016,7 +6034,7 @@ def _ensure_presence_table(conn):
             role                VARCHAR(32) DEFAULT 'resident',
             status              VARCHAR(32) DEFAULT 'online',
             current_activity    VARCHAR(255),
-            current_path        VARCHAR(255),
+            `current_path`      VARCHAR(255),
             current_island      VARCHAR(64),
             ign                 VARCHAR(64),
             island_name         VARCHAR(64),
@@ -6151,7 +6169,7 @@ def api_presence_heartbeat():
         conn.execute("""
             INSERT INTO user_online_presence (
                 session_id, user_id, username, display_name, avatar_url, role, status,
-                current_activity, current_path, current_island, ign, island_name,
+                current_activity, `current_path`, current_island, ign, island_name,
                 native_fruit, has_public_passport, is_guest, ip_hash, last_heartbeat, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
@@ -6162,7 +6180,7 @@ def api_presence_heartbeat():
                 role = excluded.role,
                 status = excluded.status,
                 current_activity = excluded.current_activity,
-                current_path = excluded.current_path,
+                `current_path` = excluded.`current_path`,
                 current_island = excluded.current_island,
                 ign = COALESCE(NULLIF(excluded.ign, ''), user_online_presence.ign),
                 island_name = COALESCE(NULLIF(excluded.island_name, ''), user_online_presence.island_name),
@@ -7576,4 +7594,3 @@ def api_players_live():
     isl = request.args.get("island") or request.args.get("name")
     data = catalog_map_service.build_live_players_payload(island_filter=isl, viewer=viewer)
     return jsonify(data)
-

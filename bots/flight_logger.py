@@ -19,6 +19,17 @@ from discord.ui import View, UserSelect, Select, button
 from utils.config import Config
 from utils.database import connect_async_db, get_backend
 from utils.helpers import clean_text
+from utils.flight_matching import (
+    LEGACY_TWO_IDENTITY_CUTOFF_UTC,
+    LEGACY_TWO_IDENTITY_LIMIT,
+    calculate_max_identities,
+    get_allowed_identity_count,
+    ign_matches_dodo_reveal,
+    is_strict_nick_match,
+    normalize_identity_text,
+    parse_member_nick,
+    split_options,
+)
 from utils.sysbot_telemetry import (
     is_ignored_flight_player,
     is_valid_origin_island,
@@ -27,26 +38,6 @@ from utils.sysbot_telemetry import (
 )
 
 logger = logging.getLogger("FlightLogger")
-
-
-def ign_matches_dodo_reveal(ign: str, username: str | None, nickname: str | None) -> bool:
-    """Heuristic: flight-list IGN vs Discord username/nickname from dodo reveal webhook."""
-    i = clean_text(ign)
-    if not i or len(i) < 2:
-        return False
-    for raw in (username, nickname):
-        if not raw:
-            continue
-        c = clean_text(raw)
-        if not c:
-            continue
-        if i == c:
-            return True
-        if len(i) >= 3 and (i in c or c in i):
-            return True
-        if c.startswith(i) or i.startswith(c):
-            return True
-    return False
 
 
 # --- CONSTANTS ---
@@ -67,8 +58,6 @@ IDENTITY_EVENT_NICKNAME_CHANGE = "nickname_change"
 IDENTITY_EVENT_MEMBER_JOIN = "member_join"
 MAX_HISTORY_ENTRIES = 10  # Max entries shown per section in !flighthistory
 MAX_DEBUG_CANDIDATES = 5  # Max closest-candidate entries shown in !fdebug
-LEGACY_TWO_IDENTITY_CUTOFF_UTC = datetime.datetime(2022, 9, 1, tzinfo=datetime.timezone.utc)
-LEGACY_TWO_IDENTITY_LIMIT = 2
 
 
 def _trim_discord_value(value: str, limit: int = 1024) -> str:
@@ -327,6 +316,56 @@ async def init_db():
             await db.execute("ALTER TABLE island_visits ADD COLUMN has_island_access INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE island_visits ADD COLUMN review_status "
+                "VARCHAR(32) NOT NULL DEFAULT 'pending'"
+            )
+        except Exception:
+            pass  # Column already exists
+        # Why the flight logger authorised or flagged a visit (shown on the web dashboard)
+        for col_sql in (
+            "ALTER TABLE island_visits ADD COLUMN logger_verdict VARCHAR(48) DEFAULT NULL",
+            "ALTER TABLE island_visits ADD COLUMN logger_detail TEXT DEFAULT NULL",
+            # The #flight-logs alert for this visit, so web resolutions can update it
+            "ALTER TABLE island_visits ADD COLUMN alert_channel_id VARCHAR(32) DEFAULT NULL",
+            "ALTER TABLE island_visits ADD COLUMN alert_message_id VARCHAR(32) DEFAULT NULL",
+        ):
+            try:
+                await db.execute(col_sql)
+            except Exception:
+                pass  # Column already exists
+        if get_backend() == "mysql":
+            try:
+                await db.execute(
+                    "UPDATE island_visits SET review_status = "
+                    "CASE WHEN authorized = 1 THEN 'authorised' ELSE 'pending' END "
+                    "WHERE review_status IS NULL OR review_status = ''"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[FLIGHT] Could not backfill empty island_visits.review_status values: %s",
+                    exc,
+                )
+            try:
+                await db.execute(
+                    "ALTER TABLE island_visits MODIFY COLUMN has_island_access INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[FLIGHT] Could not normalize island_visits.has_island_access default: %s",
+                    exc,
+                )
+            try:
+                await db.execute(
+                    "ALTER TABLE island_visits MODIFY COLUMN review_status "
+                    "VARCHAR(32) NOT NULL DEFAULT 'pending'"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[FLIGHT] Could not normalize island_visits.review_status default: %s",
+                    exc,
+                )
         await db.execute("""
             CREATE TABLE IF NOT EXISTS dodo_reveal_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,19 +399,8 @@ async def init_db():
         await _ensure_mysql_autoincrement_tables(db)
         await db.commit()
 
-DEFAULT_REASON_TEXT = (
-    "Breaking [Sub Rule #2](https://discord.com/channels/729590421478703135/"
-    "783677194576330792/1137904975553499217). We have removed your island access "
-    "for now. Please read the <#783677194576330792> again to gain access."
-)
-
-REASON_TEMPLATES = {
-    "rule_top_1": "Breaking [Sub Top Rule](https://discord.com/channels/729590421478703135/783677194576330792/1249835404098801756) or [Sub Rule #1](https://discord.com/channels/729590421478703135/783677194576330792/1249835467067752461). We have removed your island access for now. Please contact someone on the mod team in regards to your recent warning. If we do not hear anything within 24 hours you will be banned.",
-    "rule_2": "Breaking [Sub Rule #2](https://discord.com/channels/729590421478703135/783677194576330792/1137904975553499217). We have removed your island access for now. Please read the <#783677194576330792> again to gain access.",
-    "rule_3_4": "Breaking [Sub Rule #3](https://discord.com/channels/729590421478703135/783677194576330792/1137905005433733211)/[Sub Rule #4](https://discord.com/channels/729590421478703135/783677194576330792/1137905033699151893). We have removed your island access for now.",
-    "rule_6": "Breaking [Sub Rule #6](https://discord.com/channels/729590421478703135/783677194576330792/1137905106919096442). We have removed your island access for now. Please read the <#783677194576330792> again to gain access.",
-    "rule_8": "Breaking [Sub Rule #8](https://discord.com/channels/729590421478703135/783677194576330792/1137905158257397875). We have removed your island access for now. Please read the <#783677194576330792> again to gain access."
-}
+# Reason texts are shared with the web dashboard (utils/flight_discord.py)
+from utils.flight_discord import DEFAULT_REASON_TEXT, REASON_TEMPLATES  # noqa: E402
 
 REASON_OPTIONS = [
     discord.SelectOption(label="Sub Top Rule / Rule #1", value="rule_top_1", description="Breaking [Sub Top Rule]"),
@@ -827,6 +855,13 @@ class NoteBuilderView(discord.ui.View):
         self.stop()
 
 
+async def _remember_alert(bot, visit_id, message) -> None:
+    """Store the Discord alert for a visit so web resolutions can update it."""
+    cog = bot.get_cog("FlightLoggerCog") if bot else None
+    if cog:
+        await cog.set_visit_alert(visit_id, message)
+
+
 class TravelerActionView(discord.ui.View):
     def __init__(self, bot=None, ign=None, visit_id=None):
         super().__init__(timeout=None)
@@ -861,6 +896,8 @@ class TravelerActionView(discord.ui.View):
         """Internal helper to update the alert embed state. Does NOT send interaction responses."""
         target_str      = _format_user_for_embed(target_user) if target_user else "Visitor (unlinked)"
         message_to_edit = log_message or (interaction.message if interaction.response.is_done() else None)
+
+        await self._record_review_outcome(status_label, log_message or interaction.message, interaction.user)
 
         if not message_to_edit:
             return
@@ -960,6 +997,21 @@ class TravelerActionView(discord.ui.View):
                     cog._pending_alerts.pop(k, None)
         except Exception as e:
             logger.error(f"Error editing original message: {e}", exc_info=True)
+
+    async def _record_review_outcome(self, status_label, message, mod):
+        """Mirror a Discord alert resolution into island_visits so the web dashboard agrees."""
+        review_status = {"AUTHORIZED": "authorised", "DISMISSED": "dismissed"}.get(
+            str(status_label).upper(), "actioned"
+        )
+        visit_id = self.visit_id
+        if not visit_id and message and message.embeds:
+            visit_id = self._get_visit_id_from_embed(message.embeds[0])
+        cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
+        if visit_id and cog:
+            try:
+                await cog.mark_visit_reviewed(visit_id, review_status, mod)
+            except Exception as exc:
+                logger.warning(f"[FLIGHT] Could not record review outcome for visit #{visit_id}: {exc}")
 
     def disable_all_items(self):
         for child in self.children:
@@ -1288,6 +1340,7 @@ class VerifiedFlightFlagView(discord.ui.View):
             alert_embed.set_footer(text="Chopaeng Camp™ • Flight Logger", icon_url=guild_icon)
             action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
             alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
+            await _remember_alert(self.bot, visit_id, alert_msg)
 
         # Log the flag action in the warnings table (None user_id = no linked Discord member)
         cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
@@ -1296,6 +1349,16 @@ class VerifiedFlightFlagView(discord.ui.View):
                 None, interaction.guild_id,
                 "Flight manually flagged for review" + (" [MULTI-IGN/SUB]" if flagged_for_multi else ""),
                 interaction.user.id, visit_id, action_type='FLAG',
+            )
+            await cog.set_visit_verdict(
+                visit_id,
+                "flagged_by_mod",
+                {
+                    "reason": "Flagged for review by a moderator"
+                    + (" (multiple IGNs/subscriptions)" if flagged_for_multi else ""),
+                    "flagged_by": interaction.user.display_name,
+                },
+                review_status="pending",
             )
 
         # --- Update the xlog message: mark as flagged, swap button for link ---
@@ -1411,6 +1474,9 @@ JOIN_PATTERN = re.compile(
 )
 
 MAX_ALERT_MERGE_SECONDS = 1800  # 30 minutes: re-joins within this window update the existing alert
+# SysBot telemetry writes an 'unchecked' island_visits row for each sub arrival; the
+# logger takes over the row within this window instead of inserting a duplicate.
+TELEMETRY_CLAIM_SECONDS = 180
 
 class FlightLoggerCog(commands.Cog):
     def __init__(self, bot):
@@ -1618,20 +1684,71 @@ class FlightLoggerCog(commands.Cog):
             logger.debug(f"[FLIGHT] Could not fetch member {user_id} from guild {getattr(guild, 'id', None)}")
             return None
 
-    async def add_warning(self, user_id, guild_id, reason, mod_id, visit_id=None, action_type='WARN'):
+    async def add_warning(self, user_id, guild_id, reason, mod_id, visit_id=None, action_type='WARN', case_id=None):
+        now_ts = int(discord.utils.utcnow().timestamp())
         async with connect_async_db() as db:
-            await db.execute(
+            cursor = await db.execute(
                 "INSERT INTO warnings (user_id, guild_id, reason, mod_id, timestamp, visit_id, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (user_id, guild_id, reason, mod_id, int(discord.utils.utcnow().timestamp()), visit_id, action_type)
+                (user_id, guild_id, reason, mod_id, now_ts, visit_id, action_type)
             )
+            warning_id = cursor.lastrowid
+
+        # Sync Discord-issued bans into the shared sanctions table so the web XLog shows them.
+        if action_type == 'BAN' and user_id:
+            try:
+                async with connect_async_db() as db:
+                    existing = await db.execute(
+                        "SELECT 1 FROM user_moderation_status WHERE user_id = ? AND action_type = 'BAN' AND is_active = 1",
+                        (str(user_id),)
+                    )
+                    if not await existing.fetchone():
+                        await db.execute(
+                            "INSERT INTO user_moderation_status "
+                            "(user_id, discord_id, action_type, reason, mod_id, mod_name, created_at, expires_at, is_active) "
+                            "VALUES (?, ?, 'BAN', ?, ?, ?, ?, NULL, 1)",
+                            (str(user_id), str(user_id), reason or "Banned via Discord", str(mod_id), f"Discord:{mod_id}",
+                             int(discord.utils.utcnow().timestamp()))
+                        )
+            except Exception as exc:
+                logger.debug(f"[FLIGHT] Could not sync BAN to user_moderation_status for {user_id}: {exc}")
+
 
         # If user got warned, delete their user_sub_rules_accepted and remove Discord role 1077997850165772398
         if action_type in ('WARN', 'R1', 'TIMEOUT', 'BAN') and user_id:
+            revoked_access = None
             try:
-                from utils.discord_membership import revoke_sub_rules_acceptance
+                from utils.discord_membership import revoke_sub_rules_acceptance, snapshot_sub_rules_acceptance
+                # Saved so the web dashboard's Undo can give the access back
+                revoked_access = await asyncio.to_thread(snapshot_sub_rules_acceptance, user_id)
                 await asyncio.to_thread(revoke_sub_rules_acceptance, user_id)
             except Exception as exc:
                 logger.warning(f"[FLIGHT] Failed to revoke sub rules for warned user {user_id}: {exc}")
+            if visit_id:
+                await self._record_discord_punishment(
+                    visit_id, warning_id, user_id, mod_id, action_type, reason, case_id, revoked_access, now_ts,
+                )
+
+    async def _record_discord_punishment(self, visit_id, warning_id, user_id, mod_id, action_type, reason, case_id, revoked_access, created_at):
+        """Audit record the web dashboard's Undo uses to reverse a Discord-button punishment."""
+        details = {
+            "visit_id": visit_id,
+            "warning_id": warning_id,
+            "target_discord_id": str(user_id),
+            "mod_id": str(mod_id),
+            "action": str(action_type).lower(),
+            "reason": reason,
+            "case_id": case_id,
+            "revoked_access": revoked_access,
+        }
+        try:
+            async with connect_async_db() as db:
+                await db.execute(
+                    "INSERT INTO dashboard_audit_events (actor_user_id, actor_name, action, target, details, created_at) "
+                    "VALUES (?, ?, 'DISCORD_PUNISHMENT', ?, ?, ?)",
+                    (str(mod_id), f"Discord:{mod_id}", f"visit:{visit_id}", json.dumps(details), created_at),
+                )
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] Could not record punishment for undo (visit #{visit_id}): {exc}")
 
     async def get_warn_count(self, user_id: int, guild_id: int, days: int = WARN_EXPIRY_DAYS):
         cutoff = int((discord.utils.utcnow() - datetime.timedelta(days=days)).timestamp())
@@ -1858,11 +1975,9 @@ class FlightLoggerCog(commands.Cog):
     async def record_authorized_followup_visit(self, ign: str, origin_island: str, destination: str, user_id: int, guild_id: int | None, timestamp: int, island_type: str = 'sub') -> int | None:
         """Record an authorized follow-up visit linked to a previously identified traveler."""
         async with connect_async_db() as db:
-            cursor = await db.execute(
-                "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-                (ign, origin_island, destination, user_id, guild_id, timestamp, island_type)
+            return await self._write_visit(
+                db, ign, origin_island, destination, user_id, guild_id, 1, timestamp, island_type, 0, 'authorised'
             )
-            return cursor.lastrowid
 
     async def get_island_visits(self, user_id: int, guild_id: int, days: int = 30):
         """Get all island visits for a user within the specified number of days."""
@@ -1888,19 +2003,87 @@ class FlightLoggerCog(commands.Cog):
             visit_id = None
             if found_members:
                 for member in found_members:
-                    cursor = await db.execute(
-                        "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-                        (ign, origin_island, destination, member.id, guild_id, timestamp, island_type)
+                    has_access = int(any(
+                        str(role.id) == str(Config.ISLAND_ACCESS_ROLE)
+                        for role in member.roles
+                    ))
+                    visit_id = await self._write_visit(
+                        db, ign, origin_island, destination, member.id, guild_id, 1, timestamp,
+                        island_type, has_access, 'authorised',
                     )
-                    visit_id = cursor.lastrowid
             else:
                 auth_val = authorized if authorized is not None else 0
-                cursor = await db.execute(
-                    "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
-                    (ign, origin_island, destination, guild_id, auth_val, timestamp, island_type)
+                visit_id = await self._write_visit(
+                    db, ign, origin_island, destination, None, guild_id, auth_val, timestamp,
+                    island_type, 0, "authorised" if auth_val else "pending",
                 )
-                visit_id = cursor.lastrowid
             return visit_id
+
+    async def _write_visit(self, db, ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_access, review_status) -> int | None:
+        """Take over SysBot telemetry's 'unchecked' row for this arrival, or insert a new visit."""
+        if island_type == 'sub':
+            cursor = await db.execute(
+                "SELECT id FROM island_visits WHERE review_status = 'unchecked' AND user_id IS NULL "
+                "AND LOWER(ign) = LOWER(?) AND LOWER(destination) = LOWER(?) AND timestamp BETWEEN ? AND ? "
+                "ORDER BY ABS(timestamp - ?) LIMIT 1",
+                (ign, destination, timestamp - TELEMETRY_CLAIM_SECONDS, timestamp + TELEMETRY_CLAIM_SECONDS, timestamp),
+            )
+            row = await cursor.fetchone()
+            if row:
+                await db.execute(
+                    "UPDATE island_visits SET origin_island = ?, user_id = ?, guild_id = ?, authorized = ?, "
+                    "has_island_access = ?, review_status = ? WHERE id = ?",
+                    (origin_island, user_id, guild_id, authorized, has_access, review_status, row[0]),
+                )
+                return row[0]
+        cursor = await db.execute(
+            "INSERT INTO island_visits (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_island_access, review_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_access, review_status),
+        )
+        return cursor.lastrowid
+
+    async def set_visit_alert(self, visit_id: int | None, message) -> None:
+        """Remember which #flight-logs alert covers this visit (the web dashboard edits it)."""
+        if not visit_id or message is None:
+            return
+        try:
+            async with connect_async_db() as db:
+                await db.execute(
+                    "UPDATE island_visits SET alert_channel_id = ?, alert_message_id = ? WHERE id = ?",
+                    (str(message.channel.id), str(message.id), visit_id),
+                )
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] Could not store alert message for visit #{visit_id}: {exc}")
+
+    async def set_visit_verdict(self, visit_id: int | None, verdict: str, detail: dict | None = None, review_status: str | None = None) -> None:
+        """Store why the logger authorised or flagged a visit; flagged visits go back to review."""
+        if not visit_id:
+            return
+        sets = ["logger_verdict = ?", "logger_detail = ?"]
+        params: list = [verdict, json.dumps(detail) if detail else None]
+        if review_status:
+            sets.append("review_status = ?")
+            params.append(review_status)
+        async with connect_async_db() as db:
+            await db.execute(f"UPDATE island_visits SET {', '.join(sets)} WHERE id = ?", (*params, visit_id))
+
+    async def mark_visit_reviewed(self, visit_id: int, review_status: str, mod) -> None:
+        """Record a Discord alert resolution, including re-joins merged into that alert."""
+        mod_name = getattr(mod, "display_name", None) or str(mod)
+        now = int(time.time())
+        async with connect_async_db() as db:
+            cursor = await db.execute("SELECT ign, destination, timestamp FROM island_visits WHERE id = ?", (visit_id,))
+            row = await cursor.fetchone()
+            if not row:
+                return
+            ign, destination, ts = row[0], row[1], row[2]
+            await db.execute(
+                "UPDATE island_visits SET review_status = ?, handled_by = ?, handled_at = ? "
+                "WHERE id = ? OR (review_status = 'pending' AND LOWER(ign) = LOWER(?) "
+                "AND LOWER(destination) = LOWER(?) AND timestamp BETWEEN ? AND ?)",
+                (review_status, f"{mod_name} (Discord)", now, visit_id, ign, destination,
+                 int(ts or now) - MAX_ALERT_MERGE_SECONDS, now),
+            )
 
     async def cleanup_expired_warnings(self):
         """Delete warnings older than WARN_EXPIRY_DAYS from the database."""
@@ -1999,7 +2182,7 @@ class FlightLoggerCog(commands.Cog):
                         "UPDATE island_visits SET user_id = ? WHERE id = ? AND user_id IS NULL",
                         (target.id, visit_id)
                     )
-            await self.add_warning(target.id, guild.id, reason_text, mod.id, visit_id, action_type=action_type)
+            await self.add_warning(target.id, guild.id, reason_text, mod.id, visit_id, action_type=action_type, case_id=case_id)
             # Use small delay to ensure DB consistency (though commit is awaited)
             new_count = await self.get_warn_count(target.id, guild.id, days=WARN_EXPIRY_DAYS)
 
@@ -2057,6 +2240,7 @@ class FlightLoggerCog(commands.Cog):
         timestamp,
         island_type='sub',
         recent_identity_events=None,
+        visit_id=None,
     ):
         """Automatically create a manual alert and an xlog entry for suspicious flights."""
         guild = self.bot.get_guild(Config.GUILD_ID)
@@ -2078,8 +2262,22 @@ class FlightLoggerCog(commands.Cog):
         member_sub_roles = [r for r in member.roles if r.id in self.all_sub_roles]
         sub_role_mentions = [r.mention for r in member_sub_roles]
         
-        # 1. Record Visit (linked to member)
-        visit_id = await self.record_island_visit(ign, island, destination, [member], guild_id, int(timestamp.timestamp()), island_type=island_type)
+        # 1. Record Visit (linked to member) unless log_result already did
+        if visit_id is None:
+            visit_id = await self.record_island_visit(ign, island, destination, [member], guild_id, int(timestamp.timestamp()), island_type=island_type)
+        await self.set_visit_verdict(
+            visit_id,
+            "identity_limit",
+            {
+                "reason": f"Nickname has {identities} identities but only {allowed_identities} allowed ({subs} subscription(s))",
+                "member": {"id": str(member.id), "name": member.display_name},
+                "identities": identities,
+                "allowed": allowed_identities,
+                "subs": [r.name for r in member_sub_roles],
+                "identity_reasons": identity_reasons,
+            },
+            review_status="pending",
+        )
         
         # 2. Create Alert in Flight Log Channel
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
@@ -2114,6 +2312,7 @@ class FlightLoggerCog(commands.Cog):
                 alert_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
 
             alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
+            await self.set_visit_alert(visit_id, alert_msg)
             
             # Record in DB
             await self.add_warning(
@@ -2190,6 +2389,16 @@ class FlightLoggerCog(commands.Cog):
         destination_link = self.get_island_channel_link(destination)
         identity_summary, identity_reasons = summarize_recent_identity_events(recent_identity_events)
         reason_text = ", ".join(identity_reasons) if identity_reasons else "Recent identity activity"
+        await self.set_visit_verdict(
+            visit_id,
+            "recent_identity_change",
+            {
+                "reason": f"Recent nickname/join activity: {reason_text}",
+                "member": {"id": str(member.id), "name": member.display_name},
+                "identity_reasons": identity_reasons,
+            },
+            review_status="pending",
+        )
 
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
         alert_msg = None
@@ -2222,6 +2431,7 @@ class FlightLoggerCog(commands.Cog):
 
             action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
             alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
+            await self.set_visit_alert(visit_id, alert_msg)
 
             await self.add_warning(
                 member.id,
@@ -2290,6 +2500,19 @@ class FlightLoggerCog(commands.Cog):
         identity_summary, identity_reasons = summarize_recent_identity_events(recent_identity_events or [])
         member_sub_text = " / ".join(r.mention for r in member_sub_roles) if member_sub_roles else "None detected"
         reason_text = "No subscription role for destination island"
+        await self.set_visit_verdict(
+            visit_id,
+            "island_access_mismatch",
+            {
+                "reason": f"{reason_text} (has: {', '.join(r.name for r in member_sub_roles) or 'none'}; "
+                          f"needs: {', '.join(r.name for r in required_roles) or 'unknown'})",
+                "member": {"id": str(member.id), "name": member.display_name},
+                "subs": [r.name for r in member_sub_roles],
+                "required_roles": [r.name for r in required_roles],
+                "identity_reasons": identity_reasons,
+            },
+            review_status="pending",
+        )
 
         output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
         alert_msg = None
@@ -2322,6 +2545,7 @@ class FlightLoggerCog(commands.Cog):
 
             action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
             alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
+            await self.set_visit_alert(visit_id, alert_msg)
 
             await self.add_warning(
                 member.id,
@@ -2617,154 +2841,26 @@ class FlightLoggerCog(commands.Cog):
             return None
         return f"https://discord.com/channels/{Config.GUILD_ID}/{cid}"
     def split_options(self, raw: str):
-        if not raw: return []
-        parts = [p.strip() for p in raw.split("/") if p.strip()]
-        out = []
-        for p in parts:
-            norm = self.normalize_identity_text(p)
-            if norm:
-                out.append(norm)
-        return out
+        return split_options(raw)
 
     def normalize_identity_text(self, text: str) -> str:
         """Normalize IGN/island while preserving symbols for strict identity checks."""
-        if not text:
-            return ""
-        # Keep symbols (e.g. $$$, _, -), normalize Unicode width/compat forms,
-        # and collapse whitespace so cosmetic spacing differences do not break matches.
-        normalized = unicodedata.normalize("NFKC", text).casefold().strip()
-
-        # Canonicalize common punctuation variants without removing symbols.
-        quote_map = {
-            "\u2018": "'", "\u2019": "'", "\u02bc": "'", "\u2032": "'", "\uff07": "'",
-            "\u201c": '"', "\u201d": '"',
-            "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
-        }
-        normalized = "".join(quote_map.get(ch, ch) for ch in normalized)
-
-        # Normalize spaces around punctuation often introduced by mobile keyboards.
-        normalized = re.sub(r"\s*'\s*", "'", normalized)
-        normalized = re.sub(r'\s*"\s*', '"', normalized)
-        normalized = re.sub(r"\s*-\s*", "-", normalized)
-        normalized = re.sub(r"\s+", " ", normalized)
-        return normalized
+        return normalize_identity_text(text)
 
     def calculate_max_identities(self, display_name: str) -> int:
-        """Calculate the number of subscriptions required based on nickname slots and options.
-        
-        Rules:
-        - If a category (IGN or Island) has multiple | blocks, its count is the number of blocks.
-        - If it has only one | block, its count is the number of / options in that block.
-        - The total count is the maximum of the IGN count and Island count.
-        """
-        if not display_name or '|' not in display_name:
-            return 1
-            
-        chunks = [c.strip() for c in display_name.split('|') if c.strip()]
-        if chunks and chunks[0].upper() == "ACNH":
-            chunks = chunks[1:]
-        
-        if not chunks:
-            return 1
-
-        ign_blocks = []
-        island_blocks = []
-
-        if len(chunks) % 2 == 0:
-            # Even chunks: pairs of (IGN, Island)
-            for i in range(0, len(chunks), 2):
-                ign_blocks.append(chunks[i])
-                island_blocks.append(chunks[i+1])
-        else:
-            # Odd chunks: first is IGN, rest are Islands
-            ign_blocks.append(chunks[0])
-            for i in range(1, len(chunks)):
-                island_blocks.append(chunks[i])
-        
-        def get_category_count(blocks):
-            if not blocks:
-                return 0
-            if len(blocks) > 1:
-                # Multiple blocks: each block is an identity (ignore internal / splits)
-                return len(blocks)
-            # Single block: count / options
-            return len(self.split_options(blocks[0]))
-            
-        ign_count = get_category_count(ign_blocks)
-        island_count = get_category_count(island_blocks)
-        
-        return max(ign_count, island_count)
+        """Calculate the number of subscriptions required based on nickname slots and options."""
+        return calculate_max_identities(display_name)
 
     def get_allowed_identity_count(self, member: discord.Member, sub_count: int) -> int:
-        """Return how many nickname identities a member may currently have.
-
-        Legacy members who joined before the one-character/island rule took effect
-        are allowed to keep up to two existing character/island identities.
-        """
-        allowed = max(1, sub_count)
-        joined_at = getattr(member, "joined_at", None)
-        if joined_at is None:
-            return allowed
-
-        if joined_at.tzinfo is None:
-            joined_at = joined_at.replace(tzinfo=datetime.timezone.utc)
-        else:
-            joined_at = joined_at.astimezone(datetime.timezone.utc)
-
-        if joined_at < LEGACY_TWO_IDENTITY_CUTOFF_UTC:
-            allowed = max(allowed, LEGACY_TWO_IDENTITY_LIMIT)
-        return allowed
+        """Return how many nickname identities a member may currently have."""
+        return get_allowed_identity_count(getattr(member, "joined_at", None), sub_count)
 
     def parse_member_nick(self, display_name: str):
-        if not display_name:
-            return [], []
-
-        # Support ONLY | as a nick separator
-        if '|' not in display_name:
-            return [], []
-        chunks = [c.strip() for c in display_name.split('|') if c.strip()]
-
-        # Skip "ACNH" prefix if present as the first chunk
-        if chunks and chunks[0].upper() == "ACNH":
-            chunks = chunks[1:]
-
-        if not chunks:
-            return [], []
-
-        ign_opts = []
-        island_opts = []
-
-        if len(chunks) % 2 == 0:
-            # Even number of chunks: treat as (IGN, Island) pairs
-            # e.g., "IGN1 | Island1 | IGN2 | Island2" or "IGN1 | Island1"
-            for i in range(0, len(chunks), 2):
-                ign_opts.extend(self.split_options(chunks[i]))
-                island_opts.extend(self.split_options(chunks[i+1]))
-        else:
-            # Odd number of chunks (e.g., 1 or 3+): First is IGN, rest are Islands
-            # e.g., "IGN1 | Island1 | Island2"
-            ign_opts = self.split_options(chunks[0])
-            for i in range(1, len(chunks)):
-                island_opts.extend(self.split_options(chunks[i]))
-
-        # Deduplicate results
-        return list(dict.fromkeys(ign_opts)), list(dict.fromkeys(island_opts))
+        return parse_member_nick(display_name)
 
     def _is_strict_nick_match(self, ign_log_clean: str, island_log_clean: str, ign_opts: list[str], island_opts: list[str]) -> bool:
-        """Return True only when both IGN and island from nickname match the flight log.
-
-        Supports paired nick formats like "IGN1/IGN2 | Island1/Island2" by checking
-        index-aligned pairs first; otherwise falls back to set membership for both fields.
-        """
-        if not ign_opts or not island_opts:
-            return False
-
-        if len(ign_opts) == len(island_opts):
-            for ign_opt, island_opt in zip(ign_opts, island_opts):
-                if ign_log_clean == ign_opt and island_log_clean == island_opt:
-                    return True
-
-        return ign_log_clean in ign_opts and island_log_clean in island_opts
+        """Return True only when both IGN and island from nickname match the flight log."""
+        return is_strict_nick_match(ign_log_clean, island_log_clean, ign_opts, island_opts)
 
     def find_matching_members(self, guild, ign_log_clean, island_log_clean):
         if not guild:
@@ -2969,27 +3065,33 @@ class FlightLoggerCog(commands.Cog):
 
             # 1. Proactive Gateway Query: When members intent is not enabled, query Gateway
             # for the in-game name. This searches usernames and nicknames without privileged intents.
+            # Discord matches by prefix, so a common IGN alone can push the right member past the
+            # limit; "IGN |" narrows it to nicknames in the "IGN | Island" format.
             if target_guild and not has_members_intent and hasattr(target_guild, "query_members"):
-                try:
-                    await target_guild.query_members(query=ign_raw, limit=20, cache=True)
-                except Exception as query_err:
-                    logger.debug(f"[FLIGHT] Member query fallback for {ign_raw}: {query_err}")
+                for query in (f"{ign_raw} |", ign_raw):
+                    try:
+                        await target_guild.query_members(query=query, limit=100, cache=True)
+                    except Exception as query_err:
+                        logger.debug(f"[FLIGHT] Member query fallback {query!r} for {ign_raw}: {query_err}")
 
             found = await asyncio.to_thread(
                 self.find_matching_members, target_guild, ign_norm, isl_norm
             )
+            match_source = "discord_nickname" if found else None
 
             # 2. Check user_saved_characters table (Website Saved in-game characters)
             if not found and target_guild:
                 saved_char_member = await self.lookup_saved_character_member(target_guild, ign_raw, island_raw)
                 if saved_char_member:
                     found = [saved_char_member]
+                    match_source = "saved_character"
 
             # 3. Check Dodo reveal records from DB
             if not found and target_guild:
                 reveal_member, reveal_url = await self.lookup_dodo_reveal_member(target_guild, ign_raw, dest_raw)
                 if reveal_member:
                     found = [reveal_member]
+                    match_source = "dodo_reveal"
                     if not message_url and reveal_url:
                         message_url = reveal_url
 
@@ -3000,12 +3102,13 @@ class FlightLoggerCog(commands.Cog):
                     member = await self._resolve_member(target_guild, int(auth_target["user_id"]))
                     if member:
                         found = [member]
+                        match_source = "recent_authorization"
 
-            await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub', message_url=message_url, message_content=message_content)
+            await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, island_type='sub', message_url=message_url, message_content=message_content, match_source=match_source)
         except Exception as e:
             logger.error(f"[FLIGHT] Pipeline error for {ign_raw}: {e}", exc_info=True)
 
-    async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub', message_url=None, message_content=None):
+    async def log_result(self, found_members, status, ign, island, destination, timestamp=None, island_type: str = 'sub', message_url=None, message_content=None, match_source=None):
         if status == "JOINING" and not is_valid_origin_island(island):
             logger.debug(f"[FLIGHT] Aborting log_result: joining event has no origin island for {ign}")
             return
@@ -3040,6 +3143,20 @@ class FlightLoggerCog(commands.Cog):
             mentions = " ".join([m.mention for m in found_members])
             logger.info(f"[FLIGHT] Match: {ign} | {mentions}")
             visit_id = await self.record_island_visit(ign, island, destination, found_members, guild_id, visit_ts, island_type=island_type)
+            matched = found_members[0]
+            await self.set_visit_verdict(
+                visit_id,
+                "ambiguous_resolved" if resolved_authorized_target is not None else "verified",
+                {
+                    "reason": (
+                        f"Several members matched; cleared by previous authorization #{resolved_authorized_target['id']}"
+                        if resolved_authorized_target is not None
+                        else "Log details matched with a member"
+                    ),
+                    "member": {"id": str(matched.id), "name": matched.display_name},
+                    "found_via": "recent_authorization" if resolved_authorized_target is not None else match_source,
+                },
+            )
 
             # Post authorized-traveler log to the xlog channel.
             xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
@@ -3113,6 +3230,7 @@ class FlightLoggerCog(commands.Cog):
                         embed_timestamp,
                         island_type=island_type,
                         recent_identity_events=recent_identity_events,
+                        visit_id=visit_id,
                     )
                     return
 
@@ -3242,6 +3360,15 @@ class FlightLoggerCog(commands.Cog):
                         alert_ts,
                         island_type=island_type,
                     )
+                    await self.set_visit_verdict(
+                        visit_id,
+                        "authorized_followup",
+                        {
+                            "reason": f"Previously verified traveler (matched from visit #{authorized_target['id']})",
+                            "member": {"id": str(user_id)},
+                            "matched_from": authorized_target["id"],
+                        },
+                    )
                     xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
                     if xlog_channel:
                         guild_icon = guild.icon.url if guild and guild.icon else None
@@ -3297,6 +3424,23 @@ class FlightLoggerCog(commands.Cog):
                     return
 
                 visit_id = await self.record_island_visit(ign, island, destination, [], guild_id, alert_ts, island_type=island_type)
+                if ambiguous_members:
+                    await self.set_visit_verdict(
+                        visit_id,
+                        "ambiguous_match",
+                        {
+                            "reason": f"{len(ambiguous_members)} members matched this flight; manual review required",
+                            "candidates": [
+                                {"id": str(m.id), "name": m.display_name} for m in ambiguous_members[:15]
+                            ],
+                        },
+                    )
+                else:
+                    await self.set_visit_verdict(
+                        visit_id,
+                        "unknown_traveler",
+                        {"reason": "No matching member found (Discord nickname, saved character, Dodo reveal)"},
+                    )
 
                 # Check if there is already a pending alert for this IGN+destination to avoid flooding the channel
                 existing_msg = None
@@ -3360,6 +3504,7 @@ class FlightLoggerCog(commands.Cog):
                     for name, value, inline in updated_fields:
                         embed.add_field(name=name, value=value, inline=inline)
                     await existing_msg.edit(embed=embed)
+                    await self.set_visit_alert(visit_id, existing_msg)
                     self._pending_alerts[alert_key] = (existing_msg.id, alert_ts)
                     logger.info(f"[FLIGHT] Updated existing alert for {ign} (re-join attempt #{rejoin_count})")
 
@@ -3436,6 +3581,7 @@ class FlightLoggerCog(commands.Cog):
 
                     view = TravelerActionView(self.bot, ign, visit_id=visit_id)
                     sent_msg = await output_channel.send(embed=embed, view=view)
+                    await self.set_visit_alert(visit_id, sent_msg)
                     self._pending_alerts[alert_key] = (sent_msg.id, alert_ts)
 
                     # Post unknown traveler notification to xlog channel
@@ -4341,8 +4487,8 @@ class FreeFlightCog(commands.Cog, name="FreeFlightLogger"):
             async with connect_async_db() as db:
                 await db.execute(
                     "INSERT INTO island_visits "
-                    "(ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type) "
-                    "VALUES (?, ?, ?, NULL, ?, 1, ?, 'free')",
+                    "(ign, origin_island, destination, user_id, guild_id, authorized, timestamp, island_type, has_island_access, review_status) "
+                    "VALUES (?, ?, ?, NULL, ?, 1, ?, 'free', 0, 'authorised')",
                     (ign_raw, island_raw, dest_raw, guild_id, visit_ts),
                 )
                 await db.commit()

@@ -70,6 +70,10 @@ def send_discord_moderation_dm(
             title = "🚫 Account Suspended - Island Access Revoked"
             color = 0xED4245  # Red
             action_desc = "Your island access has been permanently suspended."
+        elif action_upper == "UNDO":
+            title = "✅ Moderation Action Reversed - Island Access Restored"
+            color = 0x2ECC71  # Green
+            action_desc = "A moderator reversed an earlier action on your account. Your island access has been restored."
         else:
             title = f"Notice: Moderation Action ({action.capitalize()})"
             color = 0x5865F2  # Blurple

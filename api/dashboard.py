@@ -545,7 +545,7 @@ def init_dashboard_db():
                 role                VARCHAR(32) DEFAULT 'resident',
                 status              VARCHAR(32) DEFAULT 'online',
                 current_activity    VARCHAR(255),
-                current_path        VARCHAR(255),
+                `current_path`      VARCHAR(255),
                 current_island      VARCHAR(64),
                 ign                 VARCHAR(64),
                 island_name         VARCHAR(64),
@@ -1531,10 +1531,12 @@ def _merge_island(db_row: dict, fs: dict | None) -> dict:
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# Domain restriction — dashboard is served from console.chopaeng.com,
+# Domain restriction — dashboard is served from the API_BASE_URL host,
 # and localhost for local development.
 # ---------------------------------------------------------------------------
-_ALLOWED_DASHBOARD_HOSTS = {"console.chopaeng.com", "localhost", "127.0.0.1"}
+_ALLOWED_DASHBOARD_HOSTS = {
+    host for host in (urllib.parse.urlparse(Config.API_BASE_URL).hostname, "localhost", "127.0.0.1") if host
+}
 
 
 def _dashboard_notice(message: str, category: str = "info") -> None:
@@ -2469,7 +2471,7 @@ def analytics():
             "  SELECT ign, MIN(timestamp) AS first_visit "
             f"  FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
             "  GROUP BY ign"
-            f") WHERE first_visit > strftime('%s','now','-7 days')",
+            f") AS firsts WHERE first_visit > strftime('%s','now','-7 days')",
             it_params,
         ).fetchone()[0]
         total_unique_7d = db.execute(
@@ -2482,7 +2484,7 @@ def analytics():
             "  SELECT ign, MIN(timestamp) AS first_visit "
             f"  FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
             "  GROUP BY ign"
-            f") WHERE first_visit > strftime('%s','now','-30 days')",
+            f") AS firsts WHERE first_visit > strftime('%s','now','-30 days')",
             it_params,
         ).fetchone()[0]
         total_unique_30d = db.execute(
@@ -3665,33 +3667,92 @@ def api_user_trust_profile():
 @dashboard.route("/api/islands", methods=["GET"])
 @api_auth_required
 def api_islands_list():
-    """List all islands."""
+    """List every island for the moderator dashboard, with live SysBot data.
+
+    Islands come from the configured 48-port order (plus the order bot and any DB-only
+    islands). Sub vs free follows /api/islands ("SUB ONLY" = sub island), the same source
+    as the Flights radar. Status, Dodo code and visitors are live SysBot telemetry;
+    display name, theme, map, etc. are the stored metadata.
+    """
+    from api.control_panel import get_sub_island_names
+    from utils.sysbot_telemetry import get_all_cached_telemetry, start_telemetry_worker
+
+    try:
+        start_telemetry_worker()
+    except Exception as exc:
+        logger.warning("Failed to start SysBot telemetry worker: %s", exc)
+
     db = get_db()
     try:
-        rows       = db.execute("SELECT * FROM islands ORDER BY name").fetchall()
-        db_islands = _merge_dashboard_fs_islands([_row_to_island_dict(dict(r)) for r in rows])
+        db_rows = {
+            str(r["id"] or "").lower(): _row_to_island_dict(dict(r))
+            for r in db.execute("SELECT * FROM islands").fetchall()
+        }
         bot_status = _load_bot_status_map(db)
     except Exception:
-        db_islands = []
-        bot_status = {}
+        logger.exception("Failed to load island metadata for the dashboard")
+        db_rows, bot_status = {}, {}
     finally:
         db.close()
 
+    try:
+        telemetry = {k.lower(): v for k, v in get_all_cached_telemetry(mask_sub_dodo=False).items()}
+    except Exception:
+        telemetry = {}
+
+    order_name = (getattr(Config, "ORDER_BOT_ISLAND", "") or "Sinta").strip()
+    names: list[str] = [n.strip() for n in getattr(Config, "ALL_ISLAND_PORT_ORDER", []) if n and n.strip()]
+    for extra in [order_name, *(r.get("name") or k for k, r in db_rows.items()), *telemetry]:
+        if extra and extra.lower() not in {n.lower() for n in names}:
+            names.append(extra.strip().title() if extra.isupper() or extra.islower() else extra.strip())
+
+    sub_names = get_sub_island_names()
     result = []
-    for isl in db_islands:
-        isl["discord_bot_online"] = bot_status.get(isl.get("id", ""))
-        isl["status"] = _effective_status(isl)
+    for port_index, raw_name in enumerate(names):
+        island_id = raw_name.lower()
+        meta = db_rows.get(island_id, {})
+        if island_id == order_name.lower():
+            cat = "order"
+        else:
+            cat = "member" if island_id in sub_names else "public"
+        live = telemetry.get(island_id) or {}
+        online = bool(live.get("is_online"))
+        refreshing = online and bool(live.get("is_refreshing_dodo"))
+
         access_info = island_access.resolved_island_required_roles(
-            isl.get("name"),
-            isl.get("cat"),
-            isl.get("required_roles") or [],
-            isl.get("type"),
-            isl.get("channel_id"),
+            raw_name, cat, meta.get("required_roles") or [], meta.get("type"), meta.get("channel_id"),
         )
-        isl["required_roles"] = access_info.required_roles
-        isl["channel_id"] = access_info.channel_id
-        isl["access_source"] = access_info.access_source
-        result.append(_island_api_dict(isl))
+        result.append({
+            "id": island_id,
+            "name": raw_name.upper(),
+            "display_name": meta.get("display_name") or raw_name,
+            "cat": cat,
+            "type": "Order" if cat == "order" else ("VIP" if cat == "member" else "Free"),
+            "is_visible": meta.get("is_visible", True),
+            "description": meta.get("description") or "",
+            "seasonal": meta.get("seasonal") or "",
+            "theme": meta.get("theme") or "teal",
+            "items": meta.get("items") or [],
+            "map_url": meta.get("map_url"),
+            "updated_at": meta.get("updated_at"),
+            "has_metadata": bool(meta),
+            "port_index": port_index,
+            "status": "REFRESHING" if refreshing else ("ONLINE" if online else "OFFLINE"),
+            "dodo_code": (live.get("raw_dodo") if online and live.get("is_dodo_valid") else None),
+            "visitors": int(live.get("visitors_count") or 0) if online else 0,
+            "visitor_list": live.get("visitor_list") or [] if online else [],
+            "game_time": live.get("game_time"),
+            "nooks_status": live.get("nooks_status"),
+            "health_score": live.get("health_score"),
+            "latency_ms": live.get("latency_ms"),
+            "console_stage": live.get("console_stage"),
+            "last_updated": live.get("last_updated"),
+            "last_arrival": live.get("last_arrival"),
+            "discord_bot_online": bot_status.get(island_id),
+            "required_roles": access_info.required_roles,
+            "channel_id": access_info.channel_id,
+            "access_source": access_info.access_source,
+        })
     return jsonify(result)
 
 
@@ -4109,21 +4170,35 @@ def api_analytics():
     """Return full analytics dataset as JSON.
 
     Accepts an optional ``island_type`` query parameter (``free`` or ``sub``)
-    to filter results to a specific island type.
+    to filter results to a specific island type. Sub vs free follows /api/islands
+    ("SUB ONLY" = sub island), not the stored island_type.
     """
+    from api.control_panel import sub_destination_filter, unchecked_sql
+
     island_type_filter = request.args.get("island_type", "").lower()
     if island_type_filter not in ("free", "sub"):
         island_type_filter = ""
 
-    it_clause = " AND island_type = ?" if island_type_filter else ""
-    it_params = [island_type_filter] if island_type_filter else []
+    def _type_filter(column: str) -> tuple[str, list]:
+        sub_sql, sub_params = sub_destination_filter(column)
+        if island_type_filter == "sub":
+            return sub_sql, list(sub_params)
+        if island_type_filter == "free":
+            return f"NOT {sub_sql}", list(sub_params)
+        return "", []
+
+    it_sql, it_params = _type_filter("destination")
+    it_clause = f" AND {it_sql}" if it_sql else ""
+    it_where = f"WHERE {it_sql}" if it_sql else ""
+    iv_sql, iv_params = _type_filter("iv.destination")
+    sub_only_sql, sub_only_params = sub_destination_filter("destination")
 
     db = get_db()
     try:
         top_islands = [
             dict(r) for r in db.execute(
                 "SELECT destination, COUNT(*) AS visit_count "
-                f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+                f"FROM island_visits {it_where} "
                 "GROUP BY destination ORDER BY visit_count DESC LIMIT 10",
                 it_params,
             ).fetchall()
@@ -4131,7 +4206,7 @@ def api_analytics():
         top_travelers = [
             dict(r) for r in db.execute(
                 "SELECT ign, COUNT(*) AS visit_count "
-                f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+                f"FROM island_visits {it_where} "
                 "GROUP BY ign ORDER BY visit_count DESC LIMIT 10",
                 it_params,
             ).fetchall()
@@ -4158,30 +4233,32 @@ def api_analytics():
             dict(r) for r in db.execute(
                 "SELECT CAST(strftime('%H', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS hour, "
                 "COUNT(*) AS count "
-                f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+                f"FROM island_visits {it_where} "
                 "GROUP BY hour ORDER BY hour",
                 it_params,
             ).fetchall()
         ]
         auth_raw = db.execute(
-            "SELECT authorized, COUNT(*) AS count "
-            f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
-            "GROUP BY authorized",
-            it_params,
+            "SELECT CASE "
+            f"  WHEN {unchecked_sql('')} THEN 'unchecked' "
+            "  WHEN review_status = 'authorised' THEN 'authorised' "
+            "  WHEN review_status = 'dismissed' THEN 'dismissed' "
+            "  ELSE 'unauthorised' END AS bucket, COUNT(*) AS count "
+            f"FROM island_visits WHERE {sub_only_sql}{it_clause} "
+            "GROUP BY bucket",
+            [*sub_only_params, *it_params],
         ).fetchall()
         cat_raw = db.execute(
-            "SELECT isl.cat, COUNT(*) AS visit_count "
-            "FROM island_visits iv "
-            "JOIN islands isl ON LOWER(iv.destination) = isl.id "
-            f"{'WHERE iv.island_type = ?' if island_type_filter else ''} "
-            "GROUP BY isl.cat",
-            it_params,
+            f"SELECT CASE WHEN {sub_only_sql} THEN 'member' ELSE 'public' END AS cat, COUNT(*) AS visit_count "
+            f"FROM island_visits {it_where} "
+            "GROUP BY cat",
+            [*sub_only_params, *it_params],
         ).fetchall()
         dow_raw = [
             dict(r) for r in db.execute(
                 "SELECT CAST(strftime('%w', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS dow, "
                 "COUNT(*) AS count "
-                f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+                f"FROM island_visits {it_where} "
                 "GROUP BY dow ORDER BY dow",
                 it_params,
             ).fetchall()
@@ -4199,9 +4276,9 @@ def api_analytics():
                     f"SELECT w.user_id, COUNT(*) AS {count_key} "
                     "FROM warnings w "
                     "JOIN island_visits iv ON w.visit_id = iv.id "
-                    "WHERE w.user_id IS NOT NULL AND iv.island_type = ? AND UPPER(w.action_type) = ? "
+                    f"WHERE w.user_id IS NOT NULL AND {iv_sql} AND UPPER(w.action_type) = ? "
                     f"GROUP BY w.user_id ORDER BY {count_key} DESC LIMIT 10",
-                    (island_type_filter, action),
+                    (*iv_params, action),
                 ).fetchall()
             else:
                 rows = db.execute(
@@ -4242,15 +4319,15 @@ def api_analytics():
             warnings_week = db.execute(
                 "SELECT COUNT(*) FROM warnings w "
                 "JOIN island_visits iv ON w.visit_id = iv.id "
-                "WHERE w.timestamp > strftime('%s','now','-7 days') AND iv.island_type = ?",
-                it_params,
+                f"WHERE w.timestamp > strftime('%s','now','-7 days') AND {iv_sql}",
+                iv_params,
             ).fetchone()[0]
             warnings_today = db.execute(
                 "SELECT COUNT(*) FROM warnings w "
                 "JOIN island_visits iv ON w.visit_id = iv.id "
                 "WHERE w.timestamp > strftime('%s','now','+8 hours','start of day','-8 hours') "
-                "AND iv.island_type = ?",
-                it_params,
+                f"AND {iv_sql}",
+                iv_params,
             ).fetchone()[0]
         else:
             warnings_week = db.execute(
@@ -4269,7 +4346,7 @@ def api_analytics():
         peak_hour_row = db.execute(
             "SELECT CAST(strftime('%H', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS hour, "
             "COUNT(*) AS cnt "
-            f"FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+            f"FROM island_visits {it_where} "
             "GROUP BY hour ORDER BY cnt DESC LIMIT 1",
             it_params,
         ).fetchone()
@@ -4283,9 +4360,9 @@ def api_analytics():
         new_7d = db.execute(
             "SELECT COUNT(DISTINCT ign) FROM ("
             "  SELECT ign, MIN(timestamp) AS first_visit "
-            f"  FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+            f"  FROM island_visits {it_where} "
             "  GROUP BY ign"
-            f") WHERE first_visit > strftime('%s','now','-7 days')",
+            f") AS firsts WHERE first_visit > strftime('%s','now','-7 days')",
             it_params,
         ).fetchone()[0]
         total_unique_7d = db.execute(
@@ -4296,9 +4373,9 @@ def api_analytics():
         new_30d = db.execute(
             "SELECT COUNT(DISTINCT ign) FROM ("
             "  SELECT ign, MIN(timestamp) AS first_visit "
-            f"  FROM island_visits {'WHERE island_type = ?' if island_type_filter else ''} "
+            f"  FROM island_visits {it_where} "
             "  GROUP BY ign"
-            f") WHERE first_visit > strftime('%s','now','-30 days')",
+            f") AS firsts WHERE first_visit > strftime('%s','now','-30 days')",
             it_params,
         ).fetchone()[0]
         total_unique_30d = db.execute(
@@ -4308,12 +4385,12 @@ def api_analytics():
         ).fetchone()[0]
         total_unique_travelers = db.execute(
             f"SELECT COUNT(DISTINCT ign) FROM island_visits"
-            f"{' WHERE island_type = ?' if island_type_filter else ''}",
+            f"{" " + it_where if it_where else ""}",
             it_params,
         ).fetchone()[0]
         total_unique_islands = db.execute(
             f"SELECT COUNT(DISTINCT destination) FROM island_visits"
-            f"{' WHERE island_type = ?' if island_type_filter else ''}",
+            f"{" " + it_where if it_where else ""}",
             it_params,
         ).fetchone()[0]
     except Exception as exc:
@@ -4322,18 +4399,25 @@ def api_analytics():
     finally:
         db.close()
 
-    auth_map  = {r["authorized"]: r["count"] for r in auth_raw}
+    auth_map  = {r["bucket"]: r["count"] for r in auth_raw}
     cat_map   = {r["cat"]: r["visit_count"] for r in cat_raw}
     hour_map  = {r["hour"]: r["count"] for r in visits_by_hour}
     dow_map   = {r["dow"]: r["count"] for r in dow_raw}
 
-    auth_stats = {"authorized": auth_map.get(1, 0), "unauthorized": auth_map.get(0, 0)}
+    # Sub flights only: free-island flights are never reviewed
+    auth_stats = {
+        "authorized": auth_map.get("authorised", 0),
+        "unauthorized": auth_map.get("unauthorised", 0),
+        "dismissed": auth_map.get("dismissed", 0),
+        "unchecked": auth_map.get("unchecked", 0),
+    }
     cat_stats  = {"public": cat_map.get("public", 0), "member": cat_map.get("member", 0)}
     visits_by_hour_full = [{"hour": h, "count": hour_map.get(h, 0)} for h in range(24)]
     visits_by_dow = [{"dow": d, "label": _DOW_LABELS[d], "count": dow_map.get(d, 0)} for d in range(7)]
 
-    total_visits  = auth_stats["authorized"] + auth_stats["unauthorized"]
-    auth_rate_pct = round(auth_stats["authorized"] / total_visits * 100) if total_visits else None
+    # Of the sub flights that were actually checked, how many were authorised
+    checked_visits = auth_stats["authorized"] + auth_stats["unauthorized"] + auth_stats["dismissed"]
+    auth_rate_pct = round(auth_stats["authorized"] / checked_visits * 100) if checked_visits else None
     warn_rate_week = round(warnings_week / visits_week * 100, 1) if visits_week else 0.0
 
     returning_7d  = max(total_unique_7d  - new_7d,  0)
@@ -4744,4 +4828,3 @@ def api_overview():
         "trend_counts":   trend_counts,
         "recent":         recent,
     })
-
