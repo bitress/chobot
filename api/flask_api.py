@@ -491,15 +491,22 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
     user = get_auth_user(token)
     if not user:
         return None
-    if not force_refresh and not should_refresh(user):
-        return user
 
+    # Discord is the only sign-in. Sessions from the removed email / YouTube / Twitch /
+    # Patreon logins end here; signing in with Discord (same verified email) keeps their data.
     has_discord_link = (
         user.get("provider") == "discord" or
         bool(user.get("discord_id")) or
         "discord" in (user.get("connected_providers") or [])
     )
-    if not has_discord_link or not getattr(Config, "DISCORD_LOGIN_ENABLED", False):
+    if not has_discord_link:
+        revoke_auth_token(token)
+        return None
+
+    if not force_refresh and not should_refresh(user):
+        return user
+
+    if not getattr(Config, "DISCORD_LOGIN_ENABLED", False):
         try:
             from utils.unified_auth import get_unified_account_by_id
             unified = get_unified_account_by_id(user.get("user_id"))
@@ -515,17 +522,6 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
 
     try:
         refreshed = refresh_user_payload(user)
-        # Linked Patreon/YouTube/Twitch tiers from the DB, so lapsed ones stop counting
-        # even on a token issued long ago
-        try:
-            from utils.unified_auth import get_unified_account_by_id
-            unified = get_unified_account_by_id(user.get("user_id"))
-            if unified:
-                refreshed["connected_accounts"] = unified.get("connected_accounts") or {}
-                refreshed["connected_providers"] = unified.get("connected_providers") or []
-                refreshed["sub_tier"] = unified.get("sub_tier")
-        except Exception as ex:
-            logger.debug("Linked account refresh note: %s", ex)
         update_auth_user(token, refreshed)
         return refreshed
     except DiscordNotGuildMember:
@@ -1485,7 +1481,8 @@ def auth_discord():
         "client_id":     Config.DISCORD_CLIENT_ID,
         "redirect_uri":  callback_url,
         "response_type": "code",
-        "scope":         "identify guilds.members.read",
+        # email: carries over data of the old email / YouTube / Twitch / Patreon accounts
+        "scope":         "identify email guilds.members.read",
         "state":         state,
     })
     return redirect(f"https://discord.com/api/oauth2/authorize?{params}")
@@ -1630,7 +1627,8 @@ def auth_callback():
                 provider_user_id=discord_user_id,
                 username=discord_username,
                 avatar=discord_avatar_url,
-                email=user_data.get("email"),
+                # Only a verified email may match an existing account (it links that account to this Discord)
+                email=user_data.get("email") if user_data.get("verified") else None,
                 roles=member_roles,
                 sub_tier=None,
                 raw_profile=user_data,

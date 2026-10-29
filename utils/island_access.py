@@ -113,16 +113,6 @@ def normalize_roles(roles: Union[List[Any], Set[Any], Tuple[Any, ...]]) -> Set[s
     return result
 
 
-def linked_tier_is_current(checked_at: Any) -> bool:
-    """True if a linked account's tiers were verified recently enough to still count."""
-    try:
-        checked = int(checked_at or 0)
-    except (TypeError, ValueError):
-        return False
-    max_age = int(getattr(Config, "LINKED_TIER_MAX_AGE_DAYS", 35) or 35) * 86400
-    return checked > 0 and time.time() - checked <= max_age
-
-
 @dataclass(frozen=True)
 class IslandAccessInfo:
     required_roles: list[str]
@@ -284,26 +274,11 @@ def has_island_access(
 
     user_norm = normalize_roles(roles)
     if user and isinstance(user, dict):
-        # The top-level sub_tier and the Discord entry in connected_accounts are snapshots
-        # taken at login, so a lapsed sub or boost would keep opening islands. Discord roles
-        # come only from user["roles"], which is refreshed live from the guild.
+        # Only Discord roles count (sign-in is Discord only): user["roles"] is refreshed live
+        # from the guild. sub_tier and connected_accounts are login-time snapshots, so a
+        # lapsed sub or boost would otherwise keep opening islands.
         if "roles" in user and user["roles"]:
             user_norm.update(normalize_roles(user["roles"]))
-        # Patreon/YouTube/Twitch tiers from linked accounts, while still recent
-        conn_accs = user.get("connected_accounts") or {}
-        if isinstance(conn_accs, dict):
-            for provider, acc in conn_accs.items():
-                if str(provider).lower() == "discord":
-                    continue
-                if isinstance(acc, dict) and linked_tier_is_current(acc.get("tier_checked_at")):
-                    acc_tier = acc.get("sub_tier")
-                    if acc_tier:
-                        at_str = str(acc_tier).strip()
-                        user_norm.add(at_str)
-                        if at_str in TIER_NAME_TO_ROLE_ID:
-                            user_norm.add(TIER_NAME_TO_ROLE_ID[at_str])
-                    if acc.get("roles"):
-                        user_norm.update(normalize_roles(acc["roles"]))
 
     # 1. Check against SUB_ISLAND_ACCESS_MATRIX if island_name is known
     if island_name:

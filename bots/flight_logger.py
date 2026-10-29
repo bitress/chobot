@@ -20,7 +20,6 @@ from utils.config import Config
 from utils.database import connect_async_db, get_backend
 from utils.helpers import clean_text
 from utils import island_access
-from utils.tier_sync import sync_linked_tiers
 from utils.flight_matching import (
     LEGACY_TWO_IDENTITY_CUTOFF_UTC,
     LEGACY_TWO_IDENTITY_LIMIT,
@@ -41,7 +40,6 @@ from utils.sysbot_telemetry import (
 from utils.website_identity import (
     SAVED_CHARACTERS_SQL,
     account_label,
-    linked_tiers_for_island,
     saved_character_owners,
     website_only_account,
     website_verdict,
@@ -2300,8 +2298,6 @@ class FlightLoggerCog(commands.Cog):
             self.cleanup_warnings_task.start()
         if not self.check_r1_reminders_task.is_running():
             self.check_r1_reminders_task.start()
-        if not self.sync_linked_tiers_task.is_running():
-            self.sync_linked_tiers_task.start()
 
     async def _trigger_automatic_flag(
         self,
@@ -2689,19 +2685,6 @@ class FlightLoggerCog(commands.Cog):
         self.fetch_islands_task.cancel()
         self.cleanup_warnings_task.cancel()
         self.check_r1_reminders_task.cancel()
-        self.sync_linked_tiers_task.cancel()
-
-    @tasks.loop(hours=6)
-    async def sync_linked_tiers_task(self):
-        """Re-check tiers of Patreon/Twitch accounts linked on the website (utils/tier_sync.py)."""
-        try:
-            await asyncio.to_thread(sync_linked_tiers)
-        except Exception as exc:
-            logger.error(f"[FLIGHT] Error in sync_linked_tiers_task: {exc}", exc_info=True)
-
-    @sync_linked_tiers_task.before_loop
-    async def before_sync_linked_tiers(self):
-        await self._safe_wait_until_ready()
 
     @tasks.loop(hours=1)
     async def fetch_islands_task(self):
@@ -3430,11 +3413,7 @@ class FlightLoggerCog(commands.Cog):
                 # Members with no sub at all are flagged too: the island access role alone
                 # (rules accepted) does not open a sub island.
                 is_staff = island_access.is_mod([str(r.id) for r in member.roles]) or member.guild_permissions.administrator
-                # Tiers linked on the website (Patreon/YouTube/Twitch) also open the island there
-                linked_tiers = []
                 if sub_roles and not current_island_subs and not is_staff:
-                    linked_tiers = await asyncio.to_thread(linked_tiers_for_island, member.id, destination)
-                if sub_roles and not current_island_subs and not linked_tiers and not is_staff:
                     await self._trigger_island_access_mismatch_flag(
                         ign,
                         island,
@@ -3471,10 +3450,6 @@ class FlightLoggerCog(commands.Cog):
                         sub_lines = [r.mention for r in current_island_subs]
                         desc_lines.append(
                             f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
-                        )
-                    elif linked_tiers:
-                        desc_lines.append(
-                            f"<a:heartside:784055539881214002> **Subscription(s) (linked on website):**\n> " + "\n> ".join(linked_tiers)
                         )
                     else:
                         desc_lines.append(

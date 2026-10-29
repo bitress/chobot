@@ -710,7 +710,6 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
             if close_conn:
                 db_conn.close()
 
-    highest_tier: Optional[str] = None
     tier_priority = {
         "ChoSoup": 3,
         "y ChoSoup": 3,
@@ -731,27 +730,12 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
         except Exception:
             link_roles = []
 
-        # Patreon/YouTube/Twitch tiers are only checked when the account is linked, so they
-        # lapse after LINKED_TIER_MAX_AGE_DAYS until the member links it again.
-        tier_checked_at = link.get("updated_at")
-        tier_expired = False
-        if p_name != "discord" and link_roles:
-            from utils.island_access import linked_tier_is_current
-            if not linked_tier_is_current(tier_checked_at):
-                link_roles, tier_expired = [], True
+        # Sign-in is Discord only: tiers come from Discord roles (YouTube/Twitch integrations,
+        # Patreon's bot). Old YouTube/Twitch/Patreon links grant nothing.
+        if p_name != "discord":
+            link_roles = []
 
         aggregated_roles.extend(link_roles)
-
-        if p_name == "discord":
-            # Discord links store every guild role and no tier; live roles are checked elsewhere
-            sub_t = None
-        else:
-            sub_t = (link.get("sub_tier") or link_roles[0]) if link_roles else None
-        if sub_t:
-            cur_p = tier_priority.get(highest_tier, 0) if highest_tier else 0
-            new_p = tier_priority.get(sub_t, 0)
-            if new_p >= cur_p:
-                highest_tier = sub_t
 
         connected_accounts[p_name] = {
             "id": link["provider_user_id"],
@@ -759,9 +743,7 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
             "avatar": link["avatar"],
             "email": link["email"],
             "roles": link_roles,
-            "sub_tier": sub_t,
-            "tier_checked_at": tier_checked_at,
-            "tier_expired": tier_expired,
+            "sub_tier": None,
             "linked_at": link["created_at"],
         }
 
@@ -782,6 +764,8 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
 
     # De-duplicate and expand roles
     unique_roles = expand_roles(aggregated_roles)
+    tiers = [t for t in unique_roles if t in tier_priority]
+    highest_tier = max(tiers, key=tier_priority.get) if tiers else None
 
     try:
         from utils.discord_membership import _admin_role_ids
