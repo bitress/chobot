@@ -309,6 +309,7 @@ class ACNHCatalog:
         self._villagers_by_name: Dict[str, CatalogVillager] = {}
         self._villagers_by_id: Dict[str, CatalogVillager] = {}
         self._categories: List[str] = []
+        self._search_index: Optional[List[Tuple[CatalogItem, str, str, bool]]] = None
 
         self.loaded = False
         self.load_catalog()
@@ -345,6 +346,7 @@ class ACNHCatalog:
             logger.error(f"[ACNHCatalog] Catalog file not found at: {self.data_path}")
             return False
 
+        self._search_index = None
         try:
             logger.info(f"[ACNHCatalog] Loading data from {self.data_path}...")
             with open(self.data_path, "r", encoding="utf-8") as f:
@@ -571,6 +573,29 @@ class ACNHCatalog:
             return items[0]
         return None
 
+    def _get_search_index(self) -> List[Tuple[CatalogItem, str, str, bool]]:
+        """(item, normalized name, normalized series, is_recipe) for items then recipes; built once per load."""
+        if self._search_index is None:
+            self._search_index = [
+                (it, self.normalize_text(it.name), self.normalize_text(it.series) if it.series else "", is_recipe)
+                for is_recipe, rows in ((False, self.items), (True, self.recipes))
+                for it in rows
+            ]
+        return self._search_index
+
+    @staticmethod
+    def _tokens_match_with_typos(q_tokens: List[str], name: str) -> bool:
+        """Every query word is (nearly) one of the name's words, in any order. Tolerates one typo per word."""
+        name_tokens = name.split()
+        for tok in q_tokens:
+            if tok in name:
+                continue
+            if len(tok) < 4:
+                return False   # too short to typo-match without false positives
+            if not any(fuzz.ratio(tok, nt) >= 80 for nt in name_tokens):
+                return False
+        return True
+
     def search_items(
         self,
         query: str,
@@ -578,48 +603,92 @@ class ACNHCatalog:
         category: Optional[str] = None,
         include_recipes: bool = True,
     ) -> List[CatalogItem]:
-        """Search items and DIY recipes by keyword with category filtering."""
+        """
+        Search items and DIY recipes by keyword with category filtering.
+
+        Results are ranked: exact name, series hit, prefix, substring, every word present (any order),
+        every word present allowing typos, then fuzzy. Within a tier shorter names come first.
+        """
+        cat = category.lower() if category and category.lower() != "all" else None
+        index = self._get_search_index()
+        if not include_recipes:
+            index = [row for row in index if not row[3]]
+        if cat:
+            index = [row for row in index if row[0].category.lower() == cat]
+
         if not query:
-            source = self.items + (self.recipes if include_recipes else [])
-            if category:
-                source = [it for it in source if it.category.lower() == category.lower()]
-            return source[:limit]
+            return [row[0] for row in index[:limit]]
 
         norm_q = self.normalize_text(query)
-        dataset = self.items + (self.recipes if include_recipes else [])
-        if category and category.lower() != "all":
-            dataset = [it for it in dataset if it.category.lower() == category.lower()]
+        q_tokens = norm_q.split()
 
-        exact_matches = []
-        prefix_matches = []
-        contains_matches = []
-        fuzzy_matches = []
+        exact_name: List[Tuple[CatalogItem, str]] = []
+        exact_series: List[Tuple[CatalogItem, str]] = []
+        prefix: List[Tuple[CatalogItem, str]] = []
+        contains: List[Tuple[CatalogItem, str]] = []
+        all_words: List[Tuple[CatalogItem, str]] = []
+        series_in_query: List[Tuple[CatalogItem, str]] = []   # query merely mentions the item's series
+        rest: List[Tuple[CatalogItem, str]] = []   # no cheap match; only scored if the results aren't full
 
-        for it in dataset:
-            it_norm = self.normalize_text(it.name)
-            it_series = self.normalize_text(it.series) if it.series else ""
-            if it_norm == norm_q or (it_series and (norm_q == it_series or norm_q in it_series or it_series in norm_q)):
-                exact_matches.append(it)
-            elif it_norm.startswith(norm_q) or (it_series and it_series.startswith(norm_q)):
-                prefix_matches.append(it)
-            elif norm_q in it_norm or (it_series and norm_q in it_series):
-                contains_matches.append(it)
+        for it, name, series, _ in index:
+            if name == norm_q:
+                exact_name.append((it, name))
+            elif series and (norm_q == series or norm_q in series):
+                exact_series.append((it, name))
+            elif name.startswith(norm_q) or (series and series.startswith(norm_q)):
+                prefix.append((it, name))
+            elif norm_q in name or (series and norm_q in series):
+                contains.append((it, name))
+            elif len(q_tokens) > 1 and all(tok in name for tok in q_tokens):
+                all_words.append((it, name))
+            elif series and series in norm_q:
+                series_in_query.append((it, name))
             else:
-                score = fuzz.partial_ratio(norm_q, it_norm)
-                if score >= 78:
-                    fuzzy_matches.append((score, it))
+                rest.append((it, name))
 
-        fuzzy_sorted = [it for _, it in sorted(fuzzy_matches, key=lambda x: x[0], reverse=True)]
-        combined = exact_matches + prefix_matches + contains_matches + fuzzy_sorted
+        def shortest_first(rows: List[Tuple[CatalogItem, str]]) -> List[CatalogItem]:
+            return [it for it, _ in sorted(rows, key=lambda r: (len(r[1]), r[1]))]
 
         seen = set()
-        deduped = []
-        for it in combined:
-            key = (it.name, it.variation, it.category)
-            if key not in seen:
-                seen.add(key)
-                deduped.append(it)
-        return deduped[:limit]
+        results: List[CatalogItem] = []
+
+        def add(items: List[CatalogItem]) -> bool:
+            """Append de-duplicated items; True once `limit` is reached."""
+            for it in items:
+                key = (it.name, it.variation, it.category)
+                if key not in seen:
+                    seen.add(key)
+                    results.append(it)
+                    if len(results) >= limit:
+                        return True
+            return False
+
+        if add(
+            [it for it, _ in exact_name]
+            + [it for it, _ in exact_series]
+            + shortest_first(prefix)
+            + shortest_first(contains)
+            + shortest_first(all_words)
+        ):
+            return results
+
+        # Typo-tolerant tiers are comparatively expensive, so they only run when needed.
+        typo_words = [
+            (it, name) for it, name in rest + series_in_query if self._tokens_match_with_typos(q_tokens, name)
+        ]
+        typo_ids = {id(it) for it, _ in typo_words}
+        # "golden nuget" mentions the Golden series, but a name match beats a whole-series match.
+        if add(shortest_first(typo_words) + shortest_first([r for r in series_in_query if id(r[0]) not in typo_ids])):
+            return results
+        fuzzy = []
+        for it, name in rest:
+            if id(it) in typo_ids:
+                continue
+            score = fuzz.partial_ratio(norm_q, name)
+            if score >= 78:
+                fuzzy.append((score, it))
+        add([it for _, it in sorted(fuzzy, key=lambda x: x[0], reverse=True)])
+        return results
 
     def get_popular_series(self) -> List[Tuple[str, str, str]]:
         """

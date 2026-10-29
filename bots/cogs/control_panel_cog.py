@@ -494,20 +494,49 @@ def _denied_embed() -> discord.Embed:
     return _err_embed("You need the control-panel role (or Administrator) to use these controls.")
 
 
+_GUIDE_SECTIONS = {
+    1: "🔌 Bot loop & requests",
+    2: "🎮 Console controls",
+    3: "📋 Info & settings",
+}
+
+
 def build_guide_embed() -> discord.Embed:
     embed = discord.Embed(
         title="📖 Island Remote Control Guide",
-        description="Quick reference for the controls on the Sub-Island Remote Control Panel.",
+        description=(
+            "Quick reference for the Sub-Island Remote Control Panel.\n\n"
+            "**Who can use it:** Administrators and members with the control-panel role. "
+            "Everyone else can read this guide, but the buttons won't run.\n"
+            "**What to expect:** every action is logged with who pressed it and the result. "
+            f"Buttons that disconnect or restart something ask you to confirm first (marked ⚠️). "
+            f"Only one action runs per island at a time, and the same action has a {ACTION_COOLDOWN:.0f}s cooldown."
+        ),
         color=PANEL_COLOR_ONLINE,
     )
-    for spec in ACTIONS.values():
-        if spec.key == "guide":
-            continue
-        warn = "  ⚠️ _asks to confirm_" if spec.confirm else ""
-        embed.add_field(name=f"{spec.emoji} {spec.guide_name}", value=spec.help + warn, inline=False)
+    for row, heading in _GUIDE_SECTIONS.items():
+        embed.add_field(name=f"━━ {heading} ━━", value="\u200b", inline=False)
+        for spec in ACTIONS.values():
+            if spec.row != row or spec.key == "guide":
+                continue
+            warn = "  ⚠️ _asks to confirm_" if spec.confirm else ""
+            embed.add_field(name=f"{spec.emoji} {spec.guide_name}", value=spec.help + warn, inline=False)
     embed.add_field(
-        name="🏝️ Switch Island",
-        value="Use the top dropdown to switch the control panel target to any sub-island.",
+        name="🏝️ Switching islands",
+        value=(
+            "The dropdown at the top of the panel changes which island the buttons control. "
+            "Use **All Islands** to browse every Sub and Free island. "
+            "Always check the island name in the panel title before you press anything."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="💡 Good to know",
+        value=(
+            "• **Refresh Status** re-reads the island; the panel also refreshes itself every 30 seconds.\n"
+            "• If SysBot is unreachable the panel shows grey — try **Refresh Status** before restarting anything.\n"
+            "• **Stop** and **Restart** let the active order finish first, so they can take a moment."
+        ),
         inline=False,
     )
     embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
