@@ -295,13 +295,22 @@ VERIFIED_FLAG_COMPONENTS = [
 ]
 
 
-def post_verified_flight(visit: dict, member_id: str, member_name: str, has_access: bool, sub_role_ids: list[str]) -> str | None:
+def post_verified_flight(
+    visit: dict,
+    member_id: str,
+    member_name: str,
+    has_access: bool,
+    sub_role_ids: list[str],
+    linked_tiers: list[str] | None = None,
+) -> str | None:
     """The logger's 'Verified Flight' post in #xlog-verbose."""
     lines = [f"Member Linked: {_user_label(member_id, member_name)}"]
     if has_access:
         lines.append(f"{EMOJI_STAR} **Has Island Access?** Yes")
         if sub_role_ids:
             lines.append(f"{EMOJI_HEART} **Subscription(s):**\n> " + "\n> ".join(f"<@&{r}>" for r in sub_role_ids))
+        elif linked_tiers:
+            lines.append(f"{EMOJI_HEART} **Subscription(s) (linked on website):**\n> " + "\n> ".join(linked_tiers))
         else:
             lines.append(f"{EMOJI_WARNING} **Subscription(s):**\n> None detected for this island.")
     else:

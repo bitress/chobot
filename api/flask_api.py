@@ -112,15 +112,16 @@ def _persist_dodo_reveal_message(
     message_url: str,
     username: str,
     nickname: str,
-) -> None:
-    """Store webhook message URL so Flight Logger can link unverified flights to dodo reveals."""
+) -> int | None:
+    """Store a Dodo reveal so the flight logger can match the traveler, even when the
+    Discord webhook fails. message_url is "" until the webhook post is known. Returns the row ID."""
     island_clean = clean_text(island_name)
     if not island_clean:
         island_clean = clean_text(island_name.lower())
     try:
         conn = connect_db()
         try:
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO dodo_reveal_messages
                 (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
@@ -137,10 +138,24 @@ def _persist_dodo_reveal_message(
                 ),
             )
             conn.commit()
+            return getattr(cur, "lastrowid", None)
         finally:
             conn.close()
     except Exception as exc:
         logger.warning("dodo_reveal_messages insert failed: %s", exc)
+        return None
+
+
+def _update_dodo_reveal_url(row_id: int, message_url: str) -> None:
+    try:
+        conn = connect_db()
+        try:
+            conn.execute("UPDATE dodo_reveal_messages SET message_url = ? WHERE id = ?", (message_url, row_id))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning("dodo_reveal_messages URL update failed: %s", exc)
 
 
 def _log_dodo_reveal_attempt(user: dict | None, island: str, outcome: str, reason: str, **extra) -> None:
@@ -925,8 +940,11 @@ def _fire_dodo_webhook(
     channel_id: str = None,
     char_ign: str = "",
     char_island: str = "",
+    discord_id: str = "",
+    reveal_row_id: int | None = None,
 ) -> None:
-    """POST a Discord webhook message in the background."""
+    """POST a Discord webhook message in the background, then attach its URL to the
+    already-saved reveal row."""
     url = Config.DODO_LOG_WEBHOOK_URL
     if not url:
         return
@@ -939,6 +957,9 @@ def _fire_dodo_webhook(
     _DODO_WEBHOOK_DEBOUNCE[cache_key] = now
 
     display_name = (nickname or "").strip() or (username or "").strip() or "Unknown User"
+    # Mention only real Discord IDs: website accounts (u_patreon_…, cp_usr_…) are not in the server
+    mention_id = next((str(i).strip() for i in (discord_id, user_id) if str(i or "").strip().isdigit()), "")
+    who = f"<@{mention_id}>" if mention_id else f"**{display_name}**"
 
     island_url_name = urllib.parse.quote(island_name)
     island_link = f"https://www.chopaeng.com/island/{island_url_name.lower()}"
@@ -946,7 +967,7 @@ def _fire_dodo_webhook(
     fields = [
         {
             "name": "Member",
-            "value": f"{display_name} (<@{user_id}>)",
+            "value": f"{display_name} ({who})" if mention_id else f"{display_name} (website account, not in Discord)",
         },
         {
             "name": "Island",
@@ -965,7 +986,7 @@ def _fire_dodo_webhook(
     embed = {
         "title": f"Dodo Code Revealed",
         "color": 0x2ecc71,  # Emerald Green
-        "description": f"<@{user_id}> has revealed the Dodo code for island <#{channel_id}>",
+        "description": f"{who} has revealed the Dodo code for island <#{channel_id}>",
         "fields": fields,
         "image": {
             "url": "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
@@ -1013,15 +1034,8 @@ def _fire_dodo_webhook(
                     message_url = f"https://discord.com/channels/{Config.GUILD_ID}/{cid}/{mid}"
             except (json.JSONDecodeError, TypeError) as exc:
                 logger.debug("Dodo webhook response not JSON: %s", exc)
-        if message_url:
-            _persist_dodo_reveal_message(
-                user_id=str(user_id),
-                island_name=island_name,
-                channel_id=channel_id,
-                message_url=message_url,
-                username=username or "",
-                nickname=nickname or "",
-            )
+        if message_url and reveal_row_id:
+            _update_dodo_reveal_url(reveal_row_id, message_url)
     except urllib.error.HTTPError as exc:
         body = ""
         try:
@@ -2199,6 +2213,19 @@ def reveal_dodo(name):
         _record_api_audit_event("dodo_reveal_failed", target, {"reason": "dodo_unavailable", "channel_id": channel_id})
         return jsonify({"error": "Dodo code not available right now"}), 404
 
+    # Save the reveal before the webhook so flight matching never depends on Discord.
+    # Discord members are stored by Discord ID (the logger resolves them as members);
+    # website-only accounts by their website ID.
+    discord_id = str(user.get("discord_id") or (user.get("connected_accounts") or {}).get("discord", {}).get("id") or "")
+    reveal_row_id = _persist_dodo_reveal_message(
+        user_id=discord_id if discord_id.isdigit() else str(user.get("user_id") or ""),
+        island_name=target,
+        channel_id=channel_id,
+        message_url="",
+        username=user.get("username") or "",
+        nickname=user.get("nickname") or "",
+    )
+
     # Fire webhook in background thread so the response isn't delayed
     threading.Thread(
         target=_fire_dodo_webhook,
@@ -2212,6 +2239,8 @@ def reveal_dodo(name):
             channel_id,
             saved_char["ign"] if saved_char else "",
             saved_char["island_name"] if saved_char else "",
+            discord_id,
+            reveal_row_id,
         ),
         daemon=True,
     ).start()

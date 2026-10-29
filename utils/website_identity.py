@@ -95,6 +95,43 @@ def account_tiers(account: dict) -> list[str]:
     return sorted(t for t in tiers if t in TIER_NAME_TO_ROLE_ID)
 
 
+def linked_tiers_for_island(discord_id: Any, destination: str) -> list[str]:
+    """Tiers a Discord member linked on the website (Patreon/YouTube/Twitch, still current)
+    that open this island, e.g. ["y ChoSoup (YouTube)"]. The website accepts these for
+    Dodo reveals even when the member has no matching Discord role."""
+    from utils.island_access import (
+        TIER_NAME_TO_ROLE_ID,
+        effective_island_required_roles,
+        linked_tier_is_current,
+        normalize_roles,
+    )
+
+    did = str(discord_id or "").strip()
+    account = load_website_account(did) if did.isdigit() else None
+    if not account:
+        return []
+    linked = account.get("connected_accounts") or {}
+    # The lookup can resolve numeric IDs of other platforms: make sure this is the member's account
+    if str((linked.get("discord") or {}).get("id") or account.get("discord_id") or "") != did:
+        return []
+
+    allowed = set(effective_island_required_roles("member", None, "VIP", destination))
+    found: set[str] = set()
+    for provider, acc in linked.items():
+        if str(provider).lower() == "discord" or not isinstance(acc, dict):
+            continue
+        if not linked_tier_is_current(acc.get("tier_checked_at")):
+            continue
+        raw = list(acc.get("roles") or []) + ([acc["sub_tier"]] if acc.get("sub_tier") else [])
+        for tier in normalize_roles(raw):
+            if tier in TIER_NAME_TO_ROLE_ID and tier in allowed:
+                found.add(f"{tier} ({_PROVIDER_LABELS.get(str(provider).lower(), str(provider).title())})")
+    return sorted(found)
+
+
+_PROVIDER_LABELS = {"youtube": "YouTube", "patreon": "Patreon", "twitch": "Twitch"}
+
+
 def website_verdict(account: dict, destination: str, found_via: str | None) -> tuple[str, dict]:
     """Verdict for a flight matched to a website account, using the website's own access rule."""
     from utils import island_access

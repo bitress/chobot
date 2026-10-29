@@ -40,6 +40,7 @@ from utils.sysbot_telemetry import (
 from utils.website_identity import (
     SAVED_CHARACTERS_SQL,
     account_label,
+    linked_tiers_for_island,
     saved_character_owners,
     website_only_account,
     website_verdict,
@@ -1582,7 +1583,8 @@ class FlightLoggerCog(commands.Cog):
             logger.warning(f"[FLIGHT] dodo_reveal_messages lookup failed: {exc}")
             return None
         for message_url, username, nickname in rows:
-            if ign_matches_dodo_reveal(ign, username, nickname):
+            # Reveals within the webhook's 5-minute debounce have no message: use an earlier one
+            if message_url and ign_matches_dodo_reveal(ign, username, nickname):
                 return message_url
         return None
 
@@ -1617,7 +1619,7 @@ class FlightLoggerCog(commands.Cog):
                     uid = int(uid_raw)
                     member = await self._resolve_member(guild, uid)
                     if member:
-                        return member, message_url
+                        return member, message_url or None
                 except Exception:
                     pass
         return None, None
@@ -1671,7 +1673,7 @@ class FlightLoggerCog(commands.Cog):
             if ign_matches_dodo_reveal(ign, username, nickname):
                 account = await asyncio.to_thread(website_only_account, user_id)
                 if account:
-                    return account, "dodo_reveal", message_url
+                    return account, "dodo_reveal", message_url or None
         return None
 
     def _get_db(self):
@@ -3343,7 +3345,11 @@ class FlightLoggerCog(commands.Cog):
                 # Members with no sub at all are flagged too: the island access role alone
                 # (rules accepted) does not open a sub island.
                 is_staff = island_access.is_mod([str(r.id) for r in member.roles]) or member.guild_permissions.administrator
+                # Tiers linked on the website (Patreon/YouTube/Twitch) also open the island there
+                linked_tiers = []
                 if sub_roles and not current_island_subs and not is_staff:
+                    linked_tiers = await asyncio.to_thread(linked_tiers_for_island, member.id, destination)
+                if sub_roles and not current_island_subs and not linked_tiers and not is_staff:
                     await self._trigger_island_access_mismatch_flag(
                         ign,
                         island,
@@ -3380,6 +3386,10 @@ class FlightLoggerCog(commands.Cog):
                         sub_lines = [r.mention for r in current_island_subs]
                         desc_lines.append(
                             f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
+                        )
+                    elif linked_tiers:
+                        desc_lines.append(
+                            f"<a:heartside:784055539881214002> **Subscription(s) (linked on website):**\n> " + "\n> ".join(linked_tiers)
                         )
                     else:
                         desc_lines.append(

@@ -30,6 +30,7 @@ from utils.website_identity import (
     SAVED_CHARACTERS_SQL,
     account_label,
     account_tiers,
+    linked_tiers_for_island,
     saved_character_owners,
     website_only_account,
     website_verdict,
@@ -1290,7 +1291,12 @@ def _role_check_like_logger(member_id: str, destination: str) -> tuple[str, dict
         r for r in island_access.effective_island_required_roles("member", None, "VIP", destination)
         if str(r).isdigit()
     }
-    if required and not snap.get("is_mod") and not (set(member_subs) & required):
+    if (
+        required
+        and not snap.get("is_mod")
+        and not (set(member_subs) & required)
+        and not linked_tiers_for_island(member_id, destination)  # tiers linked on the website
+    ):
         have = [names.get(r, r) for r in member_subs]
         need = [names.get(r, r) for r in sorted(required)]
         return "island_access_mismatch", {
@@ -1311,7 +1317,7 @@ def _announce_web_verdict(conn, flight: dict, verdict: str, detail: dict, user_i
         if LOGGER_VERDICT_KIND.get(verdict) == "verified" and member.get("kind") == "website":
             flight_discord.post_verified_website_flight(flight, member.get("name") or "", detail.get("subs") or [])
         elif LOGGER_VERDICT_KIND.get(verdict) == "verified":
-            member_name, has_access, island_subs = member.get("name"), False, []
+            member_name, has_access, island_subs, linked = member.get("name"), False, [], []
             if str(user_id or "").isdigit():
                 from utils.discord_membership import fetch_guild_member_snapshot
                 try:
@@ -1321,9 +1327,13 @@ def _announce_web_verdict(conn, flight: dict, verdict: str, detail: dict, user_i
                     has_access = str(Config.ISLAND_ACCESS_ROLE) in roles
                     required = island_access.effective_island_required_roles("member", None, "VIP", flight["destination"])
                     island_subs = sorted(roles & {str(r) for r in required if str(r).isdigit()})
+                    if not island_subs:
+                        linked = linked_tiers_for_island(user_id, flight["destination"])
                 except Exception:
                     pass
-            flight_discord.post_verified_flight(flight, str(user_id or ""), member_name or "", has_access, island_subs)
+            flight_discord.post_verified_flight(
+                flight, str(user_id or ""), member_name or "", has_access, island_subs, linked_tiers=linked,
+            )
         else:
             message = flight_discord.post_flight_alert(flight, verdict, detail)
             if message and message.get("id"):
