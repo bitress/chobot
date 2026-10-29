@@ -940,17 +940,12 @@ def auth_patreon_callback():
         pat_avatar = user_data.get("data", {}).get("attributes", {}).get("image_url") or ""
         pat_email = user_data.get("data", {}).get("attributes", {}).get("email") or ""
 
-        roles: List[str] = []
-        for inc in user_data.get("included", []):
-            if inc.get("type") == "tier":
-                title = inc.get("attributes", {}).get("title", "") or ""
-                t_lower = title.lower()
-                if "chosoup" in t_lower:
-                    roles.append("ChoSoup")
-                elif "chocolate" in t_lower:
-                    roles.append("ChoColate")
-                elif "chofries" in t_lower:
-                    roles.append("ChoFries")
+        from utils.tier_sync import patreon_tier_roles
+        roles: List[str] = patreon_tier_roles(
+            (inc.get("attributes") or {}).get("title") or ""
+            for inc in user_data.get("included", [])
+            if inc.get("type") == "tier"
+        )
 
         unified_user = provision_or_link_unified_account(
             provider="patreon",
@@ -973,6 +968,24 @@ def auth_patreon_callback():
     except Exception as exc:
         logger.error("[Patreon OAuth] Failed: %s", exc)
         return redirect(f"{return_to}?error=patreon_auth_failed")
+
+
+@sub_islands_bp.route("/api/webhooks/patreon", methods=["POST"])
+def patreon_members_webhook():
+    """Patreon members:* webhook: a new, changed or cancelled pledge updates the linked
+    account's tiers right away (the scheduled sync in utils/tier_sync.py catches the rest)."""
+    from utils.tier_sync import apply_patreon_webhook, verify_patreon_webhook
+
+    body = request.get_data()
+    if not verify_patreon_webhook(body, request.headers.get("X-Patreon-Signature")):
+        return jsonify({"error": "invalid signature"}), 401
+    try:
+        user_id = apply_patreon_webhook(json.loads(body or b"{}"))
+    except Exception as exc:
+        logger.warning("[Patreon webhook] %s failed: %s", request.headers.get("X-Patreon-Event"), exc)
+        return jsonify({"error": "could not apply"}), 500
+    logger.info("[Patreon webhook] %s for Patreon user %s", request.headers.get("X-Patreon-Event"), user_id)
+    return jsonify({"ok": True})
 
 
 # ── 3. Twitch OAuth ──────────────────────────────────────────────────────────

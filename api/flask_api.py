@@ -629,25 +629,32 @@ def _user_has_sub_rules(user: dict | None) -> bool:
         except Exception:
             pass
 
-    if in_db and not has_role:
-        from utils.discord_membership import add_guild_member_role
-        discord_uids = [str(uid) for uid in cand_ids if str(uid).isdigit()]
-        d_uid = str(user.get("discord_id") or user.get("user_id") or "").strip()
-        if d_uid.isdigit() and d_uid not in discord_uids:
-            discord_uids.append(d_uid)
-        conn_accs = user.get("connected_accounts") or {}
-        if isinstance(conn_accs, dict) and "discord" in conn_accs:
-            disc_acc = conn_accs["discord"]
-            if isinstance(disc_acc, dict) and disc_acc.get("id"):
-                disc_id = str(disc_acc["id"]).strip()
-                if disc_id.isdigit() and disc_id not in discord_uids:
-                    discord_uids.append(disc_id)
-        for du in discord_uids:
-            if add_guild_member_role(du, sub_role_str):
-                user.setdefault("roles", []).append(sub_role_str)
-                has_role = True
+    # For Discord members the live role decides. Missing it while the DB says "accepted"
+    # means a mod removed it in Discord: clear the stale acceptance so they must accept the
+    # rules again (which grants the role back), instead of the website quietly re-adding it.
+    # Website-only accounts have no role, so the DB decides for them.
+    has_discord = bool(
+        str(user.get("discord_id") or "").isdigit()
+        or "discord" in (user.get("connected_providers") or [])
+        or user.get("provider") == "discord"
+    )
+    roles_are_live = time.time() - int(user.get("discord_checked_at") or 0) < _LIVE_ROLES_SECONDS
+    if in_db and not has_role and has_discord and roles_are_live and getattr(Config, "DISCORD_LOGIN_ENABLED", True):
+        try:
+            with connect_db() as c_sync:
+                rule_ph = ",".join("?" for _ in cand_ids)
+                c_sync.execute(f"DELETE FROM user_sub_rules_accepted WHERE user_id IN ({rule_ph})", cand_ids)
+                c_sync.commit()
+            logger.info("Sub rules role missing in Discord for %s: cleared website acceptance", user.get("user_id"))
+        except Exception as exc:
+            logger.warning("Could not clear stale sub rules acceptance for %s: %s", user.get("user_id"), exc)
+        return False
 
     return in_db or has_role
+
+
+# Roles fetched from Discord this recently count as live (a role missing from them was removed)
+_LIVE_ROLES_SECONDS = 600
 
 
 def _user_has_order_rules(user: dict | None) -> bool:

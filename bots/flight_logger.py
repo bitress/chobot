@@ -20,6 +20,7 @@ from utils.config import Config
 from utils.database import connect_async_db, get_backend
 from utils.helpers import clean_text
 from utils import island_access
+from utils.tier_sync import sync_linked_tiers
 from utils.flight_matching import (
     LEGACY_TWO_IDENTITY_CUTOFF_UTC,
     LEGACY_TWO_IDENTITY_LIMIT,
@@ -410,6 +411,36 @@ async def init_db():
 
 # Reason texts are shared with the web dashboard (utils/flight_discord.py)
 from utils.flight_discord import DEFAULT_REASON_TEXT, REASON_TEMPLATES  # noqa: E402
+
+# Where mods act on website accounts, which Discord punishments cannot reach
+DASHBOARD_FLIGHTS_URL = f"{Config.DASHBOARD_FRONTEND_URL or 'https://www.chopaeng.com/dashboard'}/flights"
+
+
+def _overwrite_view_roles(channel) -> dict[int, str]:
+    """Roles a channel's permission overwrites allow to view it (except @everyone)."""
+    roles = {}
+    for target, overwrite in channel.overwrites.items():
+        # Discord migrated from "read_messages" -> "view_channel". Support both.
+        can_view = (getattr(overwrite, "view_channel", None) is True) or (getattr(overwrite, "read_messages", None) is True)
+        if isinstance(target, discord.Role) and can_view and target.name != "@everyone":
+            roles[target.id] = target.name
+    return roles
+
+
+def island_tier_roles(guild, destination: str, dest_channel=None) -> dict[int, str]:
+    """Tier roles that open a sub island: {role_id: name}.
+
+    Islands in the website's access matrix use it, so the logger and the website's Dodo
+    reveal agree on who may visit. Other sub channels fall back to their Discord overwrites.
+    """
+    if island_access.is_member_island(None, None, destination):
+        roles = {}
+        for rid in island_access.effective_island_required_roles("member", None, "VIP", destination):
+            if str(rid).isdigit():
+                role = guild.get_role(int(rid)) if guild else None
+                roles[int(rid)] = role.name if role else island_access.ROLE_ID_TO_TIER_NAME.get(str(rid), str(rid))
+        return roles
+    return _overwrite_view_roles(dest_channel) if dest_channel else {}
 
 REASON_OPTIONS = [
     discord.SelectOption(label="Sub Top Rule / Rule #1", value="rule_top_1", description="Breaking [Sub Top Rule]"),
@@ -950,6 +981,7 @@ class TravelerActionView(discord.ui.View):
 
                 # Get destination from embed to check subscription roles using the cog's island_map
                 dest_channel = None
+                dest_clean = ""
                 for field in embed.fields:
                     if field.name == "Destination":
                         dest_clean = clean_text(field.value)
@@ -957,14 +989,9 @@ class TravelerActionView(discord.ui.View):
                         dest_channel = interaction.guild.get_channel(channel_id) if channel_id and interaction.guild else None
                         break
 
-                if dest_channel:
-                    sub_roles = {}
-                    for target_obj, overwrite in dest_channel.overwrites.items():
-                        can_view = (getattr(overwrite, "view_channel", None) is True) or (getattr(overwrite, "read_messages", None) is True)
-                        if isinstance(target_obj, discord.Role) and can_view:
-                            if target_obj.name != "@everyone":
-                                sub_roles[target_obj.id] = target_obj.name
-
+                # The Destination field may be a channel mention: prefer the channel's name
+                sub_roles = island_tier_roles(interaction.guild, dest_channel.name if dest_channel else dest_clean, dest_channel)
+                if sub_roles:
                     current_island_subs = [sub_roles[r.id] for r in target_user.roles if r.id in sub_roles]
                     other_subs = [r.name for r in target_user.roles if r.id in all_sub_roles and r.id not in sub_roles]
                     total_subs = len(current_island_subs) + len(other_subs)
@@ -1025,6 +1052,37 @@ class TravelerActionView(discord.ui.View):
     def disable_all_items(self):
         for child in self.children:
             child.disabled = True
+
+    async def _send_to_dashboard_if_website(self, interaction: discord.Interaction, action: str) -> bool:
+        """Website accounts are not in the server, so Discord punishments cannot reach them.
+        Point the mod to the dashboard instead. Returns True when the alert is for one."""
+        visit_id = self.visit_id or self._get_visit_id_from_embed(interaction.message.embeds[0] if interaction.message.embeds else None)
+        if not visit_id:
+            return False
+        try:
+            async with connect_async_db() as db:
+                cur = await db.execute("SELECT logger_detail FROM island_visits WHERE id = ?", (visit_id,))
+                row = await cur.fetchone()
+            member = (json.loads(row[0]) if row and row[0] else {}).get("member") or {}
+        except Exception as exc:
+            logger.debug(f"[FLIGHT] Could not read verdict for visit #{visit_id}: {exc}")
+            return False
+        if member.get("kind") != "website":
+            return False
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="Open in Dashboard", url=DASHBOARD_FLIGHTS_URL, style=discord.ButtonStyle.link))
+        what = (
+            "Kick does not apply: use Warn, Timeout or Ban on the dashboard instead."
+            if action == "KICK"
+            else f"{action.title()} them from the dashboard: it records the case and blocks their Dodo reveals."
+        )
+        await interaction.followup.send(
+            f"🌐 **{member.get('name') or member.get('id')}** is a website account, not in this server, so there is "
+            f"no member to DM or roles to remove. {what}",
+            view=view,
+            ephemeral=True,
+        )
+        return True
 
     @discord.ui.button(label="Investigate", style=discord.ButtonStyle.secondary, emoji="<:Cho_Investigate:1474310726381338666>", custom_id="fl_investigate", row=0)
     async def investigate_action(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1095,6 +1153,8 @@ class TravelerActionView(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
         except (discord.NotFound, discord.HTTPException):
             return
+        if await self._send_to_dashboard_if_website(interaction, "WARN"):
+            return
         view = PunishmentBuilderView("WARN", self, log_message=interaction.message)
         await interaction.followup.send("<:Cho_Warn:1456712416271405188> **Build Warning:**", view=view, ephemeral=True)
 
@@ -1104,6 +1164,8 @@ class TravelerActionView(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
         except (discord.NotFound, discord.HTTPException):
             return
+        if await self._send_to_dashboard_if_website(interaction, "KICK"):
+            return
         view = PunishmentBuilderView("KICK", self, log_message=interaction.message)
         await interaction.followup.send("<:Cho_Kick:1456714701630214349> **Build Kick:**", view=view, ephemeral=True)
 
@@ -1112,6 +1174,8 @@ class TravelerActionView(discord.ui.View):
         try:
             await interaction.response.defer(ephemeral=True)
         except (discord.NotFound, discord.HTTPException):
+            return
+        if await self._send_to_dashboard_if_website(interaction, "BAN"):
             return
         view = PunishmentBuilderView("BAN", self, log_message=interaction.message)
         await interaction.followup.send("<:Cho_Ban:1473530840725061793> **Build Ban:**", view=view, ephemeral=True)
@@ -2236,6 +2300,8 @@ class FlightLoggerCog(commands.Cog):
             self.cleanup_warnings_task.start()
         if not self.check_r1_reminders_task.is_running():
             self.check_r1_reminders_task.start()
+        if not self.sync_linked_tiers_task.is_running():
+            self.sync_linked_tiers_task.start()
 
     async def _trigger_automatic_flag(
         self,
@@ -2623,6 +2689,19 @@ class FlightLoggerCog(commands.Cog):
         self.fetch_islands_task.cancel()
         self.cleanup_warnings_task.cancel()
         self.check_r1_reminders_task.cancel()
+        self.sync_linked_tiers_task.cancel()
+
+    @tasks.loop(hours=6)
+    async def sync_linked_tiers_task(self):
+        """Re-check tiers of Patreon/Twitch accounts linked on the website (utils/tier_sync.py)."""
+        try:
+            await asyncio.to_thread(sync_linked_tiers)
+        except Exception as exc:
+            logger.error(f"[FLIGHT] Error in sync_linked_tiers_task: {exc}", exc_info=True)
+
+    @sync_linked_tiers_task.before_loop
+    async def before_sync_linked_tiers(self):
+        await self._safe_wait_until_ready()
 
     @tasks.loop(hours=1)
     async def fetch_islands_task(self):
@@ -2780,6 +2859,19 @@ class FlightLoggerCog(commands.Cog):
                         channel_req_roles.append(str(target.id))
                         if target.id not in excluded_roles:
                             sub_roles.add(target.id)
+
+            # The access matrix decides who may visit; warn when Discord's channel permissions
+            # disagree, since members then see a channel they cannot reveal (or the reverse)
+            if island_access.is_member_island(None, None, channel.name):
+                tier_ids = {int(r) for r in island_access.ROLE_ID_TO_TIER_NAME}
+                in_discord = {int(r) for r in channel_req_roles} & tier_ids
+                in_matrix = set(island_tier_roles(guild, channel.name)) & tier_ids
+                if in_discord != in_matrix:
+                    name = lambda ids: ", ".join(sorted(island_access.ROLE_ID_TO_TIER_NAME[str(i)] for i in ids)) or "none"
+                    logger.warning(
+                        f"[FLIGHT] Access drift on #{channel.name}: Discord also lets in [{name(in_discord - in_matrix)}], "
+                        f"matrix also allows [{name(in_matrix - in_discord)}]. The matrix (utils/island_access.py) is used."
+                    )
 
             # Sync with the 'islands' table used by the Web API
             island_clean = re.sub(r'^\d+', '', chan_clean)
@@ -3291,18 +3383,11 @@ class FlightLoggerCog(commands.Cog):
                 member_roles = [r for r in member.roles if r.name != "@everyone"]
                 has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in member_roles)
                 
-                sub_roles = {}
                 dest_clean = clean_text(destination)
                 channel_id = self.island_map.get(dest_clean)
                 dest_channel = guild.get_channel(channel_id) if channel_id else None
-                
-                if dest_channel:
-                    for target, overwrite in dest_channel.overwrites.items():
-                        can_view = (getattr(overwrite, "view_channel", None) is True) or (getattr(overwrite, "read_messages", None) is True)
-                        if isinstance(target, discord.Role) and can_view:
-                            if target.name != "@everyone":
-                                sub_roles[target.id] = target.name
-                
+                sub_roles = island_tier_roles(guild, destination, dest_channel)
+
                 # Subscription Analysis
                 cog = self
                 await self._ensure_sub_roles_loaded()
