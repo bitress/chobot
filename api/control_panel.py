@@ -29,6 +29,7 @@ from utils.helpers import clean_text
 from utils.website_identity import (
     SAVED_CHARACTERS_SQL,
     account_label,
+    account_tiers,
     saved_character_owners,
     website_only_account,
     website_verdict,
@@ -1823,6 +1824,7 @@ def search_members():
     q = request.args.get("q", "").strip()
     if len(q) < 2:
         return jsonify({"members": []})
+    website = _search_website_accounts(q)
     if q.isdigit() and len(q) >= 15:
         # A pasted Discord ID: look it up directly
         from utils.discord_membership import fetch_guild_member_snapshot
@@ -1834,9 +1836,9 @@ def search_members():
                 "username": snap.get("account_name"),
                 "avatar": snap.get("avatar"),
                 "has_island_access": str(Config.ISLAND_ACCESS_ROLE) in snap.get("roles", []),
-            }]})
+            }] + website})
         except Exception:
-            return jsonify({"members": []})
+            return jsonify({"members": website})
     try:
         resp = discord_request(
             f"https://discord.com/api/v10/guilds/{Config.GUILD_ID}/members/search?"
@@ -1847,6 +1849,8 @@ def search_members():
         raw = json.loads(resp.body) or []
     except Exception as exc:
         logger.warning("[ControlPanel] Member search failed: %s", exc)
+        if website:
+            return jsonify({"members": website})
         return jsonify({"error": "Discord member search is unavailable"}), 502
 
     members = []
@@ -1862,7 +1866,49 @@ def search_members():
             "avatar": avatar,
             "has_island_access": str(Config.ISLAND_ACCESS_ROLE) in {str(r) for r in m.get("roles", [])},
         })
-    return jsonify({"members": members})
+    return jsonify({"members": members + website})
+
+
+def _search_website_accounts(q: str, limit: int = 10) -> list[dict]:
+    """Website accounts outside the Discord server matching a pasted account ID, account
+    name or saved character IGN, so mods can act on travelers who only use the website."""
+    pattern = f"%{q.lower()}%"
+    queries = [
+        ("SELECT user_id, ign FROM user_saved_characters WHERE LOWER(ign) LIKE ? LIMIT 25", True),
+        ("SELECT unified_user_id, NULL FROM user_provider_links WHERE provider <> 'discord' AND LOWER(username) LIKE ? LIMIT 25", False),
+        ("SELECT id, NULL FROM chopaeng_users WHERE LOWER(username) LIKE ? LIMIT 25", False),
+    ]
+    found: dict[str, str | None] = {}
+    if q.startswith(("cp_usr_", "u_")):
+        found[q] = None  # a pasted account ID (cp_usr_…, u_patreon_…)
+    conn = connect_db()
+    try:
+        for sql, is_ign in queries:
+            try:
+                for uid, ign in conn.execute(sql, (pattern,)).fetchall():
+                    if uid and (str(uid) not in found or (is_ign and not found[str(uid)])):
+                        found[str(uid)] = ign if is_ign else None
+            except Exception as exc:
+                logger.debug("[ControlPanel] Website account search skipped a table: %s", exc)
+    finally:
+        conn.close()
+
+    results: list[dict] = []
+    for uid, ign in found.items():
+        account = website_only_account(uid)
+        if not account or any(r["id"] == account.get("user_id") for r in results):
+            continue
+        results.append({
+            "id": str(account.get("user_id")),
+            "name": account_label(account),
+            "username": f"IGN {ign}" if ign else None,
+            "avatar": account.get("avatar") or None,
+            "kind": "website",
+            "tiers": account_tiers(account),
+        })
+        if len(results) >= limit:
+            break
+    return results
 
 
 @control_panel_bp.route("/flight/<int:visit_id>/investigate", methods=["GET"])
