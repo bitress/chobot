@@ -7462,6 +7462,94 @@ def api_user_critters():
         conn.close()
 
 
+_TRACKER_NAMES = {"todo", "turnips", "visitors"}
+_TRACKER_MAX_BYTES = 16 * 1024
+_TRACKERS_TABLE_READY = False
+
+
+def _ensure_trackers_table(conn):
+    """Per-user JSON blobs for the Pocket Guide trackers (to-do, turnips, visitors)."""
+    global _TRACKERS_TABLE_READY
+    if _TRACKERS_TABLE_READY:
+        return
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_trackers (
+            user_id    VARCHAR(64) NOT NULL,
+            tracker    VARCHAR(32) NOT NULL,
+            data       TEXT NOT NULL,
+            updated_at BIGINT NOT NULL,
+            PRIMARY KEY (user_id, tracker)
+        )
+    """)
+    conn.commit()
+    _TRACKERS_TABLE_READY = True
+
+
+@app.route("/api/user/trackers/<tracker>", methods=["GET", "POST", "PUT"])
+def api_user_tracker(tracker):
+    """Get or save one Pocket Guide tracker for the authenticated user (newest write wins)."""
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"ok": False, "success": False, "error": "Authentication required"}), 401
+
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "").strip()
+    if not user_id:
+        return jsonify({"ok": False, "success": False, "error": "User ID not found"}), 401
+    if tracker not in _TRACKER_NAMES:
+        return jsonify({"ok": False, "error": "Unknown tracker"}), 404
+
+    conn = get_db()
+    try:
+        _ensure_trackers_table(conn)
+        row = conn.execute(
+            "SELECT data, updated_at FROM user_trackers WHERE user_id = ? AND tracker = ?",
+            (user_id, tracker),
+        ).fetchone()
+
+        if request.method == "GET":
+            if not row:
+                return jsonify({"ok": True, "success": True, "data": None, "updated_at": 0})
+            try:
+                data = json.loads(row["data"])
+            except ValueError:
+                data = None
+            return jsonify({"ok": True, "success": True, "data": data, "updated_at": int(row["updated_at"] or 0)})
+
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or not isinstance(body.get("data"), (dict, list)):
+            return jsonify({"ok": False, "error": "data object is required"}), 400
+        raw = json.dumps(body["data"], separators=(",", ":"))
+        if len(raw.encode("utf-8")) > _TRACKER_MAX_BYTES:
+            return jsonify({"ok": False, "error": "Tracker data too large"}), 413
+
+        try:
+            incoming_ts = int(body.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            incoming_ts = 0
+        now_ms = int(time.time() * 1000)
+        incoming_ts = min(incoming_ts, now_ms + 60_000) if incoming_ts > 0 else now_ms
+
+        current_ts = int(row["updated_at"] or 0) if row else 0
+        if incoming_ts < current_ts:
+            # A newer copy already exists (another device); tell the client to adopt it.
+            return jsonify({"ok": True, "success": True, "applied": False, "updated_at": current_ts})
+
+        conn.execute("""
+            INSERT INTO user_trackers (user_id, tracker, data, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, tracker) DO UPDATE SET
+                data = excluded.data,
+                updated_at = excluded.updated_at
+        """, (user_id, tracker, raw, incoming_ts))
+        conn.commit()
+        return jsonify({"ok": True, "success": True, "applied": True, "updated_at": incoming_ts})
+    except Exception as exc:
+        logger.warning("Error in user trackers API: %s", exc)
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
+    finally:
+        conn.close()
+
+
 @app.route("/api/user/notifications", methods=["GET", "POST", "DELETE"])
 @app.route("/api/profile/notifications", methods=["GET", "POST", "DELETE"])
 def api_user_notifications():

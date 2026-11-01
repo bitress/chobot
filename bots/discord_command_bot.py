@@ -395,6 +395,18 @@ def _discord_conv_key(message: discord.Message) -> str:
     guild_id = message.guild.id if message.guild else "dm"
     return f"discord:{guild_id}:{message.channel.id}:{message.author.id}"
 
+# Only these Discord users may run /update (server or DM), regardless of server permissions.
+UPDATE_ALLOWED_USER_IDS = frozenset({712983261684432897, 660198924946243609})
+
+
+def is_update_authorized():
+    """Check: command is limited to UPDATE_ALLOWED_USER_IDS and works in DMs."""
+    async def predicate(ctx):
+        return ctx.author.id in UPDATE_ALLOWED_USER_IDS
+
+    return commands.check(predicate)
+
+
 def is_admin_or_senior_mod():
     async def predicate(ctx):
         if getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.administrator:
@@ -5036,9 +5048,10 @@ class DiscordCommandCog(commands.Cog):
             await ctx.reply("You do not have permission to use this command.")
 
     @commands.hybrid_command(name="update")
-    @commands.has_permissions(administrator=True)
+    @is_update_authorized()
     async def update(self, ctx):
-        """OTA update: pull latest code from git and restart the bot (Admin only)"""
+        """OTA update: pull latest code from git and restart the bot (authorized users only, works in DMs)"""
+        logger.info("[DISCORD] /update requested by %s (%s) in %s", ctx.author, ctx.author.id, "DM" if ctx.guild is None else ctx.guild.name)
         await ctx.reply("Fetching latest changes from git...")
         try:
             backup = create_sqlite_backup("pre_update")
@@ -5100,7 +5113,8 @@ class DiscordCommandCog(commands.Cog):
     @update.error
     async def update_error(self, ctx, error):
         """Handle permission errors for update command"""
-        if isinstance(error, commands.MissingPermissions):
+        if isinstance(error, (commands.CheckFailure, commands.MissingPermissions)):
+            logger.warning("[DISCORD] Unauthorized /update attempt by %s (%s)", ctx.author, ctx.author.id)
             await ctx.reply("You do not have permission to use this command.")
 
     @commands.hybrid_command(name="restart")
