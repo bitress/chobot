@@ -553,6 +553,7 @@ def init_dashboard_db():
                 has_public_passport INTEGER DEFAULT 0,
                 is_guest            INTEGER DEFAULT 0,
                 ip_hash             VARCHAR(64),
+                ip_address          VARCHAR(64),
                 last_heartbeat      INTEGER NOT NULL,
                 created_at          INTEGER NOT NULL
             )

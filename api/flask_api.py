@@ -70,6 +70,15 @@ def _client_ip() -> str:
     return forwarded or request.headers.get("X-Real-IP", "").strip() or request.remote_addr or ""
 
 
+def _visitor_ip() -> str:
+    """Real visitor IP behind Cloudflare (CF-Connecting-IP), falling back to the proxy-resolved address.
+
+    Only trustworthy while the origin is reachable solely through Cloudflare (e.g. a Tunnel);
+    otherwise a client could send its own CF-Connecting-IP.
+    """
+    return (request.headers.get("CF-Connecting-IP") or "").strip() or request.remote_addr or ""
+
+
 def _record_website_login(event: dict) -> None:
     """Persist a successful website Discord OAuth login for dashboard audit history."""
     db = get_db()
@@ -6139,6 +6148,9 @@ def api_public_passport_get(username: str):
 # REAL-TIME ONLINE PRESENCE & COMMUNITY RADAR ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
 
+_PRESENCE_IP_COLUMN_READY = False
+
+
 def _ensure_presence_table(conn):
     """Ensure user_online_presence table exists with correct schema."""
     conn.execute("""
@@ -6159,10 +6171,19 @@ def _ensure_presence_table(conn):
             has_public_passport INTEGER DEFAULT 0,
             is_guest            INTEGER DEFAULT 0,
             ip_hash             VARCHAR(64),
+            ip_address          VARCHAR(64),
             last_heartbeat      INTEGER NOT NULL,
             created_at          INTEGER NOT NULL
         )
     """)
+    global _PRESENCE_IP_COLUMN_READY
+    if not _PRESENCE_IP_COLUMN_READY:
+        try:
+            conn.execute("ALTER TABLE user_online_presence ADD COLUMN ip_address VARCHAR(64)")
+            conn.commit()
+        except Exception:
+            pass  # column already exists
+        _PRESENCE_IP_COLUMN_READY = True
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS ix_presence_last_heartbeat ON user_online_presence (last_heartbeat)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_presence_user_id ON user_online_presence (user_id)")
@@ -6247,7 +6268,7 @@ def api_presence_heartbeat():
                 if not avatar_url and pass_row["avatar_url"]:
                     avatar_url = pass_row["avatar_url"]
         else:
-            ip = request.remote_addr or "127.0.0.1"
+            ip = _visitor_ip() or "127.0.0.1"
             ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:12]
             if not session_id:
                 session_id = f"guest_{ip_hash}_{now}"
@@ -6288,8 +6309,8 @@ def api_presence_heartbeat():
             INSERT INTO user_online_presence (
                 session_id, user_id, username, display_name, avatar_url, role, status,
                 current_activity, `current_path`, current_island, ign, island_name,
-                native_fruit, has_public_passport, is_guest, ip_hash, last_heartbeat, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                native_fruit, has_public_passport, is_guest, ip_hash, ip_address, last_heartbeat, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 username = excluded.username,
@@ -6305,12 +6326,14 @@ def api_presence_heartbeat():
                 native_fruit = COALESCE(NULLIF(excluded.native_fruit, ''), user_online_presence.native_fruit),
                 has_public_passport = excluded.has_public_passport,
                 is_guest = excluded.is_guest,
+                ip_address = excluded.ip_address,
                 last_heartbeat = excluded.last_heartbeat
         """, (
             session_id, user_id, username, display_name, avatar_url, role, status,
             activity, current_path, current_island, ign, island_name,
             native_fruit, has_public_passport, is_guest,
-            hashlib.sha256((request.remote_addr or "127.0.0.1").encode()).hexdigest()[:16],
+            hashlib.sha256((_visitor_ip() or "127.0.0.1").encode()).hexdigest()[:16],
+            _visitor_ip()[:64],
             now, now
         ))
         conn.commit()
