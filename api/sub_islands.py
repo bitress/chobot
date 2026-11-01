@@ -227,7 +227,7 @@ def inject_sub_island_villager(name: str):
     if not auth_user.get("is_admin") and not _user_has_sub_rules(auth_user):
         return jsonify({
             "success": False,
-            "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before injecting villagers.",
+            "error": "You must review and accept the Subscriber Island Rules first before injecting villagers.",
             "code": "missing_sub_rules_acceptance",
             "requires_sub_rules": True,
         }), 403
@@ -329,7 +329,7 @@ def drop_sub_island():
     if not auth_user.get("is_admin") and not _user_has_sub_rules(auth_user):
         return jsonify({
             "success": False,
-            "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before dropping items.",
+            "error": "You must review and accept the Subscriber Island Rules first before dropping items.",
             "code": "missing_sub_rules_acceptance",
             "requires_sub_rules": True,
         }), 403

@@ -12,6 +12,7 @@ import re
 import time
 import json
 import hashlib
+import hmac
 import secrets as _secrets
 import logging
 import threading
@@ -534,6 +535,59 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
             revoke_auth_token(token)
             return None
         return user
+
+
+# ── Response hygiene ─────────────────────────────────────────────────────────
+
+def _safe_error(exc: BaseException, fallback: str = "Something went wrong. Please try again.") -> str:
+    """Message that is safe to return to a client.
+
+    Validation errors (ValueError) are written for the caller and pass through. Everything
+    else (DB, network, filesystem, Discord, SysBot...) can carry paths, SQL, hostnames or
+    tokens, so it is logged server-side and replaced with a generic message.
+    """
+    if isinstance(exc, ValueError):
+        return str(exc)
+    logging.getLogger("flask_api").error("Request failed on %s: %s", request.path, exc, exc_info=exc)
+    return fallback
+
+
+def _public_presence_id(session_id: str) -> str:
+    """Opaque roster id. The raw session id (usr_<discord id>) is a credential, so never expose it."""
+    key = str(getattr(Config, "FLASK_SECRET_KEY", "") or "cp_secret").encode("utf-8")
+    return "p_" + hmac.new(key, str(session_id).encode("utf-8"), hashlib.sha256).hexdigest()[:20]
+
+
+def _presence_session_for(session_id: str, auth_user: dict | None) -> str:
+    """Return the client's session id, or "" if it claims to be a logged-in user it isn't."""
+    session_id = (session_id or "").strip()
+    if not session_id.startswith("usr_"):
+        return session_id
+    uid = ""
+    if auth_user:
+        uid = str(auth_user.get("user_id") or auth_user.get("discord_id") or auth_user.get("id") or "")
+    return session_id if uid and session_id == f"usr_{uid}" else ""
+
+
+def _island_view_denied(island_name: str | None):
+    """401/403 response if island_name is a subscriber island the caller can't access, else None."""
+    if not island_name or not island_access.is_member_island(None, None, island_name):
+        return None
+    user = _current_auth_user()
+    if not user:
+        return jsonify({"ok": False, "success": False, "error": "Authentication required"}), 401
+    if not island_access.has_island_access(user.get("roles", []), [], False, island_name=island_name, user=user):
+        return jsonify({"ok": False, "success": False, "error": "You do not have access to this island."}), 403
+    return None
+
+
+@app.errorhandler(Exception)
+def _handle_unexpected_error(exc):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return exc
+    logging.getLogger("flask_api").exception("Unhandled error on %s", request.path)
+    return jsonify({"ok": False, "success": False, "error": "Internal server error"}), 500
 
 
 # Keep legacy helper names stable while sharing the access engine with dashboard APIs.
@@ -1912,7 +1966,7 @@ def api_subscriptions():
         db.commit()
     except Exception as exc:
         db.rollback()
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         db.close()
 
@@ -2321,7 +2375,7 @@ def join_dodo_queue(name):
         entry_id = cur.lastrowid
     except Exception as exc:
         db.rollback()
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         db.close()
 
@@ -3220,7 +3274,7 @@ def api_island_drop(name):
     if not is_viewer_admin and not _user_has_sub_rules(user):
         return jsonify({
             "success": False,
-            "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before dropping items.",
+            "error": "You must review and accept the Subscriber Island Rules first before dropping items.",
             "code": "missing_sub_rules_acceptance",
             "requires_sub_rules": True,
         }), 403
@@ -3346,7 +3400,7 @@ def api_island_villager_inject(name):
     if not is_viewer_admin and not _user_has_sub_rules(user):
         return jsonify({
             "success": False,
-            "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before injecting villagers.",
+            "error": "You must review and accept the Subscriber Island Rules first before injecting villagers.",
             "code": "missing_sub_rules_acceptance",
             "requires_sub_rules": True,
         }), 403
@@ -3446,7 +3500,7 @@ def get_patreon_posts():
         return jsonify(result)
 
     except Exception as e:
-        return jsonify({"error": "Server error", "details": str(e)}), 500
+        return jsonify({"error": "Server error"}), 500
 
 
 @app.route("/api/patreon/posts/<post_id>", methods=["GET"])
@@ -3476,7 +3530,7 @@ def get_single_post(post_id):
         return jsonify(result)
 
     except Exception as e:
-        return jsonify({"error": "Server error", "details": str(e)}), 500
+        return jsonify({"error": "Server error"}), 500
 
 
 # --- STATUS ROUTE ---
@@ -3546,6 +3600,10 @@ def villager_route(name):
     })
 
 
+_HUMAN_MEMBERS_CACHE: dict[str, Any] = {"payload": None, "ts": 0.0}
+_HUMAN_MEMBERS_TTL = 600
+
+
 @app.route("/api/v1/guild/human-members")
 def guild_human_members():
     """Return the count of human (non-bot) members in the configured Discord guild.
@@ -3559,29 +3617,38 @@ def guild_human_members():
         404  - guild does not exist
         503  - Discord token / GUILD_ID not configured, or member intent unavailable
     """
+    # Public and unauthenticated, and each miss pages through the whole guild on Discord's
+    # REST API, so serve a cached count rather than letting callers drive that traffic.
+    cached = _HUMAN_MEMBERS_CACHE["payload"]
+    if cached and time.time() - _HUMAN_MEMBERS_CACHE["ts"] < _HUMAN_MEMBERS_TTL:
+        return jsonify(cached)
+
+    unavailable = ({"success": False, "error": "Member count is temporarily unavailable."}, 503)
     guild_id = str(Config.GUILD_ID or "").strip()
     if not guild_id or guild_id in ("0", "None"):
-        return jsonify({"success": False, "error": "GUILD_ID is not configured."}), 503
+        logger.error("human-members: GUILD_ID is not configured")
+        return jsonify(unavailable[0]), unavailable[1]
 
     auth_value = _discord_bot_auth_value()
     if not auth_value:
-        return jsonify({"success": False, "error": "Discord bot token is not configured."}), 503
+        logger.error("human-members: Discord bot token is not configured")
+        return jsonify(unavailable[0]), unavailable[1]
 
     # Step 1: Verify the guild exists and the bot can see it.
     guild_payload = _discord_api_json(f"/guilds/{guild_id}")
 
     if guild_payload is None:
         # Network / token error â€“ treat as service unavailable.
-        return jsonify({"success": False, "error": "Could not reach Discord API. Please try again later."}), 503
+        return jsonify(unavailable[0]), unavailable[1]
 
     if isinstance(guild_payload, dict):
         error_code = guild_payload.get("code")
         if error_code == 10004 or guild_payload.get("message") == "Unknown Guild":
-            return jsonify({"success": False, "error": "Guild not found."}), 404
+            return jsonify(unavailable[0]), unavailable[1]
         if error_code in (50013, 50001):
-            return jsonify({"success": False, "error": "Bot is not a member of the specified guild."}), 403
+            return jsonify(unavailable[0]), unavailable[1]
         if "message" in guild_payload and "id" not in guild_payload:
-            return jsonify({"success": False, "error": guild_payload.get("message", "Discord API error.")}), 502
+            return jsonify(unavailable[0]), unavailable[1]
 
     guild_name = guild_payload.get("name", "") if isinstance(guild_payload, dict) else ""
 
@@ -3596,31 +3663,26 @@ def guild_human_members():
         members_payload = _discord_api_json(path)
 
         if members_payload is None:
-            return jsonify({"success": False, "error": "Could not reach Discord API while fetching members."}), 503
+            return jsonify(unavailable[0]), unavailable[1]
 
         # Discord returns an error dict when the bot lacks GUILD_MEMBERS intent
         # or when access is denied.
         if isinstance(members_payload, dict):
             error_code = members_payload.get("code")
             if error_code == 10004:
-                return jsonify({"success": False, "error": "Guild not found."}), 404
+                return jsonify(unavailable[0]), unavailable[1]
             if error_code in (50013, 50001):
-                return jsonify({"success": False, "error": "Bot is not a member of the specified guild."}), 403
-            return jsonify({"success": False, "error": members_payload.get("message", "Discord API error.")}), 502
+                return jsonify(unavailable[0]), unavailable[1]
+            return jsonify(unavailable[0]), unavailable[1]
 
         if not isinstance(members_payload, list):
-            return jsonify({"success": False, "error": "Unexpected response from Discord API."}), 502
+            return jsonify(unavailable[0]), unavailable[1]
 
         # If the first page returns an empty list the bot is in the guild but
         # member intent (GUILD_MEMBERS privileged intent) is not enabled.
         if first_page and len(members_payload) == 0:
-            return jsonify({
-                "success": False,
-                "error": (
-                    "Member data is unavailable. "
-                    "Ensure the bot has the GUILD_MEMBERS privileged intent enabled."
-                ),
-            }), 503
+            logger.error("human-members: empty member page (GUILD_MEMBERS intent likely disabled)")
+            return jsonify(unavailable[0]), unavailable[1]
         first_page = False
 
         for member in members_payload:
@@ -3639,12 +3701,14 @@ def guild_human_members():
             break
         after = int(last_user_id)
 
-    return jsonify({
+    payload = {
         "success": True,
         "guild_id": int(guild_id),
         "guild_name": guild_name,
         "human_members": human_count,
-    })
+    }
+    _HUMAN_MEMBERS_CACHE.update(payload=payload, ts=time.time())
+    return jsonify(payload)
 
 
 # ============================================================================
@@ -4038,7 +4102,7 @@ def _sysbot_get(path: str, **params) -> tuple:
     except Exception as exc:
         _sysbot_offline_until = time.monotonic() + _SYSBOT_OFFLINE_COOLDOWN
         logger.warning("[SysBot] GET %s failed: %s", path, exc)
-        return {"success": False, "error": str(exc)}, 500
+        return {"success": False, "error": _safe_error(exc)}, 500
 
 
 def _sysbot_post(path: str, body: dict | list | None = None) -> tuple:
@@ -4079,7 +4143,7 @@ def _sysbot_post(path: str, body: dict | list | None = None) -> tuple:
     except Exception as exc:
         _sysbot_offline_until = time.monotonic() + _SYSBOT_OFFLINE_COOLDOWN
         logger.warning("[SysBot] POST %s failed: %s", path, exc)
-        return {"success": False, "error": str(exc)}, 500
+        return {"success": False, "error": _safe_error(exc)}, 500
 
 
 def _sysbot_delete(path: str, **params) -> tuple:
@@ -4119,7 +4183,7 @@ def _sysbot_delete(path: str, **params) -> tuple:
     except Exception as exc:
         _sysbot_offline_until = time.monotonic() + _SYSBOT_OFFLINE_COOLDOWN
         logger.warning("[SysBot] DELETE %s failed: %s", path, exc)
-        return {"success": False, "error": str(exc)}, 500
+        return {"success": False, "error": _safe_error(exc)}, 500
 
 
 # ── Normalization helpers ────────────────────────────────────────────────────
@@ -4563,7 +4627,7 @@ def get_user_order_history():
         return jsonify({"success": True, "orders": orders})
     except Exception as exc:
         logger.warning("[OrderBot] Failed to query user order history: %s", exc)
-        return jsonify({"success": False, "error": str(exc), "orders": []}), 500
+        return jsonify({"success": False, "error": _safe_error(exc), "orders": []}), 500
     finally:
         db.close()
 
@@ -4665,7 +4729,7 @@ def order_drop():
         if not is_viewer_admin and not _user_has_sub_rules(auth_user):
             return jsonify({
                 "success": False,
-                "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before dropping items.",
+                "error": "You must review and accept the Subscriber Island Rules first before dropping items.",
                 "code": "missing_sub_rules_acceptance",
                 "requires_sub_rules": True,
             }), 403
@@ -4723,8 +4787,16 @@ def order_drop():
 @app.route("/api/islands/<name>/drops/logs", methods=["GET"])
 @app.route("/api/drops/logs", methods=["GET"])
 def api_island_drops_logs(name=None):
-    """Fetch recent drop logs and failure alerts."""
-    limit = min(int(request.args.get("limit", 50)), 100)
+    """Fetch recent drop logs and failure alerts (mods only: rows carry Discord user ids)."""
+    auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"success": False, "error": "Authentication required"}), 401
+    if not (auth_user.get("is_admin") or auth_user.get("is_mod") or _is_mod(auth_user.get("roles", []))):
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+    try:
+        limit = min(max(int(request.args.get("limit", 50)), 1), 100)
+    except (TypeError, ValueError):
+        limit = 50
     status_filter = request.args.get("status")
     try:
         with connect_db() as conn:
@@ -4745,7 +4817,7 @@ def api_island_drops_logs(name=None):
             logs = [dict(r) for r in rows]
             return jsonify({"success": True, "logs": logs, "count": len(logs)})
     except Exception as exc:
-        return jsonify({"success": False, "error": str(exc)}), 500
+        return jsonify({"success": False, "error": _safe_error(exc)}), 500
 
 
 # ── Presets ──────────────────────────────────────────────────────────────────
@@ -4876,7 +4948,7 @@ def order_villagers():
             if not is_viewer_admin and not _user_has_sub_rules(auth_user):
                 return jsonify({
                     "success": False,
-                    "error": "You must review and accept the Subscriber Island Rules first (role 1077997850165772398 required) before injecting villagers.",
+                    "error": "You must review and accept the Subscriber Island Rules first before injecting villagers.",
                     "code": "missing_sub_rules_acceptance",
                     "requires_sub_rules": True,
                 }), 403
@@ -5427,7 +5499,7 @@ def api_user_favorite_islands():
         })
     except Exception as exc:
         logger.warning("Error in user favorite islands API: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -5518,7 +5590,7 @@ def api_user_characters():
         return jsonify({"ok": True, "success": True, "count": min(len(char_list), 3)})
     except Exception as exc:
         logger.warning("Error in user_characters API: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -5645,7 +5717,7 @@ def api_user_sub_rules():
         })
     except Exception as exc:
         logger.warning("Error in api_user_sub_rules: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -5715,7 +5787,7 @@ def api_user_order_rules():
         })
     except Exception as exc:
         logger.warning("Error in api_user_order_rules: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -5771,7 +5843,7 @@ def api_user_features_seen():
         return jsonify({"ok": True, "seen_features": seen_features})
     except Exception as exc:
         logger.warning("Error in api_user_features_seen: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -5860,7 +5932,7 @@ def api_update_discord_nickname():
         return jsonify({
             "ok": False,
             "success": False,
-            "error": f"Failed to update Discord nickname: {str(exc)}",
+            "error": "Failed to update Discord nickname.",
         }), 500
 
     # Update in-memory auth token cache so subsequent profile calls return the new nickname immediately
@@ -6002,7 +6074,7 @@ def api_user_passport():
         })
     except Exception as exc:
         logger.warning("Error saving user passport: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -6058,7 +6130,7 @@ def api_public_passport_get(username: str):
         return jsonify({"ok": True, "passport": passport})
     except Exception as exc:
         logger.warning("Error fetching public passport for %s: %s", clean_uname, exc)
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -6133,6 +6205,7 @@ def api_presence_heartbeat():
 
     now = int(time.time())
     auth_user = _current_auth_user()
+    session_id = _presence_session_for(session_id, auth_user)
     conn = get_db()
     try:
         _ensure_presence_table(conn)
@@ -6252,10 +6325,10 @@ def api_presence_heartbeat():
                   AND expires_at >= ?
                   AND (
                       (to_username IS NOT NULL AND LOWER(to_username) = LOWER(?))
-                      OR (to_session_id IS NOT NULL AND to_session_id = ?)
+                      OR (to_session_id IS NOT NULL AND to_session_id IN (?, ?))
                   )
                 ORDER BY created_at ASC
-            """, (now, username, session_id)).fetchall()
+            """, (now, username, session_id, _public_presence_id(session_id))).fetchall()
 
             if wave_rows:
                 wave_ids = []
@@ -6294,7 +6367,7 @@ def api_presence_heartbeat():
         })
     except Exception as exc:
         logger.warning("[Presence] Error recording heartbeat: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -6305,16 +6378,17 @@ def api_presence_leave():
     """Remove active presence session when user navigates away or closes tab."""
     data = request.get_json(silent=True) or {}
     session_id = str(data.get("sessionId") or request.headers.get("x-session-id") or request.args.get("sessionId") or "").strip()
-    if not session_id:
-        auth_user = _current_auth_user()
-        if auth_user:
-            uid = str(auth_user.get("user_id") or auth_user.get("discord_id") or "")
-            session_id = f"usr_{uid}"
+    auth_user = _current_auth_user()
+    session_id = _presence_session_for(session_id, auth_user)
+    if not session_id and auth_user:
+        uid = str(auth_user.get("user_id") or auth_user.get("discord_id") or "")
+        session_id = f"usr_{uid}" if uid else ""
 
     if session_id:
         conn = get_db()
         try:
-            conn.execute("DELETE FROM user_online_presence WHERE session_id = ? OR user_id = ?", (session_id, session_id.replace("usr_", "")))
+            # Only ever remove the exact session; never match by user id from client input
+            conn.execute("DELETE FROM user_online_presence WHERE session_id = ?", (session_id,))
             conn.commit()
         except Exception:
             pass
@@ -6353,11 +6427,16 @@ def api_presence_online():
             LIMIT 50
         """, (now - 60,)).fetchall()
 
+        viewer_session = _presence_session_for(
+            str(request.headers.get("x-session-id") or request.args.get("sessionId") or "").strip(),
+            _current_auth_user(),
+        )
         residents = []
         for r in rows:
             minutes_ago = max(0, int((now - (r["created_at"] or now)) / 60))
             residents.append({
-                "id": r["session_id"],
+                "id": _public_presence_id(r["session_id"]),
+                "isSelf": bool(viewer_session) and r["session_id"] == viewer_session,
                 "username": r["username"],
                 "displayName": r["display_name"] or r["username"],
                 "avatarUrl": r["avatar_url"] or "https://acnhcdn.com/latest/NpcIcon/der00.png",
@@ -6391,7 +6470,7 @@ def api_presence_online():
         })
     except Exception as exc:
         logger.warning("[Presence] Error fetching online presence: %s", exc)
-        return jsonify({"ok": False, "error": str(exc), "residents": []}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc), "residents": []}), 500
     finally:
         conn.close()
 
@@ -6466,7 +6545,7 @@ def api_presence_send_wave():
         })
     except Exception as exc:
         logger.warning("[Presence] Error storing wave: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -6477,7 +6556,10 @@ def api_presence_poll_waves():
     """Poll for pending waves directed to this user/session."""
     auth_user = _current_auth_user()
     now = int(time.time())
-    session_id = str(request.headers.get("x-session-id") or request.args.get("sessionId") or "").strip()
+    session_id = _presence_session_for(
+        str(request.headers.get("x-session-id") or request.args.get("sessionId") or "").strip(),
+        auth_user,
+    )
     username = ""
     if auth_user:
         username = str(auth_user.get("username") or auth_user.get("discord_name") or "").strip()
@@ -6494,10 +6576,10 @@ def api_presence_poll_waves():
               AND expires_at >= ?
               AND (
                   (to_username IS NOT NULL AND to_username != '' AND LOWER(to_username) = LOWER(?))
-                  OR (to_session_id IS NOT NULL AND to_session_id != '' AND to_session_id = ?)
+                  OR (to_session_id IS NOT NULL AND to_session_id != '' AND to_session_id IN (?, ?))
               )
             ORDER BY created_at ASC
-        """, (now, username, session_id)).fetchall()
+        """, (now, username, session_id, _public_presence_id(session_id))).fetchall()
 
         waves = []
         if wave_rows:
@@ -6732,9 +6814,10 @@ def api_get_island_map(island_name: str):
         return jsonify({
             "ok": False,
             "error": "Island name is required (e.g. /api/islands/<island_name>/map or ?island=<name>).",
-            "total_islands": len(Config.ALL_ISLAND_PORT_ORDER),
-            "available_islands": Config.ALL_ISLAND_PORT_ORDER,
         }), 400
+    denied = _island_view_denied(resolved_island)
+    if denied:
+        return denied
 
     norm = resolved_island.strip().lower()
     cache_key = f"island_map_unified:{norm}"
@@ -6767,7 +6850,7 @@ def api_get_island_map(island_name: str):
             "ok": False,
             "island": resolved_island,
             "status": "error",
-            "error": f"Failed to retrieve map data from HttpApiServer and .nhl: {exc}",
+            "error": "Failed to retrieve map data.",
             "items": [],
             "sectors": {},
             "sector_summary": {},
@@ -6788,6 +6871,8 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
 
     # When no island is specified or ?island=all, return all 48 islands
     if not resolved_island or str(resolved_island).strip().lower() in ("all", "*"):
+        viewer = _current_auth_user()
+        viewer_is_mod = bool(viewer and (viewer.get("is_admin") or viewer.get("is_mod") or _is_mod(viewer.get("roles", []))))
         base_port = int(getattr(Config, "SYSBOT_BASE_PORT", 8201) or 8201)
         telemetry = {}
         try:
@@ -6803,11 +6888,10 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
             health = telemetry.get(name.lower(), {})
             all_islands_data.append({
                 "name": name,
-                "port": port,
                 "category": category,
                 "is_online": health.get("is_online", False),
                 "visitors_count": health.get("visitors_count", 0),
-                "sysbot_url": Config.get_island_sysbot_url(name),
+                **({"port": port, "sysbot_url": Config.get_island_sysbot_url(name)} if viewer_is_mod else {}),
                 "map_data_url": f"/api/islands/{name}/map/data",
                 "map_url": f"/api/islands/{name}/map",
             })
@@ -6819,6 +6903,9 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
             "islands": all_islands_data,
         })
 
+    denied = _island_view_denied(resolved_island)
+    if denied:
+        return denied
     force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
     fmt = request.args.get("format", "").lower()
     norm = resolved_island.strip().lower()
@@ -6856,7 +6943,7 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
         map_cache.set(cache_key, compact, ttl=30.0)
         return jsonify(compact)
     except Exception as exc:
-        return jsonify({"success": False, "error": str(exc), "island_name": resolved_island}), 500
+        return jsonify({"success": False, "error": _safe_error(exc), "island_name": resolved_island}), 500
 
 
 @app.route("/api/islands/<island_name>/map/search", methods=["GET"])
@@ -6865,6 +6952,9 @@ def api_search_island_map(island_name: str):
     Searches items or categories on an island map to return exact coordinates and sectors.
     """
     from utils.nhl_map_parser import search_island_items
+    denied = _island_view_denied(island_name)
+    if denied:
+        return denied
     q = request.args.get("q", "").strip()
     result = search_island_items(island_name, q)
     return jsonify({"ok": True, **result})
@@ -6963,7 +7053,7 @@ def api_search_island_map(island_name: str):
 #     except PermissionError:
 #         return jsonify({"ok": False, "error": "Permission denied"}), 403
 #     except OSError as e:
-#         return jsonify({"ok": False, "error": str(e)}), 500
+#         return jsonify({"ok": False, "error": _safe_error(e)}), 500
 
 
 @app.route("/api/islands/maps", methods=["GET"])
@@ -7102,7 +7192,7 @@ def api_user_collection():
         })
     except Exception as exc:
         logger.warning("Error in user collection API: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -7192,7 +7282,7 @@ def api_user_wishlist():
         })
     except Exception as exc:
         logger.warning("Error in user wishlist API: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -7255,7 +7345,7 @@ def api_user_pockets():
         })
     except Exception as exc:
         logger.warning("Error in user pockets API: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -7344,7 +7434,7 @@ def api_user_critters():
         })
     except Exception as exc:
         logger.warning("Error in user critters API: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -7419,7 +7509,7 @@ def api_user_notifications():
         })
     except Exception as exc:
         logger.warning("Error in user notifications API: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -7443,7 +7533,7 @@ def api_user_notifications_read():
         return jsonify({"ok": True, "success": True})
     except Exception as exc:
         logger.warning("Error marking notifications read: %s", exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
     finally:
         conn.close()
 
@@ -7559,6 +7649,9 @@ def api_island_items(island_name: Optional[str] = None):
     """
     from utils import catalog_map_service
     isl = (island_name or request.args.get("island") or request.args.get("name") or "").strip()
+    denied = _island_view_denied(isl)
+    if denied:
+        return denied
     q = request.args.get("query") or request.args.get("q") or ""
     acre = request.args.get("acre") or request.args.get("sector")
     cat = request.args.get("category") or request.args.get("cat")
@@ -7600,6 +7693,9 @@ def api_island_map_image(island_name: Optional[str] = None):
     """
     from utils import catalog_map_service
     isl = (island_name or request.args.get("island") or request.args.get("name") or "Hiraya").strip()
+    denied = _island_view_denied(isl)
+    if denied:
+        return denied
     try:
         scale_val = float(request.args.get("scale", 1.0))
     except (ValueError, TypeError):
@@ -7620,11 +7716,11 @@ def api_island_map_image(island_name: Optional[str] = None):
             format_type=fmt,
         )
         resp = send_file(io.BytesIO(img_bytes), mimetype=mimetype)
-        resp.headers["Cache-Control"] = "public, max-age=120"
+        resp.headers["Cache-Control"] = "private, max-age=120" if island_access.is_member_island(None, None, isl) else "public, max-age=120"
         return resp
     except Exception as exc:
         logging.getLogger("flask_api").error(f"Failed to render island map image: {exc}")
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
 
 
 @app.route("/api/players/live", methods=["GET"])
