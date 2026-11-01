@@ -1224,25 +1224,30 @@ def extract_image_from_html(html_content):
 
 
 def process_post_attributes(post_id, attrs):
-    """Process Patreon post attributes"""
+    """Process Patreon post attributes.
+
+    Posts are fetched with the creator's token, which can read patron-only posts. Those are served as
+    teasers only (title, date, link to Patreon): no body, embed or images, since this route is public.
+    """
+    is_public = bool(attrs.get("is_public"))
     image_url = None
 
-    if attrs.get("embed_data"):
+    if is_public and attrs.get("embed_data"):
         embed = attrs["embed_data"]
         if "image" in embed and "url" in embed["image"]:
             image_url = embed["image"]["url"]
         elif "thumbnail_url" in embed:
             image_url = embed["thumbnail_url"]
 
-    if not image_url:
+    if is_public and not image_url:
         image_url = extract_image_from_html(attrs.get("content"))
 
     return {
         "id": post_id,
         "attributes": {
-            "embed_data": attrs.get("embed_data"),
+            "embed_data": attrs.get("embed_data") if is_public else None,
             "title": attrs["title"],
-            "content": attrs["content"],
+            "content": attrs["content"] if is_public else "",
             "published_at": attrs["published_at"],
             "url": attrs["url"],
             "is_public": attrs["is_public"],
