@@ -200,6 +200,8 @@ class Config:
     TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "")
     TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET", "")
     TWITCH_BROADCASTER_ID = os.getenv("TWITCH_BROADCASTER_ID", "")
+    # Channel whose live status the website shows (Helix "Get Streams" by login name).
+    TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "chopaeng").strip().lower()
     TWITCH_REDIRECT_URI = os.getenv("TWITCH_REDIRECT_URI", "")
 
     PATREON_CLIENT_ID = os.getenv("PATREON_CLIENT_ID", "")

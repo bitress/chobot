@@ -3547,6 +3547,17 @@ def get_single_post(post_id):
         return jsonify({"error": "Server error"}), 500
 
 
+@app.route("/api/stream/status", methods=["GET"])
+def api_stream_status():
+    """Whether the ChoPaeng Twitch channel is live right now (shared ~60s cache; never errors)."""
+    from utils.twitch_api import get_stream_status
+
+    response = jsonify({"ok": True, **get_stream_status()})
+    # Let browsers and the edge reuse the answer briefly; it only changes when a stream starts or ends.
+    response.headers["Cache-Control"] = "public, max-age=30"
+    return response
+
+
 # --- STATUS ROUTE ---
 @app.route('/status')
 def status():
