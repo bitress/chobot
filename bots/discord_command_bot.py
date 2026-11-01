@@ -2525,7 +2525,7 @@ class DiscordCommandCog(commands.Cog):
         if description:
             details.append(description[:180])
         
-        links = [f"\n[View Island]({island_url})"]
+        links = [f"\n[View Island]({island_url})", "[All Treasure Island Codes](https://www.chopaeng.com/islands)"]
         if map_url:
             links.append(f"[View Map]({map_url})")
         details.append(" • ".join(links))

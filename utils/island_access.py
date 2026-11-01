@@ -1,8 +1,8 @@
 """
 Unified Island Access & Entitlement Engine.
 
-Replaces legacy Discord channel overwrite polling with the ChoPaeng Unified Access Matrix
-across Patreon, YouTube, Twitch, and native ChoPaeng memberships.
+Island access mirrors each island's Discord channel role requirements, which the bot syncs
+into islands.required_roles (see DiscordCommandBot.fetch_islands).
 """
 
 from __future__ import annotations
@@ -26,36 +26,6 @@ VIEW_CHANNEL_PERM = 1 << 10
 ROLE_NAME_CACHE_TTL = 3600
 CHANNEL_OVERWRITE_CACHE_TTL = 300
 GUILD_CHANNELS_CACHE_TTL = 300
-
-# ============================================================================
-# CANONICAL UNIFIED SUB ISLAND ACCESS MATRIX
-# Patreon: ChoSoup, ChoColate, ChoFries
-# YouTube: y ChoSoup, y ChoColate, y ChoTato
-# Twitch:  ChoTato Club
-# ============================================================================
-
-SUB_ISLAND_ACCESS_MATRIX: Dict[str, List[str]] = {
-    "Hiraya": ["ChoSoup", "y ChoSoup", "ChoColate", "ChoFries", "y ChoTato", "Server Booster"],
-    "Tagumpay": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
-    "Bahaghari": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoTato"],
-    "Alapaap": ["ChoSoup", "y ChoSoup", "y ChoColate", "Server Booster"],
-    "Bituin": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Lakan": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
-    "Galak": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Aruga": ["ChoSoup", "y ChoSoup", "y ChoColate"],
-    "Likha": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Dalisay": ["ChoSoup", "y ChoSoup", "y ChoColate"],
-    "Marahuyo": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Diwa": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
-    "Bonita": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Gabay": ["ChoSoup", "y ChoSoup", "y ChoColate"],
-    "Dakila": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoColate"],
-    "Kalangitan": ["ChoSoup", "y ChoSoup"],
-    "Malaya": ["ChoSoup", "y ChoSoup"],
-    "Pangarap": ["ChoSoup", "y ChoSoup"],
-    "Giliw": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoColate"],
-    "Adhika": ["ChoSoup", "y ChoSoup"],
-}
 
 # Bidirectional mapping between Discord Snowflake IDs and canonical Tier Names
 ROLE_ID_TO_TIER_NAME: Dict[str, str] = {
@@ -93,11 +63,6 @@ def canonical_island_key(value: str | None) -> str:
     return clean_text(raw)
 
 
-_CANONICAL_SUB_ISLANDS: Dict[str, str] = {
-    canonical_island_key(k): k for k in SUB_ISLAND_ACCESS_MATRIX
-}
-
-
 def normalize_roles(roles: Union[List[Any], Set[Any], Tuple[Any, ...]]) -> Set[str]:
     """Convert a mixture of role IDs and tier names to canonical tier names & original IDs."""
     result = set()
@@ -126,7 +91,8 @@ class IslandAccessInfo:
 
 def clear_access_caches() -> None:
     """Clear access caches."""
-    pass
+    global _db_roles_cache
+    _db_roles_cache = None
 
 
 def is_mod(roles: list[str] | set[str] | tuple[str, ...], user: dict[str, Any] | None = None) -> bool:
@@ -151,7 +117,7 @@ def is_member_island(cat: str | None, island_type: str | None = None, island_nam
     """Return whether an island should be gated behind member roles/tiers."""
     if island_name:
         clean = canonical_island_key(island_name)
-        if clean in _CANONICAL_SUB_ISLANDS:
+        if clean in {canonical_island_key(n) for n in (Config.SUB_ISLANDS or [])}:
             return True
     return (cat or "").strip().lower() == "member" or (island_type or "").strip().upper() == "VIP"
 
@@ -213,6 +179,41 @@ def excluded_profile_role_ids() -> set[str]:
     return {role_id for role_id in excluded if role_id and role_id not in {"0", "None"}}
 
 
+_db_roles_cache: tuple[dict[str, list[str]], float] | None = None
+DB_ROLES_CACHE_TTL = 60
+
+
+def discord_synced_island_roles(island_name: str | None) -> list[str]:
+    """Role IDs that can view the island's Discord channel, as last synced by the bot.
+
+    The bot's fetch_islands writes the channel's view_channel role overwrites to
+    islands.required_roles, so this mirrors what members can see in Discord.
+    Returns [] when the island has not been synced.
+    """
+    global _db_roles_cache
+    key = canonical_island_key(island_name)
+    if not key:
+        return []
+
+    now = time.monotonic()
+    if _db_roles_cache is None or now - _db_roles_cache[1] > DB_ROLES_CACHE_TTL:
+        by_island: dict[str, list[str]] = {}
+        try:
+            from utils.database import connect_db
+            with connect_db() as conn:
+                for row in conn.execute("SELECT name, required_roles FROM islands").fetchall():
+                    try:
+                        roles = json.loads(row.get("required_roles") or "[]")
+                    except (TypeError, ValueError):
+                        roles = []
+                    by_island[canonical_island_key(row.get("name"))] = [str(r) for r in roles if str(r)]
+        except Exception as exc:
+            logger.warning("Could not load synced island roles: %s", exc)
+            return _db_roles_cache[0].get(key, []) if _db_roles_cache else []
+        _db_roles_cache = (by_island, now)
+    return _db_roles_cache[0].get(key, [])
+
+
 def effective_island_required_roles(
     cat: str | None,
     required_roles: list[str] | None = None,
@@ -220,28 +221,19 @@ def effective_island_required_roles(
     island_name: str | None = None,
 ) -> list[str]:
     """
-    Return explicit island roles/tiers from the Unified Sub Island Matrix.
-    Always includes canonical tier names ('ChoSoup', etc.) and corresponding role IDs.
-    """
-    # 1. Match from SUB_ISLAND_ACCESS_MATRIX if island_name is provided
-    if island_name:
-        clean = canonical_island_key(island_name)
-        if clean in _CANONICAL_SUB_ISLANDS:
-            canonical_name = _CANONICAL_SUB_ISLANDS[clean]
-            allowed_tiers = SUB_ISLAND_ACCESS_MATRIX[canonical_name]
-            out = list(allowed_tiers)
-            for t in allowed_tiers:
-                if t in TIER_NAME_TO_ROLE_ID:
-                    out.append(TIER_NAME_TO_ROLE_ID[t])
-            return list(dict.fromkeys(out))
+    Return the roles that unlock an island.
 
-    # 2. Expand existing required_roles if stored in database
-    if required_roles:
-        expanded = list(normalize_roles(required_roles))
+    Priority: the Discord channel's role requirements (synced to the database by the bot),
+    then, for member/VIP islands not synced yet, all configured subscription tiers.
+    """
+    # 1. Explicit roles passed in, or the Discord-synced roles stored for this island
+    synced = list(required_roles or []) or discord_synced_island_roles(island_name)
+    if synced:
+        expanded = list(normalize_roles(synced))
         if expanded:
             return expanded
 
-    # 3. For member/VIP islands, return all configured subscription tiers
+    # 2. For member/VIP islands, return all configured subscription tiers
     if is_member_island(cat, island_type, island_name):
         return configured_subscription_role_ids()
 
@@ -280,25 +272,22 @@ def has_island_access(
         if "roles" in user and user["roles"]:
             user_norm.update(normalize_roles(user["roles"]))
 
-    # 1. Check against SUB_ISLAND_ACCESS_MATRIX if island_name is known
+    # 1. Roles passed in, else the Discord channel's roles synced by the bot
+    needed = list(required_roles or [])
     if island_name:
-        clean = canonical_island_key(island_name)
-        if clean in _CANONICAL_SUB_ISLANDS:
-            canonical_name = _CANONICAL_SUB_ISLANDS[clean]
-            allowed_tiers = SUB_ISLAND_ACCESS_MATRIX[canonical_name]
-            allowed_norm = normalize_roles(allowed_tiers)
-            return bool(allowed_norm & user_norm)
-        elif not is_member_island(None, None, island_name):
-            # It's not a Sub Island and not marked as a member island -> public/free
-            return True
+        if not needed:
+            needed = discord_synced_island_roles(island_name)
+        if not needed:
+            if not is_member_island(None, None, island_name):
+                # Not a Sub Island and not marked as a member island -> public/free
+                return True
+            # Sub island Discord hasn't synced yet: any subscription tier unlocks it
+            needed = configured_subscription_role_ids()
 
-    # 2. Check against required_roles if provided
-    if required_roles:
-        req_norm = normalize_roles(required_roles)
-        return bool(req_norm & user_norm)
+    if needed:
+        return bool(normalize_roles(needed) & user_norm)
 
-    # 3. If required_roles is empty and island_name is not specified:
-    # Public/free islands have no required roles, so access is open to all.
+    # 2. No requirements known: public/free islands are open to all.
     return True
 
 
@@ -312,7 +301,7 @@ def resolved_island_required_roles(
     force_refresh: bool = False,
 ) -> IslandAccessInfo:
     """
-    Resolve island access roles using the Unified Sub Island Matrix.
+    Resolve island access roles from the Discord-synced channel requirements.
     Returns immediately without failing Discord network calls.
     """
     effective_roles = effective_island_required_roles(
@@ -321,10 +310,11 @@ def resolved_island_required_roles(
         island_type=island_type,
         island_name=island_name,
     )
+    has_synced = bool(list(required_roles or []) or discord_synced_island_roles(island_name))
     return IslandAccessInfo(
         required_roles=effective_roles,
         channel_id=channel_id,
-        access_source="unified_matrix",
+        access_source="discord_channel" if has_synced else "not_synced",
     )
 
 
@@ -358,9 +348,11 @@ def role_payload(role_id: str, role_names: dict[str, str] | None = None) -> dict
 
 
 def sync_island_role_cache(conn, islands: list[dict], *, force_refresh: bool = True) -> dict:
-    """Refresh islands.required_roles in SQLite from the Unified Access Matrix."""
+    """Refresh islands.required_roles in SQLite from Discord (read-only; the bot is the writer)."""
+    clear_access_caches()
     synced = 0
     skipped = 0
+    errors: list[dict] = []
     items: list[dict] = []
 
     for island in islands:
@@ -379,19 +371,18 @@ def sync_island_role_cache(conn, islands: list[dict], *, force_refresh: bool = T
             force_refresh=force_refresh,
         )
 
-        try:
-            conn.execute(
-                "UPDATE islands SET required_roles = ?, updated_at = ? WHERE id = ? OR name = ?",
-                (
-                    json.dumps(info.required_roles),
-                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    island_id,
-                    island_name,
-                ),
-            )
+        # The bot's fetch_islands is the only writer of islands.required_roles (from the
+        # Discord channel overwrites). The fallback is never persisted, so it can't
+        # masquerade as synced data.
+        if info.access_source == "discord_channel":
             synced += 1
-        except Exception as exc:
-            logger.warning("Failed to update island %s in cache: %s", island_id, exc)
+        else:
+            skipped += 1
+            errors.append({
+                "id": island_id,
+                "name": island_name,
+                "error": "Not synced from Discord yet; using any-subscription fallback",
+            })
 
         items.append({
             "id": island_id,
@@ -405,7 +396,7 @@ def sync_island_role_cache(conn, islands: list[dict], *, force_refresh: bool = T
     return {
         "synced": synced,
         "skipped": skipped,
-        "errors": [],
+        "errors": errors,
         "items": items,
     }
 

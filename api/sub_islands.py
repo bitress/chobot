@@ -1,7 +1,7 @@
 """
 Sub Islands & Multi-Provider OAuth Module
 Handles:
-- Sub Island Tier Access Matrix (ChoSoup, y ChoSoup, ChoTato Club, ChoColate, ChoFries, y ChoColate, y ChoTato)
+- Sub Island access, driven by Discord channel role requirements
 - Island Telemetry, Plots, Drop Status, and Remote Dispatch
 - Multi-Provider OAuth: Twitch, Patreon, YouTube
 - Account Linking & Unlinking
@@ -41,38 +41,8 @@ logger = logging.getLogger("SubIslands")
 
 sub_islands_bp = Blueprint("sub_islands", __name__)
 
-# ============================================================================
-# SUB ISLAND ACCESS MATRIX
-# y - youtube
-# ChoTato Club - twitch
-# ChoSoup, ChoColate, ChoFries - patreon
-# ============================================================================
-
-SUB_ISLAND_ACCESS_MATRIX: Dict[str, List[str]] = {
-    "Hiraya": ["ChoSoup", "y ChoSoup", "ChoColate", "ChoFries", "y ChoTato", "Server Booster"],
-    "Tagumpay": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
-    "Bahaghari": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoTato"],
-    "Alapaap": ["ChoSoup", "y ChoSoup", "y ChoColate", "Server Booster"],
-    "Bituin": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Lakan": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
-    "Galak": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Aruga": ["ChoSoup", "y ChoSoup", "y ChoColate"],
-    "Likha": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Dalisay": ["ChoSoup", "y ChoSoup", "y ChoColate"],
-    "Marahuyo": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Diwa": ["ChoSoup", "y ChoSoup", "ChoTato Club", "y ChoColate"],
-    "Bonita": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries"],
-    "Gabay": ["ChoSoup", "y ChoSoup", "y ChoColate"],
-    "Dakila": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoColate"],
-    "Kalangitan": ["ChoSoup", "y ChoSoup"],
-    "Malaya": ["ChoSoup", "y ChoSoup"],
-    "Pangarap": ["ChoSoup", "y ChoSoup"],
-    "Giliw": ["ChoSoup", "y ChoSoup", "ChoTato Club", "ChoColate", "ChoFries", "y ChoColate"],
-    "Adhika": ["ChoSoup", "y ChoSoup"],
-}
-
-_CANONICAL_SUB_ISLANDS = {k.lower(): k for k in SUB_ISLAND_ACCESS_MATRIX}
-
+# Which tiers unlock which island comes from each island's Discord channel role
+# requirements (synced by the bot into islands.required_roles); see utils/island_access.py.
 
 ROLE_ID_TO_TIER_NAME: Dict[str, str] = {
     str(getattr(Config, "ROLE_CHOSOUP", 1031974843656192080)): "ChoSoup",
@@ -105,7 +75,8 @@ def _clean_island_name(island_name: Optional[str]) -> str:
     if not island_name:
         return ""
     cleaned = re.sub(r"^sub\s+island\s+", "", island_name.strip(), flags=re.IGNORECASE).strip()
-    return _CANONICAL_SUB_ISLANDS.get(cleaned.lower(), cleaned.title())
+    canonical = {n.lower(): n for n in (Config.SUB_ISLANDS or [])}
+    return canonical.get(cleaned.lower(), cleaned.title())
 
 
 def get_user_sub_tier(user: Optional[Dict[str, Any]]) -> Optional[int]:
@@ -193,7 +164,13 @@ def _get_auth_from_request() -> Optional[Dict[str, Any]]:
 def get_sub_island_telemetry(name: str):
     clean = _clean_island_name(name)
     state = _get_island_state(clean)
-    allowed = SUB_ISLAND_ACCESS_MATRIX.get(clean, [])
+    from utils.island_access import effective_island_required_roles, ROLE_ID_TO_TIER_NAME
+    # Discord channel requirements first (matrix fallback), shown as tier names where known
+    allowed = list(dict.fromkeys(
+        ROLE_ID_TO_TIER_NAME.get(r, r)
+        for r in effective_island_required_roles("member", None, "VIP", clean)
+        if r in ROLE_ID_TO_TIER_NAME.values() or r in ROLE_ID_TO_TIER_NAME
+    ))
     return jsonify({
         "island": clean,
         "gate_status": state["gate_status"],
