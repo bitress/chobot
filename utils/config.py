@@ -210,7 +210,8 @@ class Config:
 
     YOUTUBE_CLIENT_ID = os.getenv("YOUTUBE_CLIENT_ID", "")
     YOUTUBE_CLIENT_SECRET = os.getenv("YOUTUBE_CLIENT_SECRET", "")
-    YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "")
+    # ChoPaeng TV; also used for the website's YouTube live status.
+    YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "UCNKiq8m-qlXcev9fl0rHNBg").strip()
     YOUTUBE_REDIRECT_URI = os.getenv("YOUTUBE_REDIRECT_URI", "")
 
     # 20 Sub Islands (indices 0..19 -> ports 8201..8220)

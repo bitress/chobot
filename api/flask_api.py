@@ -3549,10 +3549,23 @@ def get_single_post(post_id):
 
 @app.route("/api/stream/status", methods=["GET"])
 def api_stream_status():
-    """Whether the ChoPaeng Twitch channel is live right now (shared ~60s cache; never errors)."""
-    from utils.twitch_api import get_stream_status
+    """Whether ChoPaeng is live on Twitch and/or YouTube right now (shared short caches; never errors).
 
-    response = jsonify({"ok": True, **get_stream_status()})
+    "primary" is the platform the website should show: Twitch wins when both are live.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from utils.twitch_api import get_stream_status
+    from utils.youtube_live import get_live_status
+
+    # Both lookups are cached, but on a cold cache each is a network call; run them side by side.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        twitch_future = pool.submit(get_stream_status)
+        youtube_future = pool.submit(get_live_status)
+        twitch, youtube = twitch_future.result(), youtube_future.result()
+
+    primary = "twitch" if twitch.get("live") else "youtube" if youtube.get("live") else None
+    response = jsonify({"ok": True, "live": primary is not None, "primary": primary, "twitch": twitch, "youtube": youtube})
     # Let browsers and the edge reuse the answer briefly; it only changes when a stream starts or ends.
     response.headers["Cache-Control"] = "public, max-age=30"
     return response

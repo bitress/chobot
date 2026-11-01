@@ -232,7 +232,8 @@ POPULAR_DROP_PRESETS: List[Tuple[str, str, str, str]] = [
     ("Royal Crown x40", "12M Bells max inventory drop", ", ".join(["Royal Crown"] * 40), "👑"),
     ("Gold Nuggets x30", "Full stack of 30 gold crafting nuggets", "Gold nugget 30", "🪙"),
     ("Nook Miles Tickets x30", "Full stack of 30 travel tickets", "Nook Miles Ticket 30", "🎫"),
-    ("Max Bells (3.96M)", "40 bags of 99,000 Bells", ", ".join(["1E33"] * 40), "💰"),
+    # 08A4 is the "99,000 Bells" bag; 1E33 ("Bell bag") can't be picked up when dropped.
+    ("Max Bells (3.96M)", "40 bags of 99,000 Bells", ", ".join(["08A4"] * 40), "💰"),
     ("Fish Bait x30", "Full stack of 30 fishing bait", "Fish bait 30", "🐟"),
     ("Golden Tools Set", "All 6 tools (Axe, Shovel, Net, Rod, Can, Slingshot)", "Golden axe, Golden shovel, Golden net, Golden rod, Golden watering can, Golden slingshot", "🛠️"),
     ("Wood Stacks (30 each)", "Normal Wood, Hardwood, Softwood (90 total)", "Wood 30, Hardwood 30, Softwood 30", "🪵"),

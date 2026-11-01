@@ -864,6 +864,26 @@ def resolve_villager_code(villager_query: str) -> str:
     return f"villager:{query.lower()}"
 
 
+# Items that look right in the catalog but can't be picked up when dropped, mapped to the item players
+# actually want. "Bell bag" (1E33) is a decorative item: dropped, it shows a bag but has no name and
+# can't be picked up. The real money bags are the "1,000 Bells"–"99,000 Bells" items 0842–08A4
+# (IDs from NHSE's item list).
+DROP_ITEM_ALIASES: dict[str, str] = {
+    "1E33": "08A4",  # Bell bag -> 99,000 Bells
+}
+
+
+def _drop_safe_hex(hex_code: str) -> str:
+    """Swap a known undroppable item for its pick-up-able equivalent; anything else is returned unchanged."""
+    code = (hex_code or "").strip().upper()
+    if re.fullmatch(r"[0-9A-F]{4}", code):
+        return DROP_ITEM_ALIASES.get(code, hex_code)
+    if re.fullmatch(r"[0-9A-F]{16}", code) and code[-4:] in DROP_ITEM_ALIASES:
+        # Full hex is count/flags + item ID; the bells items use neither, so the plain ID is correct.
+        return DROP_ITEM_ALIASES[code[-4:]]
+    return hex_code
+
+
 def resolve_drop_items(
     raw_items: Union[str, List[str]],
     max_slots: int = 40,
@@ -901,7 +921,7 @@ def resolve_drop_items(
 
         # Check if token is already pure hex
         if re.fullmatch(r"[0-9a-fA-F]{4}|[0-9a-fA-F]{16}", entry):
-            result_hexes.append(entry.upper())
+            result_hexes.append(_drop_safe_hex(entry.upper()))
             continue
 
         # Extract name and quantity
@@ -931,6 +951,7 @@ def resolve_drop_items(
                 hex_code = clean_name.upper()
             else:
                 hex_code = name
+        hex_code = _drop_safe_hex(hex_code)
 
         for _ in range(qty):
             result_hexes.append(hex_code)
