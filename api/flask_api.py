@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import secrets as _secrets
 import logging
+import queue
 import threading
 import urllib.parse
 import urllib.error
@@ -25,7 +26,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 import requests
-from flask import Flask, jsonify, request, session, redirect, url_for, send_file
+from flask import Flask, Response, jsonify, request, session, redirect, url_for, send_file
 from flask_cors import CORS
 from thefuzz import process, fuzz
 
@@ -37,6 +38,7 @@ from utils import island_access
 from utils.database import connect_db
 from utils.discord_http import request as discord_request
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
+from utils.presence_hub import hub as presence_hub, format_sse
 from utils.nickname_format import nickname_warning_for, is_valid_acnh_nickname
 from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token, update_auth_user
 from utils.discord_membership import (
@@ -6179,7 +6181,7 @@ def api_public_passport_get(username: str):
 # REAL-TIME ONLINE PRESENCE & COMMUNITY RADAR ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PRESENCE_IP_COLUMN_READY = False
+_PRESENCE_COLUMNS_READY = False
 
 
 def _ensure_presence_table(conn):
@@ -6203,18 +6205,26 @@ def _ensure_presence_table(conn):
             is_guest            INTEGER DEFAULT 0,
             ip_hash             VARCHAR(64),
             ip_address          VARCHAR(64),
+            viewing_item        VARCHAR(160),
+            ordering_items      TEXT,
             last_heartbeat      INTEGER NOT NULL,
             created_at          INTEGER NOT NULL
         )
     """)
-    global _PRESENCE_IP_COLUMN_READY
-    if not _PRESENCE_IP_COLUMN_READY:
-        try:
-            conn.execute("ALTER TABLE user_online_presence ADD COLUMN ip_address VARCHAR(64)")
-            conn.commit()
-        except Exception:
-            pass  # column already exists
-        _PRESENCE_IP_COLUMN_READY = True
+    global _PRESENCE_COLUMNS_READY
+    if not _PRESENCE_COLUMNS_READY:
+        # The table may predate these columns (or be created by the dashboard without them).
+        for column, ddl in (
+            ("ip_address", "VARCHAR(64)"),
+            ("viewing_item", "VARCHAR(160)"),
+            ("ordering_items", "TEXT"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE user_online_presence ADD COLUMN {column} {ddl}")
+                conn.commit()
+            except Exception:
+                pass  # column already exists
+        _PRESENCE_COLUMNS_READY = True
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS ix_presence_last_heartbeat ON user_online_presence (last_heartbeat)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_presence_user_id ON user_online_presence (user_id)")
@@ -6245,6 +6255,227 @@ def _ensure_waves_table(conn):
         pass
 
 
+PRESENCE_ACTIVE_SECONDS = 75   # a session counts as online while its last beat is this recent
+PRESENCE_ROW_SECONDS = 90      # rows older than this are deleted
+PRESENCE_ROSTER_LIMIT = 50
+PRESENCE_CACHE_SECONDS = 2.0
+PRESENCE_PRUNE_INTERVAL = 30
+PRESENCE_STREAM_MAX_SECONDS = 600
+PRESENCE_STREAMS_PER_SESSION = 3
+PRESENCE_ROLE_RANK = {"admin": 1, "mod": 2, "member": 3}
+_PRESENCE_UTC_OFFSET = 8 * 3600  # "today" follows Philippine time, where the community lives
+
+_presence_cache_lock = threading.Lock()
+_presence_cache: dict = {"at": 0.0, "rows": None}
+_presence_last_prune = 0.0
+
+
+def _invalidate_presence_cache() -> None:
+    with _presence_cache_lock:
+        _presence_cache["rows"] = None
+
+
+def _ensure_visits_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS site_visit_daily (
+            day    VARCHAR(10) PRIMARY KEY,
+            visits INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+
+def _presence_day(now: int) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(now + _PRESENCE_UTC_OFFSET))
+
+
+def _record_site_visit(conn, now: int) -> None:
+    """Count one visit when a session first appears (not on every route change)."""
+    _ensure_visits_table(conn)
+    conn.execute(
+        "INSERT INTO site_visit_daily (day, visits) VALUES (?, 1) "
+        "ON CONFLICT(day) DO UPDATE SET visits = visits + 1",
+        (_presence_day(now),),
+    )
+
+
+def _site_traffic(conn, now: int) -> dict:
+    _ensure_visits_table(conn)
+    week_start = _presence_day(now - 6 * 86400)
+    row = conn.execute(
+        "SELECT COALESCE(SUM(visits), 0) AS total, "
+        "COALESCE(SUM(CASE WHEN day >= ? THEN visits ELSE 0 END), 0) AS week, "
+        "COALESCE(SUM(CASE WHEN day = ? THEN visits ELSE 0 END), 0) AS today "
+        "FROM site_visit_daily",
+        (week_start, _presence_day(now)),
+    ).fetchone()
+    return {
+        "allTimeVisits": int(row["total"] or 0),
+        "visitsThisWeek": int(row["week"] or 0),
+        "visitsToday": int(row["today"] or 0),
+    }
+
+
+def _prune_presence(conn, now: int, *, force: bool = False) -> None:
+    """Delete expired sessions, at most once per PRESENCE_PRUNE_INTERVAL unless forced."""
+    global _presence_last_prune
+    if not force and now - _presence_last_prune < PRESENCE_PRUNE_INTERVAL:
+        return
+    _presence_last_prune = now
+    cur = conn.execute("DELETE FROM user_online_presence WHERE last_heartbeat < ?", (now - PRESENCE_ROW_SECONDS,))
+    conn.commit()
+    if getattr(cur, "rowcount", 0) > 0:
+        _invalidate_presence_cache()
+        presence_hub.broadcast_radar(_build_radar_payload)
+
+
+def _presence_people(conn, now: int) -> list[dict]:
+    """Active presence rows collapsed to one entry per person, roster-ordered.
+
+    Signed-in users appear once however many tabs or devices they have open. Cached briefly
+    because every SSE listener may ask for the same snapshot after a change.
+    """
+    with _presence_cache_lock:
+        rows = _presence_cache["rows"]
+        if rows is not None and time.time() - _presence_cache["at"] < PRESENCE_CACHE_SECONDS:
+            return rows
+
+    raw = conn.execute(
+        "SELECT * FROM user_online_presence WHERE last_heartbeat >= ? ORDER BY last_heartbeat DESC LIMIT 1000",
+        (now - PRESENCE_ACTIVE_SECONDS,),
+    ).fetchall()
+    people: dict[str, dict] = {}
+    for r in raw:
+        row = dict(r)
+        key = f"u:{row['user_id']}" if row.get("user_id") else f"s:{row['session_id']}"
+        if key not in people:
+            people[key] = row
+    ordered = sorted(
+        people.values(),
+        key=lambda r: (
+            int(r.get("is_guest") or 0),
+            PRESENCE_ROLE_RANK.get(r.get("role") or "", 4),
+            -int(r.get("last_heartbeat") or 0),
+        ),
+    )
+    with _presence_cache_lock:
+        _presence_cache["rows"] = ordered
+        _presence_cache["at"] = time.time()
+    return ordered
+
+
+PRESENCE_ITEM_KEY_MAX = 120
+PRESENCE_ORDERING_ITEMS_MAX = 12
+PRESENCE_RADAR_ITEMS_MAX = 200
+
+
+def _clean_item_key(raw) -> str:
+    """Catalog keys look like "item:red-tulip"; anything else is trimmed and lower-cased."""
+    return re.sub(r"\s+", " ", str(raw or "")).strip().lower()[:PRESENCE_ITEM_KEY_MAX]
+
+
+def _clean_ordering_items(raw) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    seen: list[str] = []
+    for value in raw:
+        key = _clean_item_key(value)
+        if key and key not in seen:
+            seen.append(key)
+        if len(seen) >= PRESENCE_ORDERING_ITEMS_MAX:
+            break
+    return seen
+
+
+def _row_ordering_items(row: dict) -> list[str]:
+    try:
+        parsed = json.loads(row.get("ordering_items") or "[]")
+    except (TypeError, ValueError):
+        return []
+    return _clean_ordering_items(parsed)
+
+
+def _radar_summary(people: list[dict]) -> dict:
+    """Aggregate counts and per-island occupancy. Holds nothing volatile so unchanged radars dedupe."""
+    by_status = {"online": 0, "on_island": 0, "ordering": 0, "idle": 0}
+    islands: dict[str, dict] = {}
+    for r in people:
+        status = r.get("status") or "online"
+        by_status[status] = by_status.get(status, 0) + 1
+        island = (r.get("current_island") or "").strip().upper()
+        if not island:
+            continue
+        entry = islands.setdefault(island, {"island": island, "count": 0, "residents": []})
+        entry["count"] += 1
+        if not r.get("is_guest") and len(entry["residents"]) < 5:
+            entry["residents"].append({
+                "id": _public_presence_id(r["session_id"]),
+                "displayName": r.get("display_name") or r.get("username") or "Resident",
+                "avatarUrl": r.get("avatar_url") or "",
+            })
+    guests = sum(1 for r in people if r.get("is_guest"))
+
+    # Item counts are aggregate only: nobody is named, and each person counts once per item.
+    items: dict[str, dict] = {}
+    for r in people:
+        viewing = _clean_item_key(r.get("viewing_item"))
+        if viewing:
+            items.setdefault(viewing, {"key": viewing, "viewing": 0, "ordering": 0})["viewing"] += 1
+        for key in _row_ordering_items(r):
+            items.setdefault(key, {"key": key, "viewing": 0, "ordering": 0})["ordering"] += 1
+    top_items = sorted(
+        items.values(), key=lambda e: (-(e["viewing"] + e["ordering"]), e["key"])
+    )[:PRESENCE_RADAR_ITEMS_MAX]
+
+    return {
+        "totalOnline": len(people),
+        "authenticatedCount": len(people) - guests,
+        "guestCount": guests,
+        "byStatus": by_status,
+        "islands": sorted(islands.values(), key=lambda e: (-e["count"], e["island"])),
+        "items": top_items,
+    }
+
+
+def _build_radar_payload() -> dict:
+    conn = get_db()
+    try:
+        _ensure_presence_table(conn)
+        return _radar_summary(_presence_people(conn, int(time.time())))
+    finally:
+        conn.close()
+
+
+def _claim_pending_waves(conn, now: int, username: str, session_id: str) -> list[dict]:
+    """Return waves queued for this user/session and mark them delivered."""
+    _ensure_waves_table(conn)
+    rows = conn.execute("""
+        SELECT * FROM user_waves
+        WHERE status = 'pending'
+          AND expires_at >= ?
+          AND (
+              (to_username IS NOT NULL AND to_username != '' AND LOWER(to_username) = LOWER(?))
+              OR (to_session_id IS NOT NULL AND to_session_id != '' AND to_session_id IN (?, ?))
+          )
+        ORDER BY created_at ASC
+    """, (now, username, session_id, _public_presence_id(session_id))).fetchall()
+    if not rows:
+        return []
+    waves = [{
+        "id": w["id"],
+        "fromUsername": w["from_username"],
+        "fromDisplayName": w["from_display_name"],
+        "fromAvatarUrl": w["from_avatar_url"] or "",
+        "toUsername": w["to_username"],
+        "toDisplayName": w["to_display_name"] or "",
+        "toSessionId": w["to_session_id"] or "",
+        "timestamp": w["created_at"] * 1000,
+    } for w in rows]
+    marks = ",".join(["?"] * len(waves))
+    conn.execute(f"UPDATE user_waves SET status = 'delivered' WHERE id IN ({marks})", [w["id"] for w in waves])
+    conn.commit()
+    return waves
+
+
 @app.route("/api/presence/heartbeat", methods=["POST"])
 @app.route("/api/community/heartbeat", methods=["POST"])
 def api_presence_heartbeat():
@@ -6254,6 +6485,10 @@ def api_presence_heartbeat():
     client_activity = str(data.get("activity") or data.get("currentActivity") or "").strip()
     session_id = str(data.get("sessionId") or request.headers.get("x-session-id") or "").strip()
     current_island = str(data.get("currentIsland") or "").strip()
+    is_idle = bool(data.get("idle"))
+    viewing_item = _clean_item_key(data.get("viewingItem"))
+    ordering_items = _clean_ordering_items(data.get("orderingItems"))
+    ordering_json = json.dumps(ordering_items) if ordering_items else ""
 
     now = int(time.time())
     auth_user = _current_auth_user()
@@ -6262,8 +6497,8 @@ def api_presence_heartbeat():
     try:
         _ensure_presence_table(conn)
 
-        # 1. Prune stale sessions older than 90 seconds
-        conn.execute("DELETE FROM user_online_presence WHERE last_heartbeat < ?", (now - 90,))
+        # 1. Prune expired sessions (throttled, not on every beat)
+        _prune_presence(conn, now)
 
         # 2. Extract identity
         if auth_user:
@@ -6334,14 +6569,22 @@ def api_presence_heartbeat():
         else:
             status = "online"
             activity = client_activity or "Browsing ChoPaeng"
+        if is_idle:
+            status = "idle"
+
+        previous = conn.execute(
+            "SELECT status, current_island, viewing_item, ordering_items FROM user_online_presence WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
 
         # UPSERT active session
         conn.execute("""
             INSERT INTO user_online_presence (
                 session_id, user_id, username, display_name, avatar_url, role, status,
                 current_activity, `current_path`, current_island, ign, island_name,
-                native_fruit, has_public_passport, is_guest, ip_hash, ip_address, last_heartbeat, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                native_fruit, has_public_passport, is_guest, ip_hash, ip_address,
+                viewing_item, ordering_items, last_heartbeat, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 username = excluded.username,
@@ -6358,6 +6601,8 @@ def api_presence_heartbeat():
                 has_public_passport = excluded.has_public_passport,
                 is_guest = excluded.is_guest,
                 ip_address = excluded.ip_address,
+                viewing_item = excluded.viewing_item,
+                ordering_items = excluded.ordering_items,
                 last_heartbeat = excluded.last_heartbeat
         """, (
             session_id, user_id, username, display_name, avatar_url, role, status,
@@ -6365,50 +6610,32 @@ def api_presence_heartbeat():
             native_fruit, has_public_passport, is_guest,
             hashlib.sha256((_visitor_ip() or "127.0.0.1").encode()).hexdigest()[:16],
             _visitor_ip()[:64],
+            viewing_item, ordering_json,
             now, now
         ))
         conn.commit()
 
-        # Check for pending waves directed to this user or session
-        _ensure_waves_table(conn)
+        # A new session is a visit; a status/island change reshapes the radar.
+        if previous is None:
+            _record_site_visit(conn, now)
+            conn.commit()
+        if (
+            previous is None
+            or previous["status"] != status
+            or (previous["current_island"] or "") != current_island
+            or _clean_item_key(previous["viewing_item"]) != viewing_item
+            or (previous["ordering_items"] or "") != ordering_json
+        ):
+            _invalidate_presence_cache()
+            presence_hub.broadcast_radar(_build_radar_payload)
+
         incoming_waves = []
         try:
-            wave_rows = conn.execute("""
-                SELECT * FROM user_waves
-                WHERE status = 'pending'
-                  AND expires_at >= ?
-                  AND (
-                      (to_username IS NOT NULL AND LOWER(to_username) = LOWER(?))
-                      OR (to_session_id IS NOT NULL AND to_session_id IN (?, ?))
-                  )
-                ORDER BY created_at ASC
-            """, (now, username, session_id, _public_presence_id(session_id))).fetchall()
-
-            if wave_rows:
-                wave_ids = []
-                for w in wave_rows:
-                    wave_ids.append(w["id"])
-                    incoming_waves.append({
-                        "id": w["id"],
-                        "fromUsername": w["from_username"],
-                        "fromDisplayName": w["from_display_name"],
-                        "fromAvatarUrl": w["from_avatar_url"] or "",
-                        "toUsername": w["to_username"],
-                        "toDisplayName": w["to_display_name"] or "",
-                        "timestamp": w["created_at"] * 1000,
-                    })
-                q_marks = ",".join(["?"] * len(wave_ids))
-                conn.execute(f"UPDATE user_waves SET status = 'delivered' WHERE id IN ({q_marks})", wave_ids)
-                conn.commit()
+            incoming_waves = _claim_pending_waves(conn, now, username, session_id)
         except Exception as wave_err:
             logger.warning("[Presence] Error checking waves on heartbeat: %s", wave_err)
 
-        # Get active count within last 60s
-        row_count = conn.execute(
-            "SELECT COUNT(DISTINCT session_id) as c FROM user_online_presence WHERE last_heartbeat >= ?",
-            (now - 60,)
-        ).fetchone()
-        online_count = row_count["c"] if row_count else 1
+        online_count = len(_presence_people(conn, now))
 
         return jsonify({
             "ok": True,
@@ -6417,6 +6644,7 @@ def api_presence_heartbeat():
             "online_count": online_count,
             "activeOnlineCount": online_count,
             "pending_waves": incoming_waves,
+            "stream_clients": presence_hub.subscriber_count,
             "timestamp": now,
         })
     except Exception as exc:
@@ -6444,12 +6672,87 @@ def api_presence_leave():
             # Only ever remove the exact session; never match by user id from client input
             conn.execute("DELETE FROM user_online_presence WHERE session_id = ?", (session_id,))
             conn.commit()
+            _invalidate_presence_cache()
+            presence_hub.broadcast_radar(_build_radar_payload)
         except Exception:
             pass
         finally:
             conn.close()
 
     return jsonify({"ok": True, "success": True})
+
+
+FRIENDS_MAX = 200
+
+
+def _ensure_friends_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_friends (
+            user_id         VARCHAR(64) NOT NULL,
+            friend_username VARCHAR(255) NOT NULL,
+            created_at      INTEGER NOT NULL,
+            PRIMARY KEY (user_id, friend_username)
+        )
+    """)
+
+
+def _friend_usernames(conn, user_id: str) -> set[str]:
+    if not user_id:
+        return set()
+    _ensure_friends_table(conn)
+    rows = conn.execute("SELECT friend_username FROM user_friends WHERE user_id = ?", (user_id,)).fetchall()
+    return {str(r["friend_username"]).lower() for r in rows}
+
+
+def _auth_user_id(auth_user: dict | None) -> str:
+    if not auth_user:
+        return ""
+    return str(auth_user.get("user_id") or auth_user.get("discord_id") or auth_user.get("id") or "").strip()
+
+
+@app.route("/api/user/friends", methods=["GET", "POST", "DELETE"])
+def api_user_friends():
+    """One-way friends list: residents you follow so their online status is easy to spot."""
+    auth_user = _current_auth_user()
+    user_id = _auth_user_id(auth_user)
+    if not user_id:
+        return jsonify({"ok": False, "error": "Authentication required"}), 401
+
+    conn = get_db()
+    try:
+        _ensure_friends_table(conn)
+        if request.method == "GET":
+            return jsonify({"ok": True, "friends": sorted(_friend_usernames(conn, user_id))})
+
+        data = request.get_json(silent=True) or {}
+        username = str(data.get("username") or request.args.get("username") or "").strip().lower()
+        if not username or len(username) > 64:
+            return jsonify({"ok": False, "error": "A valid username is required"}), 400
+
+        if request.method == "POST":
+            own = str(auth_user.get("username") or auth_user.get("discord_name") or "").strip().lower()
+            if username == own:
+                return jsonify({"ok": False, "error": "You cannot add yourself"}), 400
+            friends = _friend_usernames(conn, user_id)
+            if username not in friends:
+                if len(friends) >= FRIENDS_MAX:
+                    return jsonify({"ok": False, "error": f"Friends list is full ({FRIENDS_MAX})"}), 400
+                conn.execute(
+                    "INSERT INTO user_friends (user_id, friend_username, created_at) VALUES (?, ?, ?)",
+                    (user_id, username, int(time.time())),
+                )
+                conn.commit()
+        else:
+            conn.execute(
+                "DELETE FROM user_friends WHERE user_id = ? AND friend_username = ?", (user_id, username)
+            )
+            conn.commit()
+        return jsonify({"ok": True, "friends": sorted(_friend_usernames(conn, user_id))})
+    except Exception as exc:
+        logger.warning("[Friends] Error handling friends request: %s", exc)
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
+    finally:
+        conn.close()
 
 
 @app.route("/api/presence/online", methods=["GET"])
@@ -6460,37 +6763,24 @@ def api_presence_online():
     conn = get_db()
     try:
         _ensure_presence_table(conn)
+        _prune_presence(conn, now)
 
-        # Prune dead sessions older than 60 seconds
-        conn.execute("DELETE FROM user_online_presence WHERE last_heartbeat < ?", (now - 60,))
-        conn.commit()
-
-        # Query all active sessions within last 60 seconds
-        rows = conn.execute("""
-            SELECT * FROM user_online_presence
-            WHERE last_heartbeat >= ?
-            ORDER BY
-                is_guest ASC,
-                CASE role
-                    WHEN 'admin' THEN 1
-                    WHEN 'mod' THEN 2
-                    WHEN 'member' THEN 3
-                    ELSE 4
-                END,
-                last_heartbeat DESC
-            LIMIT 50
-        """, (now - 60,)).fetchall()
-
+        people = _presence_people(conn, now)
+        viewer = _current_auth_user()
         viewer_session = _presence_session_for(
             str(request.headers.get("x-session-id") or request.args.get("sessionId") or "").strip(),
-            _current_auth_user(),
+            viewer,
         )
-        residents = []
-        for r in rows:
+        viewer_uid = str((viewer or {}).get("user_id") or (viewer or {}).get("discord_id") or "")
+
+        def to_resident(r: dict) -> dict:
             minutes_ago = max(0, int((now - (r["created_at"] or now)) / 60))
-            residents.append({
+            is_self = (bool(viewer_session) and r["session_id"] == viewer_session) or (
+                bool(viewer_uid) and str(r.get("user_id") or "") == viewer_uid
+            )
+            return {
                 "id": _public_presence_id(r["session_id"]),
-                "isSelf": bool(viewer_session) and r["session_id"] == viewer_session,
+                "isSelf": is_self,
                 "username": r["username"],
                 "displayName": r["display_name"] or r["username"],
                 "avatarUrl": r["avatar_url"] or "https://acnhcdn.com/latest/NpcIcon/der00.png",
@@ -6506,20 +6796,31 @@ def api_presence_online():
                 "isGuest": bool(r["is_guest"]),
                 "joinedMinutesAgo": minutes_ago,
                 "lastHeartbeat": r["last_heartbeat"],
-            })
+            }
 
-        total_online = len(residents)
-        auth_count = sum(1 for r in residents if not r["isGuest"])
-        guest_count = total_online - auth_count
+        residents = [to_resident(r) for r in people[:PRESENCE_ROSTER_LIMIT]]
 
+        # Friends are returned in full so one past the roster cap is not missed.
+        friend_names = _friend_usernames(conn, viewer_uid) if viewer_uid else set()
+        friends_online = [
+            to_resident(r) for r in people
+            if not r.get("is_guest") and str(r.get("username") or "").lower() in friend_names
+        ]
+
+        radar = _radar_summary(people)
         return jsonify({
             "ok": True,
             "success": True,
-            "total_online": total_online,
-            "activeOnlineCount": total_online,
-            "authenticated_count": auth_count,
-            "guest_count": guest_count,
+            # Real totals: the roster is capped, the counts are not.
+            "total_online": radar["totalOnline"],
+            "activeOnlineCount": radar["totalOnline"],
+            "authenticated_count": radar["authenticatedCount"],
+            "guest_count": radar["guestCount"],
+            "roster_truncated": radar["totalOnline"] > len(residents),
             "residents": residents,
+            "friends_online": friends_online,
+            "radar": radar,
+            "traffic": _site_traffic(conn, now),
             "timestamp": now,
         })
     except Exception as exc:
@@ -6527,6 +6828,91 @@ def api_presence_online():
         return jsonify({"ok": False, "error": _safe_error(exc), "residents": []}), 500
     finally:
         conn.close()
+
+
+@app.route("/api/presence/radar", methods=["GET"])
+@app.route("/api/community/radar", methods=["GET"])
+def api_presence_radar():
+    """Compact live radar (counts + per-island occupancy). Cheap fallback when SSE is unavailable."""
+    now = int(time.time())
+    conn = get_db()
+    try:
+        _ensure_presence_table(conn)
+        _prune_presence(conn, now)
+        return jsonify({
+            "ok": True,
+            "radar": _radar_summary(_presence_people(conn, now)),
+            "traffic": _site_traffic(conn, now),
+            "timestamp": now,
+        })
+    except Exception as exc:
+        logger.warning("[Presence] Error building radar: %s", exc)
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/presence/stream", methods=["GET"])
+@app.route("/api/community/stream", methods=["GET"])
+def api_presence_stream():
+    """Server-Sent Events: pushes waves and radar changes so clients need not poll.
+
+    Clients read it with fetch() so the Authorization header never ends up in a URL.
+    """
+    now = int(time.time())
+    auth_user = _current_auth_user()
+    session_id = _presence_session_for(
+        str(request.headers.get("x-session-id") or request.args.get("sessionId") or "").strip(),
+        auth_user,
+    )
+    username = ""
+    if auth_user:
+        username = str(auth_user.get("username") or auth_user.get("discord_name") or "").strip()
+    keys = [k for k in (session_id, _public_presence_id(session_id) if session_id else "", username) if k]
+    if not keys:
+        return jsonify({"ok": False, "error": "Session required"}), 400
+
+    if session_id and presence_hub.count_for(session_id) >= PRESENCE_STREAMS_PER_SESSION:
+        return jsonify({"ok": False, "error": "Too many open streams for this session"}), 429
+    sub = presence_hub.subscribe(keys)
+    if sub is None:
+        return jsonify({"ok": False, "error": "Stream capacity reached"}), 503
+
+    conn = get_db()
+    try:
+        _ensure_presence_table(conn)
+        hello = {
+            "radar": _radar_summary(_presence_people(conn, now)),
+            "traffic": _site_traffic(conn, now),
+            "waves": _claim_pending_waves(conn, now, username, session_id),
+        }
+    except Exception as exc:
+        presence_hub.unsubscribe(sub)
+        logger.warning("[Presence] Error opening stream: %s", exc)
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
+    finally:
+        conn.close()
+
+    def generate():
+        deadline = time.time() + PRESENCE_STREAM_MAX_SECONDS
+        try:
+            yield "retry: 5000\n\n"
+            yield format_sse("hello", hello)
+            while time.time() < deadline:
+                try:
+                    event, data = sub.queue.get(timeout=15)
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+                    continue
+                yield format_sse(event, data)
+            yield format_sse("reconnect", {})
+        finally:
+            presence_hub.unsubscribe(sub)
+
+    resp = Response(generate(), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache, no-transform"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
 
 
 @app.route("/api/presence/wave", methods=["POST"])
@@ -6592,6 +6978,10 @@ def api_presence_send_wave():
             "toSessionId": to_session_id,
             "timestamp": now * 1000,
         }
+        # Live listeners get it instantly; otherwise it stays pending for the next heartbeat.
+        if presence_hub.publish_to([to_username, to_session_id], "wave", wave_payload):
+            conn.execute("UPDATE user_waves SET status = 'delivered' WHERE id = ?", (wave_id,))
+            conn.commit()
         return jsonify({
             "ok": True,
             "success": True,
@@ -6623,36 +7013,7 @@ def api_presence_poll_waves():
 
     conn = get_db()
     try:
-        _ensure_waves_table(conn)
-        wave_rows = conn.execute("""
-            SELECT * FROM user_waves
-            WHERE status = 'pending'
-              AND expires_at >= ?
-              AND (
-                  (to_username IS NOT NULL AND to_username != '' AND LOWER(to_username) = LOWER(?))
-                  OR (to_session_id IS NOT NULL AND to_session_id != '' AND to_session_id IN (?, ?))
-              )
-            ORDER BY created_at ASC
-        """, (now, username, session_id, _public_presence_id(session_id))).fetchall()
-
-        waves = []
-        if wave_rows:
-            wave_ids = []
-            for w in wave_rows:
-                wave_ids.append(w["id"])
-                waves.append({
-                    "id": w["id"],
-                    "fromUsername": w["from_username"],
-                    "fromDisplayName": w["from_display_name"],
-                    "fromAvatarUrl": w["from_avatar_url"] or "",
-                    "toUsername": w["to_username"],
-                    "toDisplayName": w["to_display_name"] or "",
-                    "toSessionId": w["to_session_id"] or "",
-                    "timestamp": w["created_at"] * 1000,
-                })
-            q_marks = ",".join(["?"] * len(wave_ids))
-            conn.execute(f"UPDATE user_waves SET status = 'delivered' WHERE id IN ({q_marks})", wave_ids)
-            conn.commit()
+        waves = _claim_pending_waves(conn, now, username, session_id)
 
         return jsonify({"ok": True, "success": True, "waves": waves})
     except Exception as exc:
