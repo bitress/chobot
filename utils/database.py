@@ -99,11 +99,13 @@ class Connection:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if exc_type:
-            self.rollback()
-        else:
-            self.commit()
-        self.close()
+        try:
+            if exc_type:
+                self.rollback()
+            else:
+                self.commit()
+        finally:
+            self.close()
         return False
 
     def execute(self, sql: str, params: Iterable[Any] | None = None):
@@ -198,32 +200,48 @@ class AsyncCursor:
 
 
 class AsyncConnection:
-    def __init__(self, conn: Connection):
+    def __init__(self, conn: Connection | None = None):
         self._conn = conn
 
     async def __aenter__(self):
+        if self._conn is None:
+            acquire_task = asyncio.create_task(asyncio.to_thread(connect_db))
+            try:
+                self._conn = await asyncio.shield(acquire_task)
+            except asyncio.CancelledError:
+                conn = await acquire_task
+                await asyncio.to_thread(conn.close)
+                raise
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        if exc_type:
-            await self.rollback()
-        else:
-            await self.commit()
-        await self.close()
+        try:
+            if exc_type:
+                await self.rollback()
+            else:
+                await self.commit()
+        finally:
+            await self.close()
         return False
 
     async def execute(self, sql: str, params: Iterable[Any] | None = None):
-        cursor = await asyncio.to_thread(self._conn.execute, sql, params)
+        cursor = await asyncio.to_thread(self._get_connection().execute, sql, params)
         return AsyncCursor(cursor)
 
     async def commit(self):
-        await asyncio.to_thread(self._conn.commit)
+        await asyncio.to_thread(self._get_connection().commit)
 
     async def rollback(self):
-        await asyncio.to_thread(self._conn.rollback)
+        await asyncio.to_thread(self._get_connection().rollback)
 
     async def close(self):
-        await asyncio.to_thread(self._conn.close)
+        if self._conn is not None:
+            await asyncio.to_thread(self._conn.close)
+
+    def _get_connection(self) -> Connection:
+        if self._conn is None:
+            raise RuntimeError("Async database connection must be entered before use")
+        return self._conn
 
 
 def get_backend() -> str:
@@ -270,6 +288,12 @@ def get_engine():
         from sqlalchemy.pool import NullPool
         kwargs["poolclass"] = NullPool
         kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+    else:
+        kwargs.update({
+            "pool_size": 20,
+            "max_overflow": 20,
+            "pool_timeout": 15,
+        })
     engine = create_engine(get_database_url(), **kwargs)
     if get_backend() == "sqlite":
         event.listen(engine, "connect", _configure_sqlite_connection)
@@ -344,7 +368,7 @@ def connect_db(*_, **__) -> Connection:
 
 
 def connect_async_db(*_, **__) -> AsyncConnection:
-    return AsyncConnection(connect_db())
+    return AsyncConnection()
 
 
 def _is_select_changes(sql: str) -> bool:
