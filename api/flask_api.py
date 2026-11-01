@@ -3643,6 +3643,7 @@ _HUMAN_MEMBERS_TTL = 600
 
 
 @app.route("/api/v1/guild/human-members")
+@app.route("/api/stats")
 def guild_human_members():
     """Return the count of human (non-bot) members in the configured Discord guild.
 
@@ -3744,6 +3745,7 @@ def guild_human_members():
         "guild_id": int(guild_id),
         "guild_name": guild_name,
         "human_members": human_count,
+        "discord_members": human_count,
     }
     _HUMAN_MEMBERS_CACHE.update(payload=payload, ts=time.time())
     return jsonify(payload)
