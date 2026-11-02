@@ -6464,6 +6464,55 @@ def _claim_pending_waves(conn, now: int, username: str, session_id: str) -> list
     return waves
 
 
+# First match wins, so specific paths come before their parents (e.g. /profile/<name> before /profile).
+# Mirrors getActivityForPath in the website; this copy only applies when the client sent no activity.
+_PRESENCE_PATH_RULES: tuple[tuple[re.Pattern, str, str], ...] = tuple(
+    (re.compile(pattern), status, activity)
+    for pattern, status, activity in (
+        (r"^/interactive-map|^/map/|/map$", "on_island", "Scanning the Island Radar Map"),
+        (r"^/order", "ordering", "Crafting Order Bot Item Bag"),
+        (r"^/drop", "online", "Setting up a Drop Bot drop"),
+        (r"^/pocket-guide", "online", "Checking their Pocket Guide"),
+        (r"^/critters", "online", "Hunting critters for the Critterpedia"),
+        (r"^/events", "online", "Checking seasonal events & birthdays"),
+        (r"^/npcs", "online", "Meeting special NPC visitors"),
+        (r"^/guides", "online", "Reading ACNH guides"),
+        (r"^/(trip-planner|planner)", "online", "Planning Island Route & Maps"),
+        (r"^/command-builder", "online", "Building item commands"),
+        (r"^/wishlist", "online", "Curating a wishlist"),
+        (r"^/my-collection", "online", "Tracking their collection"),
+        (r"^/(pockets|pocket-inventory)", "online", "Packing their pockets"),
+        (r"^/villager", "online", "Looking up a villager"),
+        (r"^/item/", "online", "Inspecting a catalogue item"),
+        (r"^/(u|profile)/[^/]", "online", "Admiring a Resident Passport"),
+        (r"^/profile", "online", "Editing Resident Passport Studio"),
+        (r"^/catalog", "online", "Browsing 40,000+ ACNH Catalogue"),
+        (r"^/find", "online", "Searching Island Stock Finder"),
+        (r"^/(membership|tiers)", "online", "Exploring membership tiers"),
+        (r"^/jukebox", "online", "Listening to K.K. Slider Airchecks"),
+    )
+)
+
+
+def _presence_for_path(path: str, current_island: str, client_activity: str) -> tuple[str, str]:
+    """(status, activity) for a presence heartbeat. A client-supplied activity text always wins."""
+    clean = (path or "/").split("?", 1)[0].split("#", 1)[0] or "/"
+    if current_island or re.match(r"^/islands?(/|$)", clean):
+        if current_island:
+            return "on_island", client_activity or f"Exploring {current_island}"
+        # /island/<id> and /islands/<id> are one island; plain /islands is the flight board
+        specific = re.match(r"^/islands?/([^/]+)/?$", clean)
+        if specific:
+            return "on_island", client_activity or f"Visiting {specific.group(1).upper()}"
+        if re.match(r"^/islands/[^/]+/map", clean):
+            return "on_island", client_activity or "Scanning the Island Radar Map"
+        return "on_island", client_activity or "Viewing Treasure Islands"
+    for pattern, status, activity in _PRESENCE_PATH_RULES:
+        if pattern.search(clean):
+            return status, client_activity or activity
+    return "online", client_activity or "Browsing ChoPaeng"
+
+
 @app.route("/api/presence/heartbeat", methods=["POST"])
 @app.route("/api/community/heartbeat", methods=["POST"])
 def api_presence_heartbeat():
@@ -6539,24 +6588,7 @@ def api_presence_heartbeat():
             has_public_passport = 0
 
         # Determine status & activity
-        if current_island or "/island/" in current_path or "/islands" in current_path:
-            status = "on_island"
-            activity = client_activity or (f"Exploring {current_island}" if current_island else "Viewing Treasure Islands")
-        elif "/order" in current_path:
-            status = "ordering"
-            activity = client_activity or "Crafting Order Bot Item Bag"
-        elif "/profile" in current_path:
-            status = "online"
-            activity = client_activity or "Styling Resident Passport Studio"
-        elif "/catalog" in current_path:
-            status = "online"
-            activity = client_activity or "Browsing 40,000+ ACNH Catalogue"
-        elif "/find" in current_path:
-            status = "online"
-            activity = client_activity or "Searching Island Stock Finder"
-        else:
-            status = "online"
-            activity = client_activity or "Browsing ChoPaeng"
+        status, activity = _presence_for_path(current_path, current_island, client_activity)
         if is_idle:
             status = "idle"
 
