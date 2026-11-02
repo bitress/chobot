@@ -1776,6 +1776,10 @@ def auth_me():
             keys_to_copy = ["connected_providers", "connected_accounts", "roles", "email", "has_password", "is_subscriber", "sub_tier"]
             if not has_discord:
                 keys_to_copy.extend(["provider", "username"])
+            if user.get("discord_checked_at"):
+                # Roles and tier were just read live from Discord; the unified account only
+                # holds the roles saved at login, so copying them would undo the refresh.
+                keys_to_copy = [k for k in keys_to_copy if k not in ("roles", "is_subscriber", "sub_tier")]
             for k in keys_to_copy:
                 if unified.get(k) is not None:
                     user[k] = unified[k]

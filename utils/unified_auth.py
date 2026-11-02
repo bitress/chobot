@@ -60,6 +60,42 @@ def resolve_subscription(roles: List[Any]) -> Dict[str, Any]:
     }
 
 
+def persist_discord_roles(discord_id: Any, roles: List[Any]) -> bool:
+    """Write live Discord roles onto the stored Discord link so DB-based lookups stay current.
+
+    Only touches the row when the roles differ from what is stored. Returns True if written.
+    """
+    pid = str(discord_id or "").strip()
+    if not pid.isdigit():
+        return False
+    sub = resolve_subscription(roles)
+    roles_json = json.dumps(sorted(sub["roles"]), separators=(",", ":"))
+    try:
+        with connect_db() as conn:
+            row = conn.execute(
+                "SELECT roles_json FROM user_provider_links WHERE provider = 'discord' AND provider_user_id = ?",
+                (pid,),
+            ).fetchone()
+            if not row:
+                return False
+            try:
+                stored = sorted(json.loads(row[0] or "[]"))
+            except Exception:
+                stored = None
+            if stored == sorted(sub["roles"]):
+                return False
+            conn.execute(
+                "UPDATE user_provider_links SET roles_json = ?, sub_tier = ?, updated_at = ? "
+                "WHERE provider = 'discord' AND provider_user_id = ?",
+                (roles_json, sub["sub_tier"] or "", int(time.time()), pid),
+            )
+            conn.commit()
+            return True
+    except Exception as exc:
+        logger.warning("Failed to persist Discord roles for %s: %s", pid, exc)
+        return False
+
+
 def expand_roles(roles: List[Any]) -> List[str]:
     """Ensure roles include both canonical tier name and configured Discord role ID."""
     result: set[str] = set()

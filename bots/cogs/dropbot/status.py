@@ -532,7 +532,7 @@ async def _build_panel_embed(island_name: str, status_data: dict | None = None) 
         visitors      = status_data.get("visitors", [])
         game_time     = status_data.get("game_time")
         is_nooks_open = status_data.get("is_nooks_open")
-        mode          = status_data.get("mode")
+
 
         # Embed colour reflects island state
         if not is_running:
@@ -737,49 +737,40 @@ def _err_embed(text: str, *, title: str = "Something's off", hint: str | None = 
 
 
 async def build_drop_picker_embed(island: str, user: discord.abc.User | None = None) -> discord.Embed:
-    p_line = await _presence_line(user, island) if user else ""
-    desc = (
-        f"Choose an item preset from the menu, browse or search the catalog, or enter custom hex codes.\n\n"
-        f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
+    embed = discord.Embed(
+        title=f"📦 Drop Items — {island}",
+        description=f"Pick a preset, browse the catalog, or enter your own items for **[{island}]({_island_url(island)})**.",
+        color=PANEL_EMBED_COLOR,
     )
-    if p_line:
-        desc += f"📍 **Presence:** {p_line}\n\n"
     if user:
+        p_line = await _presence_line(user, island)
+        if p_line:
+            embed.add_field(name="📍 You", value=p_line, inline=False)
         last = await _load_user_last_drop(user.id)
         if last:
             where = f" on {last['island']}" if last.get("island") and last["island"] != island else ""
-            desc += (
-                f"🔁 **Last order{where}:** `{last['display_name'][:60]}` "
-                "*(press **Re-drop Last Cart** to repeat it here)*\n\n"
+            embed.add_field(
+                name=f"🔁 Last order{where}",
+                value=f"`{last['display_name'][:60]}`\n*Press **Re-drop Last Cart** to repeat it here.*",
+                inline=False,
             )
-    desc += (
-        f"• Pick an item preset from the dropdown for instant dropping\n"
-        f"• Use **🎒 Saved Pockets** for full curated inventory sets\n"
-        f"• Use **🔍 Search Catalog** to search 6,000+ items, series, and recipes\n"
-        f"• Use **📝 Custom / Hex** to enter your own items or hex list\n"
-        f"• *Inject Villager adds a villager to your island's next open plot.*"
-    )
-    embed = discord.Embed(
-        title=f"📦 Drop Items — {island}",
-        description=desc,
-        color=PANEL_EMBED_COLOR,
-    )
-    embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+    embed.add_field(name="⚡ Presets", value="Pick from the dropdown to drop instantly.", inline=True)
+    embed.add_field(name="🎒 Saved Pockets", value="Full curated inventory sets.", inline=True)
+    embed.add_field(name="🔍 Search", value="6,000+ items, series and recipes.", inline=True)
+    embed.add_field(name="📝 Custom / Hex", value="Your own item list or hex codes.", inline=True)
+    embed.set_footer(text=f"{PANEL_FOOTER_TEXT} • You must be on the island", icon_url=PANEL_FOOTER_ICON)
     return embed
 
 
 def build_villager_picker_embed(island: str) -> discord.Embed:
     embed = discord.Embed(
         title=f"🐱 Inject Villager — {island}",
-        description=(
-            f"Select a popular villager from the dropdown below, search the catalog, or enter any name.\n\n"
-            f"🏝️ **Target Island:** [{island}]({_island_url(island)})\n"
-            f"• Choose a villager from the menu to inject\n"
-            f"• Use **🔍 Search Villager** to search by name or species\n"
-            f"• Use **🎀 Sanrio / Amiibo** for special Sanrio villager injections\n"
-            f"• Use **✏️ Type Any Name** to enter any name manually"
-        ),
+        description=f"Add a villager to the next open plot on **[{island}]({_island_url(island)})**.",
         color=PANEL_EMBED_COLOR,
     )
-    embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+    embed.add_field(name="📋 Menu", value="Pick a popular villager to inject.", inline=True)
+    embed.add_field(name="🔍 Search", value="Find one by name or species.", inline=True)
+    embed.add_field(name="🎀 Sanrio / Amiibo", value="Special Sanrio injections.", inline=True)
+    embed.add_field(name="✏️ Any name", value="Type any villager manually.", inline=True)
+    embed.set_footer(text=f"{PANEL_FOOTER_TEXT} • You must be on the island", icon_url=PANEL_FOOTER_ICON)
     return embed

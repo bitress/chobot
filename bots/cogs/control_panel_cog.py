@@ -476,7 +476,7 @@ def _embed_signature(embed: discord.Embed) -> str:
     d = embed.to_dict()
     d.pop("timestamp", None)
     if "fields" in d:
-        d["fields"] = [f for f in d["fields"] if f.get("name") != "🕒 Last Updated"]
+        d["fields"] = [f for f in d["fields"] if f.get("name") != "🕒 Last Updated"]   # legacy panels
     return json.dumps(d, sort_keys=True)
 
 
@@ -1005,26 +1005,24 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
                 visitors_display = rendered or "*No visitors on island*"
 
     embed = discord.Embed(
-        title=f"🎛️ Island Remote Control Panel — {island_name}",
-        description=(
-            f"{status_text}\n"
-            f"Direct hardware & SysBot loop controller for **[{island_name}]({_island_url(island_name)})**.\n\n"
-            "Use the interactive controls below to manage the console loop and hardware."
-        ),
+        title=f"🎛️ {island_name} — Remote Control",
+        description=f"{status_text}\n[Open island page ↗]({_island_url(island_name)})",
         color=color,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
+
+    # Row 1: the three things people look at first.
     embed.add_field(name="✈️ Dodo Code", value=dodo_display, inline=True)
-    embed.add_field(name="🎮 Console Stage", value=f"`{console_stage}`", inline=True)
+    embed.add_field(name="🎮 Stage", value=f"`{console_stage}`", inline=True)
     embed.add_field(
         name="📡 Requests",
-        value="`—`" if unreachable else f"`{'Accepting' if accepting else 'Paused'}`",
+        value="`—`" if unreachable else ("🟢 `Accepting`" if accepting else "⏸️ `Paused`"),
         inline=True,
     )
-    embed.add_field(
-        name=field_name,
-        value=visitors_display,
-        inline=False,
-    )
+
+    # Row 2: visitors, full width.
+    embed.add_field(name=field_name, value=visitors_display, inline=False)
+
     screen_val = _extract_console_state(
         status, ("screen_on", "screen", "screen_state", "is_screen_on"), island_name, "screen_on"
     )
@@ -1035,16 +1033,6 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
         status, ("refresh_map", "map_refresh", "map_refresh_state", "togglerefresh", "is_refresh_map"), island_name, "refresh_map"
     )
 
-    embed.add_field(
-        name="⚙️ Console States",
-        value=(
-            f"• **Screen:** {_format_console_state(screen_val, unreachable)}\n"
-            f"• **Mash B:** {_format_console_state(mash_val, unreachable)}\n"
-            f"• **Map Refresh:** {_format_console_state(map_val, unreachable)}"
-        ),
-        inline=True,
-    )
-
     def _bool_icon(val: Any) -> str:
         if val is True or str(val).lower() in ("true", "1", "on"):
             return "🟢 `ON`"
@@ -1052,23 +1040,28 @@ def build_control_panel_embed(island_name: str, status: dict | None = None) -> d
             return "🔴 `OFF`"
         return "`—`"
 
-    echo_dodo = _bool_icon(status.get("echo_dodo_enabled"))
-    echo_arr = _bool_icon(status.get("echo_arrivals_enabled"))
-    echo_upd = _bool_icon(status.get("echo_island_updates_enabled"))
-
+    # Row 3: console toggles, echo toggles and port side by side.
     embed.add_field(
-        name="📣 Echo Broadcasts",
+        name="⚙️ Console",
         value=(
-            f"• **Dodo:** {echo_dodo}\n"
-            f"• **Arrivals:** {echo_arr}\n"
-            f"• **Updates:** {echo_upd}"
+            f"🖥️ Screen {_format_console_state(screen_val, unreachable)}\n"
+            f"🅱️ Mash B {_format_console_state(mash_val, unreachable)}\n"
+            f"🗺️ Map {_format_console_state(map_val, unreachable)}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="📣 Echo",
+        value=(
+            f"🦤 Dodo {_bool_icon(status.get('echo_dodo_enabled'))}\n"
+            f"🛬 Arrivals {_bool_icon(status.get('echo_arrivals_enabled'))}\n"
+            f"📢 Updates {_bool_icon(status.get('echo_island_updates_enabled'))}"
         ),
         inline=True,
     )
     port = _endpoint_port(island_name)
-    embed.add_field(name="🔌 SysBot Port", value=f"`{port}`" if port else "`—`", inline=True)
-    embed.add_field(name="🕒 Last Updated", value=f"<t:{int(time.time())}:R>", inline=True)
-    embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+    embed.add_field(name="🔌 Port", value=f"`{port}`" if port else "`—`", inline=True)
+    embed.set_footer(text=f"{PANEL_FOOTER_TEXT} • Updated", icon_url=PANEL_FOOTER_ICON)
     return embed
 
 
@@ -1288,12 +1281,16 @@ async def run_action(
 
     if ok:
         result = _embed(
-            f"✅ {spec.title} executed",
-            f"Command sent to **{island}** successfully." + (f"\n*{msg}*" if msg else ""),
+            f"✅ {spec.title} — {island}",
+            (f"{msg}" if msg else "Command sent successfully.") + "\n\n*The panel will refresh in a moment.*",
             PANEL_COLOR_ONLINE,
         )
     else:
-        result = _embed(f"⚠️ {spec.title} failed", f"SysBot returned: {msg or 'No response message.'}", PANEL_COLOR_OFFLINE)
+        result = _embed(
+            f"⚠️ {spec.title} failed — {island}",
+            f"{msg or 'No response message from SysBot.'}\n\n*You can try again right away. If it keeps failing, use **Refresh Status** first.*",
+            PANEL_COLOR_OFFLINE,
+        )
     await interaction.edit_original_response(content=None, embed=result, view=None)
 
     # Refresh the real panel (not the ephemeral result message).
@@ -1313,6 +1310,16 @@ class ConfirmActionView(discord.ui.View):
         self.island = island
         self.spec = spec
         self.panel_message = panel_message
+        self.interaction: discord.Interaction | None = None   # set once the prompt is sent
+
+    async def on_timeout(self) -> None:
+        if not self.interaction:
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await self.interaction.edit_original_response(
+                embed=_embed("⌛ Timed out", f"No confirmation, so nothing was sent to **{self.island}**.", PANEL_COLOR_UNREACHABLE),
+                view=None,
+            )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -1326,13 +1333,21 @@ class ConfirmActionView(discord.ui.View):
     @discord.ui.button(label="Confirm", emoji="✅", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.stop()
-        await interaction.response.edit_message(content=f"⏳ Sending **{self.spec.title}**…", embed=None, view=None)
+        await interaction.response.edit_message(
+            content=None,
+            embed=_embed(f"⏳ Sending — {self.spec.title}", f"Working on **{self.island}**…", PANEL_COLOR_WARN),
+            view=None,
+        )
         await run_action(interaction, self.island, self.spec, self.panel_message)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.stop()
-        await interaction.response.edit_message(content="Cancelled.", embed=None, view=None)
+        await interaction.response.edit_message(
+            content=None,
+            embed=_embed("Cancelled", f"Nothing was sent to **{self.island}**.", PANEL_COLOR_UNREACHABLE),
+            view=None,
+        )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         logger.error("[ControlPanel] ConfirmActionView error: %s", error, exc_info=error)
@@ -1368,18 +1383,13 @@ def build_echo_settings_embed(island_name: str, status: dict | None) -> discord.
 
     embed = discord.Embed(
         title=f"📣 Echo Broadcast Settings — {island_name}",
-        description=(
-            f"Manage automated Discord announcements for **{island_name}**.\n\n"
-            f"• **🦤 Dodo Code Broadcast**: {_badge(dodo)}\n"
-            f"  *Echoes when a new Dodo code is generated or detected.*\n\n"
-            f"• **🛬 Arrivals & Departures**: {_badge(arrivals)}\n"
-            f"  *Echoes player arrival and departure flight events in real-time.*\n\n"
-            f"• **📢 Island State Updates**: {_badge(updates)}\n"
-            f"  *Echoes island gate, clean, and queue state changes.*\n"
-        ),
+        description=f"Automated Discord announcements for **{island_name}**. Use the buttons below to change them.",
         color=PANEL_COLOR_ONLINE if online else PANEL_COLOR_OFFLINE,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
+    embed.add_field(name="🦤 Dodo Code", value=f"{_badge(dodo)}\n*New Dodo generated or detected*", inline=True)
+    embed.add_field(name="🛬 Arrivals", value=f"{_badge(arrivals)}\n*Players arriving and leaving*", inline=True)
+    embed.add_field(name="📢 Island Updates", value=f"{_badge(updates)}\n*Gate, clean and queue changes*", inline=True)
     embed.set_footer(text=f"Island: {island_name} • ChoPaeng SysBot Echo Control", icon_url=PANEL_FOOTER_ICON)
     return embed
 
@@ -1891,6 +1901,7 @@ class ControlPanelActionButton(
                 view=view,
                 ephemeral=True,
             )
+            view.interaction = interaction
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)

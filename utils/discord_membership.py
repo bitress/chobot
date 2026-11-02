@@ -155,9 +155,10 @@ def refresh_user_payload(user: dict) -> dict:
         refreshed[key] = value
     # Tier fields are derived from roles; recompute so a role change on Discord
     # isn't masked by the login-time sub_tier / is_subscriber.
-    from utils.unified_auth import resolve_subscription
+    from utils.unified_auth import persist_discord_roles, resolve_subscription
 
     refreshed.update(resolve_subscription(snapshot["roles"]))
+    persist_discord_roles(target_id, snapshot["roles"])
     if refreshed.get("joined_at"):
         try:
             from datetime import datetime
