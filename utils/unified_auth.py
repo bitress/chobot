@@ -37,6 +37,29 @@ ROLE_ID_TO_TIER_NAME: Dict[str, str] = {
 TIER_NAME_TO_ROLE_ID: Dict[str, str] = {v: k for k, v in ROLE_ID_TO_TIER_NAME.items()}
 
 
+TIER_PRIORITY: Dict[str, int] = {
+    "ChoSoup": 3,
+    "y ChoSoup": 3,
+    "ChoColate": 2,
+    "y ChoColate": 2,
+    "ChoTato Club": 1,
+    "ChoFries": 1,
+    "y ChoTato": 1,
+}
+
+
+def resolve_subscription(roles: List[Any]) -> Dict[str, Any]:
+    """Expand raw Discord roles and derive the subscriber tier fields from them."""
+    unique_roles = expand_roles(roles)
+    tiers = [t for t in unique_roles if t in TIER_PRIORITY]
+    highest_tier = max(tiers, key=TIER_PRIORITY.get) if tiers else None
+    return {
+        "roles": unique_roles,
+        "sub_tier": highest_tier,
+        "is_subscriber": bool(highest_tier or unique_roles),
+    }
+
+
 def expand_roles(roles: List[Any]) -> List[str]:
     """Ensure roles include both canonical tier name and configured Discord role ID."""
     result: set[str] = set()
@@ -710,16 +733,6 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
             if close_conn:
                 db_conn.close()
 
-    tier_priority = {
-        "ChoSoup": 3,
-        "y ChoSoup": 3,
-        "ChoColate": 2,
-        "y ChoColate": 2,
-        "ChoTato Club": 1,
-        "ChoFries": 1,
-        "y ChoTato": 1,
-    }
-
     for link_item in links:
         link = dict(link_item) if not isinstance(link_item, dict) else link_item
         p_name = str(link.get("provider", "")).lower()
@@ -763,9 +776,9 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
                 primary_avatar = discord_acc["avatar"]
 
     # De-duplicate and expand roles
-    unique_roles = expand_roles(aggregated_roles)
-    tiers = [t for t in unique_roles if t in tier_priority]
-    highest_tier = max(tiers, key=tier_priority.get) if tiers else None
+    subscription = resolve_subscription(aggregated_roles)
+    unique_roles = subscription["roles"]
+    highest_tier = subscription["sub_tier"]
 
     try:
         from utils.discord_membership import _admin_role_ids
@@ -805,7 +818,7 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
         "has_password": has_password,
         "roles": unique_roles,
         "sub_tier": highest_tier,
-        "is_subscriber": bool(highest_tier or unique_roles),
+        "is_subscriber": subscription["is_subscriber"],
         "is_admin": is_admin,
         "is_mod": is_mod,
         "connected_providers": list(dict.fromkeys(connected_providers)),

@@ -153,6 +153,11 @@ def refresh_user_payload(user: dict) -> dict:
         if key == "user_id" and user.get("user_id") and not str(user["user_id"]).isdigit():
             continue
         refreshed[key] = value
+    # Tier fields are derived from roles; recompute so a role change on Discord
+    # isn't masked by the login-time sub_tier / is_subscriber.
+    from utils.unified_auth import resolve_subscription
+
+    refreshed.update(resolve_subscription(snapshot["roles"]))
     if refreshed.get("joined_at"):
         try:
             from datetime import datetime
