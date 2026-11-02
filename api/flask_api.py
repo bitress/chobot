@@ -1653,8 +1653,20 @@ def auth_callback():
                 except (ValueError, TypeError):
                     member_perms = 0
             except Exception as exc:
-                # User is not in server or guild scope not allowed: log note, but still allow login smoothly!
+                # OAuth guild scope may be missing; membership is enforced by the bot-based check below
                 logger.debug(f"Guild member fetch note for {discord_user_id}: {exc}")
+
+        # /api/auth/me revokes tokens of non-members, so reject them here with a clear error
+        # instead of letting the site report a generic session-verification failure.
+        if Config.GUILD_ID and getattr(Config, "DISCORD_LOGIN_ENABLED", True):
+            try:
+                from utils.discord_membership import fetch_guild_member_snapshot
+                fetch_guild_member_snapshot(discord_user_id)
+            except DiscordNotGuildMember:
+                logger.info("Rejecting Discord login for %s: not in guild", discord_user_id)
+                return redirect(f"{return_to}?error=not_a_member")
+            except Exception as exc:
+                logger.debug("Guild membership precheck skipped for %s: %s", discord_user_id, exc)
 
         try:
             from utils.discord_membership import _admin_role_ids
