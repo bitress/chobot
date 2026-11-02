@@ -580,18 +580,6 @@ def _presence_session_for(session_id: str, auth_user: dict | None) -> str:
     return session_id if uid and session_id == f"usr_{uid}" else ""
 
 
-def _island_view_denied(island_name: str | None):
-    """401/403 response if island_name is a subscriber island the caller can't access, else None."""
-    if not island_name or not island_access.is_member_island(None, None, island_name):
-        return None
-    user = _current_auth_user()
-    if not user:
-        return jsonify({"ok": False, "success": False, "error": "Authentication required"}), 401
-    if not island_access.has_island_access(user.get("roles", []), [], False, island_name=island_name, user=user):
-        return jsonify({"ok": False, "success": False, "error": "You do not have access to this island."}), 403
-    return None
-
-
 @app.errorhandler(Exception)
 def _handle_unexpected_error(exc):
     from werkzeug.exceptions import HTTPException
@@ -7230,9 +7218,6 @@ def api_get_island_map(island_name: str):
             "ok": False,
             "error": "Island name is required (e.g. /api/islands/<island_name>/map or ?island=<name>).",
         }), 400
-    denied = _island_view_denied(resolved_island)
-    if denied:
-        return denied
 
     norm = resolved_island.strip().lower()
     cache_key = f"island_map_unified:{norm}"
@@ -7318,9 +7303,6 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
             "islands": all_islands_data,
         })
 
-    denied = _island_view_denied(resolved_island)
-    if denied:
-        return denied
     force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
     fmt = request.args.get("format", "").lower()
     norm = resolved_island.strip().lower()
@@ -7367,9 +7349,6 @@ def api_search_island_map(island_name: str):
     Searches items or categories on an island map to return exact coordinates and sectors.
     """
     from utils.nhl_map_parser import search_island_items
-    denied = _island_view_denied(island_name)
-    if denied:
-        return denied
     q = request.args.get("q", "").strip()
     result = search_island_items(island_name, q)
     return jsonify({"ok": True, **result})
@@ -8152,9 +8131,6 @@ def api_island_items(island_name: Optional[str] = None):
     """
     from utils import catalog_map_service
     isl = (island_name or request.args.get("island") or request.args.get("name") or "").strip()
-    denied = _island_view_denied(isl)
-    if denied:
-        return denied
     q = request.args.get("query") or request.args.get("q") or ""
     acre = request.args.get("acre") or request.args.get("sector")
     cat = request.args.get("category") or request.args.get("cat")
@@ -8196,9 +8172,6 @@ def api_island_map_image(island_name: Optional[str] = None):
     """
     from utils import catalog_map_service
     isl = (island_name or request.args.get("island") or request.args.get("name") or "Hiraya").strip()
-    denied = _island_view_denied(isl)
-    if denied:
-        return denied
     try:
         scale_val = float(request.args.get("scale", 1.0))
     except (ValueError, TypeError):
