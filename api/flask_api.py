@@ -6223,6 +6223,7 @@ def _ensure_presence_table(conn):
             ("viewing_item", "VARCHAR(160)"),
             ("ordering_items", "TEXT"),
             ("is_subscriber", "INTEGER DEFAULT 0"),
+            ("sub_tier", "INTEGER DEFAULT 0"),
         ):
             try:
                 conn.execute(f"ALTER TABLE user_online_presence ADD COLUMN {column} {ddl}")
@@ -6354,11 +6355,18 @@ def _presence_people(conn, now: int) -> list[dict]:
         key = f"u:{row['user_id']}" if row.get("user_id") else f"s:{row['session_id']}"
         if key not in people:
             people[key] = row
+    def roster_rank(r: dict) -> float:
+        rank = PRESENCE_ROLE_RANK.get(r.get("role") or "", 4)
+        # Subs sit right after admins and mods, ahead of regular members.
+        if rank >= 3 and r.get("is_subscriber"):
+            return 2.5 - int(r.get("sub_tier") or 1) / 10
+        return rank
+
     ordered = sorted(
         people.values(),
         key=lambda r: (
             int(r.get("is_guest") or 0),
-            PRESENCE_ROLE_RANK.get(r.get("role") or "", 4),
+            roster_rank(r),
             -int(r.get("last_heartbeat") or 0),
         ),
     )
@@ -6565,7 +6573,10 @@ def api_presence_heartbeat():
             role = "admin" if is_admin else "mod" if is_mod else "member"
             is_guest = 0
             from api.sub_islands import get_user_sub_tier
-            is_subscriber = 1 if (get_user_sub_tier(auth_user) or auth_user.get("is_subscriber")) else 0
+            sub_tier = int(get_user_sub_tier(auth_user) or 0)
+            if not sub_tier and auth_user.get("is_subscriber"):
+                sub_tier = 1
+            is_subscriber = 1 if sub_tier else 0
             if not session_id:
                 session_id = f"usr_{user_id}"
 
@@ -6602,6 +6613,7 @@ def api_presence_heartbeat():
             role = "resident"
             is_guest = 1
             is_subscriber = 0
+            sub_tier = 0
             ign = str(data.get("ign") or "").strip()
             island_name = str(data.get("islandName") or "").strip()
             native_fruit = str(data.get("nativeFruit") or "Peach").strip()
@@ -6623,8 +6635,8 @@ def api_presence_heartbeat():
                 session_id, user_id, username, display_name, avatar_url, role, status,
                 current_activity, `current_path`, current_island, ign, island_name,
                 native_fruit, has_public_passport, is_guest, ip_hash, ip_address,
-                viewing_item, ordering_items, is_subscriber, last_heartbeat, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                viewing_item, ordering_items, is_subscriber, sub_tier, last_heartbeat, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 username = excluded.username,
@@ -6644,6 +6656,7 @@ def api_presence_heartbeat():
                 viewing_item = excluded.viewing_item,
                 ordering_items = excluded.ordering_items,
                 is_subscriber = excluded.is_subscriber,
+                sub_tier = excluded.sub_tier,
                 last_heartbeat = excluded.last_heartbeat
         """, (
             session_id, user_id, username, display_name, avatar_url, role, status,
@@ -6651,7 +6664,7 @@ def api_presence_heartbeat():
             native_fruit, has_public_passport, is_guest,
             hashlib.sha256((_visitor_ip() or "127.0.0.1").encode()).hexdigest()[:16],
             _visitor_ip()[:64],
-            viewing_item, ordering_json, is_subscriber,
+            viewing_item, ordering_json, is_subscriber, sub_tier,
             now, now
         ))
         conn.commit()
@@ -6836,6 +6849,7 @@ def api_presence_online():
                 "hasPublicPassport": bool(r["has_public_passport"]),
                 "isGuest": bool(r["is_guest"]),
                 "isSubscriber": bool(r.get("is_subscriber")),
+                "subTier": int(r.get("sub_tier") or (1 if r.get("is_subscriber") else 0)),
                 "joinedMinutesAgo": minutes_ago,
                 "lastHeartbeat": r["last_heartbeat"],
             }
