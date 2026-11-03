@@ -6000,8 +6000,74 @@ def api_update_discord_nickname():
     })
 
 
-@app.route("/api/user/passport", methods=["GET", "POST"])
-@app.route("/api/profile/passport", methods=["GET", "POST"])
+# Handles that would collide with site routes or read as staff accounts.
+_RESERVED_HANDLES = frozenset({
+    "admin", "administrator", "mod", "moderator", "staff", "support", "help", "system", "official",
+    "chopaeng", "chobot", "bot", "api", "console", "dashboard", "profile", "settings", "account",
+    "login", "logout", "auth", "u", "user", "users", "islands", "island", "order", "drop", "membership",
+    "tiers", "contact", "about", "privacy", "terms", "cookies", "null", "undefined", "resident", "guest",
+})
+_HANDLE_RE = re.compile(r"[a-z0-9_-]{3,30}")
+_PASSPORT_COLUMNS_READY = False
+
+
+def _ensure_passport_columns(conn) -> None:
+    """Older passport tables predate the subscriber tier column."""
+    global _PASSPORT_COLUMNS_READY
+    if _PASSPORT_COLUMNS_READY:
+        return
+    try:
+        conn.execute("ALTER TABLE user_public_passports ADD COLUMN sub_tier INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
+    _PASSPORT_COLUMNS_READY = True
+
+
+def _handle_problem(conn, handle: str, user_id: str) -> tuple[str, int] | None:
+    """Why this public handle can't be used by this user, as (message, http status), or None if fine."""
+    if not _HANDLE_RE.fullmatch(handle):
+        return "Choose a username of 3-30 letters, numbers, hyphens or underscores.", 400
+    if handle in _RESERVED_HANDLES:
+        return "That username is reserved. Please choose another.", 400
+    taken = conn.execute(
+        "SELECT 1 FROM user_public_passports WHERE LOWER(username) = ? AND user_id != ?",
+        (handle, user_id),
+    ).fetchone()
+    if taken:
+        return "That username is already taken.", 409
+    return None
+
+
+def _passport_sub_tier(user: dict | None) -> int:
+    from api.sub_islands import get_user_sub_tier
+    tier = int(get_user_sub_tier(user) or 0) if user else 0
+    if not tier and user and user.get("is_subscriber"):
+        tier = 1
+    return tier
+
+
+@app.route("/api/passport/username-available", methods=["GET"])
+def api_passport_username_available():
+    """Live availability check for the passport handle picker."""
+    handle = str(request.args.get("username") or "").strip().lower()
+    auth_user = _current_auth_user()
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+    conn = get_db()
+    try:
+        problem = _handle_problem(conn, handle, user_id)
+        if problem:
+            return jsonify({"ok": True, "available": False, "reason": problem[0]})
+        return jsonify({"ok": True, "available": True})
+    except Exception as exc:
+        logger.warning("Error checking passport handle: %s", exc)
+        return jsonify({"ok": False, "error": _safe_error(exc)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/user/passport", methods=["GET", "POST", "DELETE"])
+@app.route("/api/profile/passport", methods=["GET", "POST", "DELETE"])
 def api_user_passport():
     """Get or save authenticated user public passport and profile customizer data."""
     auth_user = _current_auth_user()
@@ -6016,6 +6082,15 @@ def api_user_passport():
 
     conn = get_db()
     try:
+        _ensure_passport_columns(conn)
+        if request.method == "DELETE":
+            if not auth_user:
+                return jsonify({"ok": False, "error": "Authentication required"}), 401
+            conn.execute("DELETE FROM user_public_passports WHERE user_id = ?", (user_id,))
+            conn.commit()
+            _invalidate_presence_cache()
+            return jsonify({"ok": True, "success": True})
+
         if request.method == "GET":
             row = conn.execute(
                 "SELECT * FROM user_public_passports WHERE user_id = ?",
@@ -6050,6 +6125,8 @@ def api_user_passport():
                 "primaryIgn": row["primary_ign"] or "",
                 "primaryIsland": row["primary_island"] or "",
                 "avatarUrl": row.get("avatar_url") or "",
+                "subTier": int(row.get("sub_tier") or 0),
+                "isSubscriber": int(row.get("sub_tier") or 0) > 0,
                 "updatedAt": row["updated_at"],
             }
             return jsonify({"ok": True, "passport": passport})
@@ -6057,7 +6134,11 @@ def api_user_passport():
         # POST: Save passport
         data = request.get_json(silent=True) or {}
         p = data.get("passport") or data.get("public_passport") or data
-        uname = str(p.get("username") or username or "Resident").strip()[:50]
+        # The public handle is always chosen by the user; never derived from Discord, IGN or island name.
+        uname = str(p.get("username") or "").strip().lower()
+        problem = _handle_problem(conn, uname, user_id)
+        if problem:
+            return jsonify({"ok": False, "success": False, "error": problem[0]}), problem[1]
         is_pub = 1 if bool(p.get("isPublic") or p.get("is_public")) else 0
         show_char = 1 if bool(p.get("showCharacterAndIsland", p.get("show_character_and_island", True))) else 0
         pronouns = str(p.get("pronouns") or "")[:40]
@@ -6083,13 +6164,13 @@ def api_user_passport():
                 user_id, username, is_public, show_character_and_island, pronouns,
                 birth_day, birth_month, native_fruit, favourite_colour, favourite_song,
                 country, language, personality, hobbies, favourite_shows_films,
-                about_you, favourite_villagers, primary_ign, primary_island, avatar_url, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                about_you, favourite_villagers, primary_ign, primary_island, avatar_url, updated_at, sub_tier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             user_id, uname, is_pub, show_char, pronouns,
             b_day, b_month, fruit, colour, song,
             country, lang, personality, hobbies, shows,
-            about, villagers, p_ign, p_island, avatar_url, now_iso
+            about, villagers, p_ign, p_island, avatar_url, now_iso, _passport_sub_tier(auth_user)
         ))
         conn.commit()
 
@@ -6139,6 +6220,7 @@ def api_public_passport_get(username: str):
 
     conn = get_db()
     try:
+        _ensure_passport_columns(conn)
         row = conn.execute(
             """SELECT * FROM user_public_passports 
                WHERE LOWER(username) = LOWER(?) OR user_id = ?""",
@@ -6171,6 +6253,10 @@ def api_public_passport_get(username: str):
             "favouriteVillagers": json.loads(row["favourite_villagers"] or "[]"),
             "primaryIgn": row["primary_ign"] if bool(row["show_character_and_island"]) or is_owner else "",
             "primaryIsland": row["primary_island"] if bool(row["show_character_and_island"]) or is_owner else "",
+            "avatarUrl": row.get("avatar_url") or "",
+            "subTier": int(row.get("sub_tier") or 0),
+            "isSubscriber": int(row.get("sub_tier") or 0) > 0,
+            "isOwner": bool(is_owner),
             "updatedAt": row["updated_at"],
         }
         return jsonify({"ok": True, "passport": passport})
@@ -6586,11 +6672,17 @@ def api_presence_heartbeat():
             native_fruit = str(data.get("nativeFruit") or "Peach").strip()
             has_public_passport = 0
 
+            _ensure_passport_columns(conn)
             pass_row = conn.execute(
                 "SELECT * FROM user_public_passports WHERE user_id = ? OR LOWER(username) = LOWER(?)",
                 (user_id, username)
             ).fetchone()
             if pass_row:
+                # Keep the passport's crown in step with the user's current subscription.
+                if int(pass_row["sub_tier"] or 0) != sub_tier:
+                    conn.execute(
+                        "UPDATE user_public_passports SET sub_tier = ? WHERE user_id = ?", (sub_tier, user_id)
+                    )
                 has_public_passport = int(bool(pass_row["is_public"]))
                 if not ign:
                     ign = pass_row["primary_ign"] or ""
