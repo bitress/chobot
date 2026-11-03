@@ -6222,6 +6222,7 @@ def _ensure_presence_table(conn):
             ("ip_address", "VARCHAR(64)"),
             ("viewing_item", "VARCHAR(160)"),
             ("ordering_items", "TEXT"),
+            ("is_subscriber", "INTEGER DEFAULT 0"),
         ):
             try:
                 conn.execute(f"ALTER TABLE user_online_presence ADD COLUMN {column} {ddl}")
@@ -6563,6 +6564,8 @@ def api_presence_heartbeat():
             is_mod = bool(auth_user.get("is_mod"))
             role = "admin" if is_admin else "mod" if is_mod else "member"
             is_guest = 0
+            from api.sub_islands import get_user_sub_tier
+            is_subscriber = 1 if (get_user_sub_tier(auth_user) or auth_user.get("is_subscriber")) else 0
             if not session_id:
                 session_id = f"usr_{user_id}"
 
@@ -6598,6 +6601,7 @@ def api_presence_heartbeat():
             avatar_url = "https://acnhcdn.com/latest/NpcIcon/der00.png"
             role = "resident"
             is_guest = 1
+            is_subscriber = 0
             ign = str(data.get("ign") or "").strip()
             island_name = str(data.get("islandName") or "").strip()
             native_fruit = str(data.get("nativeFruit") or "Peach").strip()
@@ -6619,8 +6623,8 @@ def api_presence_heartbeat():
                 session_id, user_id, username, display_name, avatar_url, role, status,
                 current_activity, `current_path`, current_island, ign, island_name,
                 native_fruit, has_public_passport, is_guest, ip_hash, ip_address,
-                viewing_item, ordering_items, last_heartbeat, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                viewing_item, ordering_items, is_subscriber, last_heartbeat, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 username = excluded.username,
@@ -6639,6 +6643,7 @@ def api_presence_heartbeat():
                 ip_address = excluded.ip_address,
                 viewing_item = excluded.viewing_item,
                 ordering_items = excluded.ordering_items,
+                is_subscriber = excluded.is_subscriber,
                 last_heartbeat = excluded.last_heartbeat
         """, (
             session_id, user_id, username, display_name, avatar_url, role, status,
@@ -6646,7 +6651,7 @@ def api_presence_heartbeat():
             native_fruit, has_public_passport, is_guest,
             hashlib.sha256((_visitor_ip() or "127.0.0.1").encode()).hexdigest()[:16],
             _visitor_ip()[:64],
-            viewing_item, ordering_json,
+            viewing_item, ordering_json, is_subscriber,
             now, now
         ))
         conn.commit()
@@ -6830,6 +6835,7 @@ def api_presence_online():
                 "currentPath": r["current_path"] or "/",
                 "hasPublicPassport": bool(r["has_public_passport"]),
                 "isGuest": bool(r["is_guest"]),
+                "isSubscriber": bool(r.get("is_subscriber")),
                 "joinedMinutesAgo": minutes_ago,
                 "lastHeartbeat": r["last_heartbeat"],
             }
