@@ -101,6 +101,29 @@ def get_user_sub_tier(user: Optional[Dict[str, Any]]) -> Optional[int]:
     return None
 
 
+def is_server_booster(user: Optional[Dict[str, Any]]) -> bool:
+    """True when the user holds the Server Booster role (a perk, not a paid subscription)."""
+    if not user:
+        return False
+    return "Server Booster" in _normalize_user_roles(user.get("roles", []))
+
+
+def get_user_paid_tier(user: Optional[Dict[str, Any]]) -> int:
+    """Subscription tier counting only real sub roles (and staff); Server Booster alone is 0."""
+    if not user:
+        return 0
+    if user.get("is_admin") or user.get("is_mod"):
+        return 3
+    roles = _normalize_user_roles(user.get("roles", []))
+    if "ChoSoup" in roles or "y ChoSoup" in roles:
+        return 3
+    if "ChoColate" in roles or "y ChoColate" in roles:
+        return 2
+    if "ChoTato Club" in roles or "y ChoTato" in roles or "ChoFries" in roles:
+        return 1
+    return 0
+
+
 def _get_user_tiers(user: Optional[Dict[str, Any]]) -> List[str]:
     """Return matching tier names from the user's assigned roles."""
     if not user:

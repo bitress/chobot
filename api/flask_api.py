@@ -6040,11 +6040,10 @@ def _handle_problem(conn, handle: str, user_id: str) -> tuple[str, int] | None:
 
 
 def _passport_sub_tier(user: dict | None) -> int:
-    from api.sub_islands import get_user_sub_tier
-    tier = int(get_user_sub_tier(user) or 0) if user else 0
-    if not tier and user and user.get("is_subscriber"):
-        tier = 1
-    return tier
+    from api.sub_islands import get_user_paid_tier as get_user_sub_tier
+    # Only a real tier role counts. The user payload's bare "is_subscriber" flag is a loose
+    # access hint (set for staff and by heuristics), so it must not invent a ChoTato tier.
+    return int(get_user_sub_tier(user) or 0) if user else 0
 
 
 @app.route("/api/passport/username-available", methods=["GET"])
@@ -6310,6 +6309,7 @@ def _ensure_presence_table(conn):
             ("ordering_items", "TEXT"),
             ("is_subscriber", "INTEGER DEFAULT 0"),
             ("sub_tier", "INTEGER DEFAULT 0"),
+            ("is_booster", "INTEGER DEFAULT 0"),
         ):
             try:
                 conn.execute(f"ALTER TABLE user_online_presence ADD COLUMN {column} {ddl}")
@@ -6658,11 +6658,12 @@ def api_presence_heartbeat():
             is_mod = bool(auth_user.get("is_mod"))
             role = "admin" if is_admin else "mod" if is_mod else "member"
             is_guest = 0
-            from api.sub_islands import get_user_sub_tier
-            sub_tier = int(get_user_sub_tier(auth_user) or 0)
-            if not sub_tier and auth_user.get("is_subscriber"):
-                sub_tier = 1
+            from api.sub_islands import get_user_paid_tier, is_server_booster
+            # Real (paid) tier roles only: neither the bare "is_subscriber" flag nor the Server
+            # Booster perk may show up as a ChoTato tier. Boosters get their own flag.
+            sub_tier = int(get_user_paid_tier(auth_user) or 0)
             is_subscriber = 1 if sub_tier else 0
+            is_booster = 1 if (not sub_tier and is_server_booster(auth_user)) else 0
             if not session_id:
                 session_id = f"usr_{user_id}"
 
@@ -6706,6 +6707,7 @@ def api_presence_heartbeat():
             is_guest = 1
             is_subscriber = 0
             sub_tier = 0
+            is_booster = 0
             ign = str(data.get("ign") or "").strip()
             island_name = str(data.get("islandName") or "").strip()
             native_fruit = str(data.get("nativeFruit") or "Peach").strip()
@@ -6727,8 +6729,8 @@ def api_presence_heartbeat():
                 session_id, user_id, username, display_name, avatar_url, role, status,
                 current_activity, `current_path`, current_island, ign, island_name,
                 native_fruit, has_public_passport, is_guest, ip_hash, ip_address,
-                viewing_item, ordering_items, is_subscriber, sub_tier, last_heartbeat, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                viewing_item, ordering_items, is_subscriber, sub_tier, is_booster, last_heartbeat, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 username = excluded.username,
@@ -6749,6 +6751,7 @@ def api_presence_heartbeat():
                 ordering_items = excluded.ordering_items,
                 is_subscriber = excluded.is_subscriber,
                 sub_tier = excluded.sub_tier,
+                is_booster = excluded.is_booster,
                 last_heartbeat = excluded.last_heartbeat
         """, (
             session_id, user_id, username, display_name, avatar_url, role, status,
@@ -6756,7 +6759,7 @@ def api_presence_heartbeat():
             native_fruit, has_public_passport, is_guest,
             hashlib.sha256((_visitor_ip() or "127.0.0.1").encode()).hexdigest()[:16],
             _visitor_ip()[:64],
-            viewing_item, ordering_json, is_subscriber, sub_tier,
+            viewing_item, ordering_json, is_subscriber, sub_tier, is_booster,
             now, now
         ))
         conn.commit()
@@ -6940,8 +6943,9 @@ def api_presence_online():
                 "currentPath": r["current_path"] or "/",
                 "hasPublicPassport": bool(r["has_public_passport"]),
                 "isGuest": bool(r["is_guest"]),
-                "isSubscriber": bool(r.get("is_subscriber")),
-                "subTier": int(r.get("sub_tier") or (1 if r.get("is_subscriber") else 0)),
+                "isSubscriber": int(r.get("sub_tier") or 0) > 0,
+                "subTier": int(r.get("sub_tier") or 0),
+                "isBooster": bool(r.get("is_booster")) and not int(r.get("sub_tier") or 0),
                 "joinedMinutesAgo": minutes_ago,
                 "lastHeartbeat": r["last_heartbeat"],
             }
