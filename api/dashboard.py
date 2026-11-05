@@ -49,7 +49,6 @@ from utils.db_migration import (
     inspect_sqlite_source,
     migrate_sqlite_to_mariadb_detailed,
 )
-from utils.helpers import clean_text
 from utils.ops_status import (
     backup_dir_path,
     build_health_payload,
@@ -1451,30 +1450,14 @@ def _merge_dashboard_fs_islands(db_islands: list[dict]) -> list[dict]:
 def _find_island_filesystem_meta(island_id: str, display_name: str | None = None) -> dict:
     """Return filesystem metadata used by the legacy island detail page."""
     upper = (display_name or island_id).upper()
-    fs_path = fs_type = None
-    for directory, itype in [(Config.DIR_FREE, "Free"), (Config.DIR_VIP, "VIP"), (getattr(Config, "DIR_ORDER", None), "Order")]:
-        if not directory:
-            continue
-        if itype == "Order" and os.path.isdir(directory):
-            order_key = (getattr(Config, "ORDER_BOT_ISLAND", None) or os.path.basename(directory)).upper()
-            if upper == order_key or island_id.lower() == order_key.lower():
-                basename_matches = clean_text(os.path.basename(directory)) in {clean_text(order_key), clean_text("SYSBOT-ACNH-ORDERS")}
-                has_order_files = any(os.path.exists(os.path.join(directory, fname)) for fname in ("Dodo.txt", "Visitors.txt", "Villagers.txt"))
-                if basename_matches or has_order_files:
-                    fs_path, fs_type = directory, itype
-                    break
-        for candidate_name in [upper, island_id]:
-            candidate = os.path.join(directory, candidate_name)
-            if os.path.isdir(candidate):
-                fs_path, fs_type = candidate, itype
-                break
-        if fs_path:
-            break
+    # Live values come from the SysBot telemetry cache, not the SysBot folders.
+    fs_islands = _collect_fs_islands()
+    telem = fs_islands.get(upper) or fs_islands.get(str(island_id).upper())
     return {
-        "fs_path": fs_path,
-        "fs_type": fs_type,
-        "fs_dodo": _read_file(fs_path, "Dodo.txt") if fs_path else None,
-        "fs_visitors": _parse_visitor_value(_read_file(fs_path, "Visitors.txt")) if fs_path else None,
+        "fs_path": None,
+        "fs_type": telem.get("fs_type") if telem else None,
+        "fs_dodo": telem.get("fs_dodo") if telem else None,
+        "fs_visitors": str(telem.get("fs_visitors")) if telem and telem.get("fs_visitors") is not None else None,
     }
 
 

@@ -140,11 +140,7 @@ class TwitchBot(commands.Bot):
         search_term_raw = name.strip()
         search_term = normalize_text(search_term_raw)
         
-        villager_map = self.data_manager.get_villagers([
-            Config.VILLAGERS_DIR,
-            Config.TWITCH_VILLAGERS_DIR,
-            Config.ORDER_BOT_DIR,
-        ])
+        villager_map = self.data_manager.get_villagers()
         
         found_locs_raw = villager_map.get(search_term)
 

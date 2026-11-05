@@ -486,10 +486,7 @@ class SuggestionSelect(discord.ui.Select):
                 found_locations = self.cog.data_manager.cache.get(selected_key)
             is_villager = False
         elif self.search_type == "villager":
-            v_map = self.cog.data_manager.get_villagers([
-                Config.VILLAGERS_DIR,
-                Config.TWITCH_VILLAGERS_DIR
-            ])
+            v_map = self.cog.data_manager.get_villagers()
             found_locations = v_map.get(selected_key)
             is_villager = True
 
@@ -580,10 +577,7 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
         search_term = normalize_text(raw)
 
         if self.search_type == "villager":
-            villager_map = self.cog.data_manager.get_villagers([
-                Config.VILLAGERS_DIR,
-                Config.TWITCH_VILLAGERS_DIR
-            ])
+            villager_map = self.cog.data_manager.get_villagers()
             found_locations = villager_map.get(search_term)
 
             if found_locations:
@@ -724,10 +718,7 @@ class FindResultView(discord.ui.View):
         await interaction.response.defer()
 
         if self.search_type == "villager":
-            villager_map = self.cog.data_manager.get_villagers([
-                Config.VILLAGERS_DIR,
-                Config.TWITCH_VILLAGERS_DIR
-            ])
+            villager_map = self.cog.data_manager.get_villagers()
             found_locations = villager_map.get(self.last_query)
             if found_locations:
                 nooki_data = await NookipediaClient.get_villager_info(self.last_query)
@@ -915,10 +906,7 @@ class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
         search_term = normalize_text(raw)
 
         # 1. Check Villagers
-        villager_map = cog.data_manager.get_villagers([
-            Config.VILLAGERS_DIR,
-            Config.TWITCH_VILLAGERS_DIR
-        ])
+        villager_map = cog.data_manager.get_villagers()
         found_villager_locs = villager_map.get(search_term)
 
         # 2. Check Items
@@ -1260,10 +1248,7 @@ class _FindPanelVillagerModal(discord.ui.Modal, title="🐾 Search Villagers"):
         raw = self.query.value.strip()
         search_term = normalize_text(raw)
 
-        villager_map = cog.data_manager.get_villagers([
-            Config.VILLAGERS_DIR,
-            Config.TWITCH_VILLAGERS_DIR
-        ])
+        villager_map = cog.data_manager.get_villagers()
         found_locations = villager_map.get(search_term)
 
         result_view = FindResultView(
@@ -2379,10 +2364,7 @@ class DiscordCommandCog(commands.Cog):
 
     def _villagers_on_island(self, island_clean: str) -> list[str]:
         """Reverse-lookup villager display names currently residing on *island_clean*."""
-        villager_map = self.data_manager.get_villagers([
-            Config.VILLAGERS_DIR,
-            Config.TWITCH_VILLAGERS_DIR,
-        ])
+        villager_map = self.data_manager.get_villagers()
 
         found = []
         for key, locations in villager_map.items():
@@ -3213,10 +3195,7 @@ class DiscordCommandCog(commands.Cog):
             return
 
         search_term = normalize_text(name)
-        villager_map = self.data_manager.get_villagers([
-            Config.VILLAGERS_DIR,
-            Config.TWITCH_VILLAGERS_DIR
-        ])
+        villager_map = self.data_manager.get_villagers()
 
         found_locations = villager_map.get(search_term)
 

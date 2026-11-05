@@ -122,7 +122,7 @@ class DataManager:
         (e.g. 'Bonita, Dalangin') with NO coordinates or sectors, matching
         the exact format used across Discord, Twitch, and Web APIs.
         """
-        from utils.nhl_map_parser import get_island_map_data, locate_nhl_file
+        from utils.nhl_map_parser import get_island_map_data
 
         logger.info("[NHL] Scanning island .nhl files to build item index...")
         self.last_refresh_attempt = datetime.now()
@@ -138,17 +138,8 @@ class DataManager:
             if isl:
                 candidate_islands.add(isl.strip())
 
-        for base_dir in [getattr(Config, "VILLAGERS_DIR", None), getattr(Config, "TWITCH_VILLAGERS_DIR", None)]:
-            if base_dir and os.path.exists(base_dir):
-                try:
-                    for entry in os.listdir(base_dir):
-                        if os.path.isdir(os.path.join(base_dir, entry)):
-                            candidate_islands.add(entry.strip())
-                except OSError:
-                    pass
-
         if not candidate_islands:
-            logger.warning("[NHL] No island directories or configured islands found.")
+            logger.warning("[NHL] No configured islands found.")
             return False
 
         temp_cache = {}
@@ -161,10 +152,6 @@ class DataManager:
             known_lookup[clean_text(isl)] = isl
 
         for island_name in sorted(candidate_islands):
-            filepath, exists, _ = locate_nhl_file(island_name)
-            if not exists or not filepath:
-                continue
-
             try:
                 map_data = get_island_map_data(island_name)
                 if not map_data.get("ok"):

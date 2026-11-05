@@ -171,10 +171,7 @@ class Config:
     # Data Source (nhl | sheets | auto)
     ITEM_DATA_SOURCE = os.getenv('ITEM_DATA_SOURCE', 'nhl').strip().lower()
 
-    VILLAGERS_DIR = _clean_path(os.getenv('VILLAGERS_DIR'))
-    TWITCH_VILLAGERS_DIR = _clean_path(os.getenv('TWITCH_VILLAGERS_DIR'))
-    ORDER_BOT_DIR = _clean_path(os.getenv('ORDER_BOT_DIR') or os.getenv('ORDER_BOR_DIR'))
-    ORDER_BOT_ISLAND = os.getenv('ORDER_BOT_ISLAND', 'SYSBOT-ACNH-ORDERS')
+    ORDER_BOT_ISLAND = os.getenv('ORDER_BOT_ISLAND', 'Sinta')
     ORDER_BOT_CHANNEL_ID = _get_int('ORDER_BOT_CHANNEL_ID', 1175672083183829075)
     ORDER_BOT_DISCORD_ID = _get_int('ORDER_BOT_DISCORD_ID', 1175671093445537802)
     ORDER_BOT_TWITCH_CHANNEL = os.getenv('ORDER_BOT_TWITCH_CHANNEL') or TWITCH_CHANNEL
@@ -302,9 +299,6 @@ class Config:
         """Return True if SYSBOT_API_URL is set."""
         return bool(cls.SYSBOT_API_URL)
 
-    DIR_FREE = TWITCH_VILLAGERS_DIR
-    DIR_VIP = VILLAGERS_DIR
-    DIR_ORDER = ORDER_BOT_DIR
 
     # Island Lists (fallback defaults; dynamically updated at runtime from Discord sub-category)
     SUB_ISLANDS = [

@@ -2116,12 +2116,10 @@ def reveal_dodo(name):
             required_roles = json.loads(row["required_roles"] or "[]")
         except (ValueError, TypeError):
             required_roles = []
-    elif Config.DIR_VIP:
-        for candidate in [target, name]:
-            if os.path.isdir(os.path.join(Config.DIR_VIP, candidate)):
-                island_cat = "member"
-                island_type = "VIP"
-                break
+    elif target in {str(n).strip().upper() for n in Config.SUB_ISLANDS}:
+        # No DB row: fall back to the configured sub-island list, not the SysBot folders.
+        island_cat = "member"
+        island_type = "VIP"
 
     # Safety: member islands must never become public because required_roles is empty.
     effective_required_roles, resolved_channel_id, _access_source = _resolved_island_required_roles(
@@ -2643,7 +2641,7 @@ def find_villager():
     if not query:
         return f"Hey {user}, type !villager <n> to search."
 
-    villager_map, _source = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
+    villager_map, _source = _get_villager_map()
     if not villager_map:
         return f"Hey {user}, the search service is not available right now. Please try again later."
 
@@ -2674,7 +2672,7 @@ def api_find_villager():
 
     original_query = query
     query, alias_used = _resolve_search_alias("villager", query)
-    villager_map, source = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR])
+    villager_map, source = _get_villager_map()
     if not villager_map:
         _log_command_search("villager", original_query, found=False, source=source)
         return jsonify({"error": "Service unavailable - villager cache is not loaded"}), 503
@@ -2763,7 +2761,7 @@ def api_search_similar():
         return jsonify({"error": "query is required"}), 400
 
     if kind == "villager":
-        data, source = _get_villager_map([Config.VILLAGERS_DIR, Config.TWITCH_VILLAGERS_DIR, Config.ORDER_BOT_DIR])
+        data, source = _get_villager_map()
         choices = list(data.keys())
     else:
         cache, _last_update, _refresh_interval, source = _get_item_cache()
@@ -2848,60 +2846,9 @@ def get_islands():
             "port_index": idx,
         }
 
-    # 2. Check disk directories and attach filesystem paths
-    if Config.DIR_VIP and os.path.exists(Config.DIR_VIP):
-        with os.scandir(Config.DIR_VIP) as entries:
-            for entry in entries:
-                if entry.is_dir():
-                    name = entry.name.strip().upper()
-                    if name in all_islands:
-                        all_islands[name]["path"] = entry.path
-                    else:
-                        all_islands[name] = {
-                            "name": name,
-                            "display_name": entry.name.strip(),
-                            "type": "VIP",
-                            "cat": "member",
-                            "path": entry.path,
-                            "port_index": 999,
-                        }
+    # Islands come only from the port list above and the DB below; the SysBot
+    # folders (DIR_VIP / DIR_FREE / DIR_ORDER) are not scanned.
 
-    if Config.DIR_FREE and os.path.exists(Config.DIR_FREE):
-        with os.scandir(Config.DIR_FREE) as entries:
-            for entry in entries:
-                if entry.is_dir():
-                    name = entry.name.strip().upper()
-                    if name in all_islands:
-                        all_islands[name]["path"] = entry.path
-                    else:
-                        all_islands[name] = {
-                            "name": name,
-                            "display_name": entry.name.strip(),
-                            "type": "Free",
-                            "cat": "public",
-                            "path": entry.path,
-                            "port_index": 999,
-                        }
-
-    if Config.DIR_ORDER and os.path.exists(Config.DIR_ORDER):
-        order_name = (Config.ORDER_BOT_ISLAND or os.path.basename(Config.DIR_ORDER) or "Sinta").strip().upper()
-        if order_name in all_islands:
-            all_islands[order_name]["path"] = Config.DIR_ORDER
-        with os.scandir(Config.DIR_ORDER) as entries:
-            for entry in entries:
-                if entry.is_dir():
-                    name = entry.name.strip().upper()
-                    if name in all_islands:
-                        all_islands[name]["path"] = entry.path
-                    else:
-                        all_islands[name] = {
-                            "name": name,
-                            "display_name": entry.name.strip(),
-                            "type": "Order",
-                            "cat": "order",
-                            "path": entry.path,
-                            "port_index": 999,
-                        }
 
     # 3. Incorporate any additional DB islands
     for name, db_meta in db_map.items():
@@ -7179,45 +7126,7 @@ def api_presence_poll_waves():
 # ISLAND MAP & SECTOR RADAR ROUTES (Powered by HttpApiServer.cs)
 # -------------------------------------------------------------
 
-def _convert_website_items_to_compact_dots(nhl_data: dict, island_name: str) -> dict:
-    """
-    Converts full .nhl parsed item layout into compact {success: True, dots, names} format.
-    Used when live RAM is temporarily unreachable to ensure API contract compatibility.
-    """
-    items = nhl_data.get("items") or []
-    names: list[str] = []
-    name_to_idx: dict[str, int] = {}
-    dots: list[list[Any]] = []
-
-    for it in items:
-        x = it.get("x")
-        y = it.get("y")
-        if x is None or y is None:
-            continue
-        name = str(it.get("name") or "Unknown")
-        if name not in name_to_idx:
-            name_to_idx[name] = len(names)
-            names.append(name)
-        n_idx = name_to_idx[name]
-        count = int(it.get("count") or 1)
-        is_diy = 1 if it.get("diy") else 0
-        hex_id = str(it.get("itemIdHex") or "0000")
-        category = str(it.get("category") or "other")
-        dots.append([int(x), int(y), n_idx, count, is_diy, hex_id, category])
-
-    return {
-        "success": True,
-        "island_name": island_name,
-        "gw": 224,
-        "gh": 192,
-        "total_items": len(dots),
-        "names": names,
-        "dots": dots,
-        "paths": [],
-        "players": [],
-        "source": "nhl_fallback",
-        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
+from utils.nhl_map_parser import convert_sysbot_map_data as _convert_sysbot_map_data_to_website
 
 
 def _resolve_target_island_and_client(island_param: Optional[str] = None):
@@ -7272,101 +7181,6 @@ def _resolve_target_island_and_client(island_param: Optional[str] = None):
     return resolved_island, target_url, client
 
 
-def _convert_sysbot_map_data_to_website(raw_data: dict, island_name: str) -> dict:
-    """
-    Transforms SysBot HttpApiServer.cs compact map data (dots & names array)
-    into the full website schema expected by InteractiveIslandMapModal.
-    """
-    cols = ["A", "B", "C", "D", "E", "F", "G"]
-    rows = [1, 2, 3, 4, 5, 6]
-    gw = int(raw_data.get("gw") or 224)
-    gh = int(raw_data.get("gh") or 192)
-    names = raw_data.get("names") or []
-    dots = raw_data.get("dots") or []
-
-    items = []
-    sectors: dict = {}
-    category_counts: dict = {}
-
-    for dot in dots:
-        if not isinstance(dot, (list, tuple)) or len(dot) < 7:
-            continue
-        x, y, name_idx, count, is_diy, item_id_hex, category = dot[:7]
-        name = names[name_idx] if 0 <= name_idx < len(names) else f"Item #{item_id_hex}"
-        col_idx = min(6, max(0, int(x) // 32))
-        row_idx = min(5, max(0, int(y) // 32))
-        sector = f"{cols[col_idx]}{rows[row_idx]}"
-
-        cat_str = str(category or "other").lower()
-        category_counts[cat_str] = category_counts.get(cat_str, 0) + 1
-
-        img_url = ""
-        try:
-            from utils.nhl_map_parser import _get_catalog_item
-            cat_entry = _get_catalog_item(str(item_id_hex))
-            if cat_entry and cat_entry.get("imageUrl"):
-                img_url = cat_entry["imageUrl"]
-        except Exception:
-            pass
-
-        item_obj = {
-            "name": name,
-            "category": cat_str,
-            "diy": bool(is_diy),
-            "itemIdHex": str(item_id_hex),
-            "x": int(x),
-            "y": int(y),
-            "sector": sector,
-            "count": int(count) if int(count) > 1 else 1,
-            "record_index": int(x) * gh + int(y),
-            "imageUrl": img_url,
-            "source": "HttpApiServer.cs",
-        }
-        items.append(item_obj)
-        sectors.setdefault(sector, []).append(item_obj)
-
-    sector_summary = {}
-    for sec, sec_items in sectors.items():
-        sec_cat_counts: dict = {}
-        for it in sec_items:
-            c = it["category"]
-            sec_cat_counts[c] = sec_cat_counts.get(c, 0) + 1
-        top_cats = sorted(sec_cat_counts.items(), key=lambda kv: kv[1], reverse=True)[:3]
-        sector_summary[sec] = {
-            "total_items": len(sec_items),
-            "top_categories": [cat for cat, _ in top_cats],
-            "sample_items": [i["name"] for i in sec_items[:5]],
-        }
-
-    return {
-        "ok": True,
-        "island": island_name,
-        "status": "live_ram",
-        "file_found": True,
-        "source": "HttpApiServer.cs",
-        "grid": {
-            "width": gw,
-            "height": gh,
-            "acre_size": 32,
-            "cols": cols,
-            "rows": rows,
-        },
-        "stats": {
-            "total_items": len(items),
-            "unique_categories": len(category_counts),
-            "category_counts": category_counts,
-        },
-        "sector_summary": sector_summary,
-        "sectors": sectors,
-        "items": items,
-        "names": names,
-        "dots": dots,
-        "paths": raw_data.get("paths") or [],
-        "players": raw_data.get("players") or [],
-        "generated_at": raw_data.get("generated_at"),
-    }
-
-
 @app.route("/api/islands/<island_name>/map", methods=["GET"])
 def api_get_island_map(island_name: str):
     """
@@ -7402,23 +7216,16 @@ def api_get_island_map(island_name: str):
     except Exception as exc:
         logging.getLogger("flask_api").debug(f"SysBot HttpApiServer live map data query note for {resolved_island}: {exc}")
 
-    # 2. Fallback: parse local .nhl file if SysBot is offline/unreachable
-    try:
-        from utils.nhl_map_parser import get_island_map_data
-        data = get_island_map_data(resolved_island, force_refresh=force)
-        res = {"ok": True, **data}
-        map_cache.set(cache_key, res, ttl=30.0)
-        return jsonify(res)
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "island": resolved_island,
-            "status": "error",
-            "error": "Failed to retrieve map data.",
-            "items": [],
-            "sectors": {},
-            "sector_summary": {},
-        }), 500
+    # SysBot is the only map source (no .nhl files on disk).
+    return jsonify({
+        "ok": False,
+        "island": resolved_island,
+        "status": "offline",
+        "error": "Island map is unavailable: SysBot is offline or unreachable.",
+        "items": [],
+        "sectors": {},
+        "sector_summary": {},
+    }), 503
 
 
 @app.route("/api/island/map/data", methods=["GET"])
@@ -7491,20 +7298,12 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
     except Exception as exc:
         logging.getLogger("flask_api").debug(f"SysBot live map data fetch note for {resolved_island}: {exc}")
 
-    # 2. Fallback: Parse .nhl file if SysBot is offline/unreachable
-    try:
-        from utils.nhl_map_parser import get_island_map_data
-        data = get_island_map_data(resolved_island, force_refresh=force)
-        if fmt in ("website", "unified", "modal"):
-            res = {"ok": True, "source": "nhl_fallback", **data}
-            map_cache.set(cache_key, res, ttl=30.0)
-            return jsonify(res)
-
-        compact = _convert_website_items_to_compact_dots(data, resolved_island)
-        map_cache.set(cache_key, compact, ttl=30.0)
-        return jsonify(compact)
-    except Exception as exc:
-        return jsonify({"success": False, "error": _safe_error(exc), "island_name": resolved_island}), 500
+    # SysBot is the only map source (no .nhl files on disk).
+    return jsonify({
+        "success": False,
+        "error": "Island map is unavailable: SysBot is offline or unreachable.",
+        "island_name": resolved_island,
+    }), 503
 
 
 @app.route("/api/islands/<island_name>/map/search", methods=["GET"])
@@ -7616,23 +7415,10 @@ def api_search_island_map(island_name: str):
 
 @app.route("/api/islands/maps", methods=["GET"])
 def api_list_island_maps():
-    """
-    Lists available islands and the detection status of their maprefresh.nhl.
-    """
-    from utils.nhl_map_parser import locate_nhl_file
-    islands_to_check = [
-        "SILAKBO", "TALA", "SINAGTALA", "TADHANA", "TINIG", "DALANGIN", "HIRAYA", "LUMINA", "MUTYA"
-    ]
-    status_list = []
-    for isl in islands_to_check:
-        filepath, exists, checked = locate_nhl_file(isl)
-        status_list.append({
-            "island": isl,
-            "has_nhl": exists,
-            "file_path": filepath if exists else None,
-            "expected_paths": checked,
-        })
-    return jsonify({"ok": True, "islands": status_list})
+    """Lists islands whose live map is currently available from SysBot."""
+    from utils.nhl_map_parser import get_island_map_telemetry
+    telem = get_island_map_telemetry()
+    return jsonify({"ok": True, **telem})
 
 
 
