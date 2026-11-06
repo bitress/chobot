@@ -23,6 +23,7 @@ import requests
 from discord import app_commands
 from discord.ext import commands, tasks
 from thefuzz import process, fuzz
+from rapidfuzz import fuzz as rf_fuzz
 
 from utils.config import Config
 from utils.database import connect_db, connect_async_db
@@ -1935,36 +1936,79 @@ class DiscordCommandCog(commands.Cog):
                 ephemeral=True
             )
 
+    def _item_autocomplete_index(self) -> list[tuple[str, tuple[str, ...]]]:
+        """(key, words) for every cached item; rebuilt whenever the cache dict is swapped."""
+        with self.data_manager.lock:
+            cache = self.data_manager.cache
+            if getattr(self, "_ac_index_src", None) is cache:
+                return self._ac_index
+            keys = sorted(k for k in cache.keys() if not k.startswith("_"))
+        self._ac_index = [(k, tuple(k.split())) for k in keys]
+        self._ac_index_src = cache
+        return self._ac_index
+
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-        """Filter items from cache for autocomplete"""
+        """Suggest cached items: exact/prefix/word matches first, fuzzy fallback for typos."""
+        return await asyncio.to_thread(self._item_autocomplete_choices, current)
+
+    def _item_autocomplete_choices(self, current: str) -> list[app_commands.Choice[str]]:
         try:
-            if not current:
-                # Return empty list for no input
+            q = self.data_manager.normalize_text(current or "")
+            if not q:
                 return []
-            
+
+            index = self._item_autocomplete_index()
+            q_words = q.split()
+            # "<name> diy" and "<name> recipe" point at the same thing; only show "recipe" when asked for
+            want_recipe = "recipe" in q
+
+            ranked: list[tuple[int, int, str]] = []
+            for key, words in index:
+                if not want_recipe and key.endswith(" recipe"):
+                    continue
+                if key == q:
+                    tier = 0
+                elif key.startswith(q):
+                    tier = 1
+                elif any(w.startswith(q) for w in words):
+                    tier = 2
+                elif q in key:
+                    tier = 3
+                elif len(q_words) > 1 and all(any(w.startswith(qw) for w in words) for qw in q_words):
+                    tier = 4  # e.g. "iron chair" -> "ironwood chair"
+                else:
+                    continue
+                ranked.append((tier, len(key), key))
+
+            ranked.sort()
+            picked = [k for _, _, k in ranked[:25]]
+
+            # Typo fallback (e.g. "nook mils"): every query word must closely match some word of the item
+            if len(picked) < 25 and len(q) >= 3:
+                def word_score(qw: str, words: tuple[str, ...]) -> float:
+                    if len(qw) < 3:
+                        return 100.0 if any(w.startswith(qw) for w in words) else 0.0
+                    return max(max(rf_fuzz.ratio(qw, w), rf_fuzz.ratio(qw, w[:len(qw)])) for w in words)
+
+                seen = set(picked)
+                fuzzy: list[tuple[float, int, str]] = []
+                for key, words in index:
+                    if key in seen or (not want_recipe and key.endswith(" recipe")):
+                        continue
+                    score = min(word_score(qw, words) for qw in q_words)
+                    if score >= 80:
+                        fuzzy.append((-score, len(key), key))
+                fuzzy.sort()
+                picked += [k for _, _, k in fuzzy[:25 - len(picked)]]
+
             with self.data_manager.lock:
-                # Filter out internal keys like _display and _index
-                all_keys = [k for k in self.data_manager.cache.keys() if not k.startswith("_")]
                 display_map = self.data_manager.cache.get("_display", {})
-            
-            # Limit the number of keys to search for performance
-            # Discord autocomplete timeout is 3 seconds
-            search_keys = all_keys[:5000] if len(all_keys) > 5000 else all_keys
-            
-            # Use fuzzy matching to find top matches
-            matches = process.extract(current, search_keys, limit=25, scorer=fuzz.partial_ratio)
-            
-            choices = []
-            for match_key, score in matches:
-                if score > 50:
-                    display_name = display_map.get(match_key, match_key.title())
-                    # Truncate if too long (Discord limit is 100)
-                    choices.append(app_commands.Choice(name=display_name[:100], value=match_key))
-            
-            return choices
+            return [
+                app_commands.Choice(name=display_map.get(k, k.title())[:100], value=k[:100])
+                for k in picked
+            ]
         except Exception as e:
             logger.error(f"[DISCORD] Error in item_autocomplete: {e}")
-            # Return empty list on error to prevent crashes
             return []
 
     async def fetch_islands(self):
