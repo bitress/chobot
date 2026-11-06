@@ -187,6 +187,11 @@ FORCE_EDIT_SECONDS    = 300.0  # re-edit an unchanged panel at least this often 
 REFRESH_CONCURRENCY   = 4      # parallel panel refreshes
 
 
+# Sticky panels: after a message lands in a panel channel, repost the panel at the bottom.
+STICKY_DELAY_SECONDS    = 5.0   # wait for the channel to go quiet this long before reposting
+STICKY_MAX_WAIT_SECONDS = 30.0  # ...but never hold a repost back longer than this in busy channels
+
+
 CATALOG_ITEM_LIMIT    = 100
 
 

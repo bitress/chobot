@@ -14,7 +14,7 @@ from typing import Any
 from utils.acnh_catalog import ACNHCatalog
 from utils.config import Config
 
-from .constants import FORCE_EDIT_SECONDS, MAX_STACK, PANEL_EMBED_COLOR_WARN, PANEL_FOOTER_ICON, PANEL_FOOTER_TEXT, PLOT_MAX, PLOT_MIN, REFRESH_CONCURRENCY, SUB_RULES_MSG
+from .constants import FORCE_EDIT_SECONDS, MAX_STACK, PANEL_EMBED_COLOR_WARN, PANEL_FOOTER_ICON, PANEL_FOOTER_TEXT, PLOT_MAX, PLOT_MIN, REFRESH_CONCURRENCY, STICKY_DELAY_SECONDS, STICKY_MAX_WAIT_SECONDS, SUB_RULES_MSG
 from .state import _close_http
 from .db import _get_panel_row, _init_tables, _load_all_panels, _load_sanrio_wizard_state, _panel_channel_ids_cached, _upsert_panel
 from .islands import _access_denied, _canonical_island, _infer_island, _sub_category_id, _user_can_target
@@ -50,6 +50,11 @@ class DropBotCog(commands.Cog, name="DropBot"):
         self.bot = bot
         self._sigs: dict[str, _PanelSig] = {}   # channel_id -> _PanelSig
         self._dead_panels: set[str] = set()    # channel_ids whose panel message no longer exists
+        # Sticky panels: channel_id -> (island, panel message_id), kept in sync with the DB.
+        self._panel_channels: dict[int, tuple[str, int]] = {}
+        self._channel_locks: dict[int, asyncio.Lock] = {}   # serialises refresh vs. repost per channel
+        self._bump_tasks: dict[int, asyncio.Task] = {}      # pending debounced reposts
+        self._bump_first_seen: dict[int, float] = {}        # when the pending repost was first requested
 
     async def cog_load(self) -> None:
         await asyncio.to_thread(_init_tables)
@@ -73,6 +78,8 @@ class DropBotCog(commands.Cog, name="DropBot"):
 
     async def cog_unload(self) -> None:
         self.auto_refresh_panels_loop.cancel()
+        for task in self._bump_tasks.values():
+            task.cancel()
         self.bot.remove_dynamic_items(*ALL_REGISTERED_DYNAMIC_ITEMS)
         await _close_http()
 
@@ -94,6 +101,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
             if p.get("channel_id") and p.get("message_id") and p.get("island_name")
             and str(p["channel_id"]) not in self._dead_panels
         ]
+        self._sync_panel_channels(panels)
         if not panels:
             return
         sem = asyncio.Semaphore(REFRESH_CONCURRENCY)
@@ -107,8 +115,12 @@ class DropBotCog(commands.Cog, name="DropBot"):
             return
         island = p["island_name"]
 
-        async with sem:
+        async with sem, self._lock_for(channel_id):
             try:
+                # A sticky repost may have moved the panel while we waited for the lock.
+                known = self._panel_channels.get(channel_id)
+                if known:
+                    message_id = known[1]
                 channel = self.bot.get_channel(channel_id)
                 if not channel:
                     try:
@@ -181,6 +193,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
                                 await candidate.edit(embed=embed, view=IslandPanelView(island, status))
                                 self._sigs[cid] = _PanelSig(sig, now, is_running, is_valid_dodo)
                                 await asyncio.to_thread(_upsert_panel, channel_id, island, candidate.id)
+                                self._panel_channels[channel_id] = (island, candidate.id)
                                 logger.info("[DropBot] Recovered panel message %s in channel %s for %s", candidate.id, cid, island)
                                 return
                     except Exception as exc:
@@ -191,6 +204,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
                     msg = await channel.send(embed=embed, view=IslandPanelView(island, status))
                     self._sigs[cid] = _PanelSig(sig, now, is_running, is_valid_dodo)
                     await asyncio.to_thread(_upsert_panel, channel_id, island, msg.id)
+                    self._panel_channels[channel_id] = (island, msg.id)
                     logger.info("[DropBot] Auto-reposted panel message %s in channel %s for %s", msg.id, cid, island)
                 except Exception as exc:
                     logger.warning("[DropBot] Failed to auto-repost panel in channel %s: %s", cid, exc)
@@ -201,6 +215,98 @@ class DropBotCog(commands.Cog, name="DropBot"):
     @auto_refresh_panels_loop.before_loop
     async def before_auto_refresh_panels_loop(self) -> None:
         await self.bot.wait_until_ready()
+
+    # ── Sticky panels ─────────────────────────────────────────────────────────
+
+    def _lock_for(self, channel_id: int) -> asyncio.Lock:
+        lock = self._channel_locks.get(channel_id)
+        if lock is None:
+            lock = self._channel_locks[channel_id] = asyncio.Lock()
+        return lock
+
+    def _sync_panel_channels(self, panels: list[dict]) -> None:
+        """Rebuild the channel -> (island, message_id) map from DB rows."""
+        mapping: dict[int, tuple[str, int]] = {}
+        for p in panels:
+            try:
+                mapping[int(p["channel_id"])] = (p["island_name"], int(p["message_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        self._panel_channels = mapping
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Any new message in a panel channel buries the panel: queue a repost to the bottom."""
+        channel_id = message.channel.id
+        known = self._panel_channels.get(channel_id)
+        if not known or message.id == known[1]:
+            return
+        if self.bot.user and message.author.id == self.bot.user.id and message.embeds:
+            title = (message.embeds[0].title or "").lower()
+            if known[0].lower() in title and message.components:
+                return  # our own freshly posted panel
+        self._schedule_bump(channel_id)
+
+    def _schedule_bump(self, channel_id: int) -> None:
+        """Debounce reposts: wait for STICKY_DELAY_SECONDS of quiet, capped at STICKY_MAX_WAIT_SECONDS."""
+        now = time.monotonic()
+        pending = self._bump_tasks.get(channel_id)
+        if pending and not pending.done():
+            first = self._bump_first_seen.get(channel_id, now)
+            if now - first >= STICKY_MAX_WAIT_SECONDS - STICKY_DELAY_SECONDS:
+                return  # busy channel: let the pending repost fire instead of postponing it again
+            pending.cancel()
+        else:
+            self._bump_first_seen[channel_id] = now
+        self._bump_tasks[channel_id] = asyncio.create_task(self._bump_after_delay(channel_id))
+
+    async def _bump_after_delay(self, channel_id: int) -> None:
+        try:
+            await asyncio.sleep(STICKY_DELAY_SECONDS)
+        except asyncio.CancelledError:
+            return
+        try:
+            await self._bump_panel(channel_id)
+        except Exception as exc:
+            logger.warning("[DropBot] Sticky repost failed in channel %s: %s", channel_id, exc, exc_info=exc)
+        finally:
+            if self._bump_tasks.get(channel_id) is asyncio.current_task():
+                self._bump_tasks.pop(channel_id, None)
+                self._bump_first_seen.pop(channel_id, None)
+
+    async def _bump_panel(self, channel_id: int) -> None:
+        """Repost the panel as the newest message, then delete the old one.
+
+        Send-then-delete (not delete-then-send) so a concurrent refresh that hits the
+        old id finds the new panel via history instead of posting a duplicate.
+        """
+        async with self._lock_for(channel_id):
+            known = self._panel_channels.get(channel_id)
+            channel = self.bot.get_channel(channel_id)
+            if not known or channel is None or not hasattr(channel, "history"):
+                return
+            island, old_id = known
+
+            # Already at the bottom? Nothing to do.
+            async for last in channel.history(limit=1):
+                if last.id == old_id:
+                    return
+
+            status = await fetch_island_live_status(island)
+            embed = await _build_panel_embed(island, status)
+            new_msg = await channel.send(embed=embed, view=IslandPanelView(island, status))
+            await asyncio.to_thread(_upsert_panel, channel_id, island, new_msg.id)
+            self._panel_channels[channel_id] = (island, new_msg.id)
+            self._dead_panels.discard(str(channel_id))
+            self._sigs[str(channel_id)] = _PanelSig(
+                _embed_signature(embed),
+                time.monotonic(),
+                bool(status.get("is_running", True)) if status else True,
+                bool(status.get("is_dodo_valid", True)) if status else True,
+            )
+
+            with contextlib.suppress(discord.NotFound, discord.Forbidden, discord.HTTPException):
+                await channel.get_partial_message(old_id).delete()
 
     # ── Shared: post a panel in a channel ─────────────────────────────────────
 
@@ -214,6 +320,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
         embed = await _build_panel_embed(island, status_data)
         panel_msg = await channel.send(embed=embed, view=IslandPanelView(island_name=island, status_data=status_data))
         await asyncio.to_thread(_upsert_panel, channel.id, island, panel_msg.id)
+        self._panel_channels[channel.id] = (island, panel_msg.id)
         self._dead_panels.discard(str(channel.id))
         self._sigs.pop(str(channel.id), None)
         return panel_msg
