@@ -910,16 +910,29 @@ FIND_PANELS_FILE = Path("find_panels.json")
 FIND_PANEL_REFRESH_MINUTES = 5
 
 
-def build_find_panel_embed(guild_icon: str | None = None, stats: dict | None = None) -> discord.Embed:
+def build_find_panel_embed(
+    guild_icon: str | None = None, stats: dict | None = None, find_mention: str | None = None
+) -> discord.Embed:
     """Build the persistent Find Station panel embed.
 
     ``stats`` (from DiscordCommandCog._find_panel_stats) adds a live summary line;
     the panel is re-rendered every FIND_PANEL_REFRESH_MINUTES to keep it current.
+    ``find_mention`` is the clickable ``</find:id>`` mention; tapping it opens Discord's
+    command form, which has live item autocomplete (the buttons' modals cannot).
     """
     lines = [
         "Search every Sub Island for items and villagers.",
-        "Results are only visible to you.",
         "",
+    ]
+    if find_mention:
+        lines += [
+            f"## Click ➡️ {find_mention} ⬅️ and type the item name",
+            "Pick from the suggestions as you type. Or use the buttons below (results only visible to you).",
+            "",
+        ]
+    else:
+        lines += ["Results are only visible to you.", ""]
+    lines += [
         "**Status:** 🟢 online · 🔴 offline · ⚪ unknown",
         "**Tip:** Not sure of the spelling? Type part of a name and pick from the suggestions.",
     ]
@@ -2172,7 +2185,34 @@ class DiscordCommandCog(commands.Cog):
             stats = await self._find_panel_stats()
         except Exception as exc:
             logger.warning(f"[DISCORD] Find Station stats unavailable: {exc}")
-        return build_find_panel_embed(guild_icon=resolve_guild_icon(guild_or_ctx, self.bot), stats=stats)
+        guild = guild_or_ctx if isinstance(guild_or_ctx, discord.Guild) else getattr(guild_or_ctx, "guild", None)
+        return build_find_panel_embed(
+            guild_icon=resolve_guild_icon(guild_or_ctx, self.bot),
+            stats=stats,
+            find_mention=await self._command_mention("find", guild),
+        )
+
+    async def _command_mention(self, name: str, guild: discord.abc.Snowflake | None) -> str | None:
+        """Clickable ``</name:id>`` for a synced slash command; guild copy preferred, cached per guild.
+
+        Commands are synced both per-guild and globally, and each copy has its own ID,
+        so the guild's own copy is looked up first.
+        """
+        cache: dict = self.__dict__.setdefault("_cmd_mention_cache", {})
+        cache_key = (name, getattr(guild, "id", None))
+        if cache.get(cache_key):
+            return cache[cache_key]
+        for scope in ([guild] if guild else []) + [None]:
+            try:
+                cmds = await self.bot.tree.fetch_commands(guild=scope)
+            except discord.HTTPException as exc:
+                logger.warning(f"[DISCORD] Could not fetch commands (guild={getattr(scope, 'id', None)}): {exc}")
+                continue
+            cmd = next((c for c in cmds if c.name == name), None)
+            if cmd:
+                cache[cache_key] = cmd.mention
+                return cmd.mention
+        return None
 
     @staticmethod
     def _load_find_panels() -> list[dict]:
@@ -2227,6 +2267,7 @@ class DiscordCommandCog(commands.Cog):
             embed = build_find_panel_embed(
                 guild_icon=resolve_guild_icon(getattr(channel, "guild", None) or channel, self.bot),
                 stats=stats,
+                find_mention=await self._command_mention("find", getattr(channel, "guild", None)),
             )
             try:
                 await channel.get_partial_message(panel["message_id"]).edit(embed=embed, view=FindPanelView())
