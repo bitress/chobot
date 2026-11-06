@@ -30,6 +30,7 @@ from utils.database import connect_db, connect_async_db
 from utils.helpers import normalize_text, get_best_suggestions, clean_text
 from utils.island_access import configured_subscription_role_ids, is_mod, resolved_island_required_roles
 from utils.nookipedia import NookipediaClient
+from utils.acnh_catalog import ACNHCatalog
 from utils.nickname_format import is_valid_acnh_nickname, nickname_warning_for, NICKNAME_FORMAT_EXAMPLE
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
 from utils.ops_status import create_sqlite_backup, get_maintenance_settings
@@ -483,6 +484,15 @@ def island_online_state(payload: Any) -> bool | None:
     return str(payload.get("status", "")).upper() == "ONLINE"
 
 
+def _stock_description(locations: str | None, known: bool = True) -> str | None:
+    """Dropdown option subtitle like "📍 3 islands: Hiraya, Lakan, Galak" (Discord caps it at 100 chars)."""
+    islands = [x.strip() for x in (locations or "").split(",") if x.strip()]
+    if not islands:
+        return "Not on any Sub Island right now" if known else None
+    text = f"📍 {len(islands)} island{'s' if len(islands) != 1 else ''}: {', '.join(islands)}"
+    return text if len(text) <= 100 else text[:99] + "…"
+
+
 class SuggestionSelect(discord.ui.Select):
     """Dropdown select for choosing from suggestions"""
 
@@ -491,8 +501,19 @@ class SuggestionSelect(discord.ui.Select):
         self.search_type = search_type
         self.private = private
 
+        # Where each match is right now, shown under its name (cached data only, no SysBot calls)
+        if search_type == "villager":
+            locations = cog.data_manager._villager_cache or {}
+        else:
+            with cog.data_manager.lock:
+                locations = cog.data_manager.cache
+
         options = [
-            discord.SelectOption(label=str(disp)[:100], value=str(norm_key)[:100])
+            discord.SelectOption(
+                label=str(disp)[:100],
+                value=str(norm_key)[:100],
+                description=_stock_description(locations.get(norm_key), known=bool(locations)),
+            )
             for (norm_key, disp) in suggestions[:25]
         ]
 
@@ -656,6 +677,9 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
                 cache = self.cog.data_manager.cache
                 keys = [k for k in cache.keys() if k != "_display"]
                 found_locations = cache.get(search_term)
+
+            if not found_locations:
+                search_term, found_locations = await self.cog.resolve_single_item_match(search_term)
 
             if found_locations:
                 with self.cog.data_manager.lock:
@@ -982,6 +1006,13 @@ class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
             display_map = cache.get("_display", {})
             item_display = display_map.get(search_term, raw)
 
+        # 2b. Exactly one item matches (e.g. "nook mils"): open it rather than a one-option dropdown
+        if not found_villager_locs and not found_item_locs and not cog.is_villager_name(search_term):
+            single_key, single_locs = await cog.resolve_single_item_match(search_term)
+            if single_locs:
+                search_term, found_item_locs = single_key, single_locs
+                item_display = display_map.get(single_key, raw)
+
         # 3. Direct hit: Villager on island
         if found_villager_locs:
             result_view = FindResultView(
@@ -1237,6 +1268,9 @@ class _FindPanelItemModal(discord.ui.Modal, title="🔍 Search Items"):
             cache = cog.data_manager.cache
             keys = [k for k in cache.keys() if k != "_display"]
             found_locations = cache.get(search_term)
+
+        if not found_locations:
+            search_term, found_locations = await cog.resolve_single_item_match(search_term)
 
         result_view = FindResultView(
             cog=cog, last_query=search_term, last_display=raw,
@@ -2011,6 +2045,27 @@ class DiscordCommandCog(commands.Cog):
         with self.data_manager.lock:
             all_keys = [k for k in self.data_manager.cache.keys() if not k.startswith("_")]
         return await asyncio.to_thread(get_best_suggestions, query, all_keys, limit)
+
+    async def resolve_single_item_match(self, search_term: str) -> tuple[str, str | None]:
+        """When a non-exact query has exactly one match (e.g. "nook mils"), return (its key, its locations)
+        so callers can show the result directly instead of a one-option dropdown. Else (search_term, None)."""
+        keys = await asyncio.to_thread(self.rank_item_keys, search_term, 2)
+        if len(keys) == 1:
+            with self.data_manager.lock:
+                locs = self.data_manager.cache.get(keys[0])
+            if locs:
+                return keys[0], locs
+        return search_term, None
+
+    def is_villager_name(self, search_term: str) -> bool:
+        """Exact villager name (on an island or not), so an item auto-match never hijacks a villager search."""
+        if search_term in (self.data_manager._villager_cache or {}):
+            return True
+        try:
+            hits = ACNHCatalog.get_instance().search_villagers(search_term, limit=1)
+        except Exception:
+            return False
+        return bool(hits) and self.data_manager.normalize_text(hits[0].name) == search_term
 
     async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         """Suggest cached items as the user types."""
@@ -3350,6 +3405,9 @@ class DiscordCommandCog(commands.Cog):
             cache = self.data_manager.cache
             keys = [k for k in cache.keys() if k != "_display"]
             found_locations = cache.get(search_term)
+
+        if not found_locations:
+            search_term, found_locations = await self.resolve_single_item_match(search_term)
 
         if found_locations:
             with self.data_manager.lock:
