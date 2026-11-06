@@ -677,7 +677,7 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
                     )
                 return
 
-            suggestion_keys = get_best_suggestions(search_term, keys, limit=8)
+            suggestion_keys = await self.cog.suggest_item_keys(search_term, limit=8)
             with self.cog.data_manager.lock:
                 display_map = self.cog.data_manager.cache.get("_display", {})
             suggestions = [(k, display_map.get(k, k)) for k in suggestion_keys]
@@ -1057,7 +1057,7 @@ class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
         v_suggestions = [(m[0], pretty_name(m[0])) for m in v_matches if m[1] > 75]
         v_top_score = v_matches[0][1] if (v_matches and len(v_matches[0]) > 1) else 0
 
-        item_keys_suggestions = get_best_suggestions(search_term, item_keys, limit=8)
+        item_keys_suggestions = await cog.suggest_item_keys(search_term, limit=8)
         i_suggestions = [(k, display_map.get(k, k)) for k in item_keys_suggestions]
 
         if v_suggestions and (v_top_score >= 85 or not i_suggestions):
@@ -1257,7 +1257,7 @@ class _FindPanelItemModal(discord.ui.Modal, title="🔍 Search Items"):
                 )
             return
 
-        suggestion_keys = get_best_suggestions(search_term, keys, limit=8)
+        suggestion_keys = await cog.suggest_item_keys(search_term, limit=8)
         with cog.data_manager.lock:
             display_map = cog.data_manager.cache.get("_display", {})
         suggestions = [(k, display_map.get(k, k)) for k in suggestion_keys]
@@ -1947,65 +1947,76 @@ class DiscordCommandCog(commands.Cog):
         self._ac_index_src = cache
         return self._ac_index
 
-    async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-        """Suggest cached items: exact/prefix/word matches first, fuzzy fallback for typos."""
-        return await asyncio.to_thread(self._item_autocomplete_choices, current)
+    def rank_item_keys(self, query: str, limit: int = 25) -> list[str]:
+        """Cached item keys matching `query`: exact, prefix, word-prefix, substring, all words; then typo-tolerant."""
+        q = self.data_manager.normalize_text(query or "")
+        if not q:
+            return []
 
-    def _item_autocomplete_choices(self, current: str) -> list[app_commands.Choice[str]]:
-        try:
-            q = self.data_manager.normalize_text(current or "")
-            if not q:
-                return []
+        index = self._item_autocomplete_index()
+        q_words = q.split()
+        # "<name> diy" and "<name> recipe" point at the same thing; only show "recipe" when asked for
+        want_recipe = "recipe" in q
 
-            index = self._item_autocomplete_index()
-            q_words = q.split()
-            # "<name> diy" and "<name> recipe" point at the same thing; only show "recipe" when asked for
-            want_recipe = "recipe" in q
+        ranked: list[tuple[int, int, str]] = []
+        for key, words in index:
+            if not want_recipe and key.endswith(" recipe"):
+                continue
+            if key == q:
+                tier = 0
+            elif key.startswith(q):
+                tier = 1
+            elif any(w.startswith(q) for w in words):
+                tier = 2
+            elif q in key:
+                tier = 3
+            elif len(q_words) > 1 and all(any(w.startswith(qw) for w in words) for qw in q_words):
+                tier = 4  # e.g. "iron chair" -> "ironwood chair"
+            else:
+                continue
+            ranked.append((tier, len(key), key))
 
-            ranked: list[tuple[int, int, str]] = []
+        ranked.sort()
+        picked = [k for _, _, k in ranked[:limit]]
+
+        # Typo fallback (e.g. "nook mils"): every query word must closely match some word of the item
+        if len(picked) < limit and len(q) >= 3:
+            def word_score(qw: str, words: tuple[str, ...]) -> float:
+                if len(qw) < 3:
+                    return 100.0 if any(w.startswith(qw) for w in words) else 0.0
+                return max(max(rf_fuzz.ratio(qw, w), rf_fuzz.ratio(qw, w[:len(qw)])) for w in words)
+
+            seen = set(picked)
+            fuzzy: list[tuple[float, int, str]] = []
             for key, words in index:
-                if not want_recipe and key.endswith(" recipe"):
+                if key in seen or (not want_recipe and key.endswith(" recipe")):
                     continue
-                if key == q:
-                    tier = 0
-                elif key.startswith(q):
-                    tier = 1
-                elif any(w.startswith(q) for w in words):
-                    tier = 2
-                elif q in key:
-                    tier = 3
-                elif len(q_words) > 1 and all(any(w.startswith(qw) for w in words) for qw in q_words):
-                    tier = 4  # e.g. "iron chair" -> "ironwood chair"
-                else:
-                    continue
-                ranked.append((tier, len(key), key))
+                score = min(word_score(qw, words) for qw in q_words)
+                if score >= 80:
+                    fuzzy.append((-score, len(key), key))
+            fuzzy.sort()
+            picked += [k for _, _, k in fuzzy[:limit - len(picked)]]
 
-            ranked.sort()
-            picked = [k for _, _, k in ranked[:25]]
+        return picked
 
-            # Typo fallback (e.g. "nook mils"): every query word must closely match some word of the item
-            if len(picked) < 25 and len(q) >= 3:
-                def word_score(qw: str, words: tuple[str, ...]) -> float:
-                    if len(qw) < 3:
-                        return 100.0 if any(w.startswith(qw) for w in words) else 0.0
-                    return max(max(rf_fuzz.ratio(qw, w), rf_fuzz.ratio(qw, w[:len(qw)])) for w in words)
+    async def suggest_item_keys(self, query: str, limit: int = 8) -> list[str]:
+        """'Did you mean' keys for a failed item search; falls back to the looser fuzzy matcher."""
+        keys = await asyncio.to_thread(self.rank_item_keys, query, limit)
+        if keys:
+            return keys
+        with self.data_manager.lock:
+            all_keys = [k for k in self.data_manager.cache.keys() if not k.startswith("_")]
+        return await asyncio.to_thread(get_best_suggestions, query, all_keys, limit)
 
-                seen = set(picked)
-                fuzzy: list[tuple[float, int, str]] = []
-                for key, words in index:
-                    if key in seen or (not want_recipe and key.endswith(" recipe")):
-                        continue
-                    score = min(word_score(qw, words) for qw in q_words)
-                    if score >= 80:
-                        fuzzy.append((-score, len(key), key))
-                fuzzy.sort()
-                picked += [k for _, _, k in fuzzy[:25 - len(picked)]]
-
+    async def item_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        """Suggest cached items as the user types."""
+        try:
+            keys = await asyncio.to_thread(self.rank_item_keys, current, 25)
             with self.data_manager.lock:
                 display_map = self.data_manager.cache.get("_display", {})
             return [
                 app_commands.Choice(name=display_map.get(k, k.title())[:100], value=k[:100])
-                for k in picked
+                for k in keys
             ]
         except Exception as e:
             logger.error(f"[DISCORD] Error in item_autocomplete: {e}")
@@ -3362,7 +3373,7 @@ class DiscordCommandCog(commands.Cog):
                 logger.info(f"[DISCORD] Item Hit: {search_term} -> Not on Sub Islands")
             return
 
-        suggestion_keys = get_best_suggestions(search_term, keys, limit=8)
+        suggestion_keys = await self.suggest_item_keys(search_term, limit=8)
 
         with self.data_manager.lock:
             display_map = cache.get("_display", {})
