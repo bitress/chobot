@@ -496,8 +496,12 @@ class SuggestionSelect(discord.ui.Select):
             for (norm_key, disp) in suggestions[:25]
         ]
 
+        noun = "villager" if search_type == "villager" else "item"
+        placeholder = f"Pick the {noun}..."
+        if len(options) > 1:
+            placeholder = f"Pick the {noun} ({len(options)} matches)..."
         super().__init__(
-            placeholder="Select the correct item...",
+            placeholder=placeholder,
             min_values=1,
             max_values=1,
             options=options
@@ -567,7 +571,7 @@ class SuggestionView(discord.ui.View):
     """View containing suggestion dropdown"""
 
     def __init__(self, cog, suggestions, search_type, author_id, private: bool = False):
-        super().__init__(timeout=60)
+        super().__init__(timeout=300)  # a 25-option list takes a moment to browse
         self.author_id = author_id
         self.add_item(SuggestionSelect(cog, suggestions, search_type, private=private))
 
@@ -677,7 +681,7 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
                     )
                 return
 
-            suggestion_keys = await self.cog.suggest_item_keys(search_term, limit=8)
+            suggestion_keys = await self.cog.suggest_item_keys(search_term, limit=25)
             with self.cog.data_manager.lock:
                 display_map = self.cog.data_manager.cache.get("_display", {})
             suggestions = [(k, display_map.get(k, k)) for k in suggestion_keys]
@@ -910,29 +914,16 @@ FIND_PANELS_FILE = Path("find_panels.json")
 FIND_PANEL_REFRESH_MINUTES = 5
 
 
-def build_find_panel_embed(
-    guild_icon: str | None = None, stats: dict | None = None, find_mention: str | None = None
-) -> discord.Embed:
+def build_find_panel_embed(guild_icon: str | None = None, stats: dict | None = None) -> discord.Embed:
     """Build the persistent Find Station panel embed.
 
     ``stats`` (from DiscordCommandCog._find_panel_stats) adds a live summary line;
     the panel is re-rendered every FIND_PANEL_REFRESH_MINUTES to keep it current.
-    ``find_mention`` is the clickable ``</find:id>`` mention; tapping it opens Discord's
-    command form, which has live item autocomplete (the buttons' modals cannot).
     """
     lines = [
         "Search every Sub Island for items and villagers.",
+        "Results are only visible to you.",
         "",
-    ]
-    if find_mention:
-        lines += [
-            f"## Click ➡️ {find_mention} ⬅️ and type the item name",
-            "Pick from the suggestions as you type. Or use the buttons below (results only visible to you).",
-            "",
-        ]
-    else:
-        lines += ["Results are only visible to you.", ""]
-    lines += [
         "**Status:** 🟢 online · 🔴 offline · ⚪ unknown",
         "**Tip:** Not sure of the spelling? Type part of a name and pick from the suggestions.",
     ]
@@ -1070,7 +1061,7 @@ class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
         v_suggestions = [(m[0], pretty_name(m[0])) for m in v_matches if m[1] > 75]
         v_top_score = v_matches[0][1] if (v_matches and len(v_matches[0]) > 1) else 0
 
-        item_keys_suggestions = await cog.suggest_item_keys(search_term, limit=8)
+        item_keys_suggestions = await cog.suggest_item_keys(search_term, limit=25)
         i_suggestions = [(k, display_map.get(k, k)) for k in item_keys_suggestions]
 
         if v_suggestions and (v_top_score >= 85 or not i_suggestions):
@@ -1270,7 +1261,7 @@ class _FindPanelItemModal(discord.ui.Modal, title="🔍 Search Items"):
                 )
             return
 
-        suggestion_keys = await cog.suggest_item_keys(search_term, limit=8)
+        suggestion_keys = await cog.suggest_item_keys(search_term, limit=25)
         with cog.data_manager.lock:
             display_map = cog.data_manager.cache.get("_display", {})
         suggestions = [(k, display_map.get(k, k)) for k in suggestion_keys]
@@ -2185,34 +2176,7 @@ class DiscordCommandCog(commands.Cog):
             stats = await self._find_panel_stats()
         except Exception as exc:
             logger.warning(f"[DISCORD] Find Station stats unavailable: {exc}")
-        guild = guild_or_ctx if isinstance(guild_or_ctx, discord.Guild) else getattr(guild_or_ctx, "guild", None)
-        return build_find_panel_embed(
-            guild_icon=resolve_guild_icon(guild_or_ctx, self.bot),
-            stats=stats,
-            find_mention=await self._command_mention("find", guild),
-        )
-
-    async def _command_mention(self, name: str, guild: discord.abc.Snowflake | None) -> str | None:
-        """Clickable ``</name:id>`` for a synced slash command; guild copy preferred, cached per guild.
-
-        Commands are synced both per-guild and globally, and each copy has its own ID,
-        so the guild's own copy is looked up first.
-        """
-        cache: dict = self.__dict__.setdefault("_cmd_mention_cache", {})
-        cache_key = (name, getattr(guild, "id", None))
-        if cache.get(cache_key):
-            return cache[cache_key]
-        for scope in ([guild] if guild else []) + [None]:
-            try:
-                cmds = await self.bot.tree.fetch_commands(guild=scope)
-            except discord.HTTPException as exc:
-                logger.warning(f"[DISCORD] Could not fetch commands (guild={getattr(scope, 'id', None)}): {exc}")
-                continue
-            cmd = next((c for c in cmds if c.name == name), None)
-            if cmd:
-                cache[cache_key] = cmd.mention
-                return cmd.mention
-        return None
+        return build_find_panel_embed(guild_icon=resolve_guild_icon(guild_or_ctx, self.bot), stats=stats)
 
     @staticmethod
     def _load_find_panels() -> list[dict]:
@@ -2267,7 +2231,6 @@ class DiscordCommandCog(commands.Cog):
             embed = build_find_panel_embed(
                 guild_icon=resolve_guild_icon(getattr(channel, "guild", None) or channel, self.bot),
                 stats=stats,
-                find_mention=await self._command_mention("find", getattr(channel, "guild", None)),
             )
             try:
                 await channel.get_partial_message(panel["message_id"]).edit(embed=embed, view=FindPanelView())
@@ -3340,20 +3303,22 @@ class DiscordCommandCog(commands.Cog):
 
         category = "Villager" if is_villager else "Item"
 
-        embed = discord.Embed(
-            title=f"{Config.EMOJI_FAIL} {category} Not Found: {pretty_name(search_term)}",
-            description=f"I couldn't find exactly that. Did you mean one of these?",
-            color=0xFF4444,
-        )
-
         if suggestions:
-            embed.add_field(
-                name=f"{Config.STAR_PINK} Suggestions",
-                value="\n".join([f"{Config.INDENT} {pretty_name(s)}" for s in suggestions[:5]]),
-                inline=False
+            embed = discord.Embed(
+                title=f"{Config.EMOJI_SEARCH} Matches for: {pretty_name(search_term)}",
+                description=f"Pick the {category.lower()} from the dropdown below to see where it is.",
+                color=discord.Color.teal(),
             )
+            shown = [f"{Config.INDENT} {pretty_name(s)}" for s in suggestions[:5]]
+            if len(suggestions) > 5:
+                shown.append(f"{Config.INDENT} *…and {len(suggestions) - 5} more in the dropdown*")
+            embed.add_field(name=f"{Config.STAR_PINK} Top matches", value="\n".join(shown), inline=False)
         else:
-            embed.description = f"I searched everywhere but couldn't find it.\n\n{Config.DROPBOT_INFO}"
+            embed = discord.Embed(
+                title=f"{Config.EMOJI_FAIL} {category} Not Found: {pretty_name(search_term)}",
+                description=f"I searched everywhere but couldn't find it.\n\n{Config.DROPBOT_INFO}",
+                color=0xFF4444,
+            )
 
         user = getattr(ctx, "author", getattr(ctx, "user", None))
         self._apply_result_footer(embed, user, private)
@@ -3414,7 +3379,7 @@ class DiscordCommandCog(commands.Cog):
                 logger.info(f"[DISCORD] Item Hit: {search_term} -> Not on Sub Islands")
             return
 
-        suggestion_keys = await self.suggest_item_keys(search_term, limit=8)
+        suggestion_keys = await self.suggest_item_keys(search_term, limit=25)
 
         with self.data_manager.lock:
             display_map = cache.get("_display", {})
