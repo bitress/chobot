@@ -450,12 +450,45 @@ def is_admin_only():
 
     return commands.check(predicate)
 
+def pretty_name(text: str) -> str:
+    """Capitalise a name for display without str.title()'s mangling.
+
+    str.title() turns "nook's" into "Nook'S" and "DIY" into "Diy". Names that
+    already carry capitals (catalog display names) are returned untouched.
+    """
+    text = str(text or "").strip()
+    if any(c.isupper() for c in text):
+        return text
+    return " ".join(w[:1].upper() + w[1:] for w in text.split(" "))
+
+
+def hey_line(user_id: int, private: bool, tail: str = "...") -> str | None:
+    """Mention line for public find replies.
+
+    Ephemeral replies are only visible to the requester, so the mention is noise there.
+    """
+    if private:
+        return None
+    return f"Hey <@{user_id}>{tail}"
+
+
+def island_online_state(payload: Any) -> bool | None:
+    """Online state of an island API payload: True, False, or None when unknown."""
+    if not isinstance(payload, dict):
+        return None
+    bot_online = payload.get("discord_bot_online")
+    if bot_online is not None:
+        return bool(bot_online)
+    return str(payload.get("status", "")).upper() == "ONLINE"
+
+
 class SuggestionSelect(discord.ui.Select):
     """Dropdown select for choosing from suggestions"""
 
-    def __init__(self, cog, suggestions, search_type):
+    def __init__(self, cog, suggestions, search_type, private: bool = False):
         self.cog = cog
         self.search_type = search_type
+        self.private = private
 
         options = [
             discord.SelectOption(label=str(disp)[:100], value=str(norm_key)[:100])
@@ -475,7 +508,7 @@ class SuggestionSelect(discord.ui.Select):
 
         with self.cog.data_manager.lock:
             display_name = self.cog.data_manager.cache.get("_display", {}).get(
-                selected_key, selected_key.title()
+                selected_key, pretty_name(selected_key)
             )
 
         found_locations = None
@@ -498,7 +531,7 @@ class SuggestionSelect(discord.ui.Select):
             island_map, _ = await self.cog._fetch_islands_api_snapshot()
             embed = self.cog.create_found_embed(
                 interaction, display_name, found_locations, is_villager, nooki_data,
-                island_map=island_map or {}
+                island_map=island_map or {}, private=self.private,
             )
 
             result_view = FindResultView(
@@ -507,17 +540,13 @@ class SuggestionSelect(discord.ui.Select):
                 last_display=display_name,
                 search_type=self.search_type,
                 author_id=interaction.user.id,
+                private=self.private,
             )
 
             if embed:
-                send_embeds = [embed]
-                if is_villager and nooki_data:
-                    house_embed = self.cog.create_villager_house_embed(interaction, display_name, nooki_data)
-                    if house_embed:
-                        send_embeds.append(house_embed)
                 await interaction.response.edit_message(
-                    content=f"Hey <@{interaction.user.id}>, look what I found!",
-                    embeds=send_embeds,
+                    content=hey_line(interaction.user.id, self.private, ", look what I found!"),
+                    embed=embed,
                     view=result_view,
                 )
             else:
@@ -536,10 +565,10 @@ class SuggestionSelect(discord.ui.Select):
 class SuggestionView(discord.ui.View):
     """View containing suggestion dropdown"""
 
-    def __init__(self, cog, suggestions, search_type, author_id):
+    def __init__(self, cog, suggestions, search_type, author_id, private: bool = False):
         super().__init__(timeout=60)
         self.author_id = author_id
-        self.add_item(SuggestionSelect(cog, suggestions, search_type))
+        self.add_item(SuggestionSelect(cog, suggestions, search_type, private=private))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Ensure only requester can use the menu"""
@@ -563,11 +592,12 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
         max_length=80,
     )
 
-    def __init__(self, cog, search_type: str, author_id: int):
+    def __init__(self, cog, search_type: str, author_id: int, private: bool = False):
         super().__init__()
         self.cog = cog
         self.search_type = search_type  # "item" or "villager"
         self.author_id = author_id
+        self.private = private
 
     async def on_submit(self, interaction: discord.Interaction):
         """Run the find logic for the entered query and edit the original message in place."""
@@ -575,6 +605,7 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
 
         raw = self.query.value.strip()
         search_term = normalize_text(raw)
+        hey = hey_line(self.author_id, self.private)
 
         if self.search_type == "villager":
             villager_map = self.cog.data_manager.get_villagers()
@@ -585,42 +616,35 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
                 island_map, _ = await self.cog._fetch_islands_api_snapshot()
                 embed = self.cog.create_found_embed(
                     interaction, search_term, found_locations, is_villager=True,
-                    nooki_data=nooki_data, island_map=island_map or {}
+                    nooki_data=nooki_data, island_map=island_map or {}, private=self.private,
                 )
                 result_view = FindResultView(
                     cog=self.cog, last_query=search_term, last_display=raw,
-                    search_type="villager", author_id=self.author_id
+                    search_type="villager", author_id=self.author_id, private=self.private,
                 )
                 if embed:
-                    send_embeds = [embed]
-                    if nooki_data:
-                        house_embed = self.cog.create_villager_house_embed(interaction, search_term, nooki_data)
-                        if house_embed:
-                            send_embeds.append(house_embed)
                     await interaction.edit_original_response(
-                        content=f"Hey <@{self.author_id}>, look who I found!",
-                        embeds=send_embeds, view=result_view
+                        content=hey_line(self.author_id, self.private, ", look who I found!"),
+                        embed=embed, view=result_view
                     )
                 else:
                     await interaction.edit_original_response(
-                        content=f"**{raw.title()}** is not currently on any Sub Island.",
+                        content=f"**{pretty_name(raw)}** is not currently on any Sub Island.",
                         embed=None, view=result_view
                     )
                 return
 
             # No hit — show suggestions
             matches = process.extract(search_term, list(villager_map.keys()), limit=3, scorer=fuzz.WRatio)
-            suggestions = [(m[0], m[0].title()) for m in matches if m[1] > 75]
-            embed_fail = self.cog.create_fail_embed(interaction, raw, [s[1] for s in suggestions], is_villager=True)
+            suggestions = [(m[0], pretty_name(m[0])) for m in matches if m[1] > 75]
+            embed_fail = self.cog.create_fail_embed(
+                interaction, raw, [s[1] for s in suggestions], is_villager=True, private=self.private
+            )
             if suggestions:
-                view = SuggestionView(self.cog, suggestions, "villager", self.author_id)
-                await interaction.edit_original_response(
-                    content=f"Hey <@{self.author_id}>...", embed=embed_fail, view=view
-                )
+                view = SuggestionView(self.cog, suggestions, "villager", self.author_id, private=self.private)
+                await interaction.edit_original_response(content=hey, embed=embed_fail, view=view)
             else:
-                await interaction.edit_original_response(
-                    content=f"Hey <@{self.author_id}>...", embed=embed_fail, view=None
-                )
+                await interaction.edit_original_response(content=hey, embed=embed_fail, view=None)
 
         else:  # item (default)
             with self.cog.data_manager.lock:
@@ -634,15 +658,15 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
                 island_map, _ = await self.cog._fetch_islands_api_snapshot()
                 embed = self.cog.create_found_embed(
                     interaction, display_name, found_locations, is_villager=False,
-                    island_map=island_map or {}
+                    island_map=island_map or {}, private=self.private,
                 )
                 result_view = FindResultView(
                     cog=self.cog, last_query=search_term, last_display=display_name,
-                    search_type="item", author_id=self.author_id
+                    search_type="item", author_id=self.author_id, private=self.private,
                 )
                 if embed:
                     await interaction.edit_original_response(
-                        content=f"Hey <@{self.author_id}>, look what I found!",
+                        content=hey_line(self.author_id, self.private, ", look what I found!"),
                         embed=embed, view=result_view
                     )
                 else:
@@ -656,16 +680,14 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
             with self.cog.data_manager.lock:
                 display_map = self.cog.data_manager.cache.get("_display", {})
             suggestions = [(k, display_map.get(k, k)) for k in suggestion_keys]
-            embed_fail = self.cog.create_fail_embed(interaction, raw, [disp for _, disp in suggestions])
+            embed_fail = self.cog.create_fail_embed(
+                interaction, raw, [disp for _, disp in suggestions], private=self.private
+            )
             if suggestions:
-                view = SuggestionView(self.cog, suggestions, "item", self.author_id)
-                await interaction.edit_original_response(
-                    content=f"Hey <@{self.author_id}>...", embed=embed_fail, view=view
-                )
+                view = SuggestionView(self.cog, suggestions, "item", self.author_id, private=self.private)
+                await interaction.edit_original_response(content=hey, embed=embed_fail, view=view)
             else:
-                await interaction.edit_original_response(
-                    content=f"Hey <@{self.author_id}>...", embed=embed_fail, view=None
-                )
+                await interaction.edit_original_response(content=hey, embed=embed_fail, view=None)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         logger.exception(f"[FindQueryModal] Error: {error}")
@@ -674,21 +696,31 @@ class FindQueryModal(discord.ui.Modal, title="🔍 Search Items & Villagers"):
 
 
 class FindResultView(discord.ui.View):
-    """Persistent button row attached to every find/villager result.
+    """Button row attached to every find/villager result.
 
     Buttons:
       🔍 Search Again  — opens FindQueryModal so the user can type a new query
       🔄 Refresh       — re-runs the same search against live data
       🎲 Random        — shows a random available item
+      🏠 House         — (villagers only) shows the villager's house info on demand
+
+    ``private`` marks results sent as ephemeral messages (Find Station panel):
+    they skip the requester mention and show data freshness in the footer instead.
     """
 
-    def __init__(self, cog, last_query: str, last_display: str, search_type: str, author_id: int):
+    def __init__(
+        self, cog, last_query: str, last_display: str, search_type: str, author_id: int,
+        private: bool = False,
+    ):
         super().__init__(timeout=120)
         self.cog = cog
         self.last_query = last_query        # normalised key used for the last search
         self.last_display = last_display    # human-readable display name
         self.search_type = search_type      # "item" or "villager"
         self.author_id = author_id
+        self.private = private
+        if search_type != "villager":
+            self.remove_item(self.btn_house)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -707,6 +739,7 @@ class FindResultView(discord.ui.View):
             cog=self.cog,
             search_type=self.search_type,
             author_id=self.author_id,
+            private=self.private,
         )
         await interaction.response.send_modal(modal)
 
@@ -717,6 +750,11 @@ class FindResultView(discord.ui.View):
         """Re-run the same query against live data and update the message."""
         await interaction.response.defer()
 
+        def refreshed(tail: str) -> str:
+            if self.private:
+                return "🔄 Refreshed"
+            return f"🔄 Refreshed — Hey <@{self.author_id}>{tail}"
+
         if self.search_type == "villager":
             villager_map = self.cog.data_manager.get_villagers()
             found_locations = villager_map.get(self.last_query)
@@ -725,26 +763,20 @@ class FindResultView(discord.ui.View):
                 island_map, _ = await self.cog._fetch_islands_api_snapshot()
                 embed = self.cog.create_found_embed(
                     interaction, self.last_query, found_locations, is_villager=True,
-                    nooki_data=nooki_data, island_map=island_map or {}
+                    nooki_data=nooki_data, island_map=island_map or {}, private=self.private,
                 )
                 if embed:
-                    send_embeds = [embed]
-                    if nooki_data:
-                        house_embed = self.cog.create_villager_house_embed(interaction, self.last_query, nooki_data)
-                        if house_embed:
-                            send_embeds.append(house_embed)
                     await interaction.edit_original_response(
-                        content=f"🔄 Refreshed — Hey <@{self.author_id}>, look who I found!",
-                        embeds=send_embeds, view=self
+                        content=refreshed(", look who I found!"), embed=embed, view=self
                     )
                 else:
                     await interaction.edit_original_response(
-                        content=f"🔄 Refreshed — **{self.last_display.title()}** is not on any Sub Island right now.",
+                        content=f"🔄 Refreshed — **{pretty_name(self.last_display)}** is not on any Sub Island right now.",
                         embed=None, view=self
                     )
             else:
                 await interaction.edit_original_response(
-                    content=f"🔄 Refreshed — **{self.last_display.title()}** could not be found.",
+                    content=f"🔄 Refreshed — **{pretty_name(self.last_display)}** could not be found.",
                     embed=None, view=self
                 )
         else:  # item
@@ -757,12 +789,11 @@ class FindResultView(discord.ui.View):
                 island_map, _ = await self.cog._fetch_islands_api_snapshot()
                 embed = self.cog.create_found_embed(
                     interaction, display_name, found_locations, is_villager=False,
-                    island_map=island_map or {}
+                    island_map=island_map or {}, private=self.private,
                 )
                 if embed:
                     await interaction.edit_original_response(
-                        content=f"🔄 Refreshed — Hey <@{self.author_id}>, look what I found!",
-                        embed=embed, view=self
+                        content=refreshed(", look what I found!"), embed=embed, view=self
                     )
                 else:
                     await interaction.edit_original_response(
@@ -794,26 +825,27 @@ class FindResultView(discord.ui.View):
             return
 
         random_key = random.choice(all_items)
-        display_name = display_map.get(random_key, random_key.title())
+        display_name = display_map.get(random_key, pretty_name(random_key))
         found_locations = None
         with self.cog.data_manager.lock:
             found_locations = self.cog.data_manager.cache.get(random_key)
 
         random_view = FindResultView(
             cog=self.cog, last_query=random_key, last_display=display_name,
-            search_type="item", author_id=self.author_id
+            search_type="item", author_id=self.author_id, private=self.private,
         )
 
         if found_locations:
             island_map, _ = await self.cog._fetch_islands_api_snapshot()
             embed = self.cog.create_found_embed(
                 interaction, display_name, found_locations, is_villager=False,
-                island_map=island_map or {}
+                island_map=island_map or {}, private=self.private,
             )
             if embed:
                 embed.title = f"🎲 Random: {display_name}"
                 await interaction.edit_original_response(
-                    content=f"🎲 Hey <@{self.author_id}>, here's a random item!",
+                    content="🎲 Here's a random item!" if self.private
+                    else f"🎲 Hey <@{self.author_id}>, here's a random item!",
                     embed=embed, view=random_view
                 )
                 return
@@ -822,6 +854,24 @@ class FindResultView(discord.ui.View):
             content=f"🎲 Random suggestion: **{display_name}** — try `!find {display_name}` to check availability!",
             embed=None, view=random_view
         )
+
+    # ── House (villagers only) ────────────────────────────────────────────────
+
+    @discord.ui.button(label="House", style=discord.ButtonStyle.secondary, emoji="🏠", row=0)
+    async def btn_house(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Show the villager's house info as a separate, requester-only message."""
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        nooki_data = await NookipediaClient.get_villager_info(self.last_query)
+        house_embed = (
+            self.cog.create_villager_house_embed(interaction, self.last_query, nooki_data, private=True)
+            if nooki_data else None
+        )
+        if house_embed:
+            await interaction.followup.send(embed=house_embed, ephemeral=True)
+        else:
+            await interaction.followup.send(
+                f"🏠 No house info available for **{pretty_name(self.last_display)}**.", ephemeral=True
+            )
 
     async def on_timeout(self):
         """Disable all buttons when the view times out."""
@@ -855,30 +905,40 @@ def resolve_guild_icon(target_or_interaction: Any, bot: Optional[Any] = None) ->
 # ── Find Station Panel ────────────────────────────────────────────────────────
 
 
-def build_find_panel_embed(guild_icon: str | None = None) -> discord.Embed:
-    """Build the persistent Find Station panel embed."""
+FIND_PANELS_FILE = Path("find_panels.json")
+FIND_PANEL_REFRESH_MINUTES = 5
+
+
+def build_find_panel_embed(guild_icon: str | None = None, stats: dict | None = None) -> discord.Embed:
+    """Build the persistent Find Station panel embed.
+
+    ``stats`` (from DiscordCommandCog._find_panel_stats) adds a live summary line;
+    the panel is re-rendered every FIND_PANEL_REFRESH_MINUTES to keep it current.
+    """
+    lines = [
+        "Search every Sub Island for items and villagers.",
+        "Results are only visible to you.",
+        "",
+        "**Status:** 🟢 online · 🔴 offline · ⚪ unknown",
+        "**Tip:** Not sure of the spelling? Type part of a name and pick from the suggestions.",
+    ]
+    if stats:
+        summary = [f"📦 **{stats['items']:,}** items", f"🐾 **{stats['villagers']:,}** villagers"]
+        if stats.get("islands_total"):
+            summary.append(f"🏝️ **{stats['islands_online']}/{stats['islands_total']}** islands online")
+        lines += ["", " · ".join(summary)]
+        if stats.get("updated_ts"):
+            lines.append(f"*Data updated <t:{stats['updated_ts']}:R>*")
+
     embed = discord.Embed(
         title=f"{Config.EMOJI_SEARCH} Find Station",
-        description=(
-            "Welcome to the **Chobot Find Station**!\n"
-            "Use the buttons below to search for items and villagers across all Sub Islands, "
-            "or roll the dice for a surprise pick.\n\n"
-            f"{Config.STAR_PINK} **Find Station** — Search both items & villagers in one place\n"
-            f"{Config.STAR_PINK} **Search Items** — Furniture, clothing, DIY recipes, and more\n"
-            f"{Config.STAR_PINK} **Search Villagers** — Find which island a villager is currently on\n"
-            f"{Config.STAR_PINK} **Random Item** — Discover something new"
-        ),
+        description="\n".join(lines),
         color=discord.Color.teal(),
     )
-    if guild_icon:
-        embed.set_author(name="ChoPaeng Camp", icon_url=guild_icon)
-        embed.set_thumbnail(url=guild_icon)
-    else:
-        embed.set_thumbnail(url="https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
+    embed.set_thumbnail(url=guild_icon or "https://nh-cdn.catalogue.ac/NpcIcon/brd09.png")
     if getattr(Config, "FOOTER_LINE", None):
         embed.set_image(url=Config.FOOTER_LINE)
-    icon = guild_icon or getattr(Config, "DEFAULT_PFP", None) or "https://nh-cdn.catalogue.ac/NpcIcon/cat23.png"
-    embed.set_footer(text="Chopaeng Camp™ • Powered by Chobot", icon_url=icon)
+    embed.set_footer(text="Chopaeng Camp™ • Powered by Chobot")
     return embed
 
 
@@ -921,27 +981,21 @@ class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
         if found_villager_locs:
             result_view = FindResultView(
                 cog=cog, last_query=search_term, last_display=raw,
-                search_type="villager", author_id=interaction.user.id
+                search_type="villager", author_id=interaction.user.id, private=True,
             )
             nooki_data = await NookipediaClient.get_villager_info(search_term)
             island_map, _ = await cog._fetch_islands_api_snapshot()
             embed = cog.create_found_embed(
                 interaction, search_term, found_villager_locs, is_villager=True,
-                nooki_data=nooki_data, island_map=island_map or {}
+                nooki_data=nooki_data, island_map=island_map or {}, private=True
             )
             if embed:
-                send_embeds = [embed]
-                if nooki_data:
-                    house_embed = cog.create_villager_house_embed(interaction, search_term, nooki_data)
-                    if house_embed:
-                        send_embeds.append(house_embed)
                 await interaction.followup.send(
-                    content=f"Hey <@{interaction.user.id}>, look who I found!",
-                    embeds=send_embeds, view=result_view, ephemeral=True
+                    embed=embed, view=result_view, ephemeral=True
                 )
             else:
                 await interaction.followup.send(
-                    content=f"**{raw.title()}** is not currently on any Sub Island.",
+                    content=f"**{pretty_name(raw)}** is not currently on any Sub Island.",
                     view=result_view, ephemeral=True
                 )
             return
@@ -950,15 +1004,14 @@ class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
         if found_item_locs:
             result_view = FindResultView(
                 cog=cog, last_query=search_term, last_display=item_display,
-                search_type="item", author_id=interaction.user.id
+                search_type="item", author_id=interaction.user.id, private=True,
             )
             island_map, _ = await cog._fetch_islands_api_snapshot()
             embed = cog.create_found_embed(
-                interaction, item_display, found_item_locs, is_villager=False, island_map=island_map or {}
+                interaction, item_display, found_item_locs, is_villager=False, island_map=island_map or {}, private=True
             )
             if embed:
                 await interaction.followup.send(
-                    content=f"Hey <@{interaction.user.id}>, look what I found!",
                     embed=embed, view=result_view, ephemeral=True
                 )
             else:
@@ -978,10 +1031,10 @@ class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
         if is_known_villager:
             result_view = FindResultView(
                 cog=cog, last_query=search_term, last_display=raw,
-                search_type="villager", author_id=interaction.user.id
+                search_type="villager", author_id=interaction.user.id, private=True,
             )
             await interaction.followup.send(
-                content=f"**{raw.title()}** is not currently on any Sub Island.",
+                content=f"**{pretty_name(raw)}** is not currently on any Sub Island.",
                 view=result_view, ephemeral=True
             )
             return
@@ -990,7 +1043,7 @@ class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
         if search_term in item_keys:
             result_view = FindResultView(
                 cog=cog, last_query=search_term, last_display=item_display,
-                search_type="item", author_id=interaction.user.id
+                search_type="item", author_id=interaction.user.id, private=True,
             )
             await interaction.followup.send(
                 content=f"**{item_display}** is not currently available on any Sub Island.",
@@ -1000,28 +1053,28 @@ class FindStationModal(discord.ui.Modal, title="🔍 Find Station"):
 
         # 7. Fuzzy suggestions: Check both villagers and items
         v_matches = process.extract(search_term, list(villager_map.keys()), limit=3, scorer=fuzz.WRatio) if villager_map else []
-        v_suggestions = [(m[0], m[0].title()) for m in v_matches if m[1] > 75]
+        v_suggestions = [(m[0], pretty_name(m[0])) for m in v_matches if m[1] > 75]
         v_top_score = v_matches[0][1] if (v_matches and len(v_matches[0]) > 1) else 0
 
         item_keys_suggestions = get_best_suggestions(search_term, item_keys, limit=8)
         i_suggestions = [(k, display_map.get(k, k)) for k in item_keys_suggestions]
 
         if v_suggestions and (v_top_score >= 85 or not i_suggestions):
-            embed_fail = cog.create_fail_embed(interaction, raw, [s[1] for s in v_suggestions], is_villager=True)
-            view = SuggestionView(cog, v_suggestions, "villager", interaction.user.id)
+            embed_fail = cog.create_fail_embed(interaction, raw, [s[1] for s in v_suggestions], is_villager=True, private=True)
+            view = SuggestionView(cog, v_suggestions, "villager", interaction.user.id, private=True)
             await interaction.followup.send(
-                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, view=view, ephemeral=True
+                embed=embed_fail, view=view, ephemeral=True
             )
         elif i_suggestions:
-            embed_fail = cog.create_fail_embed(interaction, raw, [disp for _, disp in i_suggestions])
-            view = SuggestionView(cog, i_suggestions, "item", interaction.user.id)
+            embed_fail = cog.create_fail_embed(interaction, raw, [disp for _, disp in i_suggestions], private=True)
+            view = SuggestionView(cog, i_suggestions, "item", interaction.user.id, private=True)
             await interaction.followup.send(
-                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, view=view, ephemeral=True
+                embed=embed_fail, view=view, ephemeral=True
             )
         else:
-            embed_fail = cog.create_fail_embed(interaction, raw, [])
+            embed_fail = cog.create_fail_embed(interaction, raw, [], private=True)
             await interaction.followup.send(
-                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, ephemeral=True
+                embed=embed_fail, ephemeral=True
             )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
@@ -1043,7 +1096,7 @@ class FindPanelView(discord.ui.View):
     # ── Unified Search (Items & Villagers) ────────────────────────────────────
 
     @discord.ui.button(
-        label="Find Station",
+        label="Search",
         style=discord.ButtonStyle.primary,
         emoji="🔍",
         custom_id="find_panel_btn_search",
@@ -1059,7 +1112,7 @@ class FindPanelView(discord.ui.View):
     # ── Search Items ──────────────────────────────────────────────────────────
 
     @discord.ui.button(
-        label="Search Items",
+        label="Items",
         style=discord.ButtonStyle.secondary,
         emoji="📦",
         custom_id="find_panel_btn_items",
@@ -1075,7 +1128,7 @@ class FindPanelView(discord.ui.View):
     # ── Search Villagers ──────────────────────────────────────────────────────
 
     @discord.ui.button(
-        label="Search Villagers",
+        label="Villagers",
         style=discord.ButtonStyle.secondary,
         emoji="🐾",
         custom_id="find_panel_btn_villagers",
@@ -1091,7 +1144,7 @@ class FindPanelView(discord.ui.View):
     # ── Random ────────────────────────────────────────────────────────────────
 
     @discord.ui.button(
-        label="Random Item",
+        label="Random",
         style=discord.ButtonStyle.secondary,
         emoji="🎲",
         custom_id="find_panel_btn_random",
@@ -1120,7 +1173,7 @@ class FindPanelView(discord.ui.View):
             return
 
         random_key = random.choice(all_items)
-        display_name = display_map.get(random_key, random_key.title())
+        display_name = display_map.get(random_key, pretty_name(random_key))
         with cog.data_manager.lock:
             found_locations = cog.data_manager.cache.get(random_key)
 
@@ -1129,19 +1182,19 @@ class FindPanelView(discord.ui.View):
             last_query=random_key,
             last_display=display_name,
             search_type="item",
-            author_id=interaction.user.id,
+            author_id=interaction.user.id, private=True,
         )
 
         if found_locations:
             island_map, _ = await cog._fetch_islands_api_snapshot()
             embed = cog.create_found_embed(
                 interaction, display_name, found_locations, is_villager=False,
-                island_map=island_map or {}
+                island_map=island_map or {}, private=True
             )
             if embed:
                 embed.title = f"🎲 Random: {display_name}"
                 await interaction.followup.send(
-                    content=f"🎲 Hey <@{interaction.user.id}>, here's a random item!",
+                    content="🎲 Here's a random item!",
                     embed=embed, view=result_view, ephemeral=True
                 )
                 return
@@ -1182,7 +1235,7 @@ class _FindPanelItemModal(discord.ui.Modal, title="🔍 Search Items"):
 
         result_view = FindResultView(
             cog=cog, last_query=search_term, last_display=raw,
-            search_type="item", author_id=interaction.user.id
+            search_type="item", author_id=interaction.user.id, private=True,
         )
 
         if found_locations:
@@ -1190,11 +1243,10 @@ class _FindPanelItemModal(discord.ui.Modal, title="🔍 Search Items"):
                 display_name = cog.data_manager.cache.get("_display", {}).get(search_term, raw)
             island_map, _ = await cog._fetch_islands_api_snapshot()
             embed = cog.create_found_embed(
-                interaction, display_name, found_locations, is_villager=False, island_map=island_map or {}
+                interaction, display_name, found_locations, is_villager=False, island_map=island_map or {}, private=True
             )
             if embed:
                 await interaction.followup.send(
-                    content=f"Hey <@{interaction.user.id}>, look what I found!",
                     embed=embed, view=result_view, ephemeral=True
                 )
             else:
@@ -1208,15 +1260,15 @@ class _FindPanelItemModal(discord.ui.Modal, title="🔍 Search Items"):
         with cog.data_manager.lock:
             display_map = cog.data_manager.cache.get("_display", {})
         suggestions = [(k, display_map.get(k, k)) for k in suggestion_keys]
-        embed_fail = cog.create_fail_embed(interaction, raw, [disp for _, disp in suggestions])
+        embed_fail = cog.create_fail_embed(interaction, raw, [disp for _, disp in suggestions], private=True)
         if suggestions:
-            view = SuggestionView(cog, suggestions, "item", interaction.user.id)
+            view = SuggestionView(cog, suggestions, "item", interaction.user.id, private=True)
             await interaction.followup.send(
-                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, view=view, ephemeral=True
+                embed=embed_fail, view=view, ephemeral=True
             )
         else:
             await interaction.followup.send(
-                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, ephemeral=True
+                embed=embed_fail, ephemeral=True
             )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
@@ -1253,7 +1305,7 @@ class _FindPanelVillagerModal(discord.ui.Modal, title="🐾 Search Villagers"):
 
         result_view = FindResultView(
             cog=cog, last_query=search_term, last_display=raw,
-            search_type="villager", author_id=interaction.user.id
+            search_type="villager", author_id=interaction.user.id, private=True,
         )
 
         if found_locations:
@@ -1261,36 +1313,30 @@ class _FindPanelVillagerModal(discord.ui.Modal, title="🐾 Search Villagers"):
             island_map, _ = await cog._fetch_islands_api_snapshot()
             embed = cog.create_found_embed(
                 interaction, search_term, found_locations, is_villager=True,
-                nooki_data=nooki_data, island_map=island_map or {}
+                nooki_data=nooki_data, island_map=island_map or {}, private=True
             )
             if embed:
-                send_embeds = [embed]
-                if nooki_data:
-                    house_embed = cog.create_villager_house_embed(interaction, search_term, nooki_data)
-                    if house_embed:
-                        send_embeds.append(house_embed)
                 await interaction.followup.send(
-                    content=f"Hey <@{interaction.user.id}>, look who I found!",
-                    embeds=send_embeds, view=result_view, ephemeral=True
+                    embed=embed, view=result_view, ephemeral=True
                 )
             else:
                 await interaction.followup.send(
-                    content=f"**{raw.title()}** is not currently on any Sub Island.",
+                    content=f"**{pretty_name(raw)}** is not currently on any Sub Island.",
                     view=result_view, ephemeral=True
                 )
             return
 
         matches = process.extract(search_term, list(villager_map.keys()), limit=3, scorer=fuzz.WRatio)
-        suggestions = [(m[0], m[0].title()) for m in matches if m[1] > 75]
-        embed_fail = cog.create_fail_embed(interaction, raw, [s[1] for s in suggestions], is_villager=True)
+        suggestions = [(m[0], pretty_name(m[0])) for m in matches if m[1] > 75]
+        embed_fail = cog.create_fail_embed(interaction, raw, [s[1] for s in suggestions], is_villager=True, private=True)
         if suggestions:
-            view = SuggestionView(cog, suggestions, "villager", interaction.user.id)
+            view = SuggestionView(cog, suggestions, "villager", interaction.user.id, private=True)
             await interaction.followup.send(
-                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, view=view, ephemeral=True
+                embed=embed_fail, view=view, ephemeral=True
             )
         else:
             await interaction.followup.send(
-                content=f"Hey <@{interaction.user.id}>...", embed=embed_fail, ephemeral=True
+                embed=embed_fail, ephemeral=True
             )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
@@ -1675,9 +1721,12 @@ class DiscordCommandCog(commands.Cog):
         # island_clean -> list of members currently waiting for a !senddodo reply.
         # Populated by send_dodo; cleared by island_monitor_loop on offline transition.
         self.pending_dodo_waiters: dict[str, list[discord.Member]] = {}
+        # Last stats rendered on the Find Station panels; skip edits when nothing changed.
+        self._find_panel_last_stats: dict | None = None
         self.island_monitor_loop.start()
         self.free_dodo_board_loop.start()
         self.island_status_sticky_loop.start()
+        self.find_panel_refresh_loop.start()
 
     def _refresh_order_island_lookup(self) -> None:
         """Refresh the fixed order-bot island lookup."""
@@ -2029,8 +2078,123 @@ class DiscordCommandCog(commands.Cog):
         self.island_monitor_loop.cancel()
         self.free_dodo_board_loop.cancel()
         self.island_status_sticky_loop.cancel()
+        self.find_panel_refresh_loop.cancel()
         if hasattr(self.bot, "change_status_loop") and self.bot.change_status_loop.is_running():
             self.bot.change_status_loop.cancel()
+
+    # ── Find Station panel: live stats + periodic refresh ─────────────────────
+
+    async def _find_panel_stats(self) -> dict:
+        """Item/villager counts, Sub Islands online and data freshness for the panel."""
+        with self.data_manager.lock:
+            items = sum(1 for k in self.data_manager.cache.keys() if not k.startswith("_"))
+        villagers = len(self.data_manager.get_villagers() or {})
+
+        island_map, _ = await self._fetch_islands_api_snapshot()
+        islands_total = len(Config.SUB_ISLANDS)
+        islands_online = 0
+        if island_map:
+            islands_online = sum(
+                1 for si in Config.SUB_ISLANDS
+                if island_online_state(island_map.get(clean_text(si))) is True
+            )
+        else:
+            islands_total = 0  # status unknown: hide the island count rather than show 0/N
+
+        last_update = self.data_manager.last_update
+        return {
+            "items": items,
+            "villagers": villagers,
+            "islands_online": islands_online,
+            "islands_total": islands_total,
+            "updated_ts": int(last_update.timestamp()) if last_update else None,
+        }
+
+    async def _build_find_panel(self, guild_or_ctx: Any) -> discord.Embed:
+        """Panel embed with live stats; falls back to the static panel if stats fail."""
+        stats = None
+        try:
+            stats = await self._find_panel_stats()
+        except Exception as exc:
+            logger.warning(f"[DISCORD] Find Station stats unavailable: {exc}")
+        return build_find_panel_embed(guild_icon=resolve_guild_icon(guild_or_ctx, self.bot), stats=stats)
+
+    @staticmethod
+    def _load_find_panels() -> list[dict]:
+        try:
+            data = json.loads(FIND_PANELS_FILE.read_text(encoding="utf-8"))
+            return [p for p in data if isinstance(p, dict) and p.get("channel_id") and p.get("message_id")]
+        except FileNotFoundError:
+            return []
+        except Exception as exc:
+            logger.warning(f"[DISCORD] Could not read {FIND_PANELS_FILE}: {exc}")
+            return []
+
+    @staticmethod
+    def _save_find_panels(panels: list[dict]) -> None:
+        try:
+            tmp = FIND_PANELS_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(panels, indent=2), encoding="utf-8")
+            tmp.replace(FIND_PANELS_FILE)
+        except Exception as exc:
+            logger.warning(f"[DISCORD] Could not write {FIND_PANELS_FILE}: {exc}")
+
+    def _register_find_panel(self, message: discord.Message) -> None:
+        """Remember a deployed panel so the refresh loop keeps its stats current."""
+        panels = [p for p in self._load_find_panels() if p["message_id"] != message.id]
+        panels.append({"channel_id": message.channel.id, "message_id": message.id})
+        self._save_find_panels(panels)
+
+    @tasks.loop(minutes=FIND_PANEL_REFRESH_MINUTES)
+    async def find_panel_refresh_loop(self):
+        """Re-render every deployed Find Station panel with fresh stats."""
+        panels = self._load_find_panels()
+        if not panels:
+            return
+
+        stats = await self._find_panel_stats()
+        if stats == self._find_panel_last_stats:
+            return
+
+        kept: list[dict] = []
+        for panel in panels:
+            channel = self.bot.get_channel(panel["channel_id"])
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(panel["channel_id"])
+                except discord.NotFound:
+                    continue  # channel deleted: forget the panel
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    logger.warning(f"[DISCORD] Find Station channel {panel['channel_id']} unavailable: {exc}")
+                    kept.append(panel)
+                    continue
+
+            embed = build_find_panel_embed(
+                guild_icon=resolve_guild_icon(getattr(channel, "guild", None) or channel, self.bot),
+                stats=stats,
+            )
+            try:
+                await channel.get_partial_message(panel["message_id"]).edit(embed=embed, view=FindPanelView())
+                kept.append(panel)
+            except discord.NotFound:
+                logger.info(f"[DISCORD] Find Station panel {panel['message_id']} was deleted; forgetting it.")
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning(f"[DISCORD] Failed to refresh Find Station panel {panel['message_id']}: {exc}")
+                kept.append(panel)
+
+        if kept != panels:
+            self._save_find_panels(kept)
+        self._find_panel_last_stats = stats
+
+    @find_panel_refresh_loop.before_loop
+    async def before_find_panel_refresh_loop(self):
+        await self.bot.wait_until_ready()
+
+    @find_panel_refresh_loop.error
+    async def find_panel_refresh_loop_error(self, error: Exception):
+        logger.error(f"[DISCORD] find_panel_refresh_loop crashed: {error}", exc_info=True)
+        if not self.find_panel_refresh_loop.is_running():
+            self.find_panel_refresh_loop.restart()
 
     async def _refresh_island_status_sticky_message(
             self,
@@ -2881,56 +3045,90 @@ class DiscordCommandCog(commands.Cog):
         # If no channel found, return bold text
         return f"**{island_name.title()}**"
 
-    def create_found_embed(self, ctx_or_interaction, search_term, location_string, is_villager=False, nooki_data=None, island_map=None):
+    def _apply_result_footer(self, embed: discord.Embed, user, private: bool) -> None:
+        """Footer for find results.
+
+        Public replies credit the requester. Ephemeral replies are only seen by the
+        requester, so they show when the island data was last refreshed instead.
+        """
+        if private:
+            embed.set_footer(
+                text="Chopaeng Camp™ • Island data updated",
+                icon_url=getattr(Config, "DEFAULT_PFP", None),
+            )
+            embed.timestamp = self.data_manager.last_update
+            return
+        avatar = user.avatar.url if (user and user.avatar) else Config.DEFAULT_PFP
+        name = user.display_name if user else "Unknown"
+        embed.set_footer(text=f"Requested by {name}", icon_url=avatar)
+        embed.timestamp = discord.utils.utcnow()
+
+    def create_found_embed(
+        self, ctx_or_interaction, search_term, location_string, is_villager=False,
+        nooki_data=None, island_map=None, private: bool = False,
+    ):
 
         user = getattr(ctx_or_interaction, "author", getattr(ctx_or_interaction, "user", None))
-        clean_name = search_term.title()
+        if is_villager and nooki_data and nooki_data.get("name"):
+            clean_name = str(nooki_data["name"])
+        else:
+            clean_name = pretty_name(search_term)
         loc_list = sorted(list(set(location_string.split(", "))))
-        sub_islands_found = []
         island_map = island_map or {}
 
+        # (online_state, line) per Sub Island the result is on
+        entries: list[tuple[bool | None, str]] = []
         for loc in loc_list:
             loc_key = clean_text(loc)
 
             # STRICT FILTER: Only allow islands explicitly listed in Config.SUB_ISLANDS
-            # Verify if the cleaned location corresponds to a known sub island
-            is_sub = any(clean_text(si) == loc_key for si in Config.SUB_ISLANDS)
-            if not is_sub:
+            if not any(clean_text(si) == loc_key for si in Config.SUB_ISLANDS):
                 continue
 
-            # Use get_island_channel_link for robust linking with fallback
-            island_link = self.get_island_channel_link(loc)
-            island_payload = island_map.get(loc_key)
-            is_online = None
-            if isinstance(island_payload, dict):
-                status_text = str(island_payload.get("status", "")).upper()
-                bot_online = island_payload.get("discord_bot_online")
-                is_online = bool(bot_online) if bot_online is not None else (status_text == "ONLINE")
+            is_online = island_online_state(island_map.get(loc_key))
             status_icon = "🟢" if is_online is True else "🔴" if is_online is False else "⚪"
-            sub_islands_found.append(f"{status_icon} {island_link}")
+            entries.append((is_online, f"{status_icon} {self.get_island_channel_link(loc)}"))
 
         # If no Sub Islands match, return None to indicate availability failure
-        if not sub_islands_found:
+        if not entries:
             return None
 
-        island_count = len(sub_islands_found)
+        # Online first, then unknown, then offline; alphabetical within each group (stable sort)
+        entries.sort(key=lambda e: 0 if e[0] is True else 1 if e[0] is None else 2)
+        sub_islands_found = [line for _, line in entries]
+
+        island_count = len(entries)
+        online_count = sum(1 for state, _ in entries if state is True)
+        any_status_known = any(state is not None for state, _ in entries)
         island_term = "island" if island_count == 1 else "islands"
-        verb_term = "is" if island_count == 1 else "are"
+        this_these = "this" if island_count == 1 else "these"
 
         if is_villager:
             embed_title = f"{Config.EMOJI_SEARCH} Found Villager: {clean_name}"
-            embed_desc = f"**{clean_name}** is currently residing on this {island_term}:" if island_count == 1 else f"**{clean_name}** is currently residing on these {island_term}:"
+            embed_desc = f"**{clean_name}** is currently residing on {this_these} {island_term}:"
         else:
             embed_title = f"{Config.EMOJI_SEARCH} Found Item: {clean_name}"
-            embed_desc = f"**{clean_name}** {verb_term} available on these {island_term}:"
+            embed_desc = f"**{clean_name}** is available on {this_these} {island_term}:"
 
+        embed = discord.Embed(title=embed_title, description=embed_desc, color=discord.Color.teal())
 
-        embed = discord.Embed(
-            title=embed_title,
-            description=embed_desc,
-            color=discord.Color.teal(),
-            timestamp=datetime.now()
-        )
+        # ── Island list first: it's the answer to "where is it?" ──
+        chunks: list[str] = []
+        current_chunk = ""
+        for line in sub_islands_found:
+            if current_chunk and len(current_chunk) + len(line) + 1 > 1024:
+                chunks.append(current_chunk)
+                current_chunk = line
+            else:
+                current_chunk = f"{current_chunk}\n{line}" if current_chunk else line
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        field_name = f"{Config.STAR_PINK} Sub {island_term.capitalize()}"
+        if any_status_known:
+            field_name += f" ({online_count}/{island_count} online)"
+        for i, chunk in enumerate(chunks):
+            embed.add_field(name=field_name if i == 0 else f"{field_name} (cont.)", value=chunk, inline=False)
 
         search_key = normalize_text(search_term)
 
@@ -2957,24 +3155,17 @@ class DiscordCommandCog(commands.Cog):
             if quote:
                 embed.description = f"*\"{quote}\"*"
 
-            # Info field
             info_parts = [f"**Species:** {species}", f"**Gender:** {gender}"]
             if villager_id:
                 info_parts.append(f"**Code:** `{villager_id}`")
-            embed.add_field(
-                name=f"{Config.STAR_PINK} Info",
-                value="\n".join(info_parts),
-                inline=True
-            )
+            embed.add_field(name=f"{Config.STAR_PINK} Info", value="\n".join(info_parts), inline=True)
 
-            # Personality field
             embed.add_field(
                 name=f"{Config.STAR_PINK} Personality",
                 value=f"**Type:** {personality}\n**Catchphrase:** \"{phrase}\"\n**Hobby:** {hobby}",
                 inline=True
             )
 
-            # Birthday / Details field
             detail_parts = []
             if birthday != "Unknown":
                 detail_parts.append(f"**Birthday:** {birthday}")
@@ -2983,46 +3174,17 @@ class DiscordCommandCog(commands.Cog):
             if colors and colors != "Unknown":
                 detail_parts.append(f"**Colors:** {colors}")
             if detail_parts:
-                embed.add_field(
-                    name=f"{Config.STAR_PINK} Details",
-                    value="\n".join(detail_parts),
-                    inline=True
-                )
+                embed.add_field(name=f"{Config.STAR_PINK} Details", value="\n".join(detail_parts), inline=True)
 
         elif search_key in self.data_manager.image_cache:
             embed.set_thumbnail(url=self.data_manager.image_cache[search_key])
 
-        full_text = "\n".join(sub_islands_found)
-        chunks = []
-
-        if len(full_text) <= 1024:
-            chunks.append(full_text)
-        else:
-            current_chunk = ""
-            for line in sub_islands_found:
-                if len(current_chunk) + len(line) + 1 > 1024:
-                    chunks.append(current_chunk)
-                    current_chunk = line
-                else:
-                    if current_chunk:
-                        current_chunk += "\n" + line
-                    else:
-                        current_chunk = line
-            if current_chunk:
-                chunks.append(current_chunk)
-
-
-        for i, chunk in enumerate(chunks):
-            name = f"{Config.STAR_PINK} Sub {island_term.capitalize()}"
-            embed.add_field(name=name, value=chunk, inline=False)
-
-        pfp_url = user.avatar.url if user.avatar else Config.DEFAULT_PFP
         embed.set_image(url=Config.FOOTER_LINE)
-        embed.set_footer(text=f"Requested by {user.display_name}", icon_url=pfp_url)
+        self._apply_result_footer(embed, user, private)
 
         return embed
 
-    def create_villager_house_embed(self, ctx_or_interaction, villager_name, nooki_data):
+    def create_villager_house_embed(self, ctx_or_interaction, villager_name, nooki_data, private: bool = False):
         """Create a house information embed for a villager"""
         if not nooki_data:
             return None
@@ -3045,13 +3207,12 @@ class DiscordCommandCog(commands.Cog):
         if not has_house_data:
             return None
 
-        clean_name = villager_name.title()
+        clean_name = str(nooki_data.get("name") or pretty_name(villager_name))
         user = getattr(ctx_or_interaction, "author", getattr(ctx_or_interaction, "user", None))
 
         embed = discord.Embed(
-            title=f"{Config.EMOJI_SEARCH} {clean_name}'s House Information",
+            title=f"🏠 {clean_name}'s House",
             color=discord.Color.teal(),
-            timestamp=datetime.now()
         )
 
         embed.add_field(name=f"{Config.STAR_PINK} Flooring", value=flooring, inline=True)
@@ -3076,36 +3237,30 @@ class DiscordCommandCog(commands.Cog):
         if interior_url:
             embed.set_image(url=interior_url)
 
-        pfp_url = user.avatar.url if user.avatar else Config.DEFAULT_PFP
-        embed.set_footer(text=f"Requested by {user.display_name}", icon_url=pfp_url)
-
+        self._apply_result_footer(embed, user, private)
         return embed
 
-    def create_fail_embed(self, ctx, search_term, suggestions, is_villager=False):
+    def create_fail_embed(self, ctx, search_term, suggestions, is_villager=False, private: bool = False):
 
         category = "Villager" if is_villager else "Item"
 
         embed = discord.Embed(
-            title=f"{Config.EMOJI_FAIL} {category} Not Found: {search_term.title()}",
+            title=f"{Config.EMOJI_FAIL} {category} Not Found: {pretty_name(search_term)}",
             description=f"I couldn't find exactly that. Did you mean one of these?",
             color=0xFF4444,
-            timestamp=discord.utils.utcnow()
         )
 
         if suggestions:
             embed.add_field(
                 name=f"{Config.STAR_PINK} Suggestions",
-                value="\n".join([f"{Config.INDENT} {s.title()}" for s in suggestions[:5]]),
+                value="\n".join([f"{Config.INDENT} {pretty_name(s)}" for s in suggestions[:5]]),
                 inline=False
             )
         else:
             embed.description = f"I searched everywhere but couldn't find it.\n\n{Config.DROPBOT_INFO}"
 
-
         user = getattr(ctx, "author", getattr(ctx, "user", None))
-        user_avatar = user.avatar.url if (user and user.avatar) else Config.DEFAULT_PFP
-        display_name = user.display_name if user else "Unknown"
-        embed.set_footer(text=f"Requested by {display_name}", icon_url=user_avatar)
+        self._apply_result_footer(embed, user, private)
         embed.set_image(url=Config.FOOTER_LINE)
         return embed
 
@@ -3216,20 +3371,18 @@ class DiscordCommandCog(commands.Cog):
                 search_type="villager", author_id=ctx.author.id
             )
             if embed:
-                house_embed = self.create_villager_house_embed(ctx, search_term, nooki_data) if nooki_data else None
-                send_embeds = [embed] + ([house_embed] if house_embed else [])
-                await ctx.reply(content=f"Hey <@{ctx.author.id}>, look who I found!", embeds=send_embeds, view=result_view)
+                await ctx.reply(content=f"Hey <@{ctx.author.id}>, look who I found!", embed=embed, view=result_view)
                 logger.info(f"[DISCORD] Villager Hit: {search_term} -> Found")
             else:
                 await ctx.reply(
-                    f"**{search_term.title()}** is not currently on any Sub Island.",
+                    f"**{pretty_name(search_term)}** is not currently on any Sub Island.",
                     view=result_view
                 )
                 logger.info(f"[DISCORD] Villager Hit: {search_term} -> Not on Sub Islands")
             return
 
         matches = process.extract(search_term, list(villager_map.keys()), limit=3, scorer=fuzz.WRatio)
-        suggestions = [(m[0], m[0].title()) for m in matches if m[1] > 75]
+        suggestions = [(m[0], pretty_name(m[0])) for m in matches if m[1] > 75]
         suggestion_display_names = [s[1] for s in suggestions]
 
         embed_fail = self.create_fail_embed(ctx, search_term, suggestion_display_names, is_villager=True)
@@ -3293,10 +3446,9 @@ class DiscordCommandCog(commands.Cog):
             return
 
         try:
-            guild_icon = resolve_guild_icon(target or interaction, self.bot)
-            embed = build_find_panel_embed(guild_icon=guild_icon)
-            view = FindPanelView()
-            await target.send(embed=embed, view=view)
+            embed = await self._build_find_panel(target or interaction)
+            panel_msg = await target.send(embed=embed, view=FindPanelView())
+            self._register_find_panel(panel_msg)
             await interaction.followup.send(
                 f"✅ Find Station deployed to {target.mention}!", ephemeral=True
             )
@@ -3337,10 +3489,9 @@ class DiscordCommandCog(commands.Cog):
             return
 
         try:
-            guild_icon = resolve_guild_icon(target or interaction, self.bot)
-            embed = build_find_panel_embed(guild_icon=guild_icon)
-            view = FindPanelView()
-            await target.send(embed=embed, view=view)
+            embed = await self._build_find_panel(target or interaction)
+            panel_msg = await target.send(embed=embed, view=FindPanelView())
+            self._register_find_panel(panel_msg)
             await interaction.followup.send(
                 f"✅ **Find Station** deployed to {target.mention}!", ephemeral=True
             )
@@ -3496,7 +3647,7 @@ class DiscordCommandCog(commands.Cog):
         
         # Pick a random item
         random_key = random.choice(all_items)
-        display_name = display_map.get(random_key, random_key.title())
+        display_name = display_map.get(random_key, pretty_name(random_key))
         found_locations = cache.get(random_key)
         
         if found_locations:
@@ -5798,17 +5949,17 @@ class DiscordCommandCog(commands.Cog):
                 await ctx.reply(msg, ephemeral=True)
             return
 
-        guild_icon = resolve_guild_icon(ctx.guild, self.bot)
-        embed = build_find_panel_embed(guild_icon=guild_icon)
-        view = FindPanelView()
         if ctx.interaction:
             await ctx.interaction.response.defer(ephemeral=True, thinking=True)
-            await ctx.channel.send(embed=embed, view=view)
+        embed = await self._build_find_panel(ctx.guild)
+        if ctx.interaction:
+            panel_msg = await ctx.channel.send(embed=embed, view=FindPanelView())
             await ctx.interaction.followup.send("✅ Find Station panel deployed to this channel!", ephemeral=True)
         else:
             with contextlib.suppress(Exception):
                 await ctx.message.delete()
-            await ctx.channel.send(embed=embed, view=view)
+            panel_msg = await ctx.channel.send(embed=embed, view=FindPanelView())
+        self._register_find_panel(panel_msg)
 
     @find_station.error
     async def find_station_error(self, ctx: commands.Context, error: Exception):

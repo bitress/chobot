@@ -10,6 +10,7 @@ chobot.db
 .idea
 cache_dump.json
 chat_log.json
+find_panels.json
 chobot.pid
 *.pid
 backups/
