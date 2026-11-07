@@ -84,6 +84,29 @@ def _admin_role_ids() -> set[str]:
     return result | admin_ids
 
 
+def is_guild_banned(user_id: int | str) -> bool | None:
+    """True if the user is banned from the guild, False if not, None if Discord can't say."""
+    uid = str(user_id or "").strip()
+    guild_id = str(Config.GUILD_ID or "")
+    if not uid.isdigit() or not guild_id:
+        return None
+    try:
+        discord_request(
+            f"https://discord.com/api/v10/guilds/{guild_id}/bans/{uid}",
+            headers=_bot_headers(),
+            timeout=10,
+        )
+        return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        logger.debug("Ban lookup for %s returned HTTP %s", uid, exc.code)
+        return None
+    except Exception as exc:
+        logger.debug("Ban lookup for %s failed: %s", uid, exc)
+        return None
+
+
 def fetch_guild_member_snapshot(user_id: str) -> dict:
     """Fetch the user's current guild roles and display profile from Discord."""
     uid = str(user_id or "").strip()

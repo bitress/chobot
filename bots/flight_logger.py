@@ -3004,6 +3004,18 @@ class FlightLoggerCog(commands.Cog):
             logger.warning(f"[FLIGHT] Could not record nickname change for {after.id}: {exc}")
 
     @commands.Cog.listener()
+    async def on_member_ban(self, guild: discord.Guild, user: discord.User | discord.Member):
+        """End the banned user's website sessions now instead of at the next membership refresh."""
+        if Config.GUILD_ID and str(guild.id) != str(Config.GUILD_ID):
+            return
+        try:
+            from utils.auth_tokens import revoke_user_auth_tokens
+            count = await asyncio.to_thread(revoke_user_auth_tokens, user.id)
+            logger.info(f"[FLIGHT] Revoked {count} website session(s) for banned user {user.id}")
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] Could not revoke website sessions for banned user {user.id}: {exc}")
+
+    @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         try:
             await self.record_member_identity_event(

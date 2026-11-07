@@ -164,6 +164,55 @@ def update_auth_user(token: str, user_data: dict) -> None:
     _save_token(token, user_data, expires_at)
 
 
+def _payload_matches_discord_id(user: dict, discord_id: str) -> bool:
+    if not isinstance(user, dict):
+        return False
+    discord_acc = (user.get("connected_accounts") or {}).get("discord") or {}
+    candidates = (
+        user.get("discord_id"),
+        user.get("user_id"),
+        user.get("id"),
+        discord_acc.get("id") if isinstance(discord_acc, dict) else None,
+    )
+    return any(str(c or "").strip() == discord_id for c in candidates)
+
+
+def revoke_user_auth_tokens(discord_id: int | str) -> int:
+    """Revoke every website session that belongs to this Discord user. Returns the count."""
+    did = str(discord_id or "").strip()
+    if not did:
+        return 0
+    revoked = 0
+    with _auth_tokens_lock:
+        for tok in [t for t, e in _auth_tokens.items() if _payload_matches_discord_id(e.get("user"), did)]:
+            _auth_tokens.pop(tok, None)
+            revoked += 1
+    try:
+        from utils.database import connect_db
+
+        conn = connect_db()
+        try:
+            _ensure_auth_token_table(conn)
+            rows = conn.execute("SELECT token_hash, user_json FROM auth_tokens").fetchall()
+            hashes = []
+            for row in rows:
+                try:
+                    if _payload_matches_discord_id(json.loads(row["user_json"]), did):
+                        hashes.append(row["token_hash"])
+                except Exception:
+                    continue
+            for h in hashes:
+                conn.execute("DELETE FROM auth_tokens WHERE token_hash = ?", (h,))
+            if hashes:
+                conn.commit()
+            revoked = max(revoked, len(hashes))
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning("Could not revoke persisted auth tokens for %s: %s", did, exc)
+    return revoked
+
+
 def revoke_auth_token(token: str) -> None:
     """Remove a token from memory and persistent storage."""
     if not token:

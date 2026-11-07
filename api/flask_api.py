@@ -1663,6 +1663,10 @@ def auth_callback():
                 from utils.discord_membership import fetch_guild_member_snapshot
                 fetch_guild_member_snapshot(discord_user_id)
             except DiscordNotGuildMember:
+                from utils.discord_membership import is_guild_banned
+                if is_guild_banned(discord_user_id):
+                    logger.info("Rejecting Discord login for %s: banned from guild", discord_user_id)
+                    return redirect(f"{return_to}?error=banned")
                 logger.info("Rejecting Discord login for %s: not in guild", discord_user_id)
                 return redirect(f"{return_to}?error=not_a_member")
             except Exception as exc:
