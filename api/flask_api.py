@@ -1875,18 +1875,24 @@ def api_acknowledge_moderation_notice():
     warning_id = data.get("warning_id")
     now = int(time.time())
 
+    from api.control_panel import init_control_panel_db
+    init_control_panel_db()  # warnings.acknowledged_at / web_user_id
+
     conn = get_db()
     try:
         placeholders = ",".join("?" for _ in cand_ids)
+        # Same ownership test as get_user_moderation_notices: website-only accounts are
+        # warned through web_user_id, so matching user_id alone left their notices unread forever.
+        owner = f"(user_id IN ({placeholders}) OR web_user_id IN ({placeholders}))"
         if warning_id:
             conn.execute(
-                f"UPDATE warnings SET acknowledged_at = ? WHERE id = ? AND user_id IN ({placeholders})",
-                [now, warning_id] + cand_ids,
+                f"UPDATE warnings SET acknowledged_at = ? WHERE id = ? AND {owner}",
+                [now, warning_id] + cand_ids + cand_ids,
             )
         else:
             conn.execute(
-                f"UPDATE warnings SET acknowledged_at = ? WHERE acknowledged_at IS NULL AND user_id IN ({placeholders})",
-                [now] + cand_ids,
+                f"UPDATE warnings SET acknowledged_at = ? WHERE acknowledged_at IS NULL AND {owner}",
+                [now] + cand_ids + cand_ids,
             )
         conn.commit()
         return jsonify({"success": True, "acknowledged_at": now})

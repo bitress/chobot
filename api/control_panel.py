@@ -371,6 +371,7 @@ def get_user_moderation_notices(user_or_id: Any) -> dict:
     active_rest = check_user_active_restriction(user_id, discord_id)
 
     unack_warnings: list[dict] = []
+    latest_warning: dict | None = None
     total_warnings = 0
     try:
         conn = connect_db()
@@ -391,6 +392,14 @@ def get_user_moderation_notices(user_or_id: Any) -> dict:
                     act = str(r[4] or "WARN").upper()
                     if act == "WARN":
                         total_warnings += 1
+                        if latest_warning is None:
+                            # Rows are newest first; shown on the sub-rules screen after a warning
+                            latest_warning = {
+                                "id": r[0],
+                                "reason": r[1] or "Official warning from moderation",
+                                "timestamp": r[3],
+                                "mod_name": r[6] or "Moderator",
+                            }
                         is_ack = bool(r[5])
                         if not is_ack:
                             unack_warnings.append({
@@ -437,6 +446,7 @@ def get_user_moderation_notices(user_or_id: Any) -> dict:
         "has_active_restriction": bool(active_rest),
         "active_restriction": active_rest,
         "unacknowledged_warnings": unack_warnings,
+        "latest_warning": latest_warning,
         "warning_count": total_warnings,
     }
 
