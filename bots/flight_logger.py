@@ -1548,6 +1548,7 @@ MAX_ALERT_MERGE_SECONDS = 1800  # 30 minutes: re-joins within this window update
 # SysBot telemetry writes an 'unchecked' island_visits row for each sub arrival; the
 # logger takes over the row within this window instead of inserting a duplicate.
 TELEMETRY_CLAIM_SECONDS = 180
+FLIGHT_TEST_CLEANUP_SECONDS = 600  # /flighttest removes its visit row and alert after this
 
 class FlightLoggerCog(commands.Cog):
     def __init__(self, bot):
@@ -4022,129 +4023,175 @@ class FlightLoggerCog(commands.Cog):
         embed.set_footer(text="Debug only — no database writes or channel posts.")
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="flighttest", aliases=["ftest"])
-    @commands.has_permissions(manage_messages=True)
-    async def flight_test(self, ctx):
-        """
-        End-to-end test of the flight logger pipeline.
-        Sends a fake flight message, processes it through the full pipeline, then cleans up.
-        Usage: !flighttest
-        """
-        await ctx.defer()
-        logger.info(f"[FLIGHT-TEST] Debug flight test triggered by {ctx.author}")
-        
-        now = datetime.datetime.now()
-        timestamp = now.strftime("%Y-%m-%d %I:%M:%S %p").lower()
+    def _flight_test_destinations(self) -> list[str]:
+        """Sub-island names the logger knows, without the channel-order digits ("01alapaap" -> "Alapaap")."""
+        names = {re.sub(r"^\d+", "", key) for key in self.island_map}
+        return sorted(n.title() for n in names if n)
 
-        # Pick a random sub-island as the destination; fall back to a placeholder if none loaded yet
-        if self.island_map:
-            random_dest = random.choice(tuple(self.island_map.keys())).title()
-        else:
-            random_dest = "Aruga"
+    def _flight_test_find_destination(self, name: str) -> str | None:
+        """Match a typed island name against the logger's own island list only."""
+        wanted = clean_text(name)
+        if not wanted:
+            return None
+        options = self._flight_test_destinations()
+        for opt in options:
+            if clean_text(opt) == wanted:
+                return opt
+        for opt in options:
+            if wanted in clean_text(opt):
+                return opt
+        return None
 
-        test_message_content = f"[{timestamp}] 🛬 ChoBot from Treasure Island is joining {random_dest}."
-        
-        # Get channels
-        listen_channel = self.bot.get_channel(Config.FLIGHT_LISTEN_CHANNEL_ID)
-        log_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
-        
-        if not listen_channel:
-            embed = discord.Embed(
-                title="Flight Test Failed",
-                description="Could not find the flight listen channel.",
-                color=0xFF0000
-            )
-            return await ctx.send(embed=embed)
-        
-        test_msg = None
-        success = True
-        error_details = None
-        
+    async def _flight_test_cleanup(self, visit_id: int, alert_channel_id, alert_message_id, started: int, alert_key) -> None:
+        """Remove the visit row and the #flight-logs alert a flight test created."""
+        await asyncio.sleep(FLIGHT_TEST_CLEANUP_SECONDS)
+        if alert_channel_id and alert_message_id:
+            try:
+                channel = self.bot.get_channel(int(alert_channel_id))
+                if channel:
+                    msg = await channel.fetch_message(int(alert_message_id))
+                    # A custom IGN can merge into an alert that existed before the test: leave that one
+                    if msg.created_at.timestamp() >= started:
+                        await msg.delete()
+            except discord.NotFound:
+                pass
+            except Exception as exc:
+                logger.warning(f"[FLIGHT-TEST] Could not delete test alert {alert_message_id}: {exc}")
+        self._pending_alerts.pop(alert_key, None)
         try:
-            # Step 1: Send the test message to the listen channel
-            test_msg = await listen_channel.send(test_message_content)
-            
-            # Step 2: Parse the message and call log_result directly
-            # (since the bot ignores its own messages in on_message)
-            match = self.join_pattern.search(test_message_content)
-            if match:
-                ign_raw = match.group(1).strip()
-                island_raw = match.group(2).strip()
-                dest_raw = match.group(3).strip()
-                
-                # Clean and find matching members
-                ign_norm = self.normalize_identity_text(ign_raw)
-                isl_norm = self.normalize_identity_text(island_raw)
-                found = await asyncio.to_thread(
-                    self.find_matching_members, 
-                    ctx.guild, 
-                    ign_norm,
-                    isl_norm
-                )
-                
-                # Log the result (this simulates what on_message would do)
-                await self.log_result(found, "JOINING", ign_raw, island_raw, dest_raw, message_url=test_msg.jump_url if test_msg else None, message_content=test_message_content)
-                
-            # Step 3: Wait 3 seconds to allow moderators to see the test message
-            # and verify the alert appears in the log channel
-            await asyncio.sleep(3)
-                
-        except discord.Forbidden:
-            success = False
-            error_details = "Permission denied. Bot may lack permissions to send/delete messages in the listen channel."
-        except Exception as e:
-            success = False
-            error_details = f"Unexpected error: {str(e)}"
-            logger.error(f"[FLIGHT-TEST] Error during flight test: {e}", exc_info=True)
-        finally:
-            # Step 4: Clean up the test message from the listen channel
-            if test_msg:
-                try:
-                    await test_msg.delete()
-                except discord.NotFound:
-                    pass  # Message already deleted
-                except discord.Forbidden:
-                    logger.warning(f"[FLIGHT-TEST] Could not delete test message - permission denied")
-                except Exception as e:
-                    logger.warning(f"[FLIGHT-TEST] Could not delete test message: {e}")
-        
-        # Step 5: Send summary embed to the invoker
-        if success:
-            embed = discord.Embed(
-                title="Flight Test Complete",
-                description="The test flight message was sent, processed, and cleaned up successfully.",
-                color=0x2ECC71  # Green
-            )
+            async with connect_async_db() as db:
+                await db.execute("DELETE FROM island_visits WHERE id = ?", (visit_id,))
+            logger.info(f"[FLIGHT-TEST] Cleaned up test visit #{visit_id}")
+        except Exception as exc:
+            logger.warning(f"[FLIGHT-TEST] Could not delete test visit #{visit_id}: {exc}")
+
+    @commands.hybrid_command(name="flighttest", aliases=["ftest"])
+    @app_commands.describe(
+        destination="Sub island to fly to (default: a random one)",
+        ign="In-game name to test (default: a new test name, which shows up as an Unknown Traveler)",
+        origin="Origin island of the traveler (default: Test Island)",
+        keep="Keep the test visit and alert instead of removing them after 10 minutes",
+    )
+    @commands.has_permissions(manage_messages=True)
+    async def flight_test(self, ctx, destination: str = None, ign: str = None, origin: str = None, keep: bool = False):
+        """
+        End-to-end test of the flight logger.
+        Runs a fake arrival through the same pipeline as a real SysBot flight, then reports
+        the verdict it reached and links the alert it posted.
+        Usage: !flighttest [destination] [ign] [origin]
+        """
+        await ctx.defer(ephemeral=True)
+        logger.info(f"[FLIGHT-TEST] Flight test triggered by {ctx.author}")
+
+        def fail(text: str):
+            embed = discord.Embed(title="Flight Test Failed", description=text, color=0xFF0000)
+            return ctx.send(embed=embed, ephemeral=True)
+
+        guild = ctx.guild or self.bot.get_guild(Config.GUILD_ID)
+        if guild is None:
+            return await fail("The ChoPaeng server is not available to the bot right now.")
+        if not self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID):
+            return await fail("The flight log channel (`FLIGHT_LOG_CHANNEL_ID`) was not found, so nothing could be posted.")
+
+        if not self.island_map:
+            await self.fetch_islands()
+        if destination:
+            dest = self._flight_test_find_destination(destination)
+            if not dest:
+                known = ", ".join(self._flight_test_destinations()[:25]) or "none loaded"
+                return await fail(f"`{destination}` is not a sub island the logger knows.\nKnown islands: {known}")
         else:
-            embed = discord.Embed(
-                title="Flight Test Failed",
-                description=error_details or "An error occurred during the test.",
-                color=0xFF0000  # Red
+            options = self._flight_test_destinations()
+            if not options:
+                return await fail("No sub islands are loaded yet. Check the sub-island category, then try again.")
+            dest = random.choice(options)
+
+        # A fresh name every run: a fixed one gets merged into its last alert (30 min) or
+        # skipped as already authorized (24 h), so the test would show nothing new.
+        test_ign = (ign or f"FlightTest{random.randint(1000, 9999)}").strip()
+        test_origin = (origin or "Test Island").strip()
+        if is_ignored_flight_player(test_ign):
+            return await fail(f"`{test_ign}` is a host account the logger always ignores. Pick another IGN.")
+        if not is_valid_origin_island(test_origin):
+            return await fail(f"`{test_origin}` is not a valid origin island; the logger ignores arrivals without one.")
+
+        # Let a repeated custom IGN through the 25-second duplicate filter
+        self._recent_flight_keys.pop((clean_text(test_ign), clean_text(dest)), None)
+
+        started = int(time.time()) - 1
+        content = f"{test_ign} from {test_origin} is joining {dest}. (flight test by {ctx.author.display_name})"
+        await self._process_flight_log(
+            guild,
+            test_ign,
+            test_origin,
+            dest,
+            self.normalize_identity_text(test_ign),
+            self.normalize_identity_text(test_origin),
+            message_url=None,
+            message_content=content,
+        )
+
+        row = None
+        try:
+            async with connect_async_db() as db:
+                cursor = await db.execute(
+                    "SELECT id, logger_verdict, logger_detail, user_id, alert_channel_id, alert_message_id "
+                    "FROM island_visits WHERE LOWER(ign) = LOWER(?) AND LOWER(destination) = LOWER(?) "
+                    "AND timestamp >= ? ORDER BY id DESC LIMIT 1",
+                    (test_ign, dest, started),
+                )
+                row = await cursor.fetchone()
+        except Exception as exc:
+            logger.error(f"[FLIGHT-TEST] Could not read back test visit: {exc}", exc_info=True)
+
+        if not row:
+            return await fail(
+                "The pipeline ran but recorded no visit, so the logger dropped or failed on this flight.\n"
+                "Check `bot.log` for `[FLIGHT]` errors around this time."
             )
-        
-        embed.add_field(
-            name="<:Cho_Notes:1474311464688029817> Test Message",
-            value=f"```{test_message_content}```",
-            inline=False
+
+        visit_id, verdict, detail_raw, user_id, alert_channel_id, alert_message_id = (
+            row[0], row[1], row[2], row[3], row[4], row[5],
         )
-        embed.add_field(
-            name="Listen Channel",
-            value=listen_channel.mention if listen_channel else "Not found",
-            inline=True
+        try:
+            detail = json.loads(detail_raw) if detail_raw else {}
+        except (TypeError, ValueError):
+            detail = {}
+
+        verdict_labels = {
+            "verified": "Verified member",
+            "ambiguous_resolved": "Verified (several matches, cleared by a past authorization)",
+            "authorized_followup": "Previously authorized traveler (no new alert)",
+            "unknown_traveler": "Unknown Traveler (alert posted)",
+            "ambiguous_match": "Ambiguous match (alert posted)",
+        }
+        embed = discord.Embed(
+            title="Flight Test Complete",
+            description=f"The test arrival went through the live pipeline.\n```{content}```",
+            color=0x2ECC71,
         )
-        embed.add_field(
-            name="Log Channel",
-            value=log_channel.mention if log_channel else "Not found",
-            inline=True
-        )
-        embed.add_field(
-            name="ℹ️ Note",
-            value=f"Check {log_channel.mention if log_channel else 'the log channel'} to verify the bot logged the test flight (should show 'UNKNOWN TRAVELER' alert for DebugUser).",
-            inline=False
-        )
-        embed.set_footer(text="🛠️ DEBUG ONLY — This message will be automatically deleted in 10 minutes.")
-        
-        await ctx.send(embed=embed, delete_after=600)
+        embed.add_field(name="Verdict", value=verdict_labels.get(verdict, f"`{verdict or 'none'}`"), inline=False)
+        if detail.get("reason"):
+            embed.add_field(name="Reason", value=str(detail["reason"])[:1000], inline=False)
+        embed.add_field(name="Destination", value=self.get_island_channel_link(dest), inline=True)
+        embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+        if user_id:
+            embed.add_field(name="Matched Member", value=f"<@{user_id}>", inline=True)
+        if alert_channel_id and alert_message_id:
+            embed.add_field(
+                name="Alert",
+                value=f"[Open in #flight-logs](https://discord.com/channels/{guild.id}/{alert_channel_id}/{alert_message_id})",
+                inline=True,
+            )
+        if keep:
+            embed.set_footer(text="Kept: the test visit and alert stay until a moderator handles them.")
+        else:
+            embed.set_footer(text="The test visit and its alert are removed in 10 minutes. Match Log posts in xlog stay.")
+            asyncio.create_task(self._flight_test_cleanup(
+                visit_id, alert_channel_id, alert_message_id, started, (clean_text(test_ign), clean_text(dest)),
+            ))
+
+        await ctx.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(name="unwarn", aliases=["removewarn"])
     @app_commands.describe(user="The user to unwarn", reason="Reason for removing the warning (optional)")
