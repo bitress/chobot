@@ -426,13 +426,14 @@ def _overwrite_view_roles(channel) -> dict[int, str]:
 
 
 def island_tier_roles(guild, destination: str, dest_channel=None) -> dict[int, str]:
-    """Tier roles that open a sub island: {role_id: name}.
+    """Roles that open a sub island: {role_id: name}.
 
-    Islands in the website's access matrix use it, so the logger and the website's Dodo
-    reveal agree on who may visit. Other sub channels fall back to their Discord overwrites.
+    Uses the roles synced to islands.required_roles (what the website's Dodo reveal checks),
+    plus the live channel overwrites when the channel is known, so a stale sync never
+    makes the logger reject a member Discord itself lets into the channel.
     """
     if island_access.is_member_island(None, None, destination):
-        roles = {}
+        roles = _overwrite_view_roles(dest_channel) if dest_channel else {}
         for rid in island_access.effective_island_required_roles("member", None, "VIP", destination):
             if str(rid).isdigit():
                 role = guild.get_role(int(rid)) if guild else None
@@ -3380,7 +3381,7 @@ class FlightLoggerCog(commands.Cog):
                 has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in member_roles)
                 
                 dest_clean = clean_text(destination)
-                channel_id = self.island_map.get(dest_clean)
+                channel_id = self.island_map.get(dest_clean) or self._resolve_island_channel_id(destination)
                 dest_channel = guild.get_channel(channel_id) if channel_id else None
                 sub_roles = island_tier_roles(guild, destination, dest_channel)
 
@@ -3390,9 +3391,26 @@ class FlightLoggerCog(commands.Cog):
                 ign_opts, island_opts = self.parse_member_nick(member.display_name)
                 max_identities = self.calculate_max_identities(member.display_name)
 
-                all_member_subs = [r for r in member.roles if r.id in cog.all_sub_roles]
+                # Tier roles count as subscriptions even when the channel-overwrite cache is
+                # empty or stale, so the alert never reports "None detected" for a subscriber.
+                tier_role_ids = {int(rid) for rid in island_access.ROLE_ID_TO_TIER_NAME if str(rid).isdigit()}
+                all_member_subs = [r for r in member.roles if r.id in cog.all_sub_roles or r.id in tier_role_ids]
                 current_island_subs = [r for r in member.roles if r.id in sub_roles]
-                other_subs = [r for r in all_member_subs if r.id not in sub_roles]
+                # Discord's own permission check is authoritative: the synced DB roles can lag
+                # behind channel overwrites, but a member who can view the island channel has access.
+                can_view_island = False
+                if not current_island_subs and dest_channel is not None:
+                    try:
+                        can_view_island = dest_channel.permissions_for(member).view_channel
+                    except Exception as perm_err:
+                        logger.debug(f"[FLIGHT] permissions_for failed for {member.id} on {dest_channel.id}: {perm_err}")
+                    if can_view_island:
+                        current_island_subs = list(all_member_subs)
+                        logger.info(
+                            f"[FLIGHT] {member.id} can view #{dest_channel.name} but has none of the synced "
+                            f"roles for {destination}; islands.required_roles is likely stale."
+                        )
+                other_subs = [r for r in all_member_subs if r.id not in sub_roles and r not in current_island_subs]
                 required_destination_roles = [
                     role for role in (guild.get_role(role_id) for role_id in sub_roles)
                     if role is not None
@@ -3426,7 +3444,7 @@ class FlightLoggerCog(commands.Cog):
                 # Members with no sub at all are flagged too: the island access role alone
                 # (rules accepted) does not open a sub island.
                 is_staff = island_access.is_mod([str(r.id) for r in member.roles]) or member.guild_permissions.administrator
-                if sub_roles and not current_island_subs and not is_staff:
+                if sub_roles and not current_island_subs and not can_view_island and not is_staff:
                     await self._trigger_island_access_mismatch_flag(
                         ign,
                         island,
