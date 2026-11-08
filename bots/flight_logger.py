@@ -425,21 +425,43 @@ def _overwrite_view_roles(channel) -> dict[int, str]:
     return roles
 
 
-def island_tier_roles(guild, destination: str, dest_channel=None) -> dict[int, str]:
-    """Roles that open a sub island: {role_id: name}.
+TIER_ROLE_IDS: set[int] = {int(r) for r in island_access.ROLE_ID_TO_TIER_NAME if str(r).isdigit()}
 
-    Uses the roles synced to islands.required_roles (what the website's Dodo reveal checks),
-    plus the live channel overwrites when the channel is known, so a stale sync never
-    makes the logger reject a member Discord itself lets into the channel.
+
+def non_subscription_role_ids() -> set[int]:
+    """Roles that may view sub island channels without being a subscription (staff, bots, rules role)."""
+    ids = (
+        Config.ADMIN_ROLE_ID, Config.SENIOR_MOD_ROLE_ID, Config.BABY_MOD_ROLE_ID,
+        Config.ISLAND_BOT_ROLE_ID, Config.ISLAND_ACCESS_ROLE,
+    )
+    return {int(i) for i in ids if str(i or "").isdigit()}
+
+
+def channel_id_from_field(value: str | None) -> int | None:
+    """Channel id from an embed field holding a channel mention like '<#123>'."""
+    m = re.search(r"<#(\d+)>", value or "")
+    return int(m.group(1)) if m else None
+
+
+def island_tier_roles(guild, destination: str, dest_channel=None) -> dict[int, str]:
+    """Subscription roles that open a sub island: {role_id: name}.
+
+    The island's Discord channel is the source of truth: the roles its overwrites let view
+    it, minus staff/bot/rules roles. The roles synced to islands.required_roles are used
+    only when the channel can't be resolved.
     """
+    if dest_channel is not None:
+        excluded = non_subscription_role_ids()
+        return {rid: name for rid, name in _overwrite_view_roles(dest_channel).items() if rid not in excluded}
     if island_access.is_member_island(None, None, destination):
-        roles = _overwrite_view_roles(dest_channel) if dest_channel else {}
+        roles = {}
         for rid in island_access.effective_island_required_roles("member", None, "VIP", destination):
             if str(rid).isdigit():
                 role = guild.get_role(int(rid)) if guild else None
                 roles[int(rid)] = role.name if role else island_access.ROLE_ID_TO_TIER_NAME.get(str(rid), str(rid))
-        return roles
-    return _overwrite_view_roles(dest_channel) if dest_channel else {}
+        excluded = non_subscription_role_ids()
+        return {rid: name for rid, name in roles.items() if rid not in excluded}
+    return {}
 
 REASON_OPTIONS = [
     discord.SelectOption(label="Sub Top Rule / Rule #1", value="rule_top_1", description="Breaking [Sub Top Rule]"),
@@ -974,17 +996,20 @@ class TravelerActionView(discord.ui.View):
 
                 # Obtain cog and parse member nickname using the cog helpers
                 cog = interaction.client.get_cog("FlightLoggerCog")
-                all_sub_roles = cog.all_sub_roles if cog else set()
+                all_sub_roles = (cog.all_sub_roles if cog else set()) | TIER_ROLE_IDS
                 ign_opts, island_opts = (cog.parse_member_nick(target_user.display_name) if cog else ([], []))
                 max_identities = max(len(ign_opts), len(island_opts))
 
-                # Get destination from embed to check subscription roles using the cog's island_map
+                # Get destination from embed. The field is normally a channel mention (<#id>),
+                # so use that id; fall back to resolving the island name.
                 dest_channel = None
                 dest_clean = ""
                 for field in embed.fields:
                     if field.name == "Destination":
+                        channel_id = channel_id_from_field(field.value)
                         dest_clean = clean_text(field.value)
-                        channel_id = cog.island_map.get(dest_clean) if cog and getattr(cog, 'island_map', None) else None
+                        if not channel_id and cog:
+                            channel_id = cog._resolve_island_channel_id(field.value)
                         dest_channel = interaction.guild.get_channel(channel_id) if channel_id and interaction.guild else None
                         break
 
@@ -1357,8 +1382,7 @@ class VerifiedFlightFlagView(discord.ui.View):
                 igns, islands = cog.parse_member_nick(traveler_member.display_name)
                 # Use the up-to-date sub role set from cog (should be set on fetch_islands)
                 await cog._ensure_sub_roles_loaded()
-                all_sub_roles = getattr(cog, 'all_sub_roles', set())
-                member_sub_roles = [r for r in traveler_member.roles if r.id in all_sub_roles]
+                member_sub_roles = cog.member_sub_roles(traveler_member)
                 sub_count = len(member_sub_roles)
                 ign_count = len(igns)
                 island_count = len(islands)
@@ -1613,6 +1637,11 @@ class FlightLoggerCog(commands.Cog):
         except Exception as exc:
             logger.warning(f"[FLIGHT] Could not load required_roles from DB for fallback: {exc}")
         return roles
+
+    def member_sub_roles(self, member) -> list:
+        """A member's subscription roles: roles that open any sub island channel, plus tier roles."""
+        sub_ids = (self.all_sub_roles | TIER_ROLE_IDS) - non_subscription_role_ids()
+        return [r for r in getattr(member, "roles", []) if r.id in sub_ids]
 
     async def _ensure_sub_roles_loaded(self) -> None:
         """Ensure `self.all_sub_roles` is populated, using DB fallback when needed."""
@@ -2334,7 +2363,7 @@ class FlightLoggerCog(commands.Cog):
             pass
 
         # Derive sub roles using the same source of truth as verbose xlog.
-        member_sub_roles = [r for r in member.roles if r.id in self.all_sub_roles]
+        member_sub_roles = self.member_sub_roles(member)
         sub_role_mentions = [r.mention for r in member_sub_roles]
         
         # 1. Record Visit (linked to member) unless log_result already did
@@ -2406,7 +2435,7 @@ class FlightLoggerCog(commands.Cog):
         xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
         if xlog_channel:
             # Helpful context inline for quick mod triage.
-            member_sub_roles = [r for r in member.roles if r.id in self.all_sub_roles]
+            member_sub_roles = self.member_sub_roles(member)
             sub_role_mentions = [r.mention for r in member_sub_roles]
             xlog_desc = (
                 f"**{_format_user_for_embed(member)}**\n"
@@ -2817,10 +2846,7 @@ class FlightLoggerCog(commands.Cog):
         sub_roles = set()
         
         # Exclude common non-subscription roles
-        excluded_roles = {
-            Config.ADMIN_ROLE_ID, Config.SENIOR_MOD_ROLE_ID, Config.BABY_MOD_ROLE_ID, 
-            Config.ISLAND_BOT_ROLE_ID
-        }
+        excluded_roles = non_subscription_role_ids()
 
         db_updates = []
         # 1. Collect subscription roles from each Channel overwrite
@@ -2845,19 +2871,6 @@ class FlightLoggerCog(commands.Cog):
                         if target.id not in excluded_roles:
                             sub_roles.add(target.id)
 
-            # The access matrix decides who may visit; warn when Discord's channel permissions
-            # disagree, since members then see a channel they cannot reveal (or the reverse)
-            if island_access.is_member_island(None, None, channel.name):
-                tier_ids = {int(r) for r in island_access.ROLE_ID_TO_TIER_NAME}
-                in_discord = {int(r) for r in channel_req_roles} & tier_ids
-                in_matrix = set(island_tier_roles(guild, channel.name)) & tier_ids
-                if in_discord != in_matrix:
-                    name = lambda ids: ", ".join(sorted(island_access.ROLE_ID_TO_TIER_NAME[str(i)] for i in ids)) or "none"
-                    logger.warning(
-                        f"[FLIGHT] Access drift on #{channel.name}: Discord also lets in [{name(in_discord - in_matrix)}], "
-                        f"matrix also allows [{name(in_matrix - in_discord)}]. The matrix (utils/island_access.py) is used."
-                    )
-
             # Sync with the 'islands' table used by the Web API
             island_clean = re.sub(r'^\d+', '', chan_clean)
             if island_clean:
@@ -2872,12 +2885,25 @@ class FlightLoggerCog(commands.Cog):
         if db_updates:
             try:
                 async with connect_async_db() as db:
+                    cur = await db.execute("SELECT name FROM islands")
+                    known = {str(row[0] or "").strip().upper() for row in await cur.fetchall()}
                     for roles_json, chan_id, isl_name in db_updates:
                         await db.execute(
                             "UPDATE islands SET required_roles = ?, channel_id = ? WHERE UPPER(name) = ?",
                             (roles_json, chan_id, isl_name)
                         )
                     await db.commit()
+                # The UPDATE matches by name, so a channel whose island row is missing or named
+                # differently never syncs and the website keeps checking stale roles for it.
+                unmatched = sorted({isl_name for _, _, isl_name in db_updates if isl_name not in known})
+                unmatched_key = tuple(unmatched)
+                if unmatched and unmatched_key != getattr(self, "_last_unmatched_islands", None):
+                    logger.warning(
+                        f"[FLIGHT] {len(unmatched)} sub-island channel(s) have no matching row in the islands "
+                        f"table, so their roles were not synced for the website: {', '.join(unmatched)}. "
+                        "Add the island or rename the row/channel so the names match."
+                    )
+                self._last_unmatched_islands = unmatched_key
             except Exception as e:
                 logger.error(f"[FLIGHT] Failed to batch sync islands to DB: {e}", exc_info=True)
 
@@ -2886,7 +2912,46 @@ class FlightLoggerCog(commands.Cog):
         if not self.all_sub_roles:
             # If category scan produced no roles, try DB-derived roles.
             await self._ensure_sub_roles_loaded()
+        # Drop the in-process copy of islands.required_roles so DB-based checks see this sync now
+        island_access.clear_access_caches()
         logger.info(f"[FLIGHT] Dynamic Island Fetch Complete. Mapped {len(temp_map)} keys, {len(sub_roles)} sub roles.")
+
+    def _is_sub_island_channel(self, channel) -> bool:
+        return getattr(channel, "category_id", None) == Config.CATEGORY_ID or getattr(channel, "id", None) == Config.CATEGORY_ID
+
+    def _schedule_island_resync(self, reason: str) -> None:
+        """Re-sync island roles shortly after a permission change (debounced: one edit to a
+        category fires an update per synced channel)."""
+        if getattr(self, "_resync_task", None) and not self._resync_task.done():
+            return
+
+        async def _run():
+            await asyncio.sleep(5)
+            try:
+                await self.fetch_islands()
+                logger.info(f"[FLIGHT] Re-synced island roles after {reason}.")
+            except Exception as exc:
+                logger.error(f"[FLIGHT] Island re-sync after {reason} failed: {exc}", exc_info=True)
+
+        self._resync_task = asyncio.create_task(_run())
+
+    @commands.Cog.listener()
+    async def on_guild_channel_update(self, before, after):
+        if not (self._is_sub_island_channel(before) or self._is_sub_island_channel(after)):
+            return
+        if before.overwrites == after.overwrites and before.name == after.name and before.category_id == after.category_id:
+            return
+        self._schedule_island_resync(f"#{after.name} changed")
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel):
+        if self._is_sub_island_channel(channel):
+            self._schedule_island_resync(f"#{channel.name} created")
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel):
+        if self._is_sub_island_channel(channel):
+            self._schedule_island_resync(f"#{channel.name} deleted")
 
     def _resolve_island_channel_id(self, island_name: str) -> int | None:
         """Resolve Discord text channel id for an island name (same logic as mention link)."""
@@ -3393,8 +3458,7 @@ class FlightLoggerCog(commands.Cog):
 
                 # Tier roles count as subscriptions even when the channel-overwrite cache is
                 # empty or stale, so the alert never reports "None detected" for a subscriber.
-                tier_role_ids = {int(rid) for rid in island_access.ROLE_ID_TO_TIER_NAME if str(rid).isdigit()}
-                all_member_subs = [r for r in member.roles if r.id in cog.all_sub_roles or r.id in tier_role_ids]
+                all_member_subs = self.member_sub_roles(member)
                 current_island_subs = [r for r in member.roles if r.id in sub_roles]
                 # Discord's own permission check is authoritative: the synced DB roles can lag
                 # behind channel overwrites, but a member who can view the island channel has access.
@@ -3473,34 +3537,35 @@ class FlightLoggerCog(commands.Cog):
                     return
 
                 # Design: Use a block with emoji and clear separation
+                # A subscription opens the island on its own, so subs are always listed; the
+                # Island Access role (rules accepted) is shown separately, not as a gate.
                 if has_access:
                     desc_lines.append(
                         f"<a:starpink:784055540321091584> **Has Island Access?** Yes"
                     )
-                    if current_island_subs:
-                        sub_lines = [r.mention for r in current_island_subs]
-                        desc_lines.append(
-                            f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
-                        )
-                    else:
-                        desc_lines.append(
-                            f"<a:CampWarning:1172346431542140961> **Subscription(s):**\n> None detected for this island."
-                        )
-                    
-                    if other_subs:
-                        other_lines = [r.mention for r in other_subs]
-                        desc_lines.append(
-                            f"<a:heartside:784055539881214002> **Other Subscription(s):**\n> " + "\n> ".join(other_lines)
-                        )
-
-                    if len(all_member_subs) > 1:
-                        desc_lines.append(f"> <:ChoLove:818216528449241128> **Multiple Subscriptions Detected**")
-
-
-                else:
+                elif not current_island_subs:
                     desc_lines.append(
                         f"<a:CampWarning:1172346431542140961> **No Island Access Role**"
                     )
+
+                if current_island_subs:
+                    sub_lines = [r.mention for r in current_island_subs]
+                    desc_lines.append(
+                        f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
+                    )
+                elif has_access:
+                    desc_lines.append(
+                        f"<a:CampWarning:1172346431542140961> **Subscription(s):**\n> None detected for this island."
+                    )
+
+                if other_subs:
+                    other_lines = [r.mention for r in other_subs]
+                    desc_lines.append(
+                        f"<a:heartside:784055539881214002> **Other Subscription(s):**\n> " + "\n> ".join(other_lines)
+                    )
+
+                if len(all_member_subs) > 1:
+                    desc_lines.append(f"> <:ChoLove:818216528449241128> **Multiple Subscriptions Detected**")
 
                 desc_lines.append("\nLog details matched with a member.")
 

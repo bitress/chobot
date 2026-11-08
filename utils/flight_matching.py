@@ -140,45 +140,14 @@ LEGACY_TWO_IDENTITY_LIMIT = 2
 def calculate_max_identities(display_name: str) -> int:
     """Calculate the number of subscriptions required based on nickname slots and options.
 
-    Rules:
-    - If a category (IGN or Island) has multiple | blocks, its count is the number of blocks.
-    - If it has only one | block, its count is the number of / options in that block.
-    - The total count is the maximum of the IGN count and Island count.
+    Every distinct IGN and island counts, whether separated by | or /, so
+    "IGN | Isl1/Isl2 | Isl3" and "IGN | Isl1 | Isl2 | Isl3" both claim 3 islands.
+    The total is the larger of the IGN count and the island count.
     """
     if not display_name or '|' not in display_name:
         return 1
-
-    chunks = [c.strip() for c in display_name.split('|') if c.strip()]
-    if chunks and chunks[0].upper() == "ACNH":
-        chunks = chunks[1:]
-
-    if not chunks:
-        return 1
-
-    ign_blocks = []
-    island_blocks = []
-
-    if len(chunks) % 2 == 0:
-        # Even chunks: pairs of (IGN, Island)
-        for i in range(0, len(chunks), 2):
-            ign_blocks.append(chunks[i])
-            island_blocks.append(chunks[i + 1])
-    else:
-        # Odd chunks: first is IGN, rest are Islands
-        ign_blocks.append(chunks[0])
-        for i in range(1, len(chunks)):
-            island_blocks.append(chunks[i])
-
-    def get_category_count(blocks):
-        if not blocks:
-            return 0
-        if len(blocks) > 1:
-            # Multiple blocks: each block is an identity (ignore internal / splits)
-            return len(blocks)
-        # Single block: count / options
-        return len(split_options(blocks[0]))
-
-    return max(get_category_count(ign_blocks), get_category_count(island_blocks))
+    ign_opts, island_opts = parse_member_nick(display_name)
+    return max(1, len(ign_opts), len(island_opts))
 
 
 def get_allowed_identity_count(joined_at: datetime.datetime | None, sub_count: int) -> int:
