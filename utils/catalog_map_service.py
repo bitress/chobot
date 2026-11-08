@@ -512,16 +512,17 @@ def build_telemetry_payload(
         v_count = tel_entry.get("visitors_count") if tel_entry.get("visitors_count") is not None else len(v_list)
         total_visitors += v_count
 
-        # Check Dodo visibility based on unified auth
-        can_see_dodo = False
+        # Sub island Dodo codes are never sent in bulk telemetry (except to mods): members
+        # reveal them through POST /api/islands/<name>/dodo, which re-checks their live Discord
+        # roles, rules acceptance and moderation status, and records the reveal for the flight
+        # logger. `dodo_accessible` only tells the UI whether a reveal would be allowed.
         if not is_sub or viewer_is_mod or viewer_is_admin:
             can_see_dodo = True
-        elif viewer:
-            can_see_dodo = island_access.has_island_access(
-                viewer_roles,
-                "member",
-                name_clean,
-                "VIP" if is_sub else "Free",
+            dodo_accessible = True
+        else:
+            can_see_dodo = False
+            dodo_accessible = bool(viewer) and island_access.has_island_access(
+                viewer_roles, None, False, island_name=name_clean, user=viewer,
             )
 
         exposed_dodo = tel_entry.get("raw_dodo") if can_see_dodo else None
@@ -536,7 +537,7 @@ def build_telemetry_payload(
             "is_online": is_online,
             "status": "ONLINE" if is_online else "OFFLINE",
             "dodo_code": exposed_dodo,
-            "dodo_accessible": can_see_dodo,
+            "dodo_accessible": dodo_accessible,
             "visitors": v_list,
             "visitor_count": v_count,
             "max_visitors": 7,

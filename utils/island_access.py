@@ -148,11 +148,29 @@ def get_user_sub_tier(user: Optional[Dict[str, Any]]) -> Optional[int]:
     return None
 
 
+def non_subscription_gate_role_ids() -> set[str]:
+    """Roles that may open a sub island channel without being a subscription.
+
+    The island-access / sub-rules role (rules accepted) and @everyone stay with a member
+    after their subscription ends, so they must never unlock a sub island's Dodo code.
+    """
+    ids = {
+        str(getattr(Config, "ISLAND_ACCESS_ROLE", "") or ""),
+        str(getattr(Config, "SUB_RULES_ROLE_ID", "") or ""),
+        str(getattr(Config, "GUILD_ID", "") or ""),
+    }
+    return {i for i in ids if i and i not in {"0", "None"}}
+
+
+def _subscription_roles_only(roles: List[Any] | Set[Any] | Tuple[Any, ...] | None) -> list[str]:
+    gate = non_subscription_gate_role_ids()
+    return [str(r) for r in (roles or []) if str(r).strip() and str(r).strip() not in gate]
+
+
 def configured_subscription_role_ids() -> list[str]:
-    """Return all subscription tier names and configured role IDs."""
+    """Return all subscription tier names and configured role IDs (never the rules/gate role)."""
     tiers_and_roles: list[str] = list(TIER_NAME_TO_ROLE_ID.keys()) + list(ROLE_ID_TO_TIER_NAME.keys())
     for attr_name in (
-        "ISLAND_ACCESS_ROLE",
         "SUBSCRIPTION_ROLE_ID",
         "SUBSCRIPTION_ROLE_IDS",
         "MEMBER_ROLE_ID",
@@ -167,7 +185,7 @@ def configured_subscription_role_ids() -> list[str]:
                     tiers_and_roles.append(str(item))
         else:
             tiers_and_roles.append(str(value))
-    return list(dict.fromkeys(tiers_and_roles))
+    return list(dict.fromkeys(_subscription_roles_only(tiers_and_roles)))
 
 
 def excluded_profile_role_ids() -> set[str]:
@@ -228,6 +246,10 @@ def effective_island_required_roles(
     """
     # 1. Explicit roles passed in, or the Discord-synced roles stored for this island
     synced = list(required_roles or []) or discord_synced_island_roles(island_name)
+    if is_member_island(cat, island_type, island_name):
+        # A sub island needs a subscription: the rules/gate role never counts, even if
+        # the channel's overwrites let it view the channel.
+        synced = _subscription_roles_only(synced)
     if synced:
         expanded = list(normalize_roles(synced))
         if expanded:
@@ -277,6 +299,9 @@ def has_island_access(
     if island_name:
         if not needed:
             needed = discord_synced_island_roles(island_name)
+        if is_member_island(None, None, island_name):
+            # Sub islands need a subscription; the rules/gate role kept after a sub ends never counts
+            needed = _subscription_roles_only(needed)
         if not needed:
             if not is_member_island(None, None, island_name):
                 # Not a Sub Island and not marked as a member island -> public/free

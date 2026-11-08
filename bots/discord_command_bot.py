@@ -37,6 +37,11 @@ from utils.ops_status import create_sqlite_backup, get_maintenance_settings
 from utils.sysbot_api import get_island_sysbot_client, _INVALID_DODO_CODES
 from utils.sysbot_telemetry import get_cached_island_telemetry
 from bots.cogs.drop_bot_cog import DropBotCog
+from bots.nickname_panel import (
+    NicknamePanelView,
+    build_panel_embed as build_nickname_panel_embed,
+    register_nickname_commands,
+)
 from bots.cogs.control_panel_cog import ControlPanelCog
 
 logger = logging.getLogger("DiscordCommandBot")
@@ -3539,6 +3544,36 @@ class DiscordCommandCog(commands.Cog):
                 await ctx.reply(f"✅ Synced {len(synced)} slash commands to **{target_guild.name}**:\n{names}")
 
     @app_commands.command(
+        name="nickpanel",
+        description="Deploy the interactive nickname panel to a channel",
+    )
+    @app_commands.describe(channel="The channel to deploy into (defaults to current channel)")
+    async def slash_nickpanel(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel | None = None,
+    ):
+        """Deploy a persistent panel where members set a Camp-format nickname."""
+        perms = getattr(interaction.user, "guild_permissions", None)
+        if not perms or not (perms.manage_channels or perms.administrator):
+            await interaction.response.send_message(
+                "❌ You need **Manage Channels** or **Administrator** permission to deploy the nickname panel.",
+                ephemeral=True,
+            )
+            return
+        target = channel or interaction.channel
+        try:
+            await target.send(embed=build_nickname_panel_embed(), view=NicknamePanelView())
+        except discord.HTTPException as exc:
+            logger.error(f"[DISCORD] Failed to deploy nickname panel to {target}: {exc}")
+            await interaction.response.send_message(
+                "❌ Failed to deploy the nickname panel. Check my permissions in that channel.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(f"✅ Nickname panel deployed to {target.mention}.", ephemeral=True)
+        logger.info(f"[DISCORD] Nickname panel deployed to #{target} by {interaction.user}")
+
+    @app_commands.command(
         name="findpanel",
         description="Deploy the interactive Find Station panel to a channel",
     )
@@ -6188,6 +6223,7 @@ class DiscordCommandBot(commands.Bot):
         if self._load_command_cog:
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
             self.add_view(FindPanelView())
+            register_nickname_commands(self)  # panel buttons + "Fix Nickname" context menu
             self.add_view(SubRulesView())
             self.add_view(OrderRulesView())
 

@@ -471,6 +471,14 @@ _GUILD_CHANNELS_CACHE: tuple[list[dict], float] | None = None
 _CHANNEL_OVERWRITE_CACHE_TTL = 300
 _GUILD_CHANNELS_CACHE_TTL = 300
 
+DODO_REVEAL_ROLE_MAX_AGE_SECONDS = 120
+
+
+def _secrets_bot_user(user: dict) -> bool:
+    """True for the internal bot/dashboard-secret caller built in _current_auth_user."""
+    return bool(user.get("_internal_secret_auth"))
+
+
 def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
     """Extract Bearer token or API key from request and return user dict, or None."""
     auth = request.headers.get("Authorization", "")
@@ -494,6 +502,7 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
                 "nickname": uname,
                 "roles": ["admin"],
                 "is_admin": True,
+                "_internal_secret_auth": True,
             }
 
     if not auth.startswith("Bearer "):
@@ -2088,6 +2097,19 @@ def reveal_dodo(name):
     if not user:
         _log_dodo_reveal_attempt(None, name.upper(), "denied", "not_logged_in")
         return jsonify({"error": "Authentication required"}), 401
+
+    # Fail closed: a forced refresh that couldn't reach Discord returns the cached session
+    # (up to the stale grace window), whose roles may include a subscription that has since
+    # ended. Only reveal against roles confirmed with Discord moments ago.
+    if getattr(Config, "DISCORD_LOGIN_ENABLED", True) and not _secrets_bot_user(user):
+        checked_at = int(user.get("discord_checked_at") or 0)
+        if time.time() - checked_at > DODO_REVEAL_ROLE_MAX_AGE_SECONDS:
+            _log_dodo_reveal_attempt(user, name.upper(), "denied", "roles_unverified", checked_at=checked_at)
+            _record_api_audit_event("dodo_reveal_denied", name.upper(), {"reason": "roles_unverified"})
+            return jsonify({
+                "error": "We couldn't confirm your Discord roles right now. Please try again in a moment.",
+                "code": "roles_unverified",
+            }), 503
 
     maintenance = get_maintenance_settings()
     island_maintenance = (maintenance.get("islands") or {}).get(clean_text(name), {})
