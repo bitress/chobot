@@ -27,6 +27,7 @@ from utils.config import Config
 logger = logging.getLogger("DodoRevealPanel")
 
 COLOR_PANEL = 0x7DD3C0
+COLOR_EMPTY = 0x99AAB5
 PAGE_SIZE = 15
 SELECT_MAX = 25
 # Order-bot islands hand out codes through the order channels, never through a reveal
@@ -193,72 +194,168 @@ def source_badge(source: str | None) -> str:
     return emoji
 
 
-def format_row(row: RevealRow) -> str:
-    when = f"<t:{row.created_at}:f> · <t:{row.created_at}:R>"
+def format_row(row: RevealRow, number: int | None = None) -> str:
+    """Two lines: who (with source badge), then when and the Dodo Log link."""
+    num = f"`{number:>2}` " if number is not None else ""
     log = f" · [Log]({row.message_url})" if row.message_url.startswith("http") else ""
-    return f"{when}\n{source_badge(row.source)} {format_member(row)}{log}"
+    return (
+        f"{num}{source_badge(row.source)} {format_member(row)}\n"
+        f"<t:{row.created_at}:f> · <t:{row.created_at}:R>{log}"
+    )
 
 
 def total_pages(total: int, page_size: int = PAGE_SIZE) -> int:
     return max(1, -(-total // page_size))
 
 
-def build_intro_embed() -> discord.Embed:
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _window_label(window: str) -> str:
+    return WINDOWS.get(window, WINDOWS[DEFAULT_WINDOW])[0]
+
+
+LEGEND = "🌐 website · 💬 Discord · ❔ before source tracking"
+
+
+@dataclass
+class IslandActivity:
+    count: int = 0
+    last: int = 0
+
+
+def fetch_island_counts(since: int) -> dict[str, IslandActivity]:
+    """Reveal count and latest reveal per sub island since a Unix time (keyed by island name)."""
+    from utils.database import connect_db
+
+    with connect_db() as conn:
+        rows = conn.execute(
+            "SELECT island_clean, COUNT(*) AS n, MAX(created_at) AS last FROM dodo_reveal_messages "
+            "WHERE created_at >= ? GROUP BY island_clean",
+            [int(since)],
+        ).fetchall()
+    by_key = {str(r["island_clean"] or ""): (int(r["n"] or 0), int(r["last"] or 0)) for r in rows}
+    result: dict[str, IslandActivity] = {}
+    for island in panel_islands():
+        act = IslandActivity()
+        for key in island_clean_keys(island):
+            n, last = by_key.get(key, (0, 0))
+            act.count += n
+            act.last = max(act.last, last)
+        result[island] = act
+    return result
+
+
+def build_overview_embed(
+    window: str = DEFAULT_WINDOW,
+    counts: dict[str, IslandActivity] | None = None,
+    viewer_id: int | None = None,
+) -> discord.Embed:
+    """Landing view: how to use the panel, plus which sub islands were busiest in the window."""
+    label = _window_label(window)
     embed = discord.Embed(
         title="🛬 Dodo reveal log",
         description=(
-            "Pick a **sub island** to see who revealed its Dodo code, and when.\n\n"
-            "• Times show in **your own timezone**.\n"
-            "• 🌐 revealed on the website · 💬 revealed in Discord · ❔ logged before source tracking.\n"
-            "• Staff only. Results update this message for everyone in the channel."
+            "Pick a **sub island** below to see who revealed its Dodo code, and when.\n"
+            f"Times show in your own timezone. {LEGEND}."
         ),
         color=COLOR_PANEL,
+        timestamp=discord.utils.utcnow(),
     )
-    embed.set_footer(text="Chopaeng Camp™ • Dodo Reveal Log")
+    if counts is not None:
+        active = sorted(((i, a) for i, a in counts.items() if a.count), key=lambda x: (-x[1].count, x[0].lower()))
+        quiet = sorted((i for i, a in counts.items() if not a.count), key=str.lower)
+        total = sum(a.count for _, a in active)
+        if active:
+            lines: list[str] = []
+            size = 0
+            for rank, (island, act) in enumerate(active, 1):
+                line = f"`{rank:>2}` 👑 **{_esc(island)}** · {_plural(act.count, 'reveal')} · last <t:{act.last}:R>"
+                if size + len(line) + 1 > 980:  # field value limit is 1024
+                    lines.append(f"… and {len(active) - rank + 1} more")
+                    break
+                lines.append(line)
+                size += len(line) + 1
+            embed.add_field(
+                name=f"Most active · {label.lower()} · {_plural(total, 'reveal')}",
+                value="\n".join(lines),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name=f"Most active · {label.lower()}",
+                value="No sub island reveals yet. Try a longer window from the 🕒 menu.",
+                inline=False,
+            )
+        if quiet:
+            value = ", ".join(_esc(i) for i in quiet)
+            embed.add_field(
+                name=f"Quiet · no reveals ({len(quiet)})",
+                value=value if len(value) <= 1024 else value[:1020] + "…",
+                inline=False,
+            )
+    if viewer_id:
+        embed.add_field(name="​", value=f"_Refreshed by <@{viewer_id}>_", inline=False)
+    embed.set_footer(text="Staff only • Results update this message for everyone • Chopaeng Camp™")
     return embed
 
 
+def build_intro_embed() -> discord.Embed:
+    """Overview without activity counts (used when the database can't be read)."""
+    return build_overview_embed()
+
+
 def build_results_embed(island: str, window: str, page: int, data: RevealPage, viewer_id: int | None) -> discord.Embed:
-    label = WINDOWS.get(window, WINDOWS[DEFAULT_WINDOW])[0].lower()
-    now = int(time.time())
+    label = _window_label(window)
+    pages = total_pages(data.total)
+    page = min(max(page, 0), pages - 1)
     lines: list[str] = []
     if data.total:
-        lines.append(
-            f"**{data.total}** reveal{'s' if data.total != 1 else ''} by **{data.unique_members}** "
-            f"member{'s' if data.unique_members != 1 else ''} · {label}"
+        sources = "  ".join(
+            f"{SOURCE_LABELS.get(key, UNKNOWN_SOURCE)[0]} {data.by_source[key]}"
+            for key in ("website", "discord", "")
+            if data.by_source.get(key)
         )
-        counts = []
-        for key in ("website", "discord", ""):
-            n = data.by_source.get(key, 0)
-            if n:
-                emoji, name = SOURCE_LABELS.get(key, UNKNOWN_SOURCE)
-                counts.append(f"{emoji} {name} {n}")
-        if counts:
-            lines.append(" · ".join(counts))
+        lines.append(
+            f"**{_plural(data.total, 'reveal')}** by **{_plural(data.unique_members, 'member')}**"
+            + (f"  ·  {sources}" if sources else "")
+        )
         if data.repeaters:
-            lines.append("Most reveals: " + " · ".join(f"{format_member(r)} ×{n}" for r, n in data.repeaters))
+            lines.append("🔁 Most reveals: " + " · ".join(f"{format_member(r)} ×{n}" for r, n in data.repeaters))
     else:
-        lines.append(f"No Dodo reveals for **{_esc(island)}** · {label}.")
-    refreshed = f"Updated <t:{now}:R>" + (f" by <@{viewer_id}>" if viewer_id else "")
-    lines.append(f"_{refreshed}_")
+        lines.append(f"No Dodo reveals for **{_esc(island)}** in the {label.lower()}.")
+        lines.append("Try a longer window from the 🕒 menu, or pick another island.")
+    if viewer_id:
+        lines.append(f"_Refreshed by <@{viewer_id}>_")
 
     body = "\n".join(lines)
+    first = page * PAGE_SIZE + 1
+    shown = 0
     if data.rows:
-        entries = []
-        size = len(body) + 2
-        for row in data.rows:
-            entry = format_row(row)
+        entries: list[str] = []
+        size = len(body) + 4
+        for i, row in enumerate(data.rows):
+            entry = format_row(row, first + i)
             if size + len(entry) + 2 > 4000:  # embed description limit is 4096
                 break
             entries.append(entry)
             size += len(entry) + 2
-        body += "\n\n" + "\n\n".join(entries)
+        shown = len(entries)
+        body += "\n​\n" + "\n\n".join(entries)
 
-    embed = discord.Embed(title=f"🛬 Dodo reveals · {island}", description=body, color=COLOR_PANEL)
-    pages = total_pages(data.total)
-    embed.set_footer(
-        text=f"Page {min(page, pages - 1) + 1}/{pages} • Times are in your timezone • Chopaeng Camp™ Dodo Reveal Log"
+    embed = discord.Embed(
+        title=f"👑 {island}",
+        description=body,
+        color=COLOR_PANEL if data.total else COLOR_EMPTY,
+        timestamp=discord.utils.utcnow(),
     )
+    embed.set_author(name=f"Dodo reveal log · {label}")
+    if data.total and shown:
+        last = first + shown - 1
+        embed.set_footer(text=f"{first}–{last} of {data.total} · Page {page + 1} of {pages} · {LEGEND}")
+    else:
+        embed.set_footer(text=LEGEND)
     return embed
 
 
@@ -279,22 +376,40 @@ def _window(value: str) -> str:
 
 
 class RevealIslandSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"dodolog:isl:(?P<win>\w+):(?P<part>\d+)"):
-    """Sub island picker. Split into several menus if there are ever more than 25 sub islands."""
+    """Sub island picker, with each island's activity in the window. Splits past 25 islands."""
 
-    def __init__(self, window: str, part: int = 0, current: str | None = None):
+    def __init__(
+        self,
+        window: str,
+        part: int = 0,
+        current: str | None = None,
+        counts: dict[str, IslandActivity] | None = None,
+    ):
         self.window = _window(window)
         self.part = part
         islands = panel_islands()
         chunk = islands[part * SELECT_MAX:(part + 1) * SELECT_MAX] or ["(no sub islands)"]
         multi = len(islands) > SELECT_MAX
         placeholder = "👑 Pick a sub island…" if not multi else f"👑 Sub islands {chunk[0][0]}–{chunk[-1][0]}…"
-        options = [
-            discord.SelectOption(
-                label=name[:100], value=name[:100], emoji="👑",
-                default=bool(current) and _clean(name) == _clean(current or ""),
+        label = _window_label(self.window).lower()
+        options = []
+        for name in chunk:
+            act = (counts or {}).get(name)
+            if act is None:
+                desc = None
+            elif act.count:
+                desc = f"{_plural(act.count, 'reveal')} · {label}"
+            else:
+                desc = f"No reveals · {label}"
+            options.append(
+                discord.SelectOption(
+                    label=name[:100],
+                    value=name[:100],
+                    description=desc,
+                    emoji="👑" if (act is None or act.count) else "🏝️",
+                    default=bool(current) and _clean(name) == _clean(current or ""),
+                )
             )
-            for name in chunk
-        ]
         super().__init__(
             discord.ui.Select(
                 custom_id=f"dodolog:isl:{self.window}:{part}",
@@ -314,7 +429,7 @@ class RevealIslandSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"d
 
 
 class RevealWindowSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"dodolog:win:(?P<island>[^:]+)"):
-    """Time window picker."""
+    """Time window picker. Keeps the current island (or the overview)."""
 
     def __init__(self, island: str | None, window: str = DEFAULT_WINDOW, row: int = 1):
         self.island = island
@@ -340,14 +455,19 @@ class RevealWindowSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"d
         await render(interaction, self.island, _window(values[0]), 0)
 
 
-_NAV = {"prev": ("◀", "Newer"), "next": ("▶", "Older"), "ref": ("🔄", "Refresh")}
+_NAV = {
+    "home": ("🏝️", "All islands"),
+    "prev": ("◀", "Newer"),
+    "next": ("▶", "Older"),
+    "ref": ("🔄", "Refresh"),
+}
 
 
 class RevealNavButton(
     discord.ui.DynamicItem[discord.ui.Button],
-    template=r"dodolog:(?P<action>prev|next|ref):(?P<island>[^:]+):(?P<win>\w+):(?P<page>\d+)",
+    template=r"dodolog:(?P<action>home|prev|next|ref):(?P<island>[^:]+):(?P<win>\w+):(?P<page>\d+)",
 ):
-    """Paging and refresh. Each button carries the page it leads to."""
+    """Overview, paging and refresh. Each button carries the island and page it leads to."""
 
     def __init__(self, action: str, island: str | None, window: str, page: int, disabled: bool = False, row: int = 2):
         self.action = action
@@ -360,7 +480,7 @@ class RevealNavButton(
                 custom_id=f"dodolog:{action}:{_q(island)}:{self.window}:{self.page}",
                 emoji=emoji,
                 label=label,
-                style=discord.ButtonStyle.secondary,
+                style=discord.ButtonStyle.primary if action == "ref" else discord.ButtonStyle.secondary,
                 disabled=disabled,
                 row=row,
             )
@@ -371,23 +491,42 @@ class RevealNavButton(
         return cls(match["action"], _uq(match["island"]), match["win"], int(match["page"]))
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await render(interaction, self.island, self.window, self.page)
+        await render(interaction, None if self.action == "home" else self.island, self.window, self.page)
 
 
-def build_view(island: str | None, window: str = DEFAULT_WINDOW, page: int = 0, total: int = 0) -> discord.ui.View:
-    """Island menu(s), time window menu, then Newer / Older / Refresh."""
+def build_view(
+    island: str | None,
+    window: str = DEFAULT_WINDOW,
+    page: int = 0,
+    total: int = 0,
+    counts: dict[str, IslandActivity] | None = None,
+) -> discord.ui.View:
+    """Island menu(s), time window menu, then All islands / Newer / Older / Refresh."""
     view = discord.ui.View(timeout=None)
     parts = max(1, -(-len(panel_islands()) // SELECT_MAX))
     parts = min(parts, 3)  # leave rows for the window menu and buttons (5 rows max)
     for part in range(parts):
-        view.add_item(RevealIslandSelect(window, part, island))
+        view.add_item(RevealIslandSelect(window, part, island, counts))
     view.add_item(RevealWindowSelect(island, window, row=parts))
     pages = total_pages(total)
-    nav_row = parts + 1
-    view.add_item(RevealNavButton("prev", island, window, page - 1, disabled=not island or page <= 0, row=nav_row))
-    view.add_item(RevealNavButton("next", island, window, page + 1, disabled=not island or page >= pages - 1, row=nav_row))
-    view.add_item(RevealNavButton("ref", island, window, page, disabled=not island, row=nav_row))
+    nav = parts + 1
+    if island:
+        view.add_item(RevealNavButton("home", island, window, 0, row=nav))
+        view.add_item(RevealNavButton("prev", island, window, page - 1, disabled=page <= 0, row=nav))
+        view.add_item(RevealNavButton("next", island, window, page + 1, disabled=page >= pages - 1, row=nav))
+    view.add_item(RevealNavButton("ref", island, window, page, row=nav))
     return view
+
+
+async def build_panel_message(window: str = DEFAULT_WINDOW) -> tuple[discord.Embed, discord.ui.View]:
+    """The overview message used when deploying the panel."""
+    since = int(time.time()) - WINDOWS[_window(window)][1]
+    try:
+        counts = await asyncio.to_thread(fetch_island_counts, since)
+    except Exception as exc:
+        logger.warning(f"[REVEALLOG] Could not load island activity: {exc}")
+        counts = None
+    return build_overview_embed(window, counts), build_view(None, window, counts=counts)
 
 
 async def render(interaction: discord.Interaction, island: str | None, window: str, page: int) -> None:
@@ -396,30 +535,31 @@ async def render(interaction: discord.Interaction, island: str | None, window: s
         await interaction.response.send_message("Only staff can use the Dodo reveal log.", ephemeral=True)
         return
     window = _window(window)
-    if not island:
-        await interaction.response.edit_message(embed=build_intro_embed(), view=build_view(None, window))
-        return
-
+    viewer = getattr(interaction.user, "id", None)
     await interaction.response.defer()
     since = int(time.time()) - WINDOWS[window][1]
+    data = RevealPage()
     try:
-        data = await asyncio.to_thread(fetch_reveals, island, since, page)
-        if data.total and page >= total_pages(data.total):  # list shrank since the button was drawn
-            page = total_pages(data.total) - 1
+        counts = await asyncio.to_thread(fetch_island_counts, since)
+        if island:
             data = await asyncio.to_thread(fetch_reveals, island, since, page)
+            if data.total and page >= total_pages(data.total):  # list shrank since the button was drawn
+                page = total_pages(data.total) - 1
+                data = await asyncio.to_thread(fetch_reveals, island, since, page)
     except Exception as exc:
-        logger.error(f"[REVEALLOG] Could not load reveals for {island}: {exc}")
+        logger.error(f"[REVEALLOG] Could not load reveals for {island or 'overview'}: {exc}")
         await interaction.followup.send(
             "Couldn't load the reveal log right now. Try again in a moment, or check the bot logs.", ephemeral=True
         )
         return
-    embed = build_results_embed(island, window, page, data, getattr(interaction.user, "id", None))
-    await interaction.edit_original_response(
-        embed=embed,
-        view=build_view(island, window, page, data.total),
-        allowed_mentions=discord.AllowedMentions.none(),
-    )
-    logger.info(f"[REVEALLOG] {interaction.user} viewed {island} ({window}, page {page + 1})")
+    if island:
+        embed = build_results_embed(island, window, page, data, viewer)
+        view = build_view(island, window, page, data.total, counts)
+    else:
+        embed = build_overview_embed(window, counts, viewer)
+        view = build_view(None, window, counts=counts)
+    await interaction.edit_original_response(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+    logger.info(f"[REVEALLOG] {interaction.user} viewed {island or 'overview'} ({window}, page {page + 1})")
 
 
 def register_reveal_panel(bot) -> None:

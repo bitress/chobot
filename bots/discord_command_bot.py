@@ -44,8 +44,7 @@ from bots.nickname_panel import (
 )
 from bots.cogs.control_panel_cog import ControlPanelCog
 from bots.dodo_reveal_panel import (
-    build_intro_embed as build_reveal_panel_embed,
-    build_view as build_reveal_panel_view,
+    build_panel_message as build_reveal_panel_message,
     can_use_panel as can_use_reveal_panel,
     register_reveal_panel,
 )
@@ -3597,15 +3596,17 @@ class DiscordCommandCog(commands.Cog):
         if target is None and interaction.guild and Config.DODO_REVEAL_PANEL_CHANNEL_ID:
             target = interaction.guild.get_channel(Config.DODO_REVEAL_PANEL_CHANNEL_ID)
         target = target or interaction.channel
+        await interaction.response.defer(ephemeral=True)
+        embed, view = await build_reveal_panel_message()
         try:
-            await target.send(embed=build_reveal_panel_embed(), view=build_reveal_panel_view(None))
+            await target.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException as exc:
             logger.error(f"[DISCORD] Failed to deploy reveal log panel to {target}: {exc}")
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Failed to deploy the reveal log panel. Check my permissions in that channel.", ephemeral=True
             )
             return
-        await interaction.response.send_message(f"✅ Dodo reveal log deployed to {target.mention}.", ephemeral=True)
+        await interaction.followup.send(f"✅ Dodo reveal log deployed to {target.mention}.", ephemeral=True)
         logger.info(f"[DISCORD] Dodo reveal log panel deployed to #{target} by {interaction.user}")
 
     @app_commands.command(
