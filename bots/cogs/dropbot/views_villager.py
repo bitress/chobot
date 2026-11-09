@@ -503,6 +503,7 @@ class SanrioInjectionWizardView(_OwnedView):
             self.target_villager,
             plot=1,
             cooldown_key="sanrio2",
+            allow_unadoptable=True,
         )
         if ok:
             self.step2_done = True
@@ -529,6 +530,7 @@ class SanrioInjectionWizardView(_OwnedView):
             self.target_villager,
             plot=1,
             cooldown_key="sanrio2",
+            allow_unadoptable=True,
         )
         if ok:
             self.step2_done = True

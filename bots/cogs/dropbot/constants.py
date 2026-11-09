@@ -54,16 +54,21 @@ PLOT_MAX = 10
 
 
 # Sanrio / Amiibo villager injection
+# Emojis are ChoBot application emojis (villager icons, named acnh_<code>), uploaded once.
 SANRIO_EMBED_COLOR = 0xF06292
 
 
 SANRIO_VILLAGERS: list[tuple[str, str, str]] = [
-    ("Chai", "Cinnamoroll • Peppy Elephant", "☕"),
-    ("Chelsea", "My Melody • Sweet Deer", "🌸"),
-    ("Étoile", "Little Twin Stars • Normal Sheep", "⭐"),
-    ("Marty", "Pompompurin • Lazy Bear Cub", "🍮"),
-    ("Rilla", "Hello Kitty • Peppy Gorilla", "🎀"),
-    ("Toby", "Kerokerokeroppi • Smug Rabbit", "🍵"),
+    ("Chai", "Cinnamoroll • Peppy Elephant", "<:acnh_elp11:1569218511815970917>"),
+    ("Chelsea", "My Melody • Sweet Deer", "<:acnh_der10:1569218514303189145>"),
+    ("Étoile", "Little Twin Stars • Normal Sheep", "<:acnh_shp14:1569218517549588511>"),
+    ("Marty", "Pompompurin • Lazy Bear Cub", "<:acnh_cbr18:1569218521668522126>"),
+    ("Rilla", "Hello Kitty • Peppy Gorilla", "<:acnh_gor11:1569218525804109904>"),
+    ("Toby", "Kerokerokeroppi • Smug Rabbit", "<:acnh_rbt20:1569218530002337823>"),
+    ("Cece", "Splatoon • Peppy Squirrel", "<:acnh_squ19:1569218532565057666>"),
+    ("Viché", "Splatoon • Normal Squirrel", "<:acnh_squ20:1569218536402980896>"),
+    ("Tulin", "Zelda • Jock Bird", "<:acnh_brd20:1569218541679550574>"),
+    ("Mineru", "Zelda • Snooty Deer", "<:acnh_der12:1569218544049201183>"),
 ]
 
 
@@ -75,6 +80,11 @@ SANRIO_NAMES_MAP: dict[str, str] = {
     "marty": "Marty",
     "rilla": "Rilla",
     "toby": "Toby",
+    "cece": "Cece",
+    "viche": "Viché",
+    "viché": "Viché",
+    "tulin": "Tulin",
+    "mineru": "Mineru",
 }
 
 
@@ -86,17 +96,22 @@ SANRIO_VILLAGER_CODES: dict[str, str] = {
     "marty": "villager:cbr18",
     "rilla": "villager:gor11",
     "toby": "villager:rbt20",
+    "cece": "villager:squ19",
+    "viche": "villager:squ20",
+    "viché": "villager:squ20",
+    "tulin": "villager:brd20",
+    "mineru": "villager:der12",
 }
 
 
 PLACEHOLDER_VILLAGERS: list[tuple[str, str, str]] = [
-    ("Raymond", "Smug • Cat (Recommended)", "🐱"),
-    ("Marshal", "Smug • Squirrel", "🐿️"),
-    ("Shino", "Peppy • Deer", "🦌"),
-    ("Sasha", "Lazy • Rabbit", "🐰"),
-    ("Judy", "Snooty • Bear cub", "🧸"),
-    ("Ankha", "Snooty • Cat", "🐱"),
-    ("Lucky", "Lazy • Dog", "🐶"),
+    ("Raymond", "Smug • Cat (Recommended)", "<:acnh_cat23:1569218547006054489>"),
+    ("Marshal", "Smug • Squirrel", "<:acnh_squ17:1569218549753581589>"),
+    ("Shino", "Peppy • Deer", "<:acnh_der11:1569218552928669706>"),
+    ("Sasha", "Lazy • Rabbit", "<:acnh_rbt21:1569218556569325719>"),
+    ("Judy", "Snooty • Bear cub", "<:acnh_cbr19:1569218563431202846>"),
+    ("Ankha", "Snooty • Cat", "<:acnh_cat19:1569218566111105134>"),
+    ("Lucky", "Lazy • Dog", "<:acnh_dog02:1569218568380350588>"),
 ]
 
 

@@ -812,7 +812,7 @@ class SysBotClient:
         except Exception:
             resolve_villager_code = None
 
-        sanrio_codes = {"cbr18", "der10", "elp11", "gor11", "rbt20", "shp14"}
+        sanrio_codes = {"cbr18", "der10", "elp11", "gor11", "rbt20", "shp14", "squ19", "squ20", "brd20", "der12"}
 
         def _is_sanrio_code(c: Any) -> bool:
             if not isinstance(c, str):

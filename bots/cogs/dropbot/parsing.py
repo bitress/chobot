@@ -5,7 +5,6 @@ from __future__ import annotations
 import difflib
 import json
 import logging
-import os
 import re
 from utils.acnh_catalog import ACNHCatalog, CatalogItem, CatalogVillager
 
@@ -108,11 +107,12 @@ def _get_villager_names() -> list[str]:
     if _VILLAGER_NAMES_LOADED:
         return _VILLAGER_NAMES
     try:
-        # villagers.json is in the project root
-        vpath = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "villagers.json",
-        )
+        # villagers.json lives in the project root (or data/); use the shared lookup so moving
+        # this module doesn't break the path again.
+        from utils.data_manager import _find_catalog_file
+        vpath = _find_catalog_file("villagers.json")
+        if not vpath:
+            raise FileNotFoundError("villagers.json not found in project root or data/")
         with open(vpath, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):

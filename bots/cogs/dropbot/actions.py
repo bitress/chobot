@@ -241,8 +241,13 @@ async def _perform_injection(
     plot: int | None,
     *,
     cooldown_key: str = "inject",
+    allow_unadoptable: bool = False,
 ) -> tuple[discord.Embed, bool]:
-    """Returns (embed to show, whether the injection was queued)."""
+    """Returns (embed to show, whether the injection was queued).
+
+    allow_unadoptable: let amiibo-only villagers (e.g. Mineru) through even if
+    they aren't one of the built-in Sanrio presets.
+    """
     denied = await _access_denied(user)
     if denied:
         return _err_embed(denied), False
@@ -289,7 +294,7 @@ async def _perform_injection(
         result = await client.inject_villagers(
             villager_code,
             plot=plot,
-            allow_unadoptable=is_sanrio_villager(villager),
+            allow_unadoptable=allow_unadoptable or is_sanrio_villager(villager),
         )
     except Exception:
         _pop_cooldown(user.id, island, cooldown_key)
@@ -310,7 +315,7 @@ async def _perform_injection(
         err = err or "unknown error"
         logger.warning("[DropBot] Injection rejected island=%s user=%s: %s", island, user.id, err)
         await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, str(err))
-        if "not adoptable" in str(err).lower() and is_sanrio_villager(villager):
+        if "not adoptable" in str(err).lower() and (allow_unadoptable or is_sanrio_villager(villager)):
             return _err_embed(
                 f"The island bot rejected **{display_name}**: `{_sanitize_error_message(err)}`.\n"
                 f"The island bot's SysBot binary must be updated/restarted with Sanrio support enabled."
