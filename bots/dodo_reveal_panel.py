@@ -7,12 +7,16 @@
   rows logged before source tracking show as unknown.
 - Times are Discord timestamps (<t:unix:f> / <t:unix:R>), so every viewer sees their own timezone.
 - State (island, window, page) lives in each component's custom_id, so the panel keeps working
-  after restarts once register_reveal_panel() has run. Nothing else is stored.
+  after restarts once setup_reveal_panel() has run.
+- Sticky: when anything else is posted in the channel, the panel is reposted at the bottom (debounced),
+  keeping the same island / window / page. The panel's channel and message id live in
+  dodo_reveal_panels. Deleting the panel by hand stops the sticky behaviour.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
@@ -21,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import discord
+from discord.ext import commands
 
 from utils.config import Config
 
@@ -518,15 +523,31 @@ def build_view(
     return view
 
 
+async def build_state(
+    island: str | None, window: str = DEFAULT_WINDOW, page: int = 0, viewer_id: int | None = None
+) -> tuple[discord.Embed, discord.ui.View, int]:
+    """Load data and build the panel for a state. Returns the page actually shown (lists can shrink)."""
+    window = _window(window)
+    since = int(time.time()) - WINDOWS[window][1]
+    counts = await asyncio.to_thread(fetch_island_counts, since)
+    if not island:
+        return build_overview_embed(window, counts, viewer_id), build_view(None, window, counts=counts), 0
+    data = await asyncio.to_thread(fetch_reveals, island, since, page)
+    if data.total and page >= total_pages(data.total):  # list shrank since the button was drawn
+        page = total_pages(data.total) - 1
+        data = await asyncio.to_thread(fetch_reveals, island, since, page)
+    embed = build_results_embed(island, window, page, data, viewer_id)
+    return embed, build_view(island, window, page, data.total, counts), page
+
+
 async def build_panel_message(window: str = DEFAULT_WINDOW) -> tuple[discord.Embed, discord.ui.View]:
-    """The overview message used when deploying the panel."""
-    since = int(time.time()) - WINDOWS[_window(window)][1]
+    """The overview message used when deploying the panel (falls back to no counts if the DB fails)."""
     try:
-        counts = await asyncio.to_thread(fetch_island_counts, since)
+        embed, view, _ = await build_state(None, window)
+        return embed, view
     except Exception as exc:
         logger.warning(f"[REVEALLOG] Could not load island activity: {exc}")
-        counts = None
-    return build_overview_embed(window, counts), build_view(None, window, counts=counts)
+        return build_overview_embed(window), build_view(None, window)
 
 
 async def render(interaction: discord.Interaction, island: str | None, window: str, page: int) -> None:
@@ -534,34 +555,225 @@ async def render(interaction: discord.Interaction, island: str | None, window: s
     if not can_use_panel(interaction.user):
         await interaction.response.send_message("Only staff can use the Dodo reveal log.", ephemeral=True)
         return
-    window = _window(window)
-    viewer = getattr(interaction.user, "id", None)
     await interaction.response.defer()
-    since = int(time.time()) - WINDOWS[window][1]
-    data = RevealPage()
     try:
-        counts = await asyncio.to_thread(fetch_island_counts, since)
-        if island:
-            data = await asyncio.to_thread(fetch_reveals, island, since, page)
-            if data.total and page >= total_pages(data.total):  # list shrank since the button was drawn
-                page = total_pages(data.total) - 1
-                data = await asyncio.to_thread(fetch_reveals, island, since, page)
+        embed, view, page = await build_state(island, window, page, getattr(interaction.user, "id", None))
     except Exception as exc:
         logger.error(f"[REVEALLOG] Could not load reveals for {island or 'overview'}: {exc}")
         await interaction.followup.send(
             "Couldn't load the reveal log right now. Try again in a moment, or check the bot logs.", ephemeral=True
         )
         return
-    if island:
-        embed = build_results_embed(island, window, page, data, viewer)
-        view = build_view(island, window, page, data.total, counts)
-    else:
-        embed = build_overview_embed(window, counts, viewer)
-        view = build_view(None, window, counts=counts)
     await interaction.edit_original_response(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
-    logger.info(f"[REVEALLOG] {interaction.user} viewed {island or 'overview'} ({window}, page {page + 1})")
+    logger.info(f"[REVEALLOG] {interaction.user} viewed {island or 'overview'} ({_window(window)}, page {page + 1})")
 
 
-def register_reveal_panel(bot) -> None:
-    """Persistent panel components. Call from setup_hook."""
+# ---------------------------------------------------------------------------
+# Sticky: keep the panel as the newest message in its channel
+# ---------------------------------------------------------------------------
+
+STICKY_DELAY_SECONDS = 5.0       # wait for the channel to go quiet this long before reposting
+STICKY_MAX_WAIT_SECONDS = 30.0   # ...but never hold a repost back longer than this in busy channels
+
+_STATE_RE = re.compile(r"dodolog:ref:(?P<island>[^:]+):(?P<win>\w+):(?P<page>\d+)")
+
+
+def panel_state_from_components(custom_ids: list[str]) -> tuple[str | None, str, int]:
+    """Read (island, window, page) back from the panel's Refresh button, so a repost keeps the view."""
+    for cid in custom_ids:
+        match = _STATE_RE.fullmatch(cid or "")
+        if match:
+            return _uq(match["island"]), _window(match["win"]), int(match["page"])
+    return None, DEFAULT_WINDOW, 0
+
+
+def _custom_ids(message: discord.Message) -> list[str]:
+    ids: list[str] = []
+    for row in message.components:
+        for child in getattr(row, "children", []) or []:
+            if getattr(child, "custom_id", None):
+                ids.append(child.custom_id)
+    return ids
+
+
+def is_panel_message(message: discord.Message) -> bool:
+    return any(cid.startswith("dodolog:") for cid in _custom_ids(message))
+
+
+def _init_panel_table() -> None:
+    from utils.database import connect_db
+
+    with connect_db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dodo_reveal_panels (
+                channel_id VARCHAR(32) PRIMARY KEY,
+                message_id VARCHAR(32) NOT NULL,
+                updated_at BIGINT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def load_panels() -> dict[int, int]:
+    """channel_id -> message_id of every deployed reveal log panel."""
+    from utils.database import connect_db
+
+    _init_panel_table()
+    with connect_db() as conn:
+        rows = conn.execute("SELECT channel_id, message_id FROM dodo_reveal_panels").fetchall()
+    panels: dict[int, int] = {}
+    for r in rows:
+        try:
+            panels[int(r["channel_id"])] = int(r["message_id"])
+        except (TypeError, ValueError):
+            continue
+    return panels
+
+
+def save_panel(channel_id: int, message_id: int) -> None:
+    from utils.database import connect_db
+
+    _init_panel_table()
+    with connect_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO dodo_reveal_panels (channel_id, message_id, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(channel_id) DO UPDATE SET message_id=excluded.message_id, updated_at=excluded.updated_at
+            """,
+            (str(channel_id), str(message_id), int(time.time())),
+        )
+        conn.commit()
+
+
+def forget_panel(channel_id: int) -> None:
+    from utils.database import connect_db
+
+    _init_panel_table()
+    with connect_db() as conn:
+        conn.execute("DELETE FROM dodo_reveal_panels WHERE channel_id = ?", (str(channel_id),))
+        conn.commit()
+
+
+class DodoRevealPanelCog(commands.Cog):
+    """Deploys the reveal log panel and keeps it at the bottom of its channel."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self._panels: dict[int, int] = {}                   # channel_id -> panel message_id
+        self._locks: dict[int, asyncio.Lock] = {}           # serialises deploy vs. repost per channel
+        self._bump_tasks: dict[int, asyncio.Task] = {}      # pending debounced reposts
+        self._bump_first_seen: dict[int, float] = {}        # when the pending repost was first requested
+
+    async def cog_load(self) -> None:
+        try:
+            self._panels = await asyncio.to_thread(load_panels)
+        except Exception as exc:
+            logger.warning(f"[REVEALLOG] Could not load panel locations: {exc}")
+
+    async def cog_unload(self) -> None:
+        for task in self._bump_tasks.values():
+            task.cancel()
+
+    def _lock_for(self, channel_id: int) -> asyncio.Lock:
+        return self._locks.setdefault(channel_id, asyncio.Lock())
+
+    async def deploy(self, channel: discord.abc.Messageable) -> discord.Message:
+        """Post a fresh overview panel and remove the channel's previous one."""
+        async with self._lock_for(channel.id):
+            embed, view = await build_panel_message()
+            message = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            old_id = self._panels.get(channel.id)
+            self._panels[channel.id] = message.id
+            await asyncio.to_thread(save_panel, channel.id, message.id)
+            if old_id and old_id != message.id:
+                with contextlib.suppress(discord.HTTPException):
+                    await channel.get_partial_message(old_id).delete()
+            return message
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """A new message buries the panel: queue a repost to the bottom."""
+        panel_id = self._panels.get(message.channel.id)
+        if panel_id is None or message.id == panel_id:
+            return
+        if self.bot.user and message.author.id == self.bot.user.id and is_panel_message(message):
+            return  # our own freshly posted panel
+        self._schedule_bump(message.channel.id)
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        """Someone deleted the panel by hand: stop keeping it sticky (redeploy with /revealpanel)."""
+        if self._panels.get(payload.channel_id) == payload.message_id:
+            self._panels.pop(payload.channel_id, None)
+            pending = self._bump_tasks.pop(payload.channel_id, None)
+            if pending:
+                pending.cancel()
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(forget_panel, payload.channel_id)
+            logger.info(f"[REVEALLOG] Panel in channel {payload.channel_id} was deleted; no longer sticky")
+
+    def _schedule_bump(self, channel_id: int) -> None:
+        """Debounce: wait for STICKY_DELAY_SECONDS of quiet, capped at STICKY_MAX_WAIT_SECONDS."""
+        now = time.monotonic()
+        pending = self._bump_tasks.get(channel_id)
+        if pending and not pending.done():
+            first = self._bump_first_seen.get(channel_id, now)
+            if now - first >= STICKY_MAX_WAIT_SECONDS - STICKY_DELAY_SECONDS:
+                return  # busy channel: let the pending repost fire instead of postponing it again
+            pending.cancel()
+        else:
+            self._bump_first_seen[channel_id] = now
+        self._bump_tasks[channel_id] = asyncio.create_task(self._bump_after_delay(channel_id))
+
+    async def _bump_after_delay(self, channel_id: int) -> None:
+        try:
+            await asyncio.sleep(STICKY_DELAY_SECONDS)
+        except asyncio.CancelledError:
+            return
+        try:
+            await self._bump(channel_id)
+        except Exception as exc:
+            logger.warning(f"[REVEALLOG] Sticky repost failed in channel {channel_id}: {exc}", exc_info=exc)
+        finally:
+            if self._bump_tasks.get(channel_id) is asyncio.current_task():
+                self._bump_tasks.pop(channel_id, None)
+                self._bump_first_seen.pop(channel_id, None)
+
+    async def _bump(self, channel_id: int) -> None:
+        """Repost the panel as the newest message (same island / window / page), then delete the old one.
+
+        Send-then-delete, so the channel is never without a panel.
+        """
+        async with self._lock_for(channel_id):
+            old_id = self._panels.get(channel_id)
+            channel = self.bot.get_channel(channel_id)
+            if not old_id or channel is None or not hasattr(channel, "history"):
+                return
+            async for last in channel.history(limit=1):
+                if last.id == old_id:
+                    return  # already at the bottom
+
+            island, window, page = None, DEFAULT_WINDOW, 0
+            with contextlib.suppress(discord.HTTPException):
+                old = await channel.fetch_message(old_id)
+                island, window, page = panel_state_from_components(_custom_ids(old))
+            try:
+                embed, view, _ = await build_state(island, window, page)
+            except Exception as exc:
+                logger.warning(f"[REVEALLOG] Repost falling back to overview in {channel_id}: {exc}")
+                embed, view = build_overview_embed(window), build_view(None, window)
+
+            new = await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            self._panels[channel_id] = new.id
+            await asyncio.to_thread(save_panel, channel_id, new.id)
+            with contextlib.suppress(discord.HTTPException):
+                await channel.get_partial_message(old_id).delete()
+
+
+async def setup_reveal_panel(bot: commands.Bot) -> None:
+    """Persistent components plus the sticky cog. Call from setup_hook."""
     bot.add_dynamic_items(RevealIslandSelect, RevealWindowSelect, RevealNavButton)
+    if bot.get_cog("DodoRevealPanelCog") is None:
+        await bot.add_cog(DodoRevealPanelCog(bot))

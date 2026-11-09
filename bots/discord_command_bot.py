@@ -44,9 +44,8 @@ from bots.nickname_panel import (
 )
 from bots.cogs.control_panel_cog import ControlPanelCog
 from bots.dodo_reveal_panel import (
-    build_panel_message as build_reveal_panel_message,
     can_use_panel as can_use_reveal_panel,
-    register_reveal_panel,
+    setup_reveal_panel,
 )
 
 logger = logging.getLogger("DiscordCommandBot")
@@ -3596,17 +3595,21 @@ class DiscordCommandCog(commands.Cog):
         if target is None and interaction.guild and Config.DODO_REVEAL_PANEL_CHANNEL_ID:
             target = interaction.guild.get_channel(Config.DODO_REVEAL_PANEL_CHANNEL_ID)
         target = target or interaction.channel
+        cog = self.bot.get_cog("DodoRevealPanelCog")
+        if cog is None:
+            await interaction.response.send_message("❌ The reveal log isn't loaded. Restart the bot.", ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
-        embed, view = await build_reveal_panel_message()
         try:
-            await target.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            # Replaces this channel's previous panel and keeps the new one sticky at the bottom
+            await cog.deploy(target)
         except discord.HTTPException as exc:
             logger.error(f"[DISCORD] Failed to deploy reveal log panel to {target}: {exc}")
             await interaction.followup.send(
                 "❌ Failed to deploy the reveal log panel. Check my permissions in that channel.", ephemeral=True
             )
             return
-        await interaction.followup.send(f"✅ Dodo reveal log deployed to {target.mention}.", ephemeral=True)
+        await interaction.followup.send(f"✅ Dodo reveal log deployed to {target.mention}. It stays at the bottom of the channel.", ephemeral=True)
         logger.info(f"[DISCORD] Dodo reveal log panel deployed to #{target} by {interaction.user}")
 
     @app_commands.command(
@@ -6260,7 +6263,7 @@ class DiscordCommandBot(commands.Bot):
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
             self.add_view(FindPanelView())
             register_nickname_commands(self)  # panel buttons + "Fix Nickname" context menu
-            register_reveal_panel(self)  # staff Dodo reveal log (island / window menus, paging)
+            await setup_reveal_panel(self)  # staff Dodo reveal log: menus, paging, sticky repost
             self.add_view(SubRulesView())
             self.add_view(OrderRulesView())
 
