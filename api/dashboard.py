@@ -246,6 +246,13 @@ def init_dashboard_db():
 
         # Core bot tables are created by SQLAlchemy/create_all, but older
         # deployments need additive migrations for analytics fields.
+        # Where a Dodo reveal happened ('website' or 'discord'); NULL for rows logged before tracking
+        try:
+            conn.execute("ALTER TABLE dodo_reveal_messages ADD COLUMN source VARCHAR(16) DEFAULT NULL")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists or table is not ready yet
+
         try:
             conn.execute("ALTER TABLE island_visits ADD COLUMN island_type TEXT NOT NULL DEFAULT 'sub'")
             conn.commit()

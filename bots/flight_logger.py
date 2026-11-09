@@ -202,7 +202,8 @@ _SQLITE_AUTOINCREMENT_TABLES = {
             message_url TEXT NOT NULL,
             username TEXT,
             nickname TEXT,
-            created_at INTEGER NOT NULL
+            created_at INTEGER NOT NULL,
+            source VARCHAR(16) DEFAULT NULL
         )
     """,
     "member_identity_events": """
@@ -383,9 +384,15 @@ async def init_db():
                 message_url TEXT NOT NULL,
                 username TEXT,
                 nickname TEXT,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                source VARCHAR(16) DEFAULT NULL
             )
         """)
+        # Where the reveal happened ('website' or 'discord'); NULL for rows logged before tracking
+        try:
+            await db.execute("ALTER TABLE dodo_reveal_messages ADD COLUMN source VARCHAR(16) DEFAULT NULL")
+        except Exception:
+            pass  # Column already exists
         await db.execute("""
             CREATE TABLE IF NOT EXISTS member_identity_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

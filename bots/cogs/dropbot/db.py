@@ -70,10 +70,14 @@ def _init_tables() -> None:
                     message_url TEXT,
                     username TEXT,
                     nickname TEXT,
-                    created_at INTEGER
+                    created_at INTEGER,
+                    source VARCHAR(16) DEFAULT NULL
                 )
                 """
             )
+            # Where the reveal happened ('website' or 'discord'); NULL for rows logged before tracking
+            with contextlib.suppress(Exception):
+                conn.execute("ALTER TABLE dodo_reveal_messages ADD COLUMN source VARCHAR(16) DEFAULT NULL")
             # Active drop cart per (user, island), so a restart or an expired menu doesn't lose it
             conn.execute(
                 """

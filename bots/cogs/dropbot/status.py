@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiohttp
 import asyncio
+import contextlib
 import discord
 import json
 import logging
@@ -46,22 +47,38 @@ def _persist_dodo_reveal_message(
     try:
         with connect_db() as conn:
             clean = re.sub(r"[^a-zA-Z0-9]", "", island_name.lower())
-            cur = conn.execute(
-                """
-                INSERT INTO dodo_reveal_messages
-                (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(user_id),
-                    clean,
-                    str(channel_id) if channel_id else None,
-                    message_url,
-                    username or "",
-                    nickname or "",
-                    int(time.time()),
-                ),
+            values = (
+                str(user_id),
+                clean,
+                str(channel_id) if channel_id else None,
+                # "" not NULL: message_url is NOT NULL where the table came from the ORM or flight logger
+                message_url or "",
+                username or "",
+                nickname or "",
+                int(time.time()),
             )
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO dodo_reveal_messages
+                    (user_id, island_clean, channel_id, message_url, username, nickname, created_at, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'discord')
+                    """,
+                    values,
+                )
+            except Exception as exc:
+                # Source column not migrated yet: still record the reveal for the flight logger
+                logger.warning("[DropBot] dodo_reveal_messages insert with source failed, retrying without: %s", exc)
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                cur = conn.execute(
+                    """
+                    INSERT INTO dodo_reveal_messages
+                    (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
             conn.commit()
             return getattr(cur, "lastrowid", None)
     except Exception as exc:

@@ -7,6 +7,7 @@ Combines all API endpoints:
 """
 
 import asyncio
+import contextlib
 import os
 import re
 import time
@@ -130,25 +131,41 @@ def _persist_dodo_reveal_message(
     island_clean = clean_text(island_name)
     if not island_clean:
         island_clean = clean_text(island_name.lower())
+    values = (
+        str(user_id),
+        island_clean,
+        str(channel_id) if channel_id else None,
+        message_url,
+        username or "",
+        nickname or "",
+        int(time.time()),
+    )
     try:
         conn = connect_db()
         try:
-            cur = conn.execute(
-                """
-                INSERT INTO dodo_reveal_messages
-                (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(user_id),
-                    island_clean,
-                    str(channel_id) if channel_id else None,
-                    message_url,
-                    username or "",
-                    nickname or "",
-                    int(time.time()),
-                ),
-            )
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO dodo_reveal_messages
+                    (user_id, island_clean, channel_id, message_url, username, nickname, created_at, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'website')
+                    """,
+                    values,
+                )
+            except Exception as exc:
+                # The source column is added by a startup migration. If it hasn't run, still record
+                # the reveal: the flight logger depends on this row.
+                logger.warning("dodo_reveal_messages insert with source failed, retrying without: %s", exc)
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                cur = conn.execute(
+                    """
+                    INSERT INTO dodo_reveal_messages
+                    (user_id, island_clean, channel_id, message_url, username, nickname, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
             conn.commit()
             return getattr(cur, "lastrowid", None)
         finally:

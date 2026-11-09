@@ -54,6 +54,8 @@ class Config:
     LOG_CHANNEL_ID = _get_int('CHANNEL_ID')
     ISLAND_ACCESS_ROLE = _get_int('ISLAND_ACCESS_ROLE', 1077997850165772398)
     FIND_BOT_CHANNEL_ID = _get_int('FIND_BOT_CHANNEL_ID', 1450554092626903232)
+    # Staff channel holding the Dodo reveal log panel (/revealpanel deploys here by default)
+    DODO_REVEAL_PANEL_CHANNEL_ID = _get_int('DODO_REVEAL_PANEL_CHANNEL_ID', 1510392165946359900)
     # Role required to see #chorder-bot and related order channels.
     ANIMAL_CROSSING_ROLE_ID = _get_int('ANIMAL_CROSSING_ROLE_ID', 890283161471295488)
     SUB_RULES_ROLE_ID = _get_int('SUB_RULES_ROLE_ID', 1077997850165772398)

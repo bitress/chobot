@@ -140,6 +140,8 @@ class DodoRevealMessage(Base):
     username: Mapped[str | None] = mapped_column(String(255))
     nickname: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    # Where the reveal happened: 'website' or 'discord' (NULL for rows logged before tracking)
+    source: Mapped[str | None] = mapped_column(String(16))
 
 
 class MemberIdentityEvent(Base):

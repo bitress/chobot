@@ -43,6 +43,12 @@ from bots.nickname_panel import (
     register_nickname_commands,
 )
 from bots.cogs.control_panel_cog import ControlPanelCog
+from bots.dodo_reveal_panel import (
+    build_intro_embed as build_reveal_panel_embed,
+    build_view as build_reveal_panel_view,
+    can_use_panel as can_use_reveal_panel,
+    register_reveal_panel,
+)
 
 logger = logging.getLogger("DiscordCommandBot")
 
@@ -3574,6 +3580,35 @@ class DiscordCommandCog(commands.Cog):
         logger.info(f"[DISCORD] Nickname panel deployed to #{target} by {interaction.user}")
 
     @app_commands.command(
+        name="revealpanel",
+        description="Deploy the staff Dodo reveal log panel (who revealed each sub island's code)",
+    )
+    @app_commands.describe(channel="The channel to deploy into (defaults to the configured reveal log channel)")
+    async def slash_revealpanel(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel | None = None,
+    ):
+        """Deploy a persistent, staff-only panel listing Dodo reveals per sub island."""
+        if not can_use_reveal_panel(interaction.user):
+            await interaction.response.send_message("❌ Only staff can deploy the Dodo reveal log.", ephemeral=True)
+            return
+        target = channel
+        if target is None and interaction.guild and Config.DODO_REVEAL_PANEL_CHANNEL_ID:
+            target = interaction.guild.get_channel(Config.DODO_REVEAL_PANEL_CHANNEL_ID)
+        target = target or interaction.channel
+        try:
+            await target.send(embed=build_reveal_panel_embed(), view=build_reveal_panel_view(None))
+        except discord.HTTPException as exc:
+            logger.error(f"[DISCORD] Failed to deploy reveal log panel to {target}: {exc}")
+            await interaction.response.send_message(
+                "❌ Failed to deploy the reveal log panel. Check my permissions in that channel.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(f"✅ Dodo reveal log deployed to {target.mention}.", ephemeral=True)
+        logger.info(f"[DISCORD] Dodo reveal log panel deployed to #{target} by {interaction.user}")
+
+    @app_commands.command(
         name="findpanel",
         description="Deploy the interactive Find Station panel to a channel",
     )
@@ -6224,6 +6259,7 @@ class DiscordCommandBot(commands.Bot):
             await self.add_cog(DiscordCommandCog(self, self.data_manager))
             self.add_view(FindPanelView())
             register_nickname_commands(self)  # panel buttons + "Fix Nickname" context menu
+            register_reveal_panel(self)  # staff Dodo reveal log (island / window menus, paging)
             self.add_view(SubRulesView())
             self.add_view(OrderRulesView())
 
