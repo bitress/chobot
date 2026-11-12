@@ -6631,6 +6631,7 @@ _PRESENCE_PATH_RULES: tuple[tuple[re.Pattern, str, str], ...] = tuple(
         (r"^/critters", "online", "Hunting critters for the Critterpedia"),
         (r"^/events", "online", "Checking seasonal events & birthdays"),
         (r"^/npcs", "online", "Meeting special NPC visitors"),
+        (r"^/flowers", "online", "Breeding hybrid flowers"),
         (r"^/guides", "online", "Reading ACNH guides"),
         (r"^/(trip-planner|planner)", "online", "Planning Island Route & Maps"),
         (r"^/command-builder", "online", "Building item commands"),
