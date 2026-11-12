@@ -2679,6 +2679,54 @@ def api_find_item():
         "message": f"Hey {user}, I couldn't find \"{query}\" or anything similar."
     })
 
+
+_FIND_BATCH_MAX_NAMES = 300
+
+
+def _batch_lookup_locations(names, lookup: dict) -> dict:
+    """Map each requested name to its island lists; names with no stock are omitted."""
+    found = {}
+    if not isinstance(names, list) or not lookup:
+        return found
+    for raw in names[:_FIND_BATCH_MAX_NAMES]:
+        if not isinstance(raw, str) or raw in found:
+            continue
+        locations = lookup.get(normalize_text(raw))
+        if not locations:
+            continue
+        free, sub, order = parse_locations_json(locations)
+        if free or sub or order:
+            found[raw] = {"free": free, "sub": sub, "order": order}
+    return found
+
+
+@app.route('/api/find/batch', methods=['POST'])
+def api_find_batch():
+    """Exact-name stock lookup for many items/villagers at once (wishlist matching).
+
+    Unlike /api/find this does no fuzzy matching and is not recorded as a search
+    event, so a whole wishlist can be checked without skewing search analytics.
+    """
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "Expected a JSON object"}), 400
+
+    item_names = data.get("items") or []
+    villager_names = data.get("villagers") or []
+
+    item_cache, _last_update, _refresh_interval, source = _get_item_cache() if item_names else ({}, None, None, "")
+    villager_map = _get_villager_map()[0] if villager_names else {}
+
+    if item_names and not item_cache:
+        return jsonify({"ok": False, "error": "Service unavailable - item cache is not loaded"}), 503
+
+    return jsonify({
+        "ok": True,
+        "source": source,
+        "items": _batch_lookup_locations(item_names, item_cache),
+        "villagers": _batch_lookup_locations(villager_names, villager_map),
+    })
+
 # --- VILLAGER SEARCH ROUTES ---
 
 @app.route('/villager')
