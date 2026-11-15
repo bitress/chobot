@@ -1087,7 +1087,7 @@ class SearchResultsView(_SubView):
 
         if len(categories) > 1:
             self.categories = categories[:24]
-            cat_options = [discord.SelectOption(label="All categories", value="", emoji="🗂️", default=self.category is None)]
+            cat_options = [discord.SelectOption(label="All categories", value="__all__", emoji="🗂️", default=self.category is None)]
             cat_options += [
                 discord.SelectOption(label=c[:100], value=str(i), default=c == self.category)
                 for i, c in enumerate(self.categories)

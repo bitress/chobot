@@ -18,6 +18,9 @@ from .ui_base import _OwnedView
 
 logger = logging.getLogger("DropBotCog")
 
+# Value of the "All / Any" choice. Discord rejects a select whose option value is empty.
+ANY = "__any__"
+
 # Called when the member is done: (interaction, chosen filters, chosen language code).
 FiltersDone = Callable[[discord.Interaction, CatalogFilters, str], Awaitable[None]]
 
@@ -68,20 +71,20 @@ class CatalogFilterView(_OwnedView):
         # Category: counted with the colour and season filters applied.
         pool = self._matching(category=None)
         counts = Counter(i.category for i in pool if i.category)
-        options = [discord.SelectOption(label=f"All categories ({len(pool)})", value="", emoji="🗂️", default=f.category is None)]
+        options = [discord.SelectOption(label=f"All categories ({len(pool)})", value=ANY, emoji="🗂️", default=f.category is None)]
         for category, n in counts.most_common(24):
             options.append(discord.SelectOption(label=str(category)[:100], description=f"{n} item(s)", value=str(category)[:100], default=category == f.category))
         self._add_select(0, "🗂️ Category…", options, self._on_category)
 
         pool = self._matching(color=None)
-        options = [discord.SelectOption(label="Any colour", value="", emoji="🎨", default=f.color is None)]
+        options = [discord.SelectOption(label="Any colour", value=ANY, emoji="🎨", default=f.color is None)]
         for color in cf.available_colors(pool):
             n = sum(1 for i in pool if color in cf.item_colors(i))
             options.append(discord.SelectOption(label=color, description=f"{n} item(s)", value=color, emoji=cf.COLOR_EMOJI.get(color), default=color == f.color))
         self._add_select(1, "🎨 Colour…", options, self._on_color)
 
         pool = self._matching(season=None)
-        options = [discord.SelectOption(label="Any season", value="", emoji="📅", default=f.season is None)]
+        options = [discord.SelectOption(label="Any season", value=ANY, emoji="📅", default=f.season is None)]
         for season in cf.available_seasons(pool):
             n = sum(1 for i in pool if season in cf.item_seasons(i))
             options.append(discord.SelectOption(label=season, description=f"{n} item(s)", value=season, emoji=cf.SEASON_EMOJI.get(season), default=season == f.season))
@@ -125,7 +128,8 @@ class CatalogFilterView(_OwnedView):
 
     @staticmethod
     def _value(interaction: discord.Interaction) -> str | None:
-        return ((interaction.data or {}).get("values") or [""])[0] or None
+        value = ((interaction.data or {}).get("values") or [ANY])[0]
+        return None if value in (ANY, "") else value
 
     async def _on_category(self, interaction: discord.Interaction) -> None:
         self.filters.category = self._value(interaction)
