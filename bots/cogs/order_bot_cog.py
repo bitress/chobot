@@ -19,6 +19,7 @@ The panel is sticky: when messages bury it, it is reposted at the bottom of the 
 Pocket builder (ephemeral):
   • Add items by typing (`Gold nugget 30, Royal crown, 09C9 x10`), or search the catalog
     and pick a color/pattern for items that have several
+  • Custom hex: paste a full `!order` command from the website or raw item hex codes
   • One move-in villager per order
   • Official bundles, personal saved loadouts
   • The pocket is saved per user, so an expired menu or a restart doesn't lose it
@@ -263,6 +264,43 @@ def parse_order_text(raw: str) -> tuple[list[OrderLine], str | None, list[str]]:
                 problems.append(f"I couldn't find **{name[:40]}**.{hint}")
                 continue
         lines.append(line)
+    return lines, villager, problems
+
+
+_HEX_TOKEN_RE = re.compile(r"^(?:0x)?(?P<hex>[0-9a-fA-F]{4}|[0-9a-fA-F]{16})(?:[x×*](?P<qty>\d+))?$", re.IGNORECASE)
+_QTY_TOKEN_RE = re.compile(r"^[x×*](?P<qty>\d+)$", re.IGNORECASE)
+
+
+def parse_hex_command(raw: str) -> tuple[list[OrderLine], str | None, list[str]]:
+    """
+    Strict parser for the "Custom hex" button: a pasted `!order 14BB 16DB 0000001D000009C9` command or
+    bare codes. Only 4- or 16-digit hex codes are accepted (optionally `14BBx3` or `14BB x3`), plus an
+    optional `villager:<id>`. Returns (lines, villager query or None, user-facing problems).
+    """
+    items_text, villager = parse_order_input(re.sub(r"[\r\n;,]+", " ", raw or ""))
+    lines: list[OrderLine] = []
+    problems: list[str] = []
+    for token in items_text.split():
+        repeat = _QTY_TOKEN_RE.match(token)
+        if repeat and lines:
+            qty = int(repeat.group("qty"))   # "14BB x3": the count applies to the code before it
+            if 1 <= qty <= ORDER_MAX_SLOTS:
+                lines[-1].qty = qty
+            else:
+                problems.append(f"Quantity for `{lines[-1].hex}` must be between 1 and {ORDER_MAX_SLOTS}.")
+            continue
+        m = _HEX_TOKEN_RE.match(token)
+        if not m:
+            problems.append(f"`{token[:24]}` isn't a hex code. Codes are 4 or 16 hex digits, like `14BB`.")
+            continue
+        qty = int(m.group("qty") or 1)
+        if not 1 <= qty <= ORDER_MAX_SLOTS:
+            problems.append(f"Quantity for `{m.group('hex').upper()}` must be between 1 and {ORDER_MAX_SLOTS}.")
+            continue
+        code = m.group("hex").upper()
+        lines.append(OrderLine(code, qty, code, 1))
+    if not lines and not villager and not problems:
+        problems.append("Enter at least one hex code.")
     return lines, villager, problems
 
 
@@ -866,6 +904,10 @@ class PocketView(_OwnedView):
     async def villager(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(VillagerModal(self))
 
+    @discord.ui.button(label="Custom hex", emoji="⌨️", style=discord.ButtonStyle.secondary, row=0)
+    async def custom_hex(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(CustomHexModal(self))
+
     @discord.ui.button(label="Bundles", emoji="🎁", style=discord.ButtonStyle.secondary, row=0)
     async def bundles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer()
@@ -908,6 +950,23 @@ class AddItemsModal(discord.ui.Modal, title="Add items to your pocket"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         notice = await self.parent.cog.add_text(self.parent.user_id, self.items.value)
+        await self.parent.render(interaction, notice)
+
+
+class CustomHexModal(discord.ui.Modal, title="Custom command / hex codes"):
+    codes = discord.ui.TextInput(
+        label="Hex codes or a full !order command",
+        style=discord.TextStyle.paragraph,
+        placeholder="!order 14BB 16DB 0000001D000009C9\nor: 14BB x3, 09C9, villager:cat23",
+        max_length=1500,
+    )
+
+    def __init__(self, parent: PocketView):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        notice = await self.parent.cog.add_hex(self.parent.user_id, self.codes.value)
         await self.parent.render(interaction, notice)
 
 
@@ -1386,6 +1445,14 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
     async def add_text(self, user_id: int, raw: str) -> str | None:
         """Add typed items (and an optional villager:<id>) to the pocket. Returns a notice for the member."""
         lines, villager, problems = await asyncio.to_thread(parse_order_text, raw)
+        return await self._merge(user_id, lines, villager, problems)
+
+    async def add_hex(self, user_id: int, raw: str) -> str | None:
+        """Add raw hex codes (the "Custom hex" button). Anything that isn't a hex code is rejected."""
+        lines, villager, problems = parse_hex_command(raw)
+        return await self._merge(user_id, lines, villager, problems)
+
+    async def _merge(self, user_id: int, lines: list[OrderLine], villager: str | None, problems: list[str]) -> str | None:
         cart = self.cart(user_id)
         added = 0
         for line in lines:
