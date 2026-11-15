@@ -37,6 +37,7 @@ from utils.ops_status import create_sqlite_backup, get_maintenance_settings
 from utils.sysbot_api import get_island_sysbot_client, _INVALID_DODO_CODES
 from utils.sysbot_telemetry import get_cached_island_telemetry
 from bots.cogs.drop_bot_cog import DropBotCog
+from bots.cogs.order_bot_cog import OrderBotCog
 from bots.nickname_panel import (
     NicknamePanelView,
     build_panel_embed as build_nickname_panel_embed,
@@ -6270,6 +6271,9 @@ class DiscordCommandBot(commands.Bot):
         # Register DropBot persistent panels and slash-command group
         drop_bot_cog = DropBotCog(self)
         await self.add_cog(drop_bot_cog)
+
+        # Register the Order Bot panel, pocket builder and /order commands
+        await self.add_cog(OrderBotCog(self))
 
         # Register ControlPanel persistent panels and slash-command group
         control_panel_cog = ControlPanelCog(self)

@@ -1,0 +1,2032 @@
+"""
+OrderBot Cog — the chopaeng.com/order experience inside Discord.
+
+Free members build a 40-slot "pocket", send it to the Order Bot island (Config.ORDER_BOT_ISLAND)
+and get a private Dodo code when their turn comes up. Orders go through the same SysBot REST API
+and the same ``order_bot_queue`` table as the website, so an order placed here shows up in the
+website's history and the other way round.
+
+Persistent panel (posted with /orderpanel, refreshed every 30s):
+  • 🛒 Start Order   – opens the pocket builder (or the live tracker if an order is already active)
+  • 📦 My Order      – live tracker for the active order: queue position, ETA, Dodo, cancel
+  • 📋 Queue         – who is in line right now
+  • 🕘 History       – the last 10 orders with one-click reorder
+  • 📖 Guide         – how ordering works
+  • 🌐 Web Order Bot – link to the website
+  • 🔔 Notify me     – only while the bot is closed: one DM when it takes orders again
+The panel is sticky: when messages bury it, it is reposted at the bottom of the channel.
+
+Pocket builder (ephemeral):
+  • Add items by typing (`Gold nugget 30, Royal crown, 09C9 x10`), or search the catalog
+    and pick a color/pattern for items that have several
+  • One move-in villager per order
+  • Official bundles, personal saved loadouts
+  • The pocket is saved per user, so an expired menu or a restart doesn't lose it
+
+Order tracking:
+  • The tracker message updates itself while the order moves queued → preparing → ready
+  • An "almost your turn" DM goes out when a member who waited reaches the front of the line
+  • The Dodo code is sent by DM the moment the gate opens (and shown in the private tracker)
+  • An order that ends without a pickup (missed gate, cancelled by the bot) offers a one-tap reorder
+  • Tracking of Discord-placed orders resumes after a bot restart
+
+Slash commands:
+  • /order [items] [villager]  – open the pocket, optionally pre-filled
+  • /cart                      – open the pocket
+  • /myorders                  – active order + history
+  • /queue                     – live queue
+  • /presets                   – official bundles
+  • /orderpanel                – (Manage Messages) post or move the panel to this channel
+
+Same gates as the website: moderation blocklist, accepted Order Bot rules, and a
+"Character | Island" nickname or a registered in-game character. One active order per member.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+
+from utils.acnh_catalog import ACNHCatalog, CatalogItem
+from utils.config import Config
+from utils.database import connect_db
+from utils.nickname_format import is_valid_acnh_nickname
+from utils.sysbot_api import SysBotClient, get_island_sysbot_client, parse_order_input
+
+from .dropbot.constants import (
+    DODO_GIF,
+    PANEL_EMBED_COLOR,
+    PANEL_EMBED_COLOR_ERR,
+    PANEL_EMBED_COLOR_WARN,
+    PANEL_FOOTER_ICON,
+    PANEL_FOOTER_TEXT,
+    STICKY_DELAY_SECONDS,
+    STICKY_MAX_WAIT_SECONDS,
+    WEBSITE_BASE,
+)
+from .dropbot.cart import _Variant, _item_variants
+from .dropbot.islands import _denied_reason, _has_order_role
+from .dropbot.state import _cooldown_left, _pop_cooldown, _spawn
+from .dropbot.status import _err_embed, _lookup_saved_character
+from .dropbot.ui_base import _OwnedView, _adopt, _reply
+
+logger = logging.getLogger("OrderBotCog")
+
+
+# ─── Constants ────────────────────────────────────────────────────────────────
+
+ORDER_MAX_SLOTS = 40          # one full pocket, same as the website
+SUBMIT_COOLDOWN = 15.0        # seconds between order submissions per member
+POLL_SECONDS = 5.0            # tracker poll interval while waiting in line
+POLL_SECONDS_READY = 15.0     # ...and once the gate is open
+TRACK_MAX_SECONDS = 60 * 60   # stop following an order after an hour
+TOKEN_SECONDS = 14 * 60       # an interaction's message can be edited for 15 minutes
+ACTIVE_ORDER_WINDOW = 2 * 60 * 60   # ignore "active" DB rows older than this (stale after a crash)
+MAX_LOADOUTS = 10
+PANEL_REFRESH_SECONDS = 30
+NEXT_UP_POSITION = 2          # DM "almost your turn" when a member reaches this place in line
+NOTIFY_MAX = 300              # most "open again" DMs sent in one go
+PANEL_TITLE_PREFIX = "📦 Order Bot"
+_MISSED_GATE_MARKERS = ("failed to arrive", "request has been removed", "timed out", "gate closed")
+
+ACTIVE_STATUSES = ("queued", "preparing", "ready")
+TERMINAL_STATUSES = ("completed", "cancelled", "error")
+
+WEB_ORDER_URL = f"{WEBSITE_BASE}/order"
+
+_HEX_RE = re.compile(r"(?:[0-9a-fA-F]{4}|[0-9a-fA-F]{16})")
+_ENTRY_RE = re.compile(r"^(?P<item>.+?)(?:\s*[x×]\s*(?P<qx>[0-9]+)|\s+(?P<q>[0-9]+))?$", re.IGNORECASE)
+
+
+def _order_island() -> str:
+    return getattr(Config, "ORDER_BOT_ISLAND", "Sinta") or "Sinta"
+
+
+def _client() -> SysBotClient:
+    return get_island_sysbot_client(_order_island(), timeout=10)
+
+
+def _embed(title: str, description: str = "", color: int = PANEL_EMBED_COLOR) -> discord.Embed:
+    embed = discord.Embed(title=title, description=description, color=color)
+    embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+    return embed
+
+
+# ─── Pocket model ─────────────────────────────────────────────────────────────
+
+@dataclass
+class OrderLine:
+    """One row of the pocket. `hex` is set for raw codes and for color/pattern variants."""
+
+    name: str
+    qty: int = 1
+    hex: str = ""
+    stack: int = 1
+
+    @property
+    def slots(self) -> int:
+        """Pocket slots this line takes: a stackable item is one stack, anything else one slot each."""
+        return 1 if self.stack > 1 else self.qty
+
+    @property
+    def label(self) -> str:
+        name = self.name[:1].upper() + self.name[1:]   # the catalog stores some names in lowercase
+        return f"{name} ×{self.qty}" if self.qty > 1 else name
+
+
+@dataclass
+class OrderCart:
+    lines: list[OrderLine] = field(default_factory=list)
+    villager: tuple[str, str] | None = None   # (display name, internal id such as "cat23")
+
+    @property
+    def slots(self) -> int:
+        return sum(line.slots for line in self.lines)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.lines and not self.villager
+
+    def add(self, line: OrderLine) -> str | None:
+        """Merge `line` into the pocket. Returns a user-facing error if it doesn't fit."""
+        existing = next((l for l in self.lines if l.name == line.name and l.hex == line.hex), None)
+        if existing and existing.stack > 1:
+            existing.qty = min(existing.stack, existing.qty + line.qty)   # still one stack, one slot
+            return None
+        if self.slots + line.slots > ORDER_MAX_SLOTS:
+            return f"**{line.label}** doesn't fit: the pocket holds {ORDER_MAX_SLOTS} slots ({self.slots} used)."
+        if existing:
+            existing.qty += line.qty
+        else:
+            self.lines.append(line)
+        return None
+
+    def to_json(self) -> str:
+        return json.dumps({
+            "lines": [[l.name, l.qty, l.hex, l.stack] for l in self.lines],
+            "villager": list(self.villager) if self.villager else None,
+        })
+
+    @classmethod
+    def from_json(cls, raw: str) -> "OrderCart":
+        cart = cls()
+        try:
+            data = json.loads(raw or "{}")
+            for name, qty, hex_code, stack in data.get("lines") or []:
+                cart.lines.append(OrderLine(str(name), max(1, int(qty)), str(hex_code or ""), max(1, int(stack))))
+            villager = data.get("villager")
+            if villager and len(villager) == 2:
+                cart.villager = (str(villager[0]), str(villager[1]))
+        except Exception as exc:
+            logger.debug("[OrderBot] Could not restore a saved pocket: %s", exc)
+        return cart
+
+
+def _stack_size(item: CatalogItem) -> int:
+    try:
+        return max(1, int(item.stack_size or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def line_from_catalog(item: CatalogItem, qty: int | None = None) -> OrderLine:
+    """Pocket line for a catalog search hit. A full stack by default, like the website's quick add."""
+    stack = _stack_size(item)
+    has_variant = bool(item.variation) and item.variation.lower() not in ("na", "none")
+    hex_code = item.to_hex() if has_variant else ""
+    if hex_code:
+        # A variant hex already uses the count field for the color, so it can't also carry a stack count.
+        return OrderLine(item.display_name, max(1, min(qty or 1, ORDER_MAX_SLOTS)), hex_code.upper(), 1)
+    qty = max(1, min(qty or stack, stack if stack > 1 else ORDER_MAX_SLOTS))
+    return OrderLine(item.name, qty, "", stack)
+
+
+def _resolve_entry(text: str, qty: int) -> OrderLine | None:
+    """Turn typed text into a pocket line: raw hex, exact catalog name, or a named variant ("ABD (Blue)")."""
+    text = text.strip()
+    if not text:
+        return None
+    item = ACNHCatalog.get_instance().get_item(text)
+    if item:
+        stack = _stack_size(item)
+        return OrderLine(item.name, min(qty, stack) if stack > 1 else qty, "", stack)
+    if _HEX_RE.fullmatch(text):
+        return OrderLine(text.upper(), qty, text.upper(), 1)
+    try:
+        from utils.data_manager import resolve_item_hex
+        hex_code = resolve_item_hex(text)
+    except Exception:
+        hex_code = None
+    if hex_code:
+        return OrderLine(text, qty, hex_code.upper(), 1)
+    return None
+
+
+def parse_order_text(raw: str) -> tuple[list[OrderLine], str | None, list[str]]:
+    """
+    Parse "Gold nugget 30, Royal crown, 09C9 x10, villager:cat23" (or a pasted `!order ...` hex command).
+    Returns (lines, villager query or None, user-facing problems). Blocking: run in a thread.
+    """
+    items_text, villager = parse_order_input(re.sub(r"[\r\n;]+", ",", raw or ""))
+    tokens = items_text.split()
+    if tokens and all(_HEX_RE.fullmatch(t) for t in tokens):
+        entries = tokens   # a command copied from the website's command builder
+    else:
+        entries = [e.strip() for e in items_text.split(",") if e.strip()]
+
+    lines: list[OrderLine] = []
+    problems: list[str] = []
+    for entry in entries:
+        # Whole entry first, so names that end in a number ("Marine Song 2001") aren't read as a quantity.
+        line = _resolve_entry(entry, 1)
+        if line is None:
+            m = _ENTRY_RE.match(entry)
+            name = m.group("item").strip() if m else entry
+            qty = int(m.group("qx") or m.group("q") or 1) if m else 1
+            if not 1 <= qty <= ORDER_MAX_SLOTS:
+                problems.append(f"Quantity for **{name[:40]}** must be between 1 and {ORDER_MAX_SLOTS}.")
+                continue
+            line = _resolve_entry(name, qty)
+            if line is None:
+                hits = ACNHCatalog.get_instance().search_items(name, limit=1)
+                hint = f" Did you mean **{hits[0].name}**?" if hits else ""
+                problems.append(f"I couldn't find **{name[:40]}**.{hint}")
+                continue
+        lines.append(line)
+    return lines, villager, problems
+
+
+def build_order_text(lines: list[OrderLine]) -> str:
+    """
+    The `order` string for SysBot's POST /api/order.
+
+    Plain catalog names are sent as a name list ("Gold nugget 30, Royal crown"). As soon as one line
+    needs a hex code (a variant or a raw code) the whole order is sent as hex, because SysBot reads
+    an order as either names or hex, not a mix.
+    """
+    if all(not line.hex for line in lines):
+        parts: list[str] = []
+        for line in lines:
+            if line.stack > 1 and line.qty > 1:
+                parts.append(f"{line.name} {line.qty}")
+            else:
+                parts.extend([line.name] * line.qty)   # a trailing " 1" makes NHSE's parser fail
+        return ", ".join(parts)
+
+    from utils.data_manager import resolve_item_hex
+    tokens: list[str] = []
+    for line in lines:
+        hex_code = line.hex or resolve_item_hex(line.name) or ""
+        if not hex_code:
+            raise ValueError(f"No item code found for {line.name}.")
+        if line.stack > 1 and line.qty > 1 and len(hex_code) == 4:
+            tokens.append(f"{line.qty - 1:08X}0000{hex_code.upper()}")   # count field holds quantity - 1
+        else:
+            tokens.extend([hex_code.upper()] * line.qty)
+    return " ".join(tokens)
+
+
+def cart_summary(cart: OrderCart, limit: int = 120) -> str:
+    """Short human-readable description of a pocket, used in the tracker and in DMs."""
+    parts = [line.label for line in cart.lines]
+    if cart.villager:
+        parts.append(f"🏠 {cart.villager[0]}")
+    text = ", ".join(parts) or "—"
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+# ─── Database helpers (synchronous; call through asyncio.to_thread) ───────────
+
+def _init_tables() -> None:
+    try:
+        with connect_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_bot_panels (
+                    channel_id VARCHAR(64) PRIMARY KEY,
+                    message_id VARCHAR(64),
+                    updated_at INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_bot_carts (
+                    user_id    VARCHAR(64) PRIMARY KEY,
+                    payload    TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_bot_loadouts (
+                    user_id    VARCHAR(64) NOT NULL,
+                    name       VARCHAR(64) NOT NULL,
+                    payload    TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, name)
+                )
+                """
+            )
+            # Orders placed from Discord: lets tracking (and the Dodo DM) resume after a restart.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_bot_discord_orders (
+                    order_id   VARCHAR(255) PRIMARY KEY,
+                    user_id    VARCHAR(64) NOT NULL,
+                    summary    TEXT,
+                    dm_sent    INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                )
+                """
+            )
+            # Members waiting for a DM when the Order Bot opens again.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_bot_notify (
+                    user_id    VARCHAR(64) PRIMARY KEY,
+                    created_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("[OrderBot] Could not create tables: %s", exc)
+    # Columns added after the first release; each in its own connection because it fails when present.
+    for column in ("cart TEXT", "next_sent INTEGER NOT NULL DEFAULT 0"):
+        with contextlib.suppress(Exception):
+            with connect_db() as conn:
+                conn.execute(f"ALTER TABLE order_bot_discord_orders ADD COLUMN {column}")
+                conn.commit()
+
+
+def _db_run(sql: str, params: tuple = ()) -> None:
+    try:
+        with connect_db() as conn:
+            conn.execute(sql, params)
+            conn.commit()
+    except Exception as exc:
+        logger.warning("[OrderBot] DB write failed: %s", exc)
+
+
+def _db_rows(sql: str, params: tuple = ()) -> list[Any]:
+    try:
+        with connect_db() as conn:
+            return list(conn.execute(sql, params).fetchall())
+    except Exception as exc:
+        logger.warning("[OrderBot] DB read failed: %s", exc)
+        return []
+
+
+def _load_panels() -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for row in _db_rows("SELECT channel_id, message_id FROM order_bot_panels"):
+        with contextlib.suppress(TypeError, ValueError):
+            out.append((int(row["channel_id"]), int(row["message_id"])))
+    return out
+
+
+def _save_panel(channel_id: int, message_id: int) -> None:
+    _db_run("DELETE FROM order_bot_panels WHERE channel_id = ?", (str(channel_id),))
+    _db_run(
+        "INSERT INTO order_bot_panels (channel_id, message_id, updated_at) VALUES (?, ?, ?)",
+        (str(channel_id), str(message_id), int(time.time())),
+    )
+
+
+def _load_cart(user_id: int) -> OrderCart:
+    rows = _db_rows("SELECT payload FROM order_bot_carts WHERE user_id = ?", (str(user_id),))
+    return OrderCart.from_json(rows[0]["payload"]) if rows else OrderCart()
+
+
+def _save_cart(user_id: int, cart: OrderCart) -> None:
+    _db_run("DELETE FROM order_bot_carts WHERE user_id = ?", (str(user_id),))
+    if not cart.is_empty:
+        _db_run(
+            "INSERT INTO order_bot_carts (user_id, payload, updated_at) VALUES (?, ?, ?)",
+            (str(user_id), cart.to_json(), int(time.time())),
+        )
+
+
+def _load_loadouts(user_id: int) -> list[tuple[str, OrderCart]]:
+    rows = _db_rows(
+        "SELECT name, payload FROM order_bot_loadouts WHERE user_id = ? ORDER BY updated_at DESC",
+        (str(user_id),),
+    )
+    return [(row["name"], OrderCart.from_json(row["payload"])) for row in rows]
+
+
+def _save_loadout(user_id: int, name: str, cart: OrderCart) -> None:
+    _db_run("DELETE FROM order_bot_loadouts WHERE user_id = ? AND name = ?", (str(user_id), name))
+    _db_run(
+        "INSERT INTO order_bot_loadouts (user_id, name, payload, updated_at) VALUES (?, ?, ?, ?)",
+        (str(user_id), name, cart.to_json(), int(time.time())),
+    )
+
+
+def _delete_loadout(user_id: int, name: str) -> None:
+    _db_run("DELETE FROM order_bot_loadouts WHERE user_id = ? AND name = ?", (str(user_id), name))
+
+
+def _active_order_row(user_id: int) -> dict | None:
+    """The member's newest order the DB still believes is in progress."""
+    placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+    rows = _db_rows(
+        f"""
+        SELECT id, command, status FROM order_bot_queue
+        WHERE user_id = ? AND status IN ({placeholders}) AND created_at > ?
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (str(user_id), *ACTIVE_STATUSES, int(time.time()) - ACTIVE_ORDER_WINDOW),
+    )
+    if not rows:
+        return None
+    return {"id": rows[0]["id"], "command": rows[0]["command"] or "", "status": rows[0]["status"]}
+
+
+def _record_discord_order(order_id: str, user_id: int, summary: str, cart_json: str = "") -> None:
+    _db_run("DELETE FROM order_bot_discord_orders WHERE order_id = ?", (order_id,))
+    _db_run(
+        "INSERT INTO order_bot_discord_orders (order_id, user_id, summary, dm_sent, created_at, cart) VALUES (?, ?, ?, 0, ?, ?)",
+        (order_id, str(user_id), summary, int(time.time()), cart_json),
+    )
+
+
+def _cart_from_command(command: str) -> OrderCart:
+    """Rebuild a pocket from a stored order command (names or hex, optional villager:<id>)."""
+    lines, villager, _ = parse_order_text(command)
+    cart = OrderCart()
+    for line in lines:
+        cart.add(line)
+    if villager:
+        found = ACNHCatalog.get_instance().get_villager(villager)
+        if found:
+            cart.villager = (found.name, found.villager_id)
+    return cart
+
+
+def _order_cart(order_id: str) -> OrderCart:
+    """The pocket of a past order: the saved pocket for Discord orders, else parsed from its command."""
+    rows = _db_rows("SELECT cart FROM order_bot_discord_orders WHERE order_id = ?", (order_id,))
+    if rows and rows[0]["cart"]:
+        cart = OrderCart.from_json(rows[0]["cart"])
+        if not cart.is_empty:
+            return cart
+    rows = _db_rows("SELECT command FROM order_bot_queue WHERE id = ?", (order_id,))
+    return _cart_from_command(rows[0]["command"] or "") if rows else OrderCart()
+
+
+def _next_sent(order_id: str) -> bool:
+    rows = _db_rows("SELECT next_sent FROM order_bot_discord_orders WHERE order_id = ?", (order_id,))
+    return bool(rows and rows[0]["next_sent"])
+
+
+def _mark_next_sent(order_id: str) -> None:
+    _db_run("UPDATE order_bot_discord_orders SET next_sent = 1 WHERE order_id = ?", (order_id,))
+
+
+def _add_subscriber(user_id: int) -> None:
+    _db_run("DELETE FROM order_bot_notify WHERE user_id = ?", (str(user_id),))
+    _db_run("INSERT INTO order_bot_notify (user_id, created_at) VALUES (?, ?)", (str(user_id), int(time.time())))
+
+
+def _pop_subscribers() -> list[int]:
+    """Everyone waiting for the "open again" DM, oldest first. Clears the list."""
+    rows = _db_rows("SELECT user_id FROM order_bot_notify ORDER BY created_at")
+    if rows:
+        _db_run("DELETE FROM order_bot_notify")
+    out: list[int] = []
+    for row in rows:
+        with contextlib.suppress(TypeError, ValueError):
+            out.append(int(row["user_id"]))
+    return out
+
+
+def _discord_order_info(order_id: str) -> tuple[str, bool]:
+    """(summary, dodo already DMed) for an order placed from Discord; ("", False) for anything else."""
+    rows = _db_rows("SELECT summary, dm_sent FROM order_bot_discord_orders WHERE order_id = ?", (order_id,))
+    if not rows:
+        return "", False
+    return rows[0]["summary"] or "", bool(rows[0]["dm_sent"])
+
+
+def _mark_dm_sent(order_id: str) -> None:
+    _db_run("UPDATE order_bot_discord_orders SET dm_sent = 1 WHERE order_id = ?", (order_id,))
+
+
+def _resumable_orders() -> list[tuple[str, int, str]]:
+    """Discord-placed orders that were still in progress when the bot last stopped."""
+    placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+    rows = _db_rows(
+        f"""
+        SELECT d.order_id, d.user_id, d.summary FROM order_bot_discord_orders d
+        JOIN order_bot_queue q ON q.id = d.order_id
+        WHERE q.status IN ({placeholders}) AND d.created_at > ?
+        """,
+        (*ACTIVE_STATUSES, int(time.time()) - TRACK_MAX_SECONDS),
+    )
+    out: list[tuple[str, int, str]] = []
+    for row in rows:
+        with contextlib.suppress(TypeError, ValueError):
+            out.append((row["order_id"], int(row["user_id"]), row["summary"] or ""))
+    return out
+
+
+# ─── Access ───────────────────────────────────────────────────────────────────
+
+def _is_staff(user: discord.abc.User) -> bool:
+    perms = getattr(user, "guild_permissions", None)
+    return bool(perms and (perms.administrator or perms.manage_guild))
+
+
+async def _order_username(user: discord.abc.User) -> str | None:
+    """The "Character | Island" name SysBot shows in-game: the nickname, else the saved character."""
+    nick = getattr(user, "display_name", "") or ""
+    if is_valid_acnh_nickname(nick):
+        return nick
+    saved = await asyncio.to_thread(_lookup_saved_character, str(user.id))
+    if saved:
+        ign, island = saved
+        return f"{ign} | {island}" if island else ign
+    return None
+
+
+async def _order_gate(interaction: discord.Interaction) -> str | None:
+    """Username to order under if this member may order; otherwise replies with the reason and returns None."""
+    user = interaction.user
+    staff = _is_staff(user)
+    if not staff:
+        denied = await _denied_reason(user.id)
+        if denied:
+            await _reply(interaction, embed=_err_embed(denied))
+            return None
+        if not await asyncio.to_thread(_has_order_role, user):
+            await _reply(interaction, embed=_err_embed(
+                "You need to **accept the Order Bot rules** before ordering.",
+                hint=f"Read and accept them in the order rules channel or at {WEB_ORDER_URL}, then try again.",
+            ))
+            return None
+    username = await _order_username(user)
+    if not username and not staff:
+        await _reply(interaction, embed=_err_embed(
+            "The Order Bot needs to know who is flying in.",
+            hint=(
+                "Set your server nickname to `Character Name | Island Name`, "
+                f"or register your in-game character at {WEBSITE_BASE}/profile."
+            ),
+        ))
+        return None
+    return username or user.display_name
+
+
+# ─── Status helpers and embeds ────────────────────────────────────────────────
+
+_UNREACHABLE_MARKERS = ("unreachable", "offline", "timed out", "not configured", "non-json")
+
+
+def _is_unreachable(data: Any) -> bool:
+    """SysBot didn't answer. (normalize_order_data fills in status="queued" even then, so check this first.)"""
+    if not isinstance(data, dict):
+        return True
+    if data.get("success") is not False:
+        return False
+    error = str(data.get("error") or "").lower()
+    return any(marker in error for marker in _UNREACHABLE_MARKERS)
+
+
+def _bot_accepting(status: dict) -> bool:
+    island = str(status.get("island_name") or "").strip().lower().rstrip(".")
+    if island == "no town name yet" or status.get("success") is False:
+        return False
+    return bool(status.get("is_running", True)) and bool(status.get("accepting_commands", True))
+
+
+def _friendly_message(raw: str | None) -> str:
+    """Port of the website's formatOrderMessage: SysBot console text → member-friendly text."""
+    msg = (raw or "").strip()
+    lower = msg.lower()
+    if "failed to arrive" in lower or "request has been removed" in lower:
+        return "Flight gate expired: the arrival window ended. You can reorder anytime."
+    if "order cancelled" in lower or "cancelled by user" in lower:
+        return "Your order was cancelled."
+    if "pickup completed" in lower or "order completed" in lower:
+        return "Pickup completed. Thank you for flying with Dodo Airlines!"
+    if "timed out" in lower or "gate closed" in lower:
+        return "The flight gate has closed. Reorder to get a new pickup slot."
+    return msg[:300]
+
+
+def _missed_gate(data: dict) -> bool:
+    """The order ended because the member didn't fly in before the gate closed."""
+    message = str(data.get("message") or "").lower()
+    return any(marker in message for marker in _MISSED_GATE_MARKERS)
+
+
+_STEPS = ("Queued", "Preparing", "Gate open", "Picked up")
+_STEP_INDEX = {"queued": 0, "preparing": 1, "ready": 2, "completed": 3}
+
+
+def build_order_embed(data: dict, order_id: str, summary: str = "", *, connection_lost: bool = False) -> discord.Embed:
+    """Tracker embed for one order in any state."""
+    status = str(data.get("status") or "queued")
+    island = data.get("island_name") or _order_island()
+    position = data.get("queue_position")
+    minutes = data.get("estimated_minutes")
+    dodo = data.get("dodo_code")
+    note = _friendly_message(data.get("message"))
+
+    if status == "ready" and dodo:
+        embed = _embed(
+            f"✈️ Gate open — fly to {island}!",
+            f"# `{dodo}`\n"
+            "Open your gate at the airport → **I want to fly** → **Via Dodo code**.\n"
+            "-# ⚠️ This code is yours only. Pick up your items, then leave through the airport.",
+        )
+        embed.set_thumbnail(url=DODO_GIF)
+    elif status == "preparing":
+        embed = _embed("🛠️ You're up next!", f"**{island}** is setting out your order. Your Dodo code arrives any moment — get to your airport.")
+    elif status == "completed":
+        embed = _embed("✅ Order complete", note or "Pickup completed. Thank you for flying with Dodo Airlines!")
+    elif status == "cancelled":
+        embed = _embed("🚫 Order cancelled", note or "Your order was cancelled.", PANEL_EMBED_COLOR_WARN)
+    elif status == "error":
+        embed = _embed("⚠️ Order ended", note or "The Order Bot no longer has this order. You can place it again.", PANEL_EMBED_COLOR_ERR)
+    else:
+        where = f"Position **#{position}** in line" if position else "In line"
+        eta = f" · about **{minutes} min**" if minutes else ""
+        embed = _embed("⏳ Order in the queue", f"{where}{eta}.\nYour Dodo code will be sent to your DMs when it's your turn.")
+
+    if status in _STEP_INDEX:
+        current = _STEP_INDEX[status]
+        steps = [f"**{s}**" if i == current else (f"~~{s}~~" if i < current else s) for i, s in enumerate(_STEPS)]
+        embed.add_field(name="Progress", value=" → ".join(steps), inline=False)
+    if summary:
+        embed.add_field(name="🎒 Pocket", value=summary[:1000], inline=False)
+    if note and status in ACTIVE_STATUSES:
+        embed.add_field(name="Order Bot says", value=note, inline=False)
+    if connection_lost:
+        embed.add_field(name="📡 Connection", value="Can't reach the Order Bot right now. Still trying…", inline=False)
+    embed.set_footer(text=f"{PANEL_FOOTER_TEXT} • Order {order_id}", icon_url=PANEL_FOOTER_ICON)
+    return embed
+
+
+def build_pocket_embed(cart: OrderCart, username: str, notice: str | None = None) -> discord.Embed:
+    embed = _embed("🎒 Your order pocket")
+    if cart.lines:
+        rows = [f"`{i:02}` {line.label}" for i, line in enumerate(cart.lines, 1)]
+        text = "\n".join(rows)
+        if len(text) > 3500:
+            text = text[:3500] + "\n…"
+        embed.description = text
+    else:
+        embed.description = (
+            "Your pocket is empty.\n"
+            "**Add items** by typing them, **Search** the catalog, or start from a **Bundle**."
+        )
+    embed.add_field(name="Slots", value=f"**{cart.slots}** / {ORDER_MAX_SLOTS}", inline=True)
+    embed.add_field(name="🏠 Villager", value=cart.villager[0] if cart.villager else "None", inline=True)
+    embed.add_field(name="Ordering as", value=discord.utils.escape_markdown(username)[:100], inline=True)
+    if notice:
+        embed.add_field(name="ℹ️", value=notice[:1000], inline=False)
+    return embed
+
+
+def build_guide_embed() -> discord.Embed:
+    island = _order_island()
+    embed = _embed(
+        "📖 How the Order Bot works",
+        f"Order up to **{ORDER_MAX_SLOTS} pocket slots** of items (plus one villager) and pick them up on **{island}**.",
+    )
+    embed.add_field(
+        name="1 · Build your pocket",
+        value=(
+            "Press **Start Order**. Type items (`Gold nugget 30, Royal crown`), search the catalog, "
+            "or load a bundle or one of your saved loadouts."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="2 · Place the order",
+        value="You join the queue. The tracker shows your position and estimated wait and updates on its own.",
+        inline=False,
+    )
+    embed.add_field(
+        name="3 · Fly in",
+        value=(
+            "When it's your turn the bot **DMs your Dodo code** (keep DMs open). "
+            "Fly in quickly: the gate only waits a short time. Grab your items and leave through the airport."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Rules",
+        value=(
+            "• Nickname must be `Character | Island`\n"
+            "• One order at a time\n"
+            "• Never share your Dodo code\n"
+            f"• Prefer a bigger screen? Use the [Web Order Bot]({WEB_ORDER_URL})"
+        ),
+        inline=False,
+    )
+    return embed
+
+
+def _queue_entries(queue_data: Any) -> list[dict]:
+    if not isinstance(queue_data, dict):
+        return []
+    entries = queue_data.get("queue") or queue_data.get("orders") or []
+    return [e for e in entries if isinstance(e, dict)]
+
+
+def build_queue_embed(queue_data: Any, viewer: discord.abc.User | None = None) -> discord.Embed:
+    entries = _queue_entries(queue_data)
+    if not entries:
+        if isinstance(queue_data, dict) and queue_data.get("success") is False and queue_data.get("error"):
+            return _embed("📋 Order queue", "The Order Bot isn't reachable right now.", PANEL_EMBED_COLOR_WARN)
+        return _embed("📋 Order queue", "The queue is empty — order now and you're first in line!")
+    viewer_id = str(viewer.id) if viewer else ""
+    viewer_name = (getattr(viewer, "display_name", "") or "").lower()
+    rows: list[str] = []
+    for entry in entries[:20]:
+        pos = entry.get("queue_position") or entry.get("position") or "?"
+        name = discord.utils.escape_markdown(str(entry.get("username") or "Someone"))[:40]
+        status = str(entry.get("status") or "queued")
+        icon = {"preparing": "🛠️", "ready": "✈️"}.get(status, "⏳")
+        eta = f" · ~{entry['estimated_minutes']} min" if entry.get("estimated_minutes") else ""
+        mine = viewer and (str(entry.get("user_id") or "") == viewer_id or str(entry.get("username") or "").lower() == viewer_name)
+        rows.append(f"`#{pos}` {icon} {name}{eta}{'  ← **you**' if mine else ''}")
+    if len(entries) > 20:
+        rows.append(f"…and {len(entries) - 20} more")
+    return _embed(f"📋 Order queue ({len(entries)})", "\n".join(rows))
+
+
+def build_panel_embed(status: dict, queue_data: Any) -> discord.Embed:
+    island = _order_island()
+    entries = _queue_entries(queue_data)
+    waiting = len(entries) or int(status.get("queue_count") or 0)
+
+    if _bot_accepting(status):
+        state, color = "🟢 **Open** — taking orders", PANEL_EMBED_COLOR
+    elif status.get("is_running") and status.get("success") is not False:
+        state, color = "🟡 **Paused** — not taking orders right now", PANEL_EMBED_COLOR_WARN
+    else:
+        state, color = "🔴 **Offline** — check back soon", PANEL_EMBED_COLOR_ERR
+
+    embed = _embed(
+        f"{PANEL_TITLE_PREFIX} — {island}",
+        "Build a pocket of items, join the queue, and get a **private Dodo code** when it's your turn.\n"
+        "Press **Start Order** to begin.",
+        color,
+    )
+    embed.add_field(name="Status", value=state, inline=False)
+    if waiting:
+        etas = [int(e["estimated_minutes"]) for e in entries if str(e.get("estimated_minutes") or "").isdigit()]
+        wait = f" · new orders wait about **{max(etas) + 2} min**" if etas else ""
+        embed.add_field(name="Queue", value=f"**{waiting}** in line{wait}", inline=True)
+    else:
+        embed.add_field(name="Queue", value="Empty — no wait", inline=True)
+    serving = queue_data.get("current_active_user") if isinstance(queue_data, dict) else None
+    if serving:
+        embed.add_field(name="Now serving", value=discord.utils.escape_markdown(str(serving))[:60], inline=True)
+    return embed
+
+
+# ─── Views: pocket builder ────────────────────────────────────────────────────
+
+async def _swap(interaction: discord.Interaction, old: discord.ui.View | None, embed: discord.Embed, new: discord.ui.View | None) -> None:
+    """Replace the menu on the interaction's message. Stops `old` so its timeout can't clobber `new`."""
+    if old is not None:
+        old.stop()
+    if new is not None:
+        _adopt(new, interaction)
+    if interaction.response.is_done():
+        await interaction.edit_original_response(embed=embed, view=new)
+    else:
+        await interaction.response.edit_message(embed=embed, view=new)
+
+
+class PocketView(_OwnedView):
+    """The pocket builder. A fresh instance is created for every render."""
+
+    expired_notice = "⌛ This menu expired. Your pocket is saved — press **Start Order** to continue."
+
+    def __init__(self, cog: "OrderBotCog", user_id: int, username: str):
+        super().__init__(user_id, timeout=600)
+        self.cog = cog
+        self.username = username
+        cart = cog.cart(user_id)
+        self.place_order.disabled = cart.is_empty
+        self.clear.disabled = cart.is_empty
+        if cart.lines or cart.villager:
+            options = [
+                discord.SelectOption(label=line.label[:100], value=str(i), emoji="📦")
+                for i, line in enumerate(cart.lines[:24])
+            ]
+            if cart.villager:
+                options.append(discord.SelectOption(label=f"Villager: {cart.villager[0]}"[:100], value="villager", emoji="🏠"))
+            select = discord.ui.Select(placeholder="Remove something…", options=options, row=2)
+            select.callback = self._remove   # type: ignore[method-assign]
+            self.add_item(select)
+
+    async def render(self, interaction: discord.Interaction, notice: str | None = None) -> None:
+        view = PocketView(self.cog, self.user_id, self.username)
+        embed = build_pocket_embed(self.cog.cart(self.user_id), self.username, notice)
+        await _swap(interaction, self, embed, view)
+
+    async def _remove(self, interaction: discord.Interaction) -> None:
+        cart = self.cog.cart(self.user_id)
+        value = (interaction.data or {}).get("values", [""])[0]
+        if value == "villager":
+            cart.villager = None
+        elif value.isdigit() and int(value) < len(cart.lines):
+            cart.lines.pop(int(value))
+        self.cog.save_cart(self.user_id)
+        await self.render(interaction)
+
+    @discord.ui.button(label="Add items", emoji="➕", style=discord.ButtonStyle.primary, row=0)
+    async def add_items(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(AddItemsModal(self))
+
+    @discord.ui.button(label="Search", emoji="🔍", style=discord.ButtonStyle.secondary, row=0)
+    async def search(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(SearchModal(self))
+
+    @discord.ui.button(label="Villager", emoji="🏠", style=discord.ButtonStyle.secondary, row=0)
+    async def villager(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(VillagerModal(self))
+
+    @discord.ui.button(label="Bundles", emoji="🎁", style=discord.ButtonStyle.secondary, row=0)
+    async def bundles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        bundles = await self.cog.bundles()
+        if not bundles:
+            await self.render(interaction, "No bundles are available right now.")
+            return
+        await _swap(interaction, self, _bundles_embed(bundles), BundleView(self, bundles))
+
+    @discord.ui.button(label="Saved", emoji="💾", style=discord.ButtonStyle.secondary, row=1)
+    async def saved(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        loadouts = await asyncio.to_thread(_load_loadouts, self.user_id)
+        await _swap(interaction, self, _loadouts_embed(loadouts), LoadoutView(self, loadouts))
+
+    @discord.ui.button(label="Clear", emoji="🗑️", style=discord.ButtonStyle.secondary, row=1)
+    async def clear(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        cart = self.cog.cart(self.user_id)
+        cart.lines.clear()
+        cart.villager = None
+        self.cog.save_cart(self.user_id)
+        await self.render(interaction, "Pocket cleared.")
+
+    @discord.ui.button(label="Place order", emoji="✈️", style=discord.ButtonStyle.success, row=1)
+    async def place_order(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        await self.cog.submit_order(interaction, self)
+
+
+class AddItemsModal(discord.ui.Modal, title="Add items to your pocket"):
+    items = discord.ui.TextInput(
+        label="Items (comma or new line separated)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Gold nugget 30, Royal crown, Nook Miles Ticket 10\nor paste a command from chopaeng.com",
+        max_length=1500,
+    )
+
+    def __init__(self, parent: PocketView):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        notice = await self.parent.cog.add_text(self.parent.user_id, self.items.value)
+        await self.parent.render(interaction, notice)
+
+
+class SearchModal(discord.ui.Modal, title="Search the catalog"):
+    query = discord.ui.TextInput(label="Item name or series", placeholder="ironwood, cherry blossom, crown…", max_length=60)
+
+    def __init__(self, parent: PocketView):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        query = self.query.value.strip()
+        hits = await asyncio.to_thread(lambda: ACNHCatalog.get_instance().search_items(query, limit=25))
+        if not hits:
+            await self.parent.render(interaction, f"Nothing found for **{query[:40]}**.")
+            return
+        await _swap(interaction, self.parent, _results_embed(query), SearchResultsView(self.parent, hits, query))
+
+
+class VillagerModal(discord.ui.Modal, title="Move-in villager"):
+    name = discord.ui.TextInput(label="Villager name", placeholder="Raymond", max_length=40)
+
+    def __init__(self, parent: PocketView):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        notice = await self.parent.cog.set_villager(self.parent.user_id, self.name.value)
+        await self.parent.render(interaction, notice)
+
+
+class _SubView(_OwnedView):
+    """A menu opened from the pocket; "Back" returns to it."""
+
+    expired_notice = PocketView.expired_notice
+
+    def __init__(self, parent: "PocketView | _SubView"):
+        super().__init__(parent.user_id, timeout=300)
+        self.cog = parent.cog
+        self.username = parent.username
+
+    async def back_to_pocket(self, interaction: discord.Interaction, notice: str | None = None) -> None:
+        view = PocketView(self.cog, self.user_id, self.username)
+        await _swap(interaction, self, build_pocket_embed(self.cog.cart(self.user_id), self.username, notice), view)
+
+    @discord.ui.button(label="Back to pocket", emoji="↩️", style=discord.ButtonStyle.secondary, row=4)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.back_to_pocket(interaction)
+
+
+def _results_embed(query: str, notice: str | None = None) -> discord.Embed:
+    embed = _embed(
+        f"🔍 Results for “{query[:40]}”",
+        "Pick an item to add it. Items that come in several colors or patterns let you choose one.",
+    )
+    if notice:
+        embed.add_field(name="ℹ️", value=notice[:1000], inline=False)
+    return embed
+
+
+class SearchResultsView(_SubView):
+    def __init__(self, parent: "PocketView | _SubView", hits: list[CatalogItem], query: str = ""):
+        super().__init__(parent)
+        self.query = query
+        self.hits = hits[:25]
+        options = [
+            discord.SelectOption(
+                label=item.display_name[:100],
+                value=str(i),
+                description=(f"{item.category}" + (f" · stack of {_stack_size(item)}" if _stack_size(item) > 1 else ""))[:100] or None,
+                emoji="📜" if item.diy else "📦",
+            )
+            for i, item in enumerate(self.hits)
+        ]
+        select = discord.ui.Select(placeholder="Add to pocket…", options=options, row=0)
+        select.callback = self._picked   # type: ignore[method-assign]
+        self.add_item(select)
+
+    async def add_and_stay(self, interaction: discord.Interaction, current: _SubView, item: CatalogItem) -> None:
+        """Add `item` to the pocket and show the results again, so several items can be added in a row."""
+        line = line_from_catalog(item)
+        error = self.cog.cart(self.user_id).add(line)
+        self.cog.save_cart(self.user_id)
+        slots = self.cog.cart(self.user_id).slots
+        notice = error or f"Added **{line.label}** · {slots}/{ORDER_MAX_SLOTS} slots used."
+        await _swap(interaction, current, _results_embed(self.query, notice), SearchResultsView(self, self.hits, self.query))
+
+    async def _picked(self, interaction: discord.Interaction) -> None:
+        item = self.hits[int((interaction.data or {}).get("values", ["0"])[0])]
+        variants = _item_variants(item)
+        if variants:
+            view = VariantView(self, item, variants)
+            await _swap(interaction, self, view.embed(), view)
+            return
+        await self.add_and_stay(interaction, self, item)
+
+
+class VariantView(_SubView):
+    """Color, then pattern (when the color has more than one) for an item picked from search results."""
+
+    def __init__(self, results: SearchResultsView, item: CatalogItem, variants: list[_Variant], body: str | None = None):
+        super().__init__(results)
+        self.results = results
+        self.item = item
+        self.variants = variants
+        bodies = list(dict.fromkeys(v.body for v in variants))
+        if body is None and len(bodies) == 1:
+            body = bodies[0]   # only the pattern varies
+        self.body = body
+        if body is None:
+            self.choices: list[Any] = bodies[:25]
+            options = [discord.SelectOption(label=b[:100], value=str(i), emoji="🎨") for i, b in enumerate(self.choices)]
+            placeholder = "Choose a color…"
+        else:
+            self.choices = [v for v in variants if v.body == body][:25]
+            options = [
+                discord.SelectOption(label=(v.pattern or v.body)[:100], value=str(i), emoji="🧵")
+                for i, v in enumerate(self.choices)
+            ]
+            placeholder = "Choose a pattern…"
+        select = discord.ui.Select(placeholder=placeholder, options=options, row=0)
+        select.callback = self._picked   # type: ignore[method-assign]
+        self.add_item(select)
+
+    def embed(self) -> discord.Embed:
+        step = f"Color **{self.body}** — now pick a pattern." if self.body and len({v.body for v in self.variants}) > 1 else "Pick the look you want."
+        embed = _embed(f"🎨 {self.item.name[:1].upper() + self.item.name[1:]}", step)
+        if self.item.image_url:
+            embed.set_thumbnail(url=self.item.image_url)
+        return embed
+
+    async def _picked(self, interaction: discord.Interaction) -> None:
+        choice = self.choices[int((interaction.data or {}).get("values", ["0"])[0])]
+        if isinstance(choice, str):
+            matching = [v for v in self.variants if v.body == choice]
+            if len(matching) > 1:
+                view = VariantView(self.results, self.item, self.variants, body=choice)
+                await _swap(interaction, self, view.embed(), view)
+                return
+            choice = matching[0]
+        await self.results.add_and_stay(interaction, self, choice.item)
+
+    @discord.ui.button(label="Back to results", emoji="🔍", style=discord.ButtonStyle.secondary, row=4)
+    async def back_to_results(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        view = SearchResultsView(self.results, self.results.hits, self.results.query)
+        await _swap(interaction, self, _results_embed(self.results.query), view)
+
+
+def _bundle_items(bundle: dict) -> list[Any]:
+    return bundle.get("orderItems") or bundle.get("items") or []
+
+
+def _bundles_embed(bundles: list[dict]) -> discord.Embed:
+    rows = []
+    for bundle in bundles[:25]:
+        name = bundle.get("title") or bundle.get("name") or "Bundle"
+        desc = str(bundle.get("description") or "")[:90]
+        rows.append(f"🎁 **{name}** ({len(_bundle_items(bundle))} items)" + (f"\n-# {desc}" if desc else ""))
+    return _embed("🎁 Official bundles", "\n".join(rows)[:4000] or "No bundles.")
+
+
+class BundleView(_SubView):
+    def __init__(self, parent: PocketView, bundles: list[dict]):
+        super().__init__(parent)
+        self.bundles = bundles[:25]
+        options = [
+            discord.SelectOption(
+                label=str(b.get("title") or b.get("name") or f"Bundle {i + 1}")[:100],
+                value=str(i),
+                description=str(b.get("category") or "")[:100] or None,
+                emoji="🎁",
+            )
+            for i, b in enumerate(self.bundles)
+        ]
+        select = discord.ui.Select(placeholder="Add a bundle to your pocket…", options=options, row=0)
+        select.callback = self._picked   # type: ignore[method-assign]
+        self.add_item(select)
+
+    async def _picked(self, interaction: discord.Interaction) -> None:
+        bundle = self.bundles[int((interaction.data or {}).get("values", ["0"])[0])]
+        notice = await self.cog.add_bundle(self.user_id, bundle)
+        await self.back_to_pocket(interaction, notice)
+
+
+def _loadouts_embed(loadouts: list[tuple[str, OrderCart]]) -> discord.Embed:
+    if not loadouts:
+        return _embed("💾 Saved loadouts", "Nothing saved yet. Fill your pocket, then press **Save current pocket**.")
+    rows = [f"💾 **{discord.utils.escape_markdown(name)}** — {cart.slots} slots\n-# {cart_summary(cart, 90)}" for name, cart in loadouts]
+    return _embed(f"💾 Saved loadouts ({len(loadouts)}/{MAX_LOADOUTS})", "\n".join(rows)[:4000])
+
+
+class LoadoutView(_SubView):
+    def __init__(self, parent: PocketView, loadouts: list[tuple[str, OrderCart]]):
+        super().__init__(parent)
+        self.loadouts = loadouts[:25]
+        self.save_current.disabled = self.cog.cart(self.user_id).is_empty
+        if self.loadouts:
+            for placeholder, handler, emoji, row in (
+                ("Load into pocket…", self._load, "💾", 0),
+                ("Delete a loadout…", self._delete, "🗑️", 1),
+            ):
+                select = discord.ui.Select(
+                    placeholder=placeholder,
+                    options=[discord.SelectOption(label=name[:100], value=str(i), emoji=emoji) for i, (name, _) in enumerate(self.loadouts)],
+                    row=row,
+                )
+                select.callback = handler   # type: ignore[method-assign]
+                self.add_item(select)
+
+    def _chosen(self, interaction: discord.Interaction) -> tuple[str, OrderCart]:
+        return self.loadouts[int((interaction.data or {}).get("values", ["0"])[0])]
+
+    async def _load(self, interaction: discord.Interaction) -> None:
+        name, saved = self._chosen(interaction)
+        self.cog.replace_cart(self.user_id, OrderCart.from_json(saved.to_json()))
+        await self.back_to_pocket(interaction, f"Loaded **{name}**.")
+
+    async def _delete(self, interaction: discord.Interaction) -> None:
+        name, _ = self._chosen(interaction)
+        await asyncio.to_thread(_delete_loadout, self.user_id, name)
+        loadouts = await asyncio.to_thread(_load_loadouts, self.user_id)
+        parent = PocketView(self.cog, self.user_id, self.username)
+        parent.stop()
+        await _swap(interaction, self, _loadouts_embed(loadouts), LoadoutView(parent, loadouts))
+
+    @discord.ui.button(label="Save current pocket", emoji="💾", style=discord.ButtonStyle.primary, row=4)
+    async def save_current(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(SaveLoadoutModal(self))
+
+
+class SaveLoadoutModal(discord.ui.Modal, title="Save this pocket"):
+    name = discord.ui.TextInput(label="Loadout name", placeholder="Starter materials", max_length=40)
+
+    def __init__(self, parent: LoadoutView):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        view, name = self.parent, self.name.value.strip()
+        existing = await asyncio.to_thread(_load_loadouts, view.user_id)
+        if not name:
+            notice = "Give the loadout a name."
+        elif len(existing) >= MAX_LOADOUTS and name not in {n for n, _ in existing}:
+            notice = f"You can keep {MAX_LOADOUTS} loadouts. Delete one first."
+        else:
+            await asyncio.to_thread(_save_loadout, view.user_id, name, view.cog.cart(view.user_id))
+            notice = f"Saved **{name}**."
+        await view.back_to_pocket(interaction, notice)
+
+
+class HistoryView(_SubView):
+    """Past orders with one-click reorder (loads the old order into the pocket)."""
+
+    def __init__(self, parent: PocketView, orders: list[dict]):
+        super().__init__(parent)
+        self.orders = [o for o in orders if o.get("command")][:25]
+        if self.orders:
+            options = [
+                discord.SelectOption(
+                    label=(str(o["command"])[:97] + "…") if len(str(o["command"])) > 98 else str(o["command"]),
+                    value=str(i),
+                    description=f"{o.get('status', '')} · {time.strftime('%b %d', time.gmtime(int(o.get('created_at') or 0)))}"[:100],
+                    emoji="🔁",
+                )
+                for i, o in enumerate(self.orders)
+            ]
+            select = discord.ui.Select(placeholder="Reorder a past pocket…", options=options, row=0)
+            select.callback = self._reorder   # type: ignore[method-assign]
+            self.add_item(select)
+
+    async def _reorder(self, interaction: discord.Interaction) -> None:
+        order = self.orders[int((interaction.data or {}).get("values", ["0"])[0])]
+        cart = await asyncio.to_thread(_order_cart, str(order.get("id") or ""))
+        if cart.is_empty:
+            cart = await asyncio.to_thread(_cart_from_command, str(order["command"]))
+        if cart.is_empty:
+            await self.back_to_pocket(interaction, "I couldn't rebuild that order. Add the items again.")
+            return
+        self.cog.replace_cart(self.user_id, cart)
+        await self.back_to_pocket(interaction, "Loaded your past order. Review it, then place the order.")
+
+
+def build_history_embed(orders: list[dict]) -> discord.Embed:
+    if not orders:
+        return _embed("🕘 Order history", "No orders yet. Press **Start Order** to place your first one!")
+    icons = {"completed": "✅", "cancelled": "🚫", "error": "⚠️", "ready": "✈️", "preparing": "🛠️", "queued": "⏳"}
+    rows = []
+    for order in orders[:10]:
+        command = str(order.get("command") or "")
+        command = command if len(command) <= 80 else command[:79] + "…"
+        rows.append(f"{icons.get(str(order.get('status')), '•')} <t:{int(order.get('created_at') or 0)}:R> — `{command}`")
+    return _embed("🕘 Order history", "\n".join(rows)[:4000])
+
+
+# ─── Views: order tracker ─────────────────────────────────────────────────────
+
+class OrderTrackerView(discord.ui.View):
+    def __init__(self, cog: "OrderBotCog", user_id: int, order_id: str, summary: str):
+        super().__init__(timeout=TOKEN_SECONDS)
+        self.cog = cog
+        self.user_id = user_id
+        self.order_id = order_id
+        self.summary = summary
+        self._confirming = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This order isn't yours.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary)
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        self.stop()
+        self.cog.start_tracker(interaction.user, self.order_id, interaction, self.summary)
+
+    @discord.ui.button(label="Cancel order", emoji="✖️", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self._confirming:
+            self._confirming = True
+            button.label = "Tap again to cancel"
+            await interaction.response.edit_message(view=self)
+            return
+        await interaction.response.defer()
+        self.stop()
+        await self.cog.cancel_order(interaction, self.order_id, self.summary)
+
+
+class ReorderView(discord.ui.View):
+    """Shown when an order ends without a pickup: one tap sends the same pocket again."""
+
+    def __init__(self, cog: "OrderBotCog", user_id: int, order_id: str):
+        super().__init__(timeout=TOKEN_SECONDS)
+        self.cog = cog
+        self.user_id = user_id
+        self.order_id = order_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This order isn't yours.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Reorder same pocket", emoji="🔁", style=discord.ButtonStyle.success)
+    async def reorder(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        username = await _order_gate(interaction)
+        if not username:
+            return
+        await interaction.response.defer()
+        cart = await asyncio.to_thread(_order_cart, self.order_id)
+        if cart.is_empty:
+            await interaction.followup.send(
+                embed=_err_embed("I couldn't rebuild that order.", hint="Press **Start Order** and add the items again."),
+                ephemeral=True,
+            )
+            return
+        self.stop()
+        self.cog.replace_cart(self.user_id, cart)
+        # On failure submit_order shows the pocket (with the reason) in place of this message.
+        await self.cog.submit_order(interaction, PocketView(self.cog, self.user_id, username))
+
+
+# ─── Views: persistent panel ──────────────────────────────────────────────────
+
+class OrderPanelView(discord.ui.View):
+    """
+    Static custom_ids, so bot.add_view() in cog_load keeps every panel working after a restart.
+    "Notify me" is only shown while the Order Bot is closed.
+    """
+
+    def __init__(self, cog: "OrderBotCog", is_open: bool = True):
+        super().__init__(timeout=None)
+        self.cog = cog
+        if is_open:
+            self.remove_item(self.notify)
+        self.add_item(discord.ui.Button(label="Web Order Bot", emoji="🌐", style=discord.ButtonStyle.link, url=WEB_ORDER_URL, row=1))
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        logger.error("[OrderBot] Panel button error: %s", error, exc_info=error)
+        await _reply(interaction, "❌ Something went wrong. Please try again in a moment.")
+
+    @discord.ui.button(label="Start Order", emoji="🛒", style=discord.ButtonStyle.success, custom_id="orderbot:start", row=0)
+    async def start(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.cog.open_pocket(interaction)
+
+    @discord.ui.button(label="My Order", emoji="📦", style=discord.ButtonStyle.primary, custom_id="orderbot:myorder", row=0)
+    async def my_order(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.cog.show_my_order(interaction)
+
+    @discord.ui.button(label="Queue", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="orderbot:queue", row=0)
+    async def queue(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.cog.show_queue(interaction)
+
+    @discord.ui.button(label="History", emoji="🕘", style=discord.ButtonStyle.secondary, custom_id="orderbot:history", row=0)
+    async def history(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.cog.show_history(interaction)
+
+    @discord.ui.button(label="Guide", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="orderbot:guide", row=1)
+    async def guide(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_message(embed=build_guide_embed(), ephemeral=True)
+
+    @discord.ui.button(label="Notify me when open", emoji="🔔", style=discord.ButtonStyle.primary, custom_id="orderbot:notify", row=1)
+    async def notify(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.cog.subscribe_open_ping(interaction)
+
+
+# ─── Cog ──────────────────────────────────────────────────────────────────────
+
+class OrderBotCog(commands.Cog, name="OrderBot"):
+    """Order Bot panel, pocket builder and live order tracking. Needs no privileged intents."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self._carts: dict[int, OrderCart] = {}
+        self._trackers: dict[int, asyncio.Task] = {}       # user_id -> running tracker
+        self._panel_sigs: dict[int, str] = {}              # channel_id -> last rendered panel
+        self._dead_panels: set[int] = set()
+        self._panel_views: dict[bool, OrderPanelView] = {}  # is_open -> view
+        self._panel_messages: dict[int, int] = {}          # channel_id -> panel message id (sticky)
+        self._last_panel: tuple[discord.Embed, str, bool] | None = None
+        self._channel_locks: dict[int, asyncio.Lock] = {}  # serialises refresh vs. sticky repost
+        self._bump_tasks: dict[int, asyncio.Task] = {}
+        self._bump_first_seen: dict[int, float] = {}
+        self._is_open: bool | None = None                  # last known "taking orders" state
+        self._open_streak = 0                              # consecutive refreshes the bot was open
+        self._notify_pending = True                        # subscribers may be waiting (unknown at startup)
+        self._next_notified: set[str] = set()              # order ids that got the "almost your turn" DM
+
+    def _panel_view(self, is_open: bool) -> OrderPanelView:
+        view = self._panel_views.get(is_open)
+        if view is None:
+            view = self._panel_views[is_open] = OrderPanelView(self, is_open)
+        return view
+
+    async def cog_load(self) -> None:
+        await asyncio.to_thread(_init_tables)
+        # The "closed" view carries every button, so registering it covers both layouts.
+        self.bot.add_view(self._panel_view(True))
+        self.bot.add_view(self._panel_view(False))
+        self.refresh_panels_loop.start()
+        _spawn(self._resume_trackers())
+
+    async def cog_unload(self) -> None:
+        self.refresh_panels_loop.cancel()
+        for task in list(self._trackers.values()) + list(self._bump_tasks.values()):
+            task.cancel()
+        for view in self._panel_views.values():
+            view.stop()
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await _reply(interaction, embed=_err_embed("You need the **Manage Messages** permission to use this command."))
+            return
+        logger.error("[OrderBot] Command error: %s", error, exc_info=error)
+        await _reply(interaction, embed=_err_embed("Something went wrong running that command."))
+
+    # ── Pocket state ──────────────────────────────────────────────────────────
+
+    def cart(self, user_id: int) -> OrderCart:
+        """The member's pocket. Call load_cart() first in a flow so a saved pocket is restored."""
+        return self._carts.setdefault(user_id, OrderCart())
+
+    async def load_cart(self, user_id: int) -> OrderCart:
+        if user_id not in self._carts:
+            self._carts[user_id] = await asyncio.to_thread(_load_cart, user_id)
+        return self._carts[user_id]
+
+    def save_cart(self, user_id: int) -> None:
+        _spawn(asyncio.to_thread(_save_cart, user_id, self.cart(user_id)))
+
+    def replace_cart(self, user_id: int, cart: OrderCart) -> None:
+        self._carts[user_id] = cart
+        self.save_cart(user_id)
+
+    async def add_text(self, user_id: int, raw: str) -> str | None:
+        """Add typed items (and an optional villager:<id>) to the pocket. Returns a notice for the member."""
+        lines, villager, problems = await asyncio.to_thread(parse_order_text, raw)
+        cart = self.cart(user_id)
+        added = 0
+        for line in lines:
+            error = cart.add(line)
+            if error:
+                problems.append(error)
+            else:
+                added += 1
+        if villager:
+            note = await self.set_villager(user_id, villager)
+            if note:
+                problems.append(note)
+        self.save_cart(user_id)
+        notice = ([f"Added {added} item{'s' if added != 1 else ''}."] if added else []) + problems
+        return "\n".join(notice)[:1000] or None
+
+    async def set_villager(self, user_id: int, query: str) -> str:
+        found = await asyncio.to_thread(lambda: ACNHCatalog.get_instance().get_villager(query.strip()))
+        if not found:
+            return f"I couldn't find a villager called **{query.strip()[:40]}**."
+        self.cart(user_id).villager = (found.name, found.villager_id)
+        self.save_cart(user_id)
+        return f"🏠 **{found.name}** will be in boxes when you arrive. Have an empty plot ready."
+
+    async def add_bundle(self, user_id: int, bundle: dict) -> str:
+        def _lines() -> list[OrderLine]:
+            out: list[OrderLine] = []
+            for entry in _bundle_items(bundle):
+                if isinstance(entry, dict):
+                    name = str(entry.get("name") or "").strip()
+                    qty = max(1, min(int(entry.get("quantity") or entry.get("count") or 1), ORDER_MAX_SLOTS))
+                    line = (_resolve_entry(name, qty) if name else None) or (
+                        _resolve_entry(str(entry.get("itemId") or entry.get("id") or ""), qty)
+                    )
+                    if line:
+                        out.append(line)
+                elif isinstance(entry, str):
+                    out.extend(parse_order_text(entry)[0])
+            return out
+
+        cart = self.cart(user_id)
+        lines = await asyncio.to_thread(_lines)
+        problems = [e for e in (cart.add(line) for line in lines) if e]
+        self.save_cart(user_id)
+        name = bundle.get("title") or bundle.get("name") or "bundle"
+        added = len(lines) - len(problems)
+        return "\n".join([f"Added {added} item{'s' if added != 1 else ''} from **{name}**."] + problems[:3])
+
+    async def bundles(self) -> list[dict]:
+        try:
+            data = await _client().get_bundles()
+        except Exception as exc:
+            logger.warning("[OrderBot] Could not load bundles: %s", exc)
+            return []
+        return [b for b in data if isinstance(b, dict) and _bundle_items(b)]
+
+    # ── Panel flows ───────────────────────────────────────────────────────────
+
+    async def find_active_order(self, user_id: int) -> tuple[str, dict, str] | None:
+        """(order_id, live status, summary) if the member has an order in progress."""
+        row = await asyncio.to_thread(_active_order_row, user_id)
+        if not row:
+            return None
+        order_id = str(row["id"])
+        summary, _ = await asyncio.to_thread(_discord_order_info, order_id)
+        data = await _client().get_order_status(order_id)
+        if _is_unreachable(data):
+            # Can't confirm either way; trust the DB so a member can't double-order during an outage.
+            return order_id, {"status": row["status"]}, summary or row["command"][:120]
+        if data.get("status") in ACTIVE_STATUSES:
+            return order_id, data, summary or row["command"][:120]
+        return None
+
+    async def open_pocket(self, interaction: discord.Interaction, prefill: str | None = None, villager: str | None = None) -> None:
+        """Start Order: the pocket builder, or the tracker when an order is already in progress."""
+        username = await _order_gate(interaction)
+        if not username:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        user = interaction.user
+        active = await self.find_active_order(user.id)
+        if active:
+            order_id, _, summary = active
+            self.start_tracker(user, order_id, interaction, summary)
+            return
+        await self.load_cart(user.id)
+        notes = []
+        if prefill:
+            notes.append(await self.add_text(user.id, prefill))
+        if villager:
+            notes.append(await self.set_villager(user.id, villager))
+        notice = "\n".join(n for n in notes if n) or None
+        view = PocketView(self, user.id, username)
+        embed = build_pocket_embed(self.cart(user.id), username, notice)
+        await interaction.followup.send(embed=embed, view=_adopt(view, interaction), ephemeral=True)
+
+    async def show_my_order(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        active = await self.find_active_order(interaction.user.id)
+        if not active:
+            await interaction.followup.send(
+                embed=_embed("📦 No active order", "You don't have an order in progress. Press **Start Order** to place one."),
+                ephemeral=True,
+            )
+            return
+        order_id, _, summary = active
+        self.start_tracker(interaction.user, order_id, interaction, summary)
+
+    async def show_queue(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        data = await _client().get_queue()
+        await interaction.followup.send(embed=build_queue_embed(data, interaction.user), ephemeral=True)
+
+    async def show_history(self, interaction: discord.Interaction) -> None:
+        username = await _order_gate(interaction)
+        if not username:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        orders = await _client().get_user_order_history(str(interaction.user.id), limit=10)
+        await self.load_cart(interaction.user.id)
+        parent = PocketView(self, interaction.user.id, username)
+        parent.stop()   # only used to carry the cog/user/username into the sub-menu
+        view = HistoryView(parent, orders)
+        await interaction.followup.send(embed=build_history_embed(orders), view=_adopt(view, interaction), ephemeral=True)
+
+    # ── Submit / cancel ───────────────────────────────────────────────────────
+
+    async def submit_order(self, interaction: discord.Interaction, view: PocketView) -> None:
+        """Send the pocket to SysBot. `interaction` is already deferred; all output edits its message."""
+        user = interaction.user
+        cart = self.cart(user.id)
+
+        async def fail(message: str) -> None:
+            await view.render(interaction, f"❌ {message}")
+
+        if cart.is_empty:
+            await fail("Your pocket is empty.")
+            return
+        wait = _cooldown_left(user.id, "orderbot", "submit", SUBMIT_COOLDOWN)
+        if wait > 0:
+            await fail(f"Please wait {wait:.0f}s before placing another order.")
+            return
+
+        active = await self.find_active_order(user.id)
+        if active:
+            order_id, _, summary = active
+            view.stop()
+            self.start_tracker(user, order_id, interaction, summary)
+            return
+
+        client = _client()
+        status = await client.get_bot_status()
+        if not _bot_accepting(status):
+            _pop_cooldown(user.id, "orderbot", "submit")
+            await fail("The Order Bot isn't taking orders right now. Your pocket is saved — try again in a bit.")
+            return
+
+        try:
+            order_text = await asyncio.to_thread(build_order_text, cart.lines)
+        except ValueError as exc:
+            _pop_cooldown(user.id, "orderbot", "submit")
+            await fail(str(exc))
+            return
+
+        result = await client.submit_order(
+            username=view.username,
+            order_text=order_text,
+            villager=cart.villager[1] if cart.villager else None,
+            user_id=str(user.id),
+        )
+        order_id = str(result.get("order_id") or "") if isinstance(result, dict) else ""
+        if not order_id or result.get("success") is False:
+            _pop_cooldown(user.id, "orderbot", "submit")
+            error = str((result or {}).get("error") or (result or {}).get("message") or "The Order Bot rejected the order.")
+            logger.warning("[OrderBot] Order by %s rejected: %s", user.id, error)
+            await fail(error[:300])
+            return
+
+        summary = cart_summary(cart, 300)
+        logger.info("[OrderBot] Order %s placed by %s (%s): %s", order_id, user, user.id, order_text[:200])
+        await asyncio.to_thread(_record_discord_order, order_id, user.id, summary, cart.to_json())
+        self.replace_cart(user.id, OrderCart())
+        view.stop()
+        self.start_tracker(user, order_id, interaction, summary, initial=result)
+
+    async def cancel_order(self, interaction: discord.Interaction, order_id: str, summary: str) -> None:
+        task = self._trackers.pop(interaction.user.id, None)
+        if task:
+            task.cancel()
+        result = await _client().cancel_order(order_id)
+        embed = build_order_embed({"status": "cancelled"}, order_id, summary)
+        if isinstance(result, dict) and result.get("success") is False and result.get("error"):
+            embed.add_field(
+                name="⚠️ Heads up",
+                value="I couldn't confirm the cancellation with the Order Bot. If it still calls you, just don't fly in.",
+                inline=False,
+            )
+        logger.info("[OrderBot] Order %s cancelled by %s", order_id, interaction.user.id)
+        with contextlib.suppress(discord.HTTPException):
+            await interaction.edit_original_response(embed=embed, view=None)
+
+    # ── Tracking ──────────────────────────────────────────────────────────────
+
+    def start_tracker(
+        self,
+        user: discord.abc.User,
+        order_id: str,
+        interaction: discord.Interaction | None,
+        summary: str = "",
+        *,
+        initial: dict | None = None,
+    ) -> None:
+        """Follow an order until it ends. Replaces any tracker the member already has."""
+        old = self._trackers.pop(user.id, None)
+        if old:
+            old.cancel()
+        self._trackers[user.id] = _spawn(self._track(user, order_id, interaction, summary, initial))
+
+    async def _track(
+        self,
+        user: discord.abc.User,
+        order_id: str,
+        interaction: discord.Interaction | None,
+        summary: str,
+        initial: dict | None,
+    ) -> None:
+        client = _client()
+        started = time.monotonic()
+        view = OrderTrackerView(self, user.id, order_id, summary) if interaction else None
+        _, dm_sent = await asyncio.to_thread(_discord_order_info, order_id)
+        next_sent = order_id in self._next_notified or await asyncio.to_thread(_next_sent, order_id)
+        seen_far = False   # was further back than NEXT_UP_POSITION, so "almost your turn" is news
+        last_sig: tuple | None = None
+        last_status = ""
+        misses = 0
+        data = initial
+
+        async def show(embed: discord.Embed, *, final: bool = False, final_view: discord.ui.View | None = None) -> None:
+            if interaction is None or time.monotonic() - started > TOKEN_SECONDS:
+                return
+            with contextlib.suppress(discord.HTTPException):
+                await interaction.edit_original_response(embed=embed, view=final_view if final else view)
+
+        try:
+            while time.monotonic() - started < TRACK_MAX_SECONDS:
+                if data is None:
+                    data = await client.get_order_status(order_id)
+                if _is_unreachable(data):
+                    misses += 1
+                    # Show it right away if nothing is on screen yet, otherwise only once it persists.
+                    if (misses == 1 and last_sig is None) or misses == 3:
+                        await show(build_order_embed({"status": last_status or "queued"}, order_id, summary, connection_lost=True))
+                    data = None
+                    await asyncio.sleep(POLL_SECONDS * 2)
+                    continue
+                misses = 0
+
+                status = str(data.get("status") or "queued")
+                # SysBot forgets an order once the visitor has left; after "ready" that means it was picked up.
+                if status == "error" and last_status == "ready":
+                    status, data = "completed", {**data, "status": "completed", "message": ""}
+                last_status = status
+
+                sig = (status, data.get("queue_position"), data.get("estimated_minutes"), data.get("dodo_code"), data.get("message"))
+                ended_early = status in ("cancelled", "error")   # no pickup: offer the same pocket again
+                if sig != last_sig:
+                    last_sig = sig
+                    await show(
+                        build_order_embed(data, order_id, summary),
+                        final=status in TERMINAL_STATUSES,
+                        final_view=ReorderView(self, user.id, order_id) if ended_early else None,
+                    )
+
+                # "Almost your turn" DM, only for members who actually waited further back in line.
+                position = data.get("queue_position") if status == "queued" else 0
+                if status == "queued" and isinstance(position, int) and position > NEXT_UP_POSITION:
+                    seen_far = True
+                elif seen_far and not next_sent and status in ("queued", "preparing"):
+                    next_sent = True
+                    self._next_notified.add(order_id)
+                    await asyncio.to_thread(_mark_next_sent, order_id)
+                    await self._send_next_up(user, data, order_id)
+
+                if status == "ready" and data.get("dodo_code") and not dm_sent:
+                    dm_sent = True
+                    await asyncio.to_thread(_mark_dm_sent, order_id)
+                    await self._deliver_dodo(user, data, order_id, summary, interaction)
+
+                if status in TERMINAL_STATUSES:
+                    # They were sent a Dodo but the gate closed: the tracker may be long gone, so DM it too.
+                    if ended_early and dm_sent and _missed_gate(data):
+                        await self._send_missed_gate(user, data, order_id, summary)
+                    self._next_notified.discard(order_id)
+                    return
+                data = None
+                await asyncio.sleep(POLL_SECONDS_READY if status == "ready" else POLL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[OrderBot] Tracker for order %s failed: %s", order_id, exc, exc_info=exc)
+        finally:
+            if view is not None:
+                view.stop()
+            if self._trackers.get(user.id) is asyncio.current_task():
+                self._trackers.pop(user.id, None)
+
+    async def _deliver_dodo(
+        self,
+        user: discord.abc.User,
+        data: dict,
+        order_id: str,
+        summary: str,
+        interaction: discord.Interaction | None,
+    ) -> None:
+        """DM the Dodo code. If DMs are closed, nudge the member in the order channel (without the code)."""
+        try:
+            await user.send(embed=build_order_embed(data, order_id, summary))
+            logger.info("[OrderBot] Sent Dodo for order %s to %s by DM", order_id, user.id)
+            return
+        except discord.HTTPException as exc:
+            logger.info("[OrderBot] Could not DM %s for order %s: %s", user.id, order_id, exc)
+
+        channel_id = interaction.channel_id if interaction else getattr(Config, "ORDER_BOT_CHANNEL_ID", None)
+        channel = self.bot.get_channel(channel_id) if channel_id else None
+        if channel is not None and hasattr(channel, "send"):
+            with contextlib.suppress(discord.HTTPException):
+                await channel.send(
+                    f"✈️ {user.mention} your order is ready, but your DMs are closed. "
+                    "Press **My Order** on the Order Bot panel to see your Dodo code.",
+                    delete_after=300,
+                    allowed_mentions=discord.AllowedMentions(users=[user]),
+                )
+
+    async def _send_next_up(self, user: discord.abc.User, data: dict, order_id: str) -> None:
+        position = data.get("queue_position")
+        where = f"You're **#{position}** in line" if data.get("status") == "queued" and position else "You're up next"
+        embed = _embed(
+            "🛫 Almost your turn!",
+            f"{where} for **{data.get('island_name') or _order_island()}**.\n"
+            "Head to your airport now — your Dodo code arrives here in a moment and the gate only waits a short time.",
+        )
+        embed.set_footer(text=f"{PANEL_FOOTER_TEXT} • Order {order_id}", icon_url=PANEL_FOOTER_ICON)
+        with contextlib.suppress(discord.HTTPException):
+            await user.send(embed=embed)
+
+    async def _send_missed_gate(self, user: discord.abc.User, data: dict, order_id: str, summary: str) -> None:
+        embed = build_order_embed(data, order_id, summary)
+        embed.add_field(
+            name="🔁 Want it again?",
+            value="Press **Start Order → History** on the Order Bot panel (or use `/myorders`) to reorder the same pocket.",
+            inline=False,
+        )
+        with contextlib.suppress(discord.HTTPException):
+            await user.send(embed=embed)
+
+    async def _resume_trackers(self) -> None:
+        """After a restart, keep following Discord-placed orders so their Dodo DM still goes out."""
+        await self.bot.wait_until_ready()
+        for order_id, user_id, summary in await asyncio.to_thread(_resumable_orders):
+            if user_id in self._trackers:
+                continue
+            try:
+                user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+            except discord.HTTPException:
+                continue
+            self.start_tracker(user, order_id, None, summary)
+            logger.info("[OrderBot] Resumed tracking order %s for %s", order_id, user_id)
+
+    # ── Panel refresh ─────────────────────────────────────────────────────────
+
+    async def _panel_state(self) -> tuple[discord.Embed, str, bool]:
+        """(embed, change signature, taking orders) from the live bot status and queue."""
+        client = _client()
+        status, queue_data = await asyncio.gather(client.get_bot_status(), client.get_queue())
+        embed = build_panel_embed(status, queue_data)
+        is_open = _bot_accepting(status)
+        sig = json.dumps([is_open, embed.description, [(f.name, f.value) for f in embed.fields]])
+        self._last_panel = (embed, sig, is_open)
+        return embed, sig, is_open
+
+    def _lock_for(self, channel_id: int) -> asyncio.Lock:
+        lock = self._channel_locks.get(channel_id)
+        if lock is None:
+            lock = self._channel_locks[channel_id] = asyncio.Lock()
+        return lock
+
+    @tasks.loop(seconds=PANEL_REFRESH_SECONDS)
+    async def refresh_panels_loop(self) -> None:
+        panels = [p for p in await asyncio.to_thread(_load_panels) if p[0] not in self._dead_panels]
+        # In memory is authoritative once known: a sticky repost may be newer than the row just read.
+        live = {channel_id for channel_id, _ in panels}
+        for channel_id, message_id in panels:
+            self._panel_messages.setdefault(channel_id, message_id)
+        for channel_id in [c for c in self._panel_messages if c not in live]:
+            del self._panel_messages[channel_id]
+        if not panels:
+            return
+        try:
+            embed, sig, is_open = await self._panel_state()
+        except Exception as exc:
+            logger.warning("[OrderBot] Could not build the panel: %s", exc)
+            return
+
+        # Two open refreshes in a row before pinging, so a one-off blip doesn't spend everyone's alert.
+        self._is_open = is_open
+        self._open_streak = self._open_streak + 1 if is_open else 0
+        if self._open_streak >= 2 and self._notify_pending:
+            self._notify_pending = False
+            _spawn(self._send_open_pings(panels[0][0]))
+
+        for channel_id in live:
+            if self._panel_sigs.get(channel_id) == sig:
+                continue
+            channel = self.bot.get_channel(channel_id)
+            if channel is None or not hasattr(channel, "get_partial_message"):
+                continue
+            async with self._lock_for(channel_id):
+                message_id = self._panel_messages.get(channel_id)
+                if not message_id:
+                    continue
+                try:
+                    await channel.get_partial_message(message_id).edit(embed=embed, view=self._panel_view(is_open))
+                    self._panel_sigs[channel_id] = sig
+                except discord.NotFound:
+                    self._dead_panels.add(channel_id)
+                    self._panel_messages.pop(channel_id, None)
+                    logger.warning("[OrderBot] Panel message %s in %s is gone; run /orderpanel to repost it.", message_id, channel_id)
+                except discord.HTTPException as exc:
+                    logger.warning("[OrderBot] Could not refresh the panel in %s: %s", channel_id, exc)
+
+    @refresh_panels_loop.before_loop
+    async def _before_refresh(self) -> None:
+        await self.bot.wait_until_ready()
+
+    # ── Sticky panel ──────────────────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Any new message in a panel channel buries the panel: queue a repost to the bottom."""
+        channel_id = message.channel.id
+        known = self._panel_messages.get(channel_id)
+        if not known or message.id == known:
+            return
+        if (
+            self.bot.user and message.author.id == self.bot.user.id and message.components and message.embeds
+            and (message.embeds[0].title or "").startswith(PANEL_TITLE_PREFIX)
+        ):
+            return   # our own freshly posted panel
+        self._schedule_bump(channel_id)
+
+    def _schedule_bump(self, channel_id: int) -> None:
+        """Debounce reposts: wait for STICKY_DELAY_SECONDS of quiet, capped at STICKY_MAX_WAIT_SECONDS."""
+        now = time.monotonic()
+        pending = self._bump_tasks.get(channel_id)
+        if pending and not pending.done():
+            first = self._bump_first_seen.get(channel_id, now)
+            if now - first >= STICKY_MAX_WAIT_SECONDS - STICKY_DELAY_SECONDS:
+                return   # busy channel: let the pending repost fire instead of postponing it again
+            pending.cancel()
+        else:
+            self._bump_first_seen[channel_id] = now
+        self._bump_tasks[channel_id] = asyncio.create_task(self._bump_after_delay(channel_id))
+
+    async def _bump_after_delay(self, channel_id: int) -> None:
+        try:
+            await asyncio.sleep(STICKY_DELAY_SECONDS)
+        except asyncio.CancelledError:
+            return
+        try:
+            await self._bump_panel(channel_id)
+        except Exception as exc:
+            logger.warning("[OrderBot] Sticky repost failed in channel %s: %s", channel_id, exc, exc_info=exc)
+        finally:
+            if self._bump_tasks.get(channel_id) is asyncio.current_task():
+                self._bump_tasks.pop(channel_id, None)
+                self._bump_first_seen.pop(channel_id, None)
+
+    async def _bump_panel(self, channel_id: int) -> None:
+        """Repost the panel as the newest message, then delete the old one."""
+        async with self._lock_for(channel_id):
+            old_id = self._panel_messages.get(channel_id)
+            channel = self.bot.get_channel(channel_id)
+            if not old_id or channel is None or not hasattr(channel, "history"):
+                return
+            async for last in channel.history(limit=1):
+                if last.id == old_id:
+                    return   # already at the bottom
+            embed, sig, is_open = self._last_panel or await self._panel_state()
+            new_msg = await channel.send(embed=embed, view=self._panel_view(is_open))
+            self._panel_messages[channel_id] = new_msg.id
+            self._panel_sigs[channel_id] = sig
+            await asyncio.to_thread(_save_panel, channel_id, new_msg.id)
+            with contextlib.suppress(discord.HTTPException):
+                await channel.get_partial_message(old_id).delete()
+
+    # ── "Open again" pings ────────────────────────────────────────────────────
+
+    async def subscribe_open_ping(self, interaction: discord.Interaction) -> None:
+        if self._is_open:
+            await interaction.response.send_message("🟢 The Order Bot is open right now — press **Start Order**.", ephemeral=True)
+            return
+        await asyncio.to_thread(_add_subscriber, interaction.user.id)
+        self._notify_pending = True
+        await interaction.response.send_message(
+            "🔔 Got it — I'll DM you once when the Order Bot is taking orders again. Keep your DMs open.",
+            ephemeral=True,
+        )
+
+    async def _send_open_pings(self, channel_id: int) -> None:
+        user_ids = await asyncio.to_thread(_pop_subscribers)
+        if not user_ids:
+            return
+        embed = _embed(
+            "🟢 The Order Bot is open again!",
+            f"**{_order_island()}** is taking orders. Head to <#{channel_id}> and press **Start Order**.\n"
+            "-# You asked for this one-time alert with the 🔔 button.",
+        )
+        sent = 0
+        for user_id in user_ids[:NOTIFY_MAX]:
+            try:
+                user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+                await user.send(embed=embed)
+                sent += 1
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(1)   # stay well under the DM rate limit
+        logger.info("[OrderBot] Sent %d/%d 'open again' pings", sent, len(user_ids))
+
+    # ── Autocomplete ──────────────────────────────────────────────────────────
+
+    async def _items_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        """Completes the item being typed after the last comma, keeping what came before it."""
+        head, _, tail = (current or "").rpartition(",")
+        prefix = f"{head.strip()}, " if head.strip() else ""
+        query = re.sub(r"\s*[x×]?\s*\d+$", "", tail.strip(), flags=re.IGNORECASE).strip()
+        try:
+            catalog = ACNHCatalog.get_instance()
+            if query:
+                hits = await asyncio.to_thread(lambda: catalog.search_items(query, limit=20))
+            else:
+                hits = catalog.get_popular_items(limit=20)
+        except Exception as exc:
+            logger.debug("[OrderBot] Item autocomplete failed: %s", exc)
+            return []
+        choices: list[app_commands.Choice[str]] = []
+        seen: set[str] = set()
+        for item in hits:
+            stack = _stack_size(item)
+            value = f"{prefix}{item.name} {stack}" if stack > 1 else f"{prefix}{item.name}"
+            if value in seen or len(value) > 100:
+                continue
+            seen.add(value)
+            choices.append(app_commands.Choice(name=value, value=value))
+        return choices[:25]
+
+    async def _villager_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        try:
+            catalog = ACNHCatalog.get_instance()
+            query = (current or "").strip()
+            if query:
+                hits = await asyncio.to_thread(lambda: catalog.search_villagers(query, limit=25))
+            else:
+                hits = catalog.get_popular_villagers(limit=25)
+        except Exception as exc:
+            logger.debug("[OrderBot] Villager autocomplete failed: %s", exc)
+            return []
+        return [app_commands.Choice(name=f"{v.emoji} {v.display_name}"[:100], value=v.name[:100]) for v in hits[:25]]
+
+    # ── Slash commands ────────────────────────────────────────────────────────
+
+    @app_commands.command(name="order", description="Order items from the Order Bot island and get a private Dodo code")
+    @app_commands.describe(
+        items="Items, comma separated (e.g. Gold nugget 30, Royal crown). Leave empty to open your pocket.",
+        villager="A villager to move in with your order (optional)",
+    )
+    @app_commands.autocomplete(items=_items_autocomplete, villager=_villager_autocomplete)
+    @app_commands.guild_only()
+    async def slash_order(self, interaction: discord.Interaction, items: str | None = None, villager: str | None = None) -> None:
+        await self.open_pocket(interaction, prefill=items, villager=villager)
+
+    @app_commands.command(name="cart", description="Open your Order Bot pocket")
+    @app_commands.guild_only()
+    async def slash_cart(self, interaction: discord.Interaction) -> None:
+        await self.open_pocket(interaction)
+
+    @app_commands.command(name="myorders", description="Track your active order and reorder past ones")
+    @app_commands.guild_only()
+    async def slash_myorders(self, interaction: discord.Interaction) -> None:
+        if await asyncio.to_thread(_active_order_row, interaction.user.id):
+            await self.show_my_order(interaction)
+        else:
+            await self.show_history(interaction)
+
+    @app_commands.command(name="queue", description="See who is in line for the Order Bot")
+    @app_commands.guild_only()
+    async def slash_queue(self, interaction: discord.Interaction) -> None:
+        await self.show_queue(interaction)
+
+    @app_commands.command(name="presets", description="Browse official Order Bot bundles")
+    @app_commands.guild_only()
+    async def slash_presets(self, interaction: discord.Interaction) -> None:
+        username = await _order_gate(interaction)
+        if not username:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        bundles = await self.bundles()
+        if not bundles:
+            await interaction.followup.send(embed=_embed("🎁 Official bundles", "No bundles are available right now."), ephemeral=True)
+            return
+        await self.load_cart(interaction.user.id)
+        parent = PocketView(self, interaction.user.id, username)
+        parent.stop()
+        view = BundleView(parent, bundles)
+        await interaction.followup.send(embed=_bundles_embed(bundles), view=_adopt(view, interaction), ephemeral=True)
+
+    @app_commands.command(name="orderpanel", description="Post the Order Bot panel in this channel")
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.guild_only()
+    async def slash_orderpanel(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send("❌ The panel can only be posted in a regular text channel.", ephemeral=True)
+            return
+        embed, sig, is_open = await self._panel_state()
+        async with self._lock_for(channel.id):
+            old_ids = {m for c, m in await asyncio.to_thread(_load_panels) if c == channel.id}
+            old_ids.add(self._panel_messages.get(channel.id))
+            message = await channel.send(embed=embed, view=self._panel_view(is_open))
+            self._panel_messages[channel.id] = message.id
+            self._panel_sigs[channel.id] = sig
+            self._dead_panels.discard(channel.id)
+            await asyncio.to_thread(_save_panel, channel.id, message.id)
+            for old_id in old_ids:
+                if old_id and old_id != message.id:
+                    with contextlib.suppress(discord.HTTPException):
+                        await channel.get_partial_message(old_id).delete()
+        logger.info("[OrderBot] Panel posted in %s (msg %s) by %s", channel.id, message.id, interaction.user)
+        await interaction.followup.send(f"✅ Order Bot panel posted in <#{channel.id}>.", ephemeral=True)
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(OrderBotCog(bot))
