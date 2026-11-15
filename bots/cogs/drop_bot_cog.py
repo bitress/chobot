@@ -261,6 +261,7 @@ from .dropbot.views_catalog import (  # noqa: F401
     _get_popular_catalog_series,
     _show_catalog,
 )
+from .dropbot.views_filters import CatalogFilterView  # noqa: F401
 from .dropbot.panel import (  # noqa: F401
     ALL_REGISTERED_DYNAMIC_ITEMS,
     DropItemsButton,

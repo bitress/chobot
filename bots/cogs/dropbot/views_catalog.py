@@ -10,7 +10,9 @@ import math
 import re
 from collections import Counter
 from typing import Any, TYPE_CHECKING
+from utils import catalog_filters as cf
 from utils.acnh_catalog import ACNHCatalog, CatalogItem, CatalogVillager
+from utils.catalog_filters import CatalogFilters
 from utils.database import connect_db
 
 from .constants import MAX_DROP_SLOTS, MAX_STACK, PANEL_EMBED_COLOR, PANEL_EMBED_COLOR_WARN, PANEL_FOOTER_ICON, PANEL_FOOTER_TEXT, is_sanrio_villager
@@ -21,6 +23,7 @@ from .status import _err_embed, _presence_line, build_drop_picker_embed
 from .ui_base import _OwnedView, _adopt, _reply
 from .actions import _perform_drop
 from .cart import _CartEntry, _HEX_INPUT_RE, _NO_PATTERN_LABEL, _PersistentCart, _cart_key, _cart_summary, _default_qty, _item_variants, _match_variant_index, _restore_cart_entries, _unique
+from .views_filters import CatalogFilterView
 from .views_villager import VillagerChoiceView, _start_injection
 
 if TYPE_CHECKING:
@@ -624,7 +627,9 @@ async def _show_catalog(
             await interaction.response.defer(ephemeral=True, thinking=True)
 
     try:
-        items, villagers = await asyncio.to_thread(_search_catalog, query)
+        # Loads (and caches) the member's catalog language, so the view can show names in it.
+        language = await asyncio.to_thread(cf.get_user_language, interaction.user.id)
+        items, villagers = await asyncio.to_thread(_search_catalog, query, language)
     except Exception:
         logger.exception("[DropBot] Catalog search failed for %r", query)
         await _reply(interaction, embed=_err_embed("The catalog search failed. Please try again."))
@@ -794,6 +799,9 @@ class CatalogSearchView(_OwnedView):
         self.page_size = page_size
         self.page = 0
         self.category: str | None = None
+        self.color: str | None = None      # catalog colour, e.g. "Blue"
+        self.season: str | None = None     # season/event group, e.g. "Halloween"
+        self.language: str = cf.peek_user_language(user_id or 0)
         self.type_filter: str = "all"  # 'all', 'items', 'recipes'
         self.cart: _PersistentCart = _PersistentCart(user_id or 0, island_name)
         self.message: discord.Message | None = None
@@ -813,9 +821,7 @@ class CatalogSearchView(_OwnedView):
         return self.items[start : start + self.page_size]
 
     def _apply_filters(self) -> None:
-        filtered = self.all_items
-        if self.category:
-            filtered = [i for i in filtered if i.category == self.category]
+        filtered = CatalogFilters(self.category, self.color, self.season).apply(self.all_items)
         if self.type_filter == "items":
             filtered = [i for i in filtered if not i.diy]
         elif self.type_filter == "recipes":
@@ -831,7 +837,8 @@ class CatalogSearchView(_OwnedView):
         for idx, i in enumerate(self.all_items):
             k = _cart_key(i) or f"item_{idx}"
             self._items_by_key[k] = i
-        self.category = None
+        self.category = self.color = self.season = None
+        self.language = cf.peek_user_language(self.user_id)
         self._apply_filters()
         self._rebuild()
 
@@ -867,7 +874,7 @@ class CatalogSearchView(_OwnedView):
                     bits.append(f"🎨 {n_colors} colors")
                 options.append(
                     discord.SelectOption(
-                        label=it.display_name[:100],
+                        label=cf.localized_name(it, self.language)[:100],
                         description=" • ".join(bits)[:100],
                         value=key[:100],
                         emoji="📜" if it.diy else "📦",
@@ -973,6 +980,16 @@ class CatalogSearchView(_OwnedView):
         series_btn.callback = self.on_open_series_filter  # type: ignore[assignment]
         self.add_item(series_btn)
 
+        n_filters = sum(1 for f in (self.category, self.color, self.season) if f)
+        filters_btn = discord.ui.Button(
+            label=f"Filters ({n_filters})" if n_filters else "Filters",
+            emoji="🎛️",
+            style=discord.ButtonStyle.primary if n_filters else discord.ButtonStyle.secondary,
+            row=3,
+        )
+        filters_btn.callback = self.on_open_filters  # type: ignore[assignment]
+        self.add_item(filters_btn)
+
         if self.island_name:
             pockets_btn = discord.ui.Button(label="Pockets", emoji="🎒", style=discord.ButtonStyle.secondary, row=3)
             pockets_btn.callback = self.on_open_saved_pockets  # type: ignore[assignment]
@@ -1026,6 +1043,24 @@ class CatalogSearchView(_OwnedView):
         embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         await interaction.response.edit_message(embed=embed, view=_adopt(view, interaction))
 
+    async def on_open_filters(self, interaction: discord.Interaction, button: Any = None) -> None:
+        """Category, colour, season and language menu (shared with the OrderBot catalog)."""
+        view = CatalogFilterView(
+            self.user_id,
+            self.all_items,
+            CatalogFilters(self.category, self.color, self.season),
+            self.language,
+            self._filters_done,
+        )
+        await interaction.response.edit_message(embed=view.embed(), view=_adopt(view, interaction))
+
+    async def _filters_done(self, interaction: discord.Interaction, filters: CatalogFilters, language: str) -> None:
+        self.category, self.color, self.season = filters.category, filters.color, filters.season
+        self.language = language
+        self._apply_filters()
+        self._rebuild()
+        await interaction.response.edit_message(embed=self.build_search_embed(), view=self)
+
     async def on_open_saved_pockets(self, interaction: discord.Interaction, button: Any = None) -> None:
         view = SavedPocketPickerView(self.island_name or "Island", self.user_id, parent_view=self)
         view._orig_interaction = getattr(self, "_orig_interaction", None)
@@ -1072,8 +1107,9 @@ class CatalogSearchView(_OwnedView):
         page_items = self.page_items()
         desc = f"Found **{len(self.all_items)}** items and **{len(self.villagers)}** villagers."
         filter_parts = []
-        if self.category:
-            filter_parts.append(f"🗂️ {self.category}")
+        described = CatalogFilters(self.category, self.color, self.season).describe()
+        if described:
+            filter_parts.append(described)
         if self.type_filter == "items":
             filter_parts.append("📦 Items Only")
         elif self.type_filter == "recipes":
@@ -1081,6 +1117,8 @@ class CatalogSearchView(_OwnedView):
         if filter_parts:
             desc += f"\n**Filter:** {' · '.join(filter_parts)} ({len(self.items)} shown)"
         desc += f"\n**Page:** `{self.page + 1} / {self.total_pages}`"
+        if self.language != cf.DEFAULT_LANGUAGE:
+            desc += f"\n🌐 **Names:** {cf.LANGUAGE_LABELS.get(self.language, self.language)}"
         if self.island_name:
             desc += f"\n🏝️ **Target island:** [{self.island_name}]({_island_url(self.island_name)})"
             if self._presence_status:
@@ -1108,7 +1146,8 @@ class CatalogSearchView(_OwnedView):
                 color_badge = f" • *{n_colors} colors*" if n_colors > 1 else ""
                 hex_code = it.to_hex()
                 hex_part = f" • `{hex_code}`" if (hex_code and self.is_staff) else ""
-                lines.append(f"`{i:02d}.` {cart_mark}**{it.display_name}**{diy_badge} — `{it.category}`{color_badge}{hex_part}")
+                shown_name = cf.localized_name(it, self.language)
+                lines.append(f"`{i:02d}.` {cart_mark}**{shown_name}**{diy_badge} — `{it.category}`{color_badge}{hex_part}")
 
             chunk: list[str] = []
             c_len = 0

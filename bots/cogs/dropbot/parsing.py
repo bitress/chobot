@@ -176,10 +176,12 @@ def _match_villagers(query: str, limit: int = 5) -> tuple[str | None, list[str]]
     return None, pool[:limit]
 
 
-def _search_catalog(query: str) -> tuple[list[CatalogItem], list[CatalogVillager]]:
-    """Blocking catalog search; run in a thread."""
+def _search_catalog(query: str, language: str | None = None) -> tuple[list[CatalogItem], list[CatalogVillager]]:
+    """Blocking catalog search; run in a thread. Also matches item names in the other game languages;
+    with `language`, names in that language rank first."""
+    from utils import catalog_filters
     catalog = ACNHCatalog.get_instance()
     return (
-        catalog.search_items(query, limit=CATALOG_ITEM_LIMIT),
+        catalog_filters.search_items(query, limit=CATALOG_ITEM_LIMIT, language=language),
         catalog.search_villagers(query, limit=10),
     )

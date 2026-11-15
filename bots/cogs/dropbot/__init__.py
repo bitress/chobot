@@ -12,6 +12,7 @@ DropBot, split by layer (each module only imports from the ones above it):
   cart            The drop cart: persistent cart model, summary, and item colour/pattern variants.
   views_villager  Villager injection UI: pickers, confirm views, Sanrio wizard and the guarded _start_injection.
   views_catalog   Catalog search, item detail, cart manager and the drop pickers.
+  views_filters   Category / colour / season / language filter menu (shared with the OrderBot cog).
   panel           Persistent island panel: DynamicItem buttons and the panel view.
   cog             The DropBot cog: panel refresh loop and slash commands.
 
