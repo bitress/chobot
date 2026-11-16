@@ -24,6 +24,9 @@ list, and Type a list · Villager · More; saved loadouts, custom hex and Clear 
   • Filters: category, colour, season/event, and the language item names are shown in
     (search and typed items also understand names in the other game languages)
   • Tap an item in the pocket to change its quantity (− / + / ×1 / Max) or remove it
+  • Results show a numbered list with a thumbnail; pick one item for its detail screen (picture,
+    quantity, colour, custom hex) or several to add them at once; toggle Items / DIYs
+  • Edit quantities: every quantity in one text box
   • Custom hex: paste a full `!order` command from the website or raw item hex codes
   • One move-in villager per order
   • Official bundles, personal saved loadouts
@@ -42,7 +45,8 @@ Slash commands:
   • /myorders                  – active order + history
   • /queue                     – live queue
   • /presets                   – official bundles
-  • /orderpanel                – (Manage Messages) post or move the panel to this channel
+  • /orderpanel [remove]       – (Manage Messages) post or move the panel to this channel, or remove it.
+                                 A deleted panel is restored automatically, so use `remove` to take it down.
 
 Same gates as the website: moderation blocklist, accepted Order Bot rules, and a
 "Character | Island" nickname or a registered in-game character. One active order per member.
@@ -108,6 +112,8 @@ PANEL_REFRESH_SECONDS = 30
 RESULTS_PER_PAGE = 25         # catalog results shown per page (Discord's select limit)
 SEARCH_LIMIT = 100             # most catalog results kept for one search
 CATEGORY_BROWSE_LIMIT = 300    # most items loaded when browsing a whole category
+MULTI_PICK_MAX = 10            # most results that can be added in one pick
+_KIND_LABELS = {"all": ("Type: All", "🏷️"), "items": ("Type: Items", "📦"), "diy": ("Type: DIYs", "📜")}
 NEXT_UP_POSITION = 2          # DM "almost your turn" when a member reaches this place in line
 NOTIFY_MAX = 300              # most "open again" DMs sent in one go
 PANEL_TITLE_PREFIX = "📦 Order Bot"
@@ -146,6 +152,12 @@ class OrderLine:
     qty: int = 1
     hex: str = ""
     stack: int = 1
+    override: str = ""   # hand-typed hex for this item; wins over the catalog code when the order is sent
+
+    @property
+    def code(self) -> str:
+        """The hex that is sent for this line, "" when it goes out by name."""
+        return self.override or self.hex
 
     @property
     def slots(self) -> int:
@@ -173,7 +185,9 @@ class OrderCart:
 
     def add(self, line: OrderLine) -> str | None:
         """Merge `line` into the pocket. Returns a user-facing error if it doesn't fit."""
-        existing = next((l for l in self.lines if l.name == line.name and l.hex == line.hex), None)
+        existing = next(
+            (l for l in self.lines if (l.name, l.hex, l.override) == (line.name, line.hex, line.override)), None
+        )
         if existing and existing.stack > 1:
             existing.qty = min(existing.stack, existing.qty + line.qty)   # still one stack, one slot
             return None
@@ -187,7 +201,7 @@ class OrderCart:
 
     def to_json(self) -> str:
         return json.dumps({
-            "lines": [[l.name, l.qty, l.hex, l.stack] for l in self.lines],
+            "lines": [[l.name, l.qty, l.hex, l.stack, l.override] for l in self.lines],
             "villager": list(self.villager) if self.villager else None,
         })
 
@@ -196,8 +210,10 @@ class OrderCart:
         cart = cls()
         try:
             data = json.loads(raw or "{}")
-            for name, qty, hex_code, stack in data.get("lines") or []:
-                cart.lines.append(OrderLine(str(name), max(1, int(qty)), str(hex_code or ""), max(1, int(stack))))
+            for name, qty, hex_code, stack, *rest in data.get("lines") or []:   # older rows have no override
+                cart.lines.append(OrderLine(
+                    str(name), max(1, int(qty)), str(hex_code or ""), max(1, int(stack)), str(rest[0] or "") if rest else "",
+                ))
             villager = data.get("villager")
             if villager and len(villager) == 2:
                 cart.villager = (str(villager[0]), str(villager[1]))
@@ -325,7 +341,7 @@ def build_order_text(lines: list[OrderLine]) -> str:
     needs a hex code (a variant or a raw code) the whole order is sent as hex, because SysBot reads
     an order as either names or hex, not a mix.
     """
-    if all(not line.hex for line in lines):
+    if all(not line.code for line in lines):
         parts: list[str] = []
         for line in lines:
             if line.stack > 1 and line.qty > 1:
@@ -337,7 +353,7 @@ def build_order_text(lines: list[OrderLine]) -> str:
     from utils.data_manager import resolve_item_hex
     tokens: list[str] = []
     for line in lines:
-        hex_code = line.hex or resolve_item_hex(line.name) or ""
+        hex_code = line.code or resolve_item_hex(line.name) or ""
         if not hex_code:
             raise ValueError(f"No item code found for {line.name}.")
         if line.stack > 1 and line.qty > 1 and len(hex_code) == 4:
@@ -345,6 +361,67 @@ def build_order_text(lines: list[OrderLine]) -> str:
         else:
             tokens.extend([hex_code.upper()] * line.qty)
     return " ".join(tokens)
+
+
+_BULK_ROW_RE = re.compile(r"^\s*(\d+)\s*[.)]\s*.*?[:=]\s*(\d+)\s*$")
+
+
+def bulk_edit_text(cart: OrderCart, limit: int = 3800) -> str:
+    """The order as "N. Item: quantity" rows for the bulk edit box (as many rows as fit)."""
+    rows: list[str] = []
+    used = 0
+    for i, line in enumerate(cart.lines, 1):
+        row = f"{i}. {line.name[:60]}: {line.qty}"
+        if used + len(row) + 1 > limit:
+            break
+        rows.append(row)
+        used += len(row) + 1
+    return "\n".join(rows)
+
+
+def apply_bulk_edit(cart: OrderCart, text: str) -> str:
+    """
+    Apply edited "N. Item: quantity" rows to the order. 0 removes the item; rows left out are kept as
+    they are. Quantities are capped at one stack (stackable) or at the free slots. Returns a notice.
+    """
+    wanted: dict[int, int] = {}
+    problems: list[str] = []
+    for raw in (text or "").splitlines():
+        if not raw.strip():
+            continue
+        m = _BULK_ROW_RE.match(raw)
+        if not m or not 1 <= int(m.group(1)) <= len(cart.lines):
+            problems.append(f"Couldn't read `{raw.strip()[:40]}` — keep the `N. Item: quantity` format.")
+            continue
+        wanted[int(m.group(1)) - 1] = int(m.group(2))
+
+    changed = 0
+    for idx, qty in wanted.items():
+        line = cart.lines[idx]
+        if qty <= 0:
+            continue
+        if line.stack > 1:
+            new = min(qty, line.stack)
+            if new < qty:
+                problems.append(f"**{line.name}** capped at {new} (one full stack).")
+        else:
+            # One slot each: whatever the rest of the order (minus removed rows) leaves free.
+            others = sum(l.slots for j, l in enumerate(cart.lines) if j != idx and wanted.get(j, 1) > 0)
+            new = max(1, min(qty, ORDER_MAX_SLOTS - others))
+            if new < qty:
+                problems.append(f"**{line.name}** capped at {new}: an order holds {ORDER_MAX_SLOTS} slots.")
+        changed += new != line.qty
+        line.qty = new
+    removed = [idx for idx, qty in wanted.items() if qty <= 0]
+    for idx in sorted(removed, reverse=True):
+        cart.lines.pop(idx)
+
+    parts = []
+    if changed:
+        parts.append(f"Updated {changed} quantit{'ies' if changed != 1 else 'y'}.")
+    if removed:
+        parts.append(f"Removed {len(removed)} item{'s' if len(removed) != 1 else ''}.")
+    return "\n".join((parts or ["Nothing changed."]) + problems[:5])[:1000]
 
 
 def cart_summary(cart: OrderCart, limit: int = 120) -> str:
@@ -454,6 +531,10 @@ def _save_panel(channel_id: int, message_id: int) -> None:
         "INSERT INTO order_bot_panels (channel_id, message_id, updated_at) VALUES (?, ?, ?)",
         (str(channel_id), str(message_id), int(time.time())),
     )
+
+
+def _delete_panel(channel_id: int) -> None:
+    _db_run("DELETE FROM order_bot_panels WHERE channel_id = ?", (str(channel_id),))
 
 
 def _load_cart(user_id: int) -> OrderCart:
@@ -613,6 +694,27 @@ async def _order_username(user: discord.abc.User) -> str | None:
     return None
 
 
+def _link_view(*links: tuple[str, str, str]) -> discord.ui.View:
+    """A row of link buttons: (label, emoji, url)."""
+    view = discord.ui.View(timeout=None)
+    for label, emoji, url in links:
+        view.add_item(discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.link, url=url))
+    return view
+
+
+def _channel_url(interaction: discord.Interaction, channel_id: int) -> str:
+    guild_id = interaction.guild_id or getattr(Config, "GUILD_ID", 0) or 0
+    return f"https://discord.com/channels/{guild_id}/{channel_id}"
+
+
+def _order_rules_channel_id() -> int:
+    return getattr(Config, "ORDER_RULES_CHANNEL_ID", 0) or 1262585130397208636   # #chorder-rules
+
+
+def _nickname_channel_id() -> int:
+    return getattr(Config, "NICKNAME_CHANNEL_ID", 0) or 1081147108612124742
+
+
 async def _order_gate(interaction: discord.Interaction) -> str | None:
     """Username to order under if this member may order; otherwise replies with the reason and returns None."""
     user = interaction.user
@@ -623,20 +725,32 @@ async def _order_gate(interaction: discord.Interaction) -> str | None:
             await _reply(interaction, embed=_err_embed(denied))
             return None
         if not await asyncio.to_thread(_has_order_role, user):
-            await _reply(interaction, embed=_err_embed(
-                "You need to **accept the Order Bot rules** before ordering.",
-                hint=f"Read and accept them in the order rules channel or at {WEB_ORDER_URL}, then try again.",
-            ))
+            rules_id = _order_rules_channel_id()
+            await _reply(
+                interaction,
+                embed=_err_embed(
+                    "You need to **accept the Order Bot rules** before ordering.",
+                    hint=f"Read the rules in <#{rules_id}> and press **Done!** there, then come back and try again.",
+                ),
+                view=_link_view(("Go to the order rules", "📜", _channel_url(interaction, rules_id))),
+            )
             return None
     username = await _order_username(user)
     if not username and not staff:
-        await _reply(interaction, embed=_err_embed(
-            "The Order Bot needs to know who is flying in.",
-            hint=(
-                "Set your server nickname to `Character Name | Island Name`, "
-                f"or register your in-game character at {WEBSITE_BASE}/profile."
+        await _reply(
+            interaction,
+            embed=_err_embed(
+                "The Order Bot needs to know who is flying in.",
+                hint=(
+                    "Set your server nickname to `Character Name | Island Name`, "
+                    "or register your in-game character on the website. Use a button below."
+                ),
             ),
-        ))
+            view=_link_view(
+                ("Set my nickname", "✏️", _channel_url(interaction, _nickname_channel_id())),
+                ("Register my character", "🌐", f"{WEBSITE_BASE}/profile"),
+            ),
+        )
         return None
     return username or user.display_name
 
@@ -886,6 +1000,7 @@ class PocketView(_OwnedView):
         self.username = username
         cart = cog.cart(user_id)
         self.place_order.disabled = cart.is_empty
+        self.edit_quantities.disabled = not cart.lines
         if cart.lines or cart.villager:
             options = [
                 discord.SelectOption(label=line.label[:100], value=str(i), emoji="📦")
@@ -945,6 +1060,10 @@ class PocketView(_OwnedView):
     async def villager(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(VillagerModal(self))
 
+    @discord.ui.button(label="Edit quantities", emoji="🔢", style=discord.ButtonStyle.secondary, row=2)
+    async def edit_quantities(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(BulkEditModal(self))
+
     @discord.ui.button(label="More", emoji="⚙️", style=discord.ButtonStyle.secondary, row=2)
     async def more(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         view = MoreView(self)
@@ -974,6 +1093,47 @@ class AddItemsModal(discord.ui.Modal, title="Type the items you want"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         notice = await self.parent.cog.add_text(self.parent.user_id, self.items.value)
         await _show_pocket(self.parent, interaction, notice)
+
+
+class BulkEditModal(discord.ui.Modal, title="Edit quantities"):
+    """Every quantity in one text box: "N. Item: quantity" per row, 0 removes the item."""
+
+    def __init__(self, parent: "PocketView | _SubView"):
+        super().__init__()
+        self.parent = parent
+        self.body = discord.ui.TextInput(
+            label="Change the numbers · 0 removes an item",
+            style=discord.TextStyle.paragraph,
+            default=bulk_edit_text(parent.cog.cart(parent.user_id)),
+            max_length=4000,
+        )
+        self.add_item(self.body)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        notice = apply_bulk_edit(self.parent.cog.cart(self.parent.user_id), self.body.value)
+        self.parent.cog.save_cart(self.parent.user_id)
+        await _show_pocket(self.parent, interaction, notice)
+
+
+class ItemHexModal(discord.ui.Modal, title="Custom hex for this item"):
+    """Override the code sent for one item. Blank resets it to the catalog code."""
+
+    code = discord.ui.TextInput(
+        label="Hex code (4 or 16 characters)",
+        placeholder="e.g. 0B64 or 0000002000003A5E (blank = reset)",
+        required=False,
+        max_length=18,
+    )
+
+    def __init__(self, editor: "ItemEditView"):
+        super().__init__()
+        self.editor = editor
+        line = editor.line
+        if line and line.override:
+            self.code.default = line.override
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.editor.set_override(interaction, self.code.value.strip())
 
 
 class CustomHexModal(discord.ui.Modal, title="Custom command / hex codes"):
@@ -1080,9 +1240,11 @@ class SearchResultsView(_SubView):
         color: str | None = None,
         season: str | None = None,
         whole_category: bool = False,
+        kind: str = "all",
     ):
         super().__init__(parent)
         self.title = title
+        self.kind = kind if kind in _KIND_LABELS else "all"   # "all" | "items" | "diy"
         self.all_hits = hits[:CATEGORY_BROWSE_LIMIT]
         self.whole_category = whole_category   # these results are one category loaded from the catalog
         self.present = {h.category for h in self.all_hits if h.category}
@@ -1091,6 +1253,8 @@ class SearchResultsView(_SubView):
         self.language = cf.peek_user_language(self.user_id)
         self.filters = CatalogFilters(self.category, self.color, self.season)
         self.filtered = self.filters.apply(self.all_hits)
+        if self.kind != "all":
+            self.filtered = [h for h in self.filtered if bool(h.diy) == (self.kind == "diy")]
         self.pages = max(1, math.ceil(len(self.filtered) / RESULTS_PER_PAGE))
         self.page = max(0, min(page, self.pages - 1))
         self.hits = self.filtered[self.page * RESULTS_PER_PAGE:(self.page + 1) * RESULTS_PER_PAGE]
@@ -1105,7 +1269,12 @@ class SearchResultsView(_SubView):
                 )
                 for i, item in enumerate(self.hits)
             ]
-            select = discord.ui.Select(placeholder="Pick an item to add to your order…", options=options, row=0)
+            select = discord.ui.Select(
+                placeholder="Pick one item for details, or several to add at once…",
+                options=options,
+                max_values=min(len(options), MULTI_PICK_MAX),
+                row=0,
+            )
             select.callback = self._picked   # type: ignore[method-assign]
             self.add_item(select)
 
@@ -1146,6 +1315,7 @@ class SearchResultsView(_SubView):
         self.prev_page.disabled = self.page <= 0
         self.next_page.disabled = self.page >= self.pages - 1
         self.place_order.disabled = self.cog.cart(self.user_id).is_empty
+        self.toggle_kind.label, self.toggle_kind.emoji = _KIND_LABELS[self.kind]
         n_filters = sum(1 for f in (self.category, self.color, self.season) if f)
         if n_filters:
             self.open_filters.label = f"Filters ({n_filters})"
@@ -1158,11 +1328,36 @@ class SearchResultsView(_SubView):
         count = f"**{total}** item{'s' if total != 1 else ''}{scope}"
         if self.pages > 1:
             count += f" · page **{self.page + 1}/{self.pages}**"
+        if self.kind != "all":
+            count += f" · {_KIND_LABELS[self.kind][0].split(': ')[1]} only"
         cart = self.cog.cart(self.user_id)
-        embed = _embed(
-            f"🔍 {self.title[:80]}",
-            f"{count}\nPick an item from the menu to add it. Use **Search by name** to look for something else.",
-        )
+        hint = "Pick **one** item to see it and choose quantity or colour, or **several** to add them all at once."
+        embed = _embed(f"🔍 {self.title[:80]}", f"{count}\n{hint}")
+
+        # Numbered list of this page, like DropBot's catalog: category, looks, DIY, and what is already ordered.
+        if self.hits:
+            ordered = {line.name.lower() for line in cart.lines}
+            rows: list[str] = []
+            used = 0
+            for i, item in enumerate(self.hits, self.page * RESULTS_PER_PAGE + 1):
+                base = item.name.lower()
+                mark = "🛒 " if any(n == base or n.startswith(base + " (") for n in ordered) else ""
+                bits = [f"`{item.category}`"]
+                looks = len(_item_variants(item))
+                if looks > 1:
+                    bits.append(f"🎨 {looks} looks")
+                if item.diy:
+                    bits.append("DIY")
+                row = f"`{i:02d}` {mark}**{cf.localized_name(item, self.language)[:70]}** — {' · '.join(bits)}"
+                if used + len(row) + 1 > 3300:
+                    rows.append("…")
+                    break
+                rows.append(row)
+                used += len(row) + 1
+            embed.description += "\n\n" + "\n".join(rows)
+            thumbnail = next((h.image_url for h in self.hits if h.image_url), "")
+            if thumbnail:
+                embed.set_thumbnail(url=thumbnail)
         embed.add_field(name="🎒 Pocket", value=f"**{cart.slots}** / {ORDER_MAX_SLOTS} slots", inline=True)
         if self.language != cf.DEFAULT_LANGUAGE:
             embed.add_field(name="🌐 Names", value=cf.LANGUAGE_LABELS.get(self.language, self.language), inline=True)
@@ -1170,7 +1365,9 @@ class SearchResultsView(_SubView):
             embed.add_field(name="ℹ️", value=notice[:1000], inline=False)
         return embed
 
-    def fresh(self, *, page: int | None = None, category: str | None | bool = False) -> "SearchResultsView":
+    def fresh(
+        self, *, page: int | None = None, category: str | None | bool = False, kind: str | None = None,
+    ) -> "SearchResultsView":
         """A new view over the same results (views are single-use). `category=None` clears the filter."""
         return SearchResultsView(
             self,
@@ -1181,27 +1378,38 @@ class SearchResultsView(_SubView):
             color=self.color,
             season=self.season,
             whole_category=self.whole_category,
+            kind=kind or self.kind,
         )
 
     async def _show(self, interaction: discord.Interaction, current: _SubView, view: "SearchResultsView", notice: str | None = None) -> None:
         await _swap(interaction, current, view.embed(notice), view)
 
-    async def add_and_stay(self, interaction: discord.Interaction, current: _SubView, item: CatalogItem) -> None:
-        """Add `item` to the pocket and show the results again, so several items can be added in a row."""
-        line = line_from_catalog(item)
+    async def add_line_and_stay(self, interaction: discord.Interaction, current: _SubView, line: OrderLine) -> None:
+        """Add `line` to the order and show the results again, so several items can be added in a row."""
         error = self.cog.cart(self.user_id).add(line)
         self.cog.save_cart(self.user_id)
         added = f"✅ Added **{line.label}**. Pick more, or press **Place order** when you're done."
         await self._show(interaction, current, self.fresh(), error or added)
 
     async def _picked(self, interaction: discord.Interaction) -> None:
-        item = self.hits[int((interaction.data or {}).get("values", ["0"])[0])]
-        variants = _item_variants(item)
-        if variants:
-            view = VariantView(self, item, variants)
+        picks = [int(v) for v in (interaction.data or {}).get("values", []) if str(v).isdigit()]
+        items = [self.hits[i] for i in picks if i < len(self.hits)]
+        if len(items) == 1:
+            # One item: the detail screen (picture, quantity, colour) before it is added.
+            view = ItemEditView(self, draft=line_from_catalog(items[0]), results=self)
             await _swap(interaction, self, view.embed(), view)
             return
-        await self.add_and_stay(interaction, self, item)
+        # Several: add a full stack of each in its default look.
+        cart = self.cog.cart(self.user_id)
+        added: list[str] = []
+        problems: list[str] = []
+        for item in items:
+            line = line_from_catalog(item)
+            error = cart.add(line)
+            (problems if error else added).append(error or line.label)
+        self.cog.save_cart(self.user_id)
+        notice = ([f"✅ Added {len(added)} items: {', '.join(added)}."] if added else []) + problems[:3]
+        await self._show(interaction, self, self.fresh(), "\n".join(notice)[:1000] or None)
 
     async def _category_picked(self, interaction: discord.Interaction) -> None:
         value = (interaction.data or {}).get("values", [""])[0]
@@ -1242,6 +1450,12 @@ class SearchResultsView(_SubView):
     async def new_search(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(SearchModal(self))
 
+    @discord.ui.button(label="Type: All", emoji="🏷️", style=discord.ButtonStyle.secondary, row=3)
+    async def toggle_kind(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Cycles All → Items only → DIY recipes only."""
+        following = {"all": "items", "items": "diy", "diy": "all"}[self.kind]
+        await self._show(interaction, self, self.fresh(page=0, kind=following))
+
     @discord.ui.button(label="Place order", emoji="✈️", style=discord.ButtonStyle.success, row=4)
     async def place_order(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         """Order straight from the item list, without going back to the order screen first."""
@@ -1260,6 +1474,7 @@ class SearchResultsView(_SubView):
         view = SearchResultsView(
             self, self.all_hits, self.title,
             category=filters.category, color=filters.color, season=filters.season,
+            whole_category=self.whole_category, kind=self.kind,
         )
         await _swap(interaction, None, view.embed(), view)
 
@@ -1297,18 +1512,40 @@ class MoreView(_SubView):
 
 
 class ItemEditView(_SubView):
-    """Change the quantity of one pocket item, or remove it."""
+    """
+    One item, like DropBot's item detail screen: picture, quantity, colour/pattern and a custom hex.
 
-    def __init__(self, parent: "PocketView | _SubView", index: int):
+      • edit mode  – an item already in the order (`index`); the fifth button removes it
+      • draft mode – an item picked from the results and not added yet (`draft`); the fifth button
+        adds it to the order and returns to the results
+    """
+
+    def __init__(
+        self,
+        parent: "PocketView | _SubView",
+        index: int | None = None,
+        *,
+        draft: OrderLine | None = None,
+        results: "SearchResultsView | None" = None,
+    ):
         super().__init__(parent)
         self.index = index
-        qty, cap = (self.line.qty if self.line else 1), self._max_qty()
+        self.draft = draft
+        self.results = results
+        line = self.line
+        qty, cap = (line.qty if line else 1), self._max_qty()
         self.minus.disabled = self.one.disabled = qty <= 1
         self.plus.disabled = self.max_qty.disabled = qty >= cap
+        self.reset_hex.disabled = not (line and line.override)
+        if draft is not None:
+            self.action.label, self.action.emoji = "Add to order", "✅"
+            self.action.style = discord.ButtonStyle.success
+        if results is None:
+            self.remove_item(self.back_to_results)
 
-        # Color / pattern selects for items that come in several looks (same data as the search picker).
+        # Colour / pattern selects for items that come in several looks.
         self.variants = self._load_variants()
-        self.current = next((v for v in self.variants if self.line and v.item.to_hex().upper() == self.line.hex), None)
+        self.current = next((v for v in self.variants if line and v.item.to_hex().upper() == line.hex), None)
         self.bodies = list(dict.fromkeys(v.body for v in self.variants))[:25]
         if len(self.bodies) > 1:
             color = discord.ui.Select(
@@ -1335,34 +1572,98 @@ class ItemEditView(_SubView):
             pattern.callback = self._pattern_picked   # type: ignore[method-assign]
             self.add_item(pattern)
 
-    def _load_variants(self) -> list[_Variant]:
-        """Every look of this line's item; [] for raw hex codes and items with a single look."""
+    # ── state ──
+    @property
+    def line(self) -> OrderLine | None:
+        if self.draft is not None:
+            return self.draft
+        lines = self.cog.cart(self.user_id).lines
+        return lines[self.index] if self.index is not None and 0 <= self.index < len(lines) else None
+
+    def _catalog_item(self) -> CatalogItem | None:
+        """The catalog record behind this line; None for raw hex codes."""
         line = self.line
         if line is None:
-            return []
+            return None
         names = [line.name]
         if line.hex and line.name.endswith(")") and " (" in line.name:
             names.insert(0, line.name.rsplit(" (", 1)[0])   # "Ironwood dresser (Oak)" -> the base item
         catalog = ACNHCatalog.get_instance()
-        for name in names:
-            item = catalog.get_item(name)
-            if item:
-                return _item_variants(item)
-        return []
+        return next((item for item in (catalog.get_item(n) for n in names) if item), None)
+
+    def _load_variants(self) -> list[_Variant]:
+        """Every look of this line's item; [] for raw hex codes and items with a single look."""
+        item = self._catalog_item()
+        return _item_variants(item) if item else []
+
+    def _max_qty(self) -> int:
+        """A stackable item tops out at one stack; anything else can use every free pocket slot."""
+        line = self.line
+        if line is None:
+            return 1
+        if line.stack > 1:
+            return line.stack
+        free = ORDER_MAX_SLOTS - self.cog.cart(self.user_id).slots
+        return max(1, free if self.draft is not None else line.qty + free)
+
+    def _again(self) -> "ItemEditView":
+        return ItemEditView(self, self.index, draft=self.draft, results=self.results)
+
+    async def _rerender(self, interaction: discord.Interaction, notice: str | None = None) -> None:
+        if self.draft is None:
+            self.cog.save_cart(self.user_id)
+        view = self._again()
+        await _swap(interaction, self, view.embed(notice), view)
+
+    def embed(self, notice: str | None = None) -> discord.Embed:
+        line, cart = self.line, self.cog.cart(self.user_id)
+        if line is None:
+            return _embed("✏️ Edit item", "That item is no longer in your order.")
+        if self.draft is not None:
+            hint = "Set the quantity" + (", pick a color or pattern" if self.variants else "") + ", then press **Add to order**."
+        else:
+            hint = "Change the quantity" + (", color or pattern" if self.variants else "") + ", or remove the item."
+        embed = _embed(f"{'📦' if self.draft is not None else '✏️'} {line.label}", hint)
+        embed.add_field(name="Quantity", value=f"**{line.qty}** (max {self._max_qty()})", inline=True)
+        embed.add_field(name="Uses", value=f"{line.slots} slot{'s' if line.slots != 1 else ''}", inline=True)
+        embed.add_field(name="🛒 Order", value=f"**{cart.slots}** / {ORDER_MAX_SLOTS} slots", inline=True)
+        if line.override:
+            embed.add_field(name="Hex", value=f"`{line.override}` (custom — **Reset hex** restores the catalog code)", inline=False)
+        elif line.hex:
+            embed.add_field(name="Hex", value=f"`{line.hex}`", inline=False)
+        item = self._catalog_item()
+        image = (self.current.item.image_url if self.current else "") or (item.image_url if item else "")
+        if image:
+            embed.set_thumbnail(url=image)
+        if notice:
+            embed.add_field(name="ℹ️", value=notice[:1000], inline=False)
+        return embed
+
+    # ── changes ──
+    async def _set(self, interaction: discord.Interaction, qty: int) -> None:
+        line = self.line
+        if line is None:
+            await self.back_to_pocket(interaction, "That item is no longer in your order.")
+            return
+        line.qty = max(1, min(qty, self._max_qty()))
+        await self._rerender(interaction)
 
     async def _apply_variant(self, interaction: discord.Interaction, variant: _Variant) -> None:
         line, cart = self.line, self.cog.cart(self.user_id)
         if line is None:
-            await self.back_to_pocket(interaction, "That item is no longer in your pocket.")
+            await self.back_to_pocket(interaction, "That item is no longer in your order.")
             return
         # A look is sent as its own hex, one slot each, so keep the quantity only if it still fits.
         qty = line.qty if line.stack == 1 else 1
-        if cart.slots - line.slots + qty > ORDER_MAX_SLOTS:
+        used = cart.slots if self.draft is not None else cart.slots - line.slots
+        if used + qty > ORDER_MAX_SLOTS:
             qty = 1
-        cart.lines[self.index] = line_from_catalog(variant.item, qty)
-        self.cog.save_cart(self.user_id)
-        view = ItemEditView(self, self.index)
-        await _swap(interaction, self, view.embed(), view)
+        chosen = line_from_catalog(variant.item, qty)
+        if self.draft is not None:
+            self.draft = chosen
+        else:
+            cart.lines[self.index] = chosen   # type: ignore[index]
+        await self._rerender(interaction)
 
     async def _color_picked(self, interaction: discord.Interaction) -> None:
         body = self.bodies[int((interaction.data or {}).get("values", ["0"])[0])]
@@ -1374,47 +1675,20 @@ class ItemEditView(_SubView):
     async def _pattern_picked(self, interaction: discord.Interaction) -> None:
         await self._apply_variant(interaction, self.patterns[int((interaction.data or {}).get("values", ["0"])[0])])
 
-    @property
-    def line(self) -> OrderLine | None:
-        lines = self.cog.cart(self.user_id).lines
-        return lines[self.index] if 0 <= self.index < len(lines) else None
-
-    def _max_qty(self) -> int:
-        """A stackable item tops out at one stack; anything else can use every free pocket slot."""
+    async def set_override(self, interaction: discord.Interaction, code: str) -> None:
+        """Set (or with "" clear) the hand-typed hex that is sent instead of the catalog code."""
         line = self.line
         if line is None:
-            return 1
-        if line.stack > 1:
-            return line.stack
-        return line.qty + ORDER_MAX_SLOTS - self.cog.cart(self.user_id).slots
-
-    def embed(self) -> discord.Embed:
-        line, cart = self.line, self.cog.cart(self.user_id)
-        if line is None:
-            return _embed("✏️ Edit item", "That item is no longer in your pocket.")
-        hint = "Change the quantity with the buttons, or remove the item."
-        if self.variants:
-            hint = "Pick a color or pattern below, change the quantity with the buttons, or remove the item."
-        embed = _embed(f"✏️ {line.label}", hint)
-        if self.current and self.current.item.image_url:
-            embed.set_thumbnail(url=self.current.item.image_url)
-        embed.add_field(name="Quantity", value=f"**{line.qty}** (max {self._max_qty()})", inline=True)
-        embed.add_field(name="Uses", value=f"{line.slots} slot{'s' if line.slots != 1 else ''}", inline=True)
-        embed.add_field(name="🎒 Pocket", value=f"**{cart.slots}** / {ORDER_MAX_SLOTS} slots", inline=True)
-        if line.hex:
-            embed.add_field(name="Hex", value=f"`{line.hex}`", inline=False)
-        return embed
-
-    async def _set(self, interaction: discord.Interaction, qty: int) -> None:
-        line = self.line
-        if line is None:
-            await self.back_to_pocket(interaction, "That item is no longer in your pocket.")
+            await self.back_to_pocket(interaction, "That item is no longer in your order.")
             return
-        line.qty = max(1, min(qty, self._max_qty()))
-        self.cog.save_cart(self.user_id)
-        view = ItemEditView(self, self.index)
-        await _swap(interaction, self, view.embed(), view)
+        code = re.sub(r"^0x", "", code, flags=re.IGNORECASE).upper()
+        if code and not _HEX_RE.fullmatch(code):
+            await self._rerender(interaction, f"`{code[:20]}` isn't a hex code. Use 4 or 16 hex digits, like `0B64`.")
+            return
+        line.override = code
+        await self._rerender(interaction, f"This item will be sent as `{code}`." if code else "Back to the catalog code.")
 
+    # ── buttons ──
     @discord.ui.button(label="−", style=discord.ButtonStyle.secondary, row=0)
     async def minus(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._set(interaction, (self.line.qty if self.line else 1) - 1)
@@ -1432,62 +1706,28 @@ class ItemEditView(_SubView):
         await self._set(interaction, self._max_qty())
 
     @discord.ui.button(label="Remove", emoji="🗑️", style=discord.ButtonStyle.danger, row=0)
-    async def remove(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def action(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Draft mode: add to the order. Edit mode: remove from the order."""
         line = self.line
-        if line is not None:
+        if self.draft is not None and self.results is not None:
+            await self.results.add_line_and_stay(interaction, self, self.draft)
+            return
+        if line is not None and self.index is not None:
             self.cog.cart(self.user_id).lines.pop(self.index)
             self.cog.save_cart(self.user_id)
         await self.back_to_pocket(interaction, f"Removed **{line.label}**." if line else None)
 
+    @discord.ui.button(label="Custom hex", emoji="#️⃣", style=discord.ButtonStyle.secondary, row=3)
+    async def custom_hex(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ItemHexModal(self))
 
-class VariantView(_SubView):
-    """Color, then pattern (when the color has more than one) for an item picked from search results."""
-
-    def __init__(self, results: SearchResultsView, item: CatalogItem, variants: list[_Variant], body: str | None = None):
-        super().__init__(results)
-        self.results = results
-        self.item = item
-        self.variants = variants
-        bodies = list(dict.fromkeys(v.body for v in variants))
-        if body is None and len(bodies) == 1:
-            body = bodies[0]   # only the pattern varies
-        self.body = body
-        if body is None:
-            self.choices: list[Any] = bodies[:25]
-            options = [discord.SelectOption(label=b[:100], value=str(i), emoji="🎨") for i, b in enumerate(self.choices)]
-            placeholder = "Choose a color…"
-        else:
-            self.choices = [v for v in variants if v.body == body][:25]
-            options = [
-                discord.SelectOption(label=(v.pattern or v.body)[:100], value=str(i), emoji="🧵")
-                for i, v in enumerate(self.choices)
-            ]
-            placeholder = "Choose a pattern…"
-        select = discord.ui.Select(placeholder=placeholder, options=options, row=0)
-        select.callback = self._picked   # type: ignore[method-assign]
-        self.add_item(select)
-
-    def embed(self) -> discord.Embed:
-        step = f"Color **{self.body}** — now pick a pattern." if self.body and len({v.body for v in self.variants}) > 1 else "Pick the look you want."
-        embed = _embed(f"🎨 {self.item.name[:1].upper() + self.item.name[1:]}", step)
-        if self.item.image_url:
-            embed.set_thumbnail(url=self.item.image_url)
-        return embed
-
-    async def _picked(self, interaction: discord.Interaction) -> None:
-        choice = self.choices[int((interaction.data or {}).get("values", ["0"])[0])]
-        if isinstance(choice, str):
-            matching = [v for v in self.variants if v.body == choice]
-            if len(matching) > 1:
-                view = VariantView(self.results, self.item, self.variants, body=choice)
-                await _swap(interaction, self, view.embed(), view)
-                return
-            choice = matching[0]
-        await self.results.add_and_stay(interaction, self, choice.item)
+    @discord.ui.button(label="Reset hex", emoji="↩️", style=discord.ButtonStyle.secondary, row=3)
+    async def reset_hex(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.set_override(interaction, "")
 
     @discord.ui.button(label="Back to results", emoji="🔍", style=discord.ButtonStyle.secondary, row=4)
     async def back_to_results(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        view = self.results.fresh()
+        view = self.results.fresh()   # type: ignore[union-attr]
         await _swap(interaction, self, view.embed(), view)
 
 
@@ -2254,11 +2494,40 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
                     await channel.get_partial_message(message_id).edit(embed=embed, view=self._panel_view(is_open))
                     self._panel_sigs[channel_id] = sig
                 except discord.NotFound:
-                    self._dead_panels.add(channel_id)
-                    self._panel_messages.pop(channel_id, None)
-                    logger.warning("[OrderBot] Panel message %s in %s is gone; run /orderpanel to repost it.", message_id, channel_id)
+                    # Deleted or lost: adopt one found in recent history, else post a new one.
+                    new_id = await self._recover_panel(channel, embed, is_open)
+                    if new_id:
+                        self._panel_messages[channel_id] = new_id
+                        self._panel_sigs[channel_id] = sig
+                        await asyncio.to_thread(_save_panel, channel_id, new_id)
+                        logger.info("[OrderBot] Panel in %s was missing; restored as message %s.", channel_id, new_id)
+                    else:
+                        self._dead_panels.add(channel_id)
+                        self._panel_messages.pop(channel_id, None)
+                        logger.warning("[OrderBot] Panel in %s is gone and could not be restored; run /orderpanel.", channel_id)
                 except discord.HTTPException as exc:
                     logger.warning("[OrderBot] Could not refresh the panel in %s: %s", channel_id, exc)
+
+    async def _recover_panel(self, channel: Any, embed: discord.Embed, is_open: bool) -> int | None:
+        """The panel message no longer exists. Returns the id of the panel now in the channel, or None."""
+        view = self._panel_view(is_open)
+        bot_id = getattr(self.bot.user, "id", None)
+        if hasattr(channel, "history"):
+            try:
+                async for candidate in channel.history(limit=25):
+                    if (
+                        candidate.author.id == bot_id and candidate.components and candidate.embeds
+                        and (candidate.embeds[0].title or "").startswith(PANEL_TITLE_PREFIX)
+                    ):
+                        await candidate.edit(embed=embed, view=view)
+                        return candidate.id
+            except discord.HTTPException as exc:
+                logger.debug("[OrderBot] Could not scan %s for an existing panel: %s", channel.id, exc)
+        try:
+            return (await channel.send(embed=embed, view=view)).id
+        except discord.HTTPException as exc:
+            logger.warning("[OrderBot] Could not repost the panel in %s: %s", channel.id, exc)
+            return None
 
     @refresh_panels_loop.before_loop
     async def _before_refresh(self) -> None:
@@ -2446,14 +2715,29 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
         await interaction.followup.send(embed=_bundles_embed(bundles), view=_adopt(view, interaction), ephemeral=True)
 
     @app_commands.command(name="orderpanel", description="Post the Order Bot panel in this channel")
+    @app_commands.describe(remove="Remove the panel from this channel instead of posting it")
     @app_commands.default_permissions(manage_messages=True)
     @app_commands.checks.has_permissions(manage_messages=True)
     @app_commands.guild_only()
-    async def slash_orderpanel(self, interaction: discord.Interaction) -> None:
+    async def slash_orderpanel(self, interaction: discord.Interaction, remove: bool = False) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         channel = interaction.channel
         if not isinstance(channel, discord.TextChannel):
             await interaction.followup.send("❌ The panel can only be posted in a regular text channel.", ephemeral=True)
+            return
+        if remove:
+            # The panel repairs itself when deleted, so removing it has to be explicit.
+            async with self._lock_for(channel.id):
+                old_ids = {m for c, m in await asyncio.to_thread(_load_panels) if c == channel.id}
+                old_ids.add(self._panel_messages.pop(channel.id, None))
+                await asyncio.to_thread(_delete_panel, channel.id)
+                self._panel_sigs.pop(channel.id, None)
+                for old_id in old_ids:
+                    if old_id:
+                        with contextlib.suppress(discord.HTTPException):
+                            await channel.get_partial_message(old_id).delete()
+            logger.info("[OrderBot] Panel removed from %s by %s", channel.id, interaction.user)
+            await interaction.followup.send(f"✅ Order Bot panel removed from <#{channel.id}>.", ephemeral=True)
             return
         embed, sig, is_open = await self._panel_state()
         async with self._lock_for(channel.id):
