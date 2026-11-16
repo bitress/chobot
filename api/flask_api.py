@@ -4367,10 +4367,11 @@ def get_order_bot_status():
     - visitors_count, visitor_list
     - queue_count, battery_charge
     - last_dodo_fetch, server_time, is_dirty
+
+    Public, so the site can show the bot online/offline and its queue to signed-out visitors.
+    Without a login the Dodo code and visitor names are removed (counts stay); ordering still needs one.
     """
     auth_user = _current_auth_user()
-    if not auth_user:
-        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
 
     data, code = _sysbot_get("/api/status")
 
@@ -4403,7 +4404,16 @@ def get_order_bot_status():
             data.setdefault("visitor_list", [])
             data.setdefault("visitors_count", 0)
 
+        if not auth_user:
+            for private_key in _BOT_STATUS_PRIVATE_KEYS:
+                data.pop(private_key, None)
+            data["visitor_list"] = []
+
     return jsonify(data), code
+
+
+# Bot-status fields only signed-in users get: the Dodo code lets anyone fly in, and visitor names are players'.
+_BOT_STATUS_PRIVATE_KEYS = ("dodo_code", "dodo", "visitors", "visitor_names", "players")
 
 
 # ── Submit Order ─────────────────────────────────────────────────────────────
