@@ -16,7 +16,8 @@ Persistent panel (posted with /orderpanel, refreshed every 30s):
   • 🔔 Notify me     – only while the bot is closed: one DM when it takes orders again
 The panel is sticky: when messages bury it, it is reposted at the bottom of the channel.
 
-Pocket builder (ephemeral):
+Pocket builder (ephemeral). The order screen shows only Find items · Bundles · Place order, the item
+list, and Type a list · Villager · More; saved loadouts, custom hex and Clear are under More:
   • Add items by typing (`Gold nugget 30, Royal crown, 09C9 x10`), or search the catalog
     and pick a color/pattern for items that have several
   • Browse: popular items and popular series; results are paged and filterable by category
@@ -56,6 +57,7 @@ import logging
 import math
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -105,6 +107,7 @@ MAX_LOADOUTS = 10
 PANEL_REFRESH_SECONDS = 30
 RESULTS_PER_PAGE = 25         # catalog results shown per page (Discord's select limit)
 SEARCH_LIMIT = 100             # most catalog results kept for one search
+CATEGORY_BROWSE_LIMIT = 300    # most items loaded when browsing a whole category
 NEXT_UP_POSITION = 2          # DM "almost your turn" when a member reaches this place in line
 NOTIFY_MAX = 300              # most "open again" DMs sent in one go
 PANEL_TITLE_PREFIX = "📦 Order Bot"
@@ -730,18 +733,21 @@ def build_order_embed(data: dict, order_id: str, summary: str = "", *, connectio
 
 
 def build_pocket_embed(cart: OrderCart, username: str, notice: str | None = None) -> discord.Embed:
-    embed = _embed("🎒 Your order pocket")
-    if cart.lines:
+    """The order screen. Always tells the member what to do next."""
+    embed = _embed("🛒 Your order")
+    if cart.is_empty:
+        embed.description = (
+            "**How to order**\n"
+            "1️⃣ Press **Find items** and pick what you want (or grab a ready-made **Bundle**)\n"
+            "2️⃣ Press **Place order**\n"
+            "3️⃣ I'll DM you a Dodo code when it's your turn — fly in and pick everything up"
+        )
+    else:
         rows = [f"`{i:02}` {line.label}" for i, line in enumerate(cart.lines, 1)]
         text = "\n".join(rows)
-        if len(text) > 3500:
-            text = text[:3500] + "\n…"
-        embed.description = text
-    else:
-        embed.description = (
-            "Your pocket is empty.\n"
-            "**Add items** by typing them, **Search** the catalog, or start from a **Bundle**."
-        )
+        if len(text) > 3400:
+            text = text[:3400] + "\n…"
+        embed.description = (text + "\n\n" if text else "") + "👉 Happy with it? Press **Place order**. Tap an item in the menu to change it."
     embed.add_field(name="Slots", value=f"**{cart.slots}** / {ORDER_MAX_SLOTS}", inline=True)
     embed.add_field(name="🏠 Villager", value=cart.villager[0] if cart.villager else "None", inline=True)
     embed.add_field(name="Ordering as", value=discord.utils.escape_markdown(username)[:100], inline=True)
@@ -757,10 +763,10 @@ def build_guide_embed() -> discord.Embed:
         f"Order up to **{ORDER_MAX_SLOTS} pocket slots** of items (plus one villager) and pick them up on **{island}**.",
     )
     embed.add_field(
-        name="1 · Build your pocket",
+        name="1 · Choose your items",
         value=(
-            "Press **Start Order**. Type items (`Gold nugget 30, Royal crown`), search the catalog, "
-            "or load a bundle or one of your saved loadouts."
+            "Press **Start Order**, then **Find items** and pick what you want from the list. "
+            "You can also grab a ready-made **Bundle** or type a list of items."
         ),
         inline=False,
     )
@@ -865,9 +871,14 @@ async def _swap(interaction: discord.Interaction, old: discord.ui.View | None, e
 
 
 class PocketView(_OwnedView):
-    """The pocket builder. A fresh instance is created for every render."""
+    """
+    The order builder ("pocket"). A fresh instance is created for every render.
 
-    expired_notice = "⌛ This menu expired. Your pocket is saved — press **Start Order** to continue."
+    Kept deliberately small: Find items · Bundles · Place order, the item list, and one row of
+    secondary actions. Saved loadouts, custom hex and Clear live under "More".
+    """
+
+    expired_notice = "⌛ This menu expired. Your order is saved — press **Start Order** to continue."
 
     def __init__(self, cog: "OrderBotCog", user_id: int, username: str):
         super().__init__(user_id, timeout=600)
@@ -875,7 +886,6 @@ class PocketView(_OwnedView):
         self.username = username
         cart = cog.cart(user_id)
         self.place_order.disabled = cart.is_empty
-        self.clear.disabled = cart.is_empty
         if cart.lines or cart.villager:
             options = [
                 discord.SelectOption(label=line.label[:100], value=str(i), emoji="📦")
@@ -883,7 +893,7 @@ class PocketView(_OwnedView):
             ]
             if cart.villager:
                 options.append(discord.SelectOption(label=f"Villager: {cart.villager[0]}"[:100], value="villager", emoji="🏠"))
-            select = discord.ui.Select(placeholder="Tap an item to change color, quantity, or remove…", options=options, row=2)
+            select = discord.ui.Select(placeholder="Tap an item to change color, quantity, or remove…", options=options, row=1)
             select.callback = self._edit   # type: ignore[method-assign]
             self.add_item(select)
 
@@ -904,21 +914,13 @@ class PocketView(_OwnedView):
             self.cog.save_cart(self.user_id)
         await self.render(interaction)
 
-    @discord.ui.button(label="Add items", emoji="➕", style=discord.ButtonStyle.primary, row=0)
-    async def add_items(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(AddItemsModal(self))
-
-    @discord.ui.button(label="Search", emoji="🔍", style=discord.ButtonStyle.secondary, row=0)
-    async def search(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(SearchModal(self))
-
-    @discord.ui.button(label="Villager", emoji="🏠", style=discord.ButtonStyle.secondary, row=0)
-    async def villager(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(VillagerModal(self))
-
-    @discord.ui.button(label="Custom hex", emoji="⌨️", style=discord.ButtonStyle.secondary, row=0)
-    async def custom_hex(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(CustomHexModal(self))
+    # Row 0 is the whole happy path: find items (or a ready-made bundle), then place the order.
+    @discord.ui.button(label="Find items", emoji="🔍", style=discord.ButtonStyle.primary, row=0)
+    async def find_items(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Opens on the popular items, so nothing has to be typed; "Search by name" is one tap away."""
+        hits = await asyncio.to_thread(lambda: ACNHCatalog.get_instance().get_popular_items(limit=RESULTS_PER_PAGE))
+        view = SearchResultsView(self, hits, "Popular items")
+        await _swap(interaction, self, view.embed(), view)
 
     @discord.ui.button(label="Bundles", emoji="🎁", style=discord.ButtonStyle.secondary, row=0)
     async def bundles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -929,32 +931,35 @@ class PocketView(_OwnedView):
             return
         await _swap(interaction, self, _bundles_embed(bundles), BundleView(self, bundles))
 
-    @discord.ui.button(label="Saved", emoji="💾", style=discord.ButtonStyle.secondary, row=1)
-    async def saved(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        loadouts = await asyncio.to_thread(_load_loadouts, self.user_id)
-        await _swap(interaction, self, _loadouts_embed(loadouts), LoadoutView(self, loadouts))
-
-    @discord.ui.button(label="Browse", emoji="🌟", style=discord.ButtonStyle.secondary, row=1)
-    async def browse(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        hits = await asyncio.to_thread(lambda: ACNHCatalog.get_instance().get_popular_items(limit=RESULTS_PER_PAGE))
-        view = SearchResultsView(self, hits, "Popular items")
-        await _swap(interaction, self, view.embed(), view)
-
-    @discord.ui.button(label="Clear", emoji="🗑️", style=discord.ButtonStyle.secondary, row=1)
-    async def clear(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        cart = self.cog.cart(self.user_id)
-        cart.lines.clear()
-        cart.villager = None
-        self.cog.save_cart(self.user_id)
-        await self.render(interaction, "Pocket cleared.")
-
-    @discord.ui.button(label="Place order", emoji="✈️", style=discord.ButtonStyle.success, row=1)
+    @discord.ui.button(label="Place order", emoji="✈️", style=discord.ButtonStyle.success, row=0)
     async def place_order(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer()
         await self.cog.submit_order(interaction, self)
 
+    # Row 2: the less common ways to fill an order.
+    @discord.ui.button(label="Type a list", emoji="✍️", style=discord.ButtonStyle.secondary, row=2)
+    async def type_items(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(AddItemsModal(self))
 
-class AddItemsModal(discord.ui.Modal, title="Add items to your pocket"):
+    @discord.ui.button(label="Villager", emoji="🏠", style=discord.ButtonStyle.secondary, row=2)
+    async def villager(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(VillagerModal(self))
+
+    @discord.ui.button(label="More", emoji="⚙️", style=discord.ButtonStyle.secondary, row=2)
+    async def more(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        view = MoreView(self)
+        await _swap(interaction, self, view.embed(), view)
+
+
+async def _show_pocket(parent: "PocketView | _SubView", interaction: discord.Interaction, notice: str | None = None) -> None:
+    """Return to the order from wherever a modal was opened (the order itself or one of its sub-menus)."""
+    if isinstance(parent, PocketView):
+        await parent.render(interaction, notice)
+    else:
+        await parent.back_to_pocket(interaction, notice)
+
+
+class AddItemsModal(discord.ui.Modal, title="Type the items you want"):
     items = discord.ui.TextInput(
         label="Items (comma or new line separated)",
         style=discord.TextStyle.paragraph,
@@ -962,13 +967,13 @@ class AddItemsModal(discord.ui.Modal, title="Add items to your pocket"):
         max_length=1500,
     )
 
-    def __init__(self, parent: PocketView):
+    def __init__(self, parent: "PocketView | _SubView"):
         super().__init__()
         self.parent = parent
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         notice = await self.parent.cog.add_text(self.parent.user_id, self.items.value)
-        await self.parent.render(interaction, notice)
+        await _show_pocket(self.parent, interaction, notice)
 
 
 class CustomHexModal(discord.ui.Modal, title="Custom command / hex codes"):
@@ -979,13 +984,13 @@ class CustomHexModal(discord.ui.Modal, title="Custom command / hex codes"):
         max_length=1500,
     )
 
-    def __init__(self, parent: PocketView):
+    def __init__(self, parent: "PocketView | _SubView"):
         super().__init__()
         self.parent = parent
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         notice = await self.parent.cog.add_hex(self.parent.user_id, self.codes.value)
-        await self.parent.render(interaction, notice)
+        await _show_pocket(self.parent, interaction, notice)
 
 
 class SearchModal(discord.ui.Modal, title="Search the catalog"):
@@ -1001,10 +1006,7 @@ class SearchModal(discord.ui.Modal, title="Search the catalog"):
         hits = await asyncio.to_thread(cf.search_items, query, SEARCH_LIMIT, language)
         if not hits:
             notice = f"Nothing found for **{query[:40]}**."
-            if isinstance(self.parent, PocketView):
-                await self.parent.render(interaction, notice)
-            else:
-                await self.parent.back_to_pocket(interaction, notice)
+            await _show_pocket(self.parent, interaction, notice)
             return
         view = SearchResultsView(self.parent, hits, f"Results for “{query[:40]}”")
         await _swap(interaction, self.parent, view.embed(), view)
@@ -1036,9 +1038,29 @@ class _SubView(_OwnedView):
         view = PocketView(self.cog, self.user_id, self.username)
         await _swap(interaction, self, build_pocket_embed(self.cog.cart(self.user_id), self.username, notice), view)
 
-    @discord.ui.button(label="Back to pocket", emoji="↩️", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="Back to my order", emoji="↩️", style=discord.ButtonStyle.secondary, row=4)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.back_to_pocket(interaction)
+
+
+_CATEGORY_SIZES: dict[str, int] = {}
+
+
+def _category_choices(present: set[str]) -> list[str]:
+    """
+    Every catalog category for the category menu, not only the ones in the current results. Discord
+    allows 25 options, so with "All categories" there is room for 24: the ones in the results are
+    always kept, then the largest of the rest. Shown alphabetically.
+    """
+    if not _CATEGORY_SIZES:
+        catalog = ACNHCatalog.get_instance()
+        for item in list(catalog.items) + list(catalog.recipes):
+            if item.category:
+                _CATEGORY_SIZES[item.category] = _CATEGORY_SIZES.get(item.category, 0) + 1
+    others = sorted((c for c in _CATEGORY_SIZES if c not in present), key=lambda c: -_CATEGORY_SIZES[c])
+    keep = sorted(present)[:24]
+    keep += others[: 24 - len(keep)]
+    return sorted(keep)
 
 
 class SearchResultsView(_SubView):
@@ -1057,12 +1079,14 @@ class SearchResultsView(_SubView):
         category: str | None = None,
         color: str | None = None,
         season: str | None = None,
+        whole_category: bool = False,
     ):
         super().__init__(parent)
         self.title = title
-        self.all_hits = hits[:SEARCH_LIMIT]
-        categories = sorted({h.category for h in self.all_hits if h.category})
-        self.category = category if category in categories else None
+        self.all_hits = hits[:CATEGORY_BROWSE_LIMIT]
+        self.whole_category = whole_category   # these results are one category loaded from the catalog
+        self.present = {h.category for h in self.all_hits if h.category}
+        self.category = category if category in self.present else None
         self.color, self.season = color, season
         self.language = cf.peek_user_language(self.user_id)
         self.filters = CatalogFilters(self.category, self.color, self.season)
@@ -1081,18 +1105,28 @@ class SearchResultsView(_SubView):
                 )
                 for i, item in enumerate(self.hits)
             ]
-            select = discord.ui.Select(placeholder="Add to pocket…", options=options, row=0)
+            select = discord.ui.Select(placeholder="Pick an item to add to your order…", options=options, row=0)
             select.callback = self._picked   # type: ignore[method-assign]
             self.add_item(select)
 
-        if len(categories) > 1:
-            self.categories = categories[:24]
-            cat_options = [discord.SelectOption(label="All categories", value="__all__", emoji="🗂️", default=self.category is None)]
-            cat_options += [
-                discord.SelectOption(label=c[:100], value=str(i), default=c == self.category)
-                for i, c in enumerate(self.categories)
-            ]
-            cat_select = discord.ui.Select(placeholder="Filter by category…", options=cat_options, row=1)
+        # Every category is offered. One that is in these results filters them; any other one opens
+        # that category from the whole catalog.
+        self.categories = _category_choices(self.present)
+        if len(self.categories) > 1:
+            counts = Counter(h.category for h in self.all_hits)
+            cat_options = [discord.SelectOption(
+                label="All categories", value="__all__", emoji="🗂️",
+                default=self.category is None and not self.whole_category,
+            )]
+            for i, c in enumerate(self.categories):
+                in_results = c in self.present and not self.whole_category
+                cat_options.append(discord.SelectOption(
+                    label=c[:100],
+                    value=str(i),
+                    description=f"{counts[c]} in these results" if in_results else "Browse this category",
+                    default=c == self.category or (self.whole_category and c in self.present),
+                ))
+            cat_select = discord.ui.Select(placeholder="Choose a category…", options=cat_options, row=1)
             cat_select.callback = self._category_picked   # type: ignore[method-assign]
             self.add_item(cat_select)
 
@@ -1111,6 +1145,7 @@ class SearchResultsView(_SubView):
 
         self.prev_page.disabled = self.page <= 0
         self.next_page.disabled = self.page >= self.pages - 1
+        self.place_order.disabled = self.cog.cart(self.user_id).is_empty
         n_filters = sum(1 for f in (self.category, self.color, self.season) if f)
         if n_filters:
             self.open_filters.label = f"Filters ({n_filters})"
@@ -1126,7 +1161,7 @@ class SearchResultsView(_SubView):
         cart = self.cog.cart(self.user_id)
         embed = _embed(
             f"🔍 {self.title[:80]}",
-            f"{count}\nPick an item to add it. Items that come in several colors or patterns let you choose one.",
+            f"{count}\nPick an item from the menu to add it. Use **Search by name** to look for something else.",
         )
         embed.add_field(name="🎒 Pocket", value=f"**{cart.slots}** / {ORDER_MAX_SLOTS} slots", inline=True)
         if self.language != cf.DEFAULT_LANGUAGE:
@@ -1145,6 +1180,7 @@ class SearchResultsView(_SubView):
             category=self.category if category is False else category,   # type: ignore[arg-type]
             color=self.color,
             season=self.season,
+            whole_category=self.whole_category,
         )
 
     async def _show(self, interaction: discord.Interaction, current: _SubView, view: "SearchResultsView", notice: str | None = None) -> None:
@@ -1155,7 +1191,8 @@ class SearchResultsView(_SubView):
         line = line_from_catalog(item)
         error = self.cog.cart(self.user_id).add(line)
         self.cog.save_cart(self.user_id)
-        await self._show(interaction, current, self.fresh(), error or f"Added **{line.label}**.")
+        added = f"✅ Added **{line.label}**. Pick more, or press **Place order** when you're done."
+        await self._show(interaction, current, self.fresh(), error or added)
 
     async def _picked(self, interaction: discord.Interaction) -> None:
         item = self.hits[int((interaction.data or {}).get("values", ["0"])[0])]
@@ -1169,7 +1206,21 @@ class SearchResultsView(_SubView):
     async def _category_picked(self, interaction: discord.Interaction) -> None:
         value = (interaction.data or {}).get("values", [""])[0]
         category = self.categories[int(value)] if value.isdigit() else None
-        await self._show(interaction, self, self.fresh(page=0, category=category))
+        catalog = ACNHCatalog.get_instance()
+        if category is None and self.whole_category:
+            # "All categories" while browsing one category: back to the popular items.
+            hits = await asyncio.to_thread(lambda: catalog.get_popular_items(limit=RESULTS_PER_PAGE))
+            await self._show(interaction, self, SearchResultsView(self, hits, "Popular items"))
+        elif category is None or (category in self.present and not self.whole_category):
+            await self._show(interaction, self, self.fresh(page=0, category=category))
+        else:
+            # Not in these results: open that category from the whole catalog.
+            hits = await asyncio.to_thread(lambda: catalog.search_items("", limit=CATEGORY_BROWSE_LIMIT, category=category))
+            if not hits:
+                await self._show(interaction, self, self.fresh(), f"Nothing found in **{category}** right now.")
+                return
+            view = SearchResultsView(self, hits, category, category=category, whole_category=True)
+            await self._show(interaction, self, view)
 
     async def _series_picked(self, interaction: discord.Interaction) -> None:
         label, keyword, _emoji = self.series[int((interaction.data or {}).get("values", ["0"])[0])]
@@ -1187,9 +1238,17 @@ class SearchResultsView(_SubView):
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._show(interaction, self, self.fresh(page=self.page + 1))
 
-    @discord.ui.button(label="New search", emoji="🔍", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="Search by name", emoji="🔍", style=discord.ButtonStyle.primary, row=3)
     async def new_search(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(SearchModal(self))
+
+    @discord.ui.button(label="Place order", emoji="✈️", style=discord.ButtonStyle.success, row=4)
+    async def place_order(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Order straight from the item list, without going back to the order screen first."""
+        await interaction.response.defer()
+        self.stop()
+        # On failure submit_order shows the order screen with the reason.
+        await self.cog.submit_order(interaction, PocketView(self.cog, self.user_id, self.username))
 
     @discord.ui.button(label="Filters", emoji="🎛️", style=discord.ButtonStyle.secondary, row=3)
     async def open_filters(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -1203,6 +1262,38 @@ class SearchResultsView(_SubView):
             category=filters.category, color=filters.color, season=filters.season,
         )
         await _swap(interaction, None, view.embed(), view)
+
+
+class MoreView(_SubView):
+    """Rarely used tools, kept off the main order screen: saved loadouts, custom hex, clear."""
+
+    def __init__(self, parent: "PocketView | _SubView"):
+        super().__init__(parent)
+        self.clear.disabled = self.cog.cart(self.user_id).is_empty
+
+    def embed(self) -> discord.Embed:
+        embed = _embed("⚙️ More options")
+        embed.add_field(name="💾 Saved loadouts", value="Save this order to reuse later, or load one you saved.", inline=False)
+        embed.add_field(name="⌨️ Custom hex", value="Paste a full `!order` command from chopaeng.com or raw item codes.", inline=False)
+        embed.add_field(name="🗑️ Clear order", value="Remove everything and start over.", inline=False)
+        return embed
+
+    @discord.ui.button(label="Saved loadouts", emoji="💾", style=discord.ButtonStyle.secondary, row=0)
+    async def saved(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        loadouts = await asyncio.to_thread(_load_loadouts, self.user_id)
+        await _swap(interaction, self, _loadouts_embed(loadouts), LoadoutView(self, loadouts))
+
+    @discord.ui.button(label="Custom hex", emoji="⌨️", style=discord.ButtonStyle.secondary, row=0)
+    async def custom_hex(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(CustomHexModal(self))
+
+    @discord.ui.button(label="Clear order", emoji="🗑️", style=discord.ButtonStyle.danger, row=0)
+    async def clear(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        cart = self.cog.cart(self.user_id)
+        cart.lines.clear()
+        cart.villager = None
+        self.cog.save_cart(self.user_id)
+        await self.back_to_pocket(interaction, "Order cleared.")
 
 
 class ItemEditView(_SubView):
