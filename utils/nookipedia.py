@@ -38,6 +38,7 @@ VILLAGER_MEDIA_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "villagers_media.json"
 )
+VILLAGERS_MAX_AGE = 7 * 24 * 3600  # villagers.json (names, birthdays, personalities) is re-downloaded weekly.
 VILLAGER_MEDIA_MAX_AGE = 90 * 24 * 3600  # Refetch weekly; new villagers/images are rare.
 
 # Nookipedia Cargo field -> nh_details key the website and Discord bot read.
@@ -89,6 +90,7 @@ class NookipediaClient:
     # In-memory dictionary of all villager data loaded from villagers.json
     _cache: Dict[str, Dict[str, Any]] = {}
     _is_loaded: bool = False
+    _villager_refresh_running: bool = False
 
     # In-memory dictionary of all item data loaded from acnh.json or Nookipedia
     _item_cache: Dict[str, Dict[str, Any]] = {}
@@ -104,17 +106,18 @@ class NookipediaClient:
         return re.sub(r"\s+", " ", s).strip()
 
     @classmethod
-    def _index_villager(cls, key: str, villager: Dict[str, Any]) -> None:
-        """Index a villager under multiple normalized variations."""
+    def _index_villager(cls, key: str, villager: Dict[str, Any], cache: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+        """Index a villager under multiple normalized variations (into `cache`, default the live one)."""
+        target = cls._cache if cache is None else cache
         raw = key.strip().lower()
         if raw:
-            cls._cache[raw] = villager
+            target[raw] = villager
         norm = cls._normalize_name(key)
         if norm:
-            cls._cache[norm] = villager
+            target[norm] = villager
         compact = re.sub(r"[^\w]", "", key.lower())
         if compact:
-            cls._cache[compact] = villager
+            target[compact] = villager
 
     @staticmethod
     def _cargo_rows(table: str, fields: list[str], key_field: str) -> list[Dict[str, str]]:
@@ -180,11 +183,12 @@ class NookipediaClient:
         return media
 
     @classmethod
-    def _apply_villager_media(cls, media: Dict[str, Dict[str, str]]) -> None:
-        """Overlay Nookipedia pictures onto the cached villagers (cache values are shared dicts)."""
+    def _apply_villager_media(cls, media: Dict[str, Dict[str, str]], cache: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+        """Overlay Nookipedia pictures onto cached villagers (`cache`, default the live one; values are shared dicts)."""
+        target = cls._cache if cache is None else cache
         applied = 0
         for name, urls in media.items():
-            villager = cls._cache.get(name.strip().lower()) or cls._cache.get(cls._normalize_name(name))
+            villager = target.get(name.strip().lower()) or target.get(cls._normalize_name(name))
             if not villager or not urls:
                 continue
             nh = villager.setdefault("nh_details", {})
@@ -194,16 +198,22 @@ class NookipediaClient:
             applied += 1
         logger.info(f"[NOOKIPEDIA] Applied Nookipedia pictures to {applied} villagers.")
 
+    @staticmethod
+    def _read_saved_media() -> Dict[str, Any]:
+        """villagers_media.json as saved ({"fetched_at", "villagers"}), or {} when missing/unreadable."""
+        if not os.path.exists(VILLAGER_MEDIA_PATH):
+            return {}
+        try:
+            with open(VILLAGER_MEDIA_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"[NOOKIPEDIA] Failed to read {VILLAGER_MEDIA_PATH}: {e}")
+            return {}
+
     @classmethod
     def _ensure_villager_media(cls) -> None:
         """Load saved villager pictures, downloading them if missing and refreshing them in the background if stale."""
-        saved: Dict[str, Any] = {}
-        if os.path.exists(VILLAGER_MEDIA_PATH):
-            try:
-                with open(VILLAGER_MEDIA_PATH, "r", encoding="utf-8") as f:
-                    saved = json.load(f)
-            except Exception as e:
-                logger.error(f"[NOOKIPEDIA] Failed to read {VILLAGER_MEDIA_PATH}: {e}")
+        saved = cls._read_saved_media()
 
         if saved.get("villagers"):
             cls._apply_villager_media(saved["villagers"])
@@ -227,6 +237,30 @@ class NookipediaClient:
         cls._load_villagers()
         if cls._cache:
             cls._ensure_villager_media()
+            cls._refresh_villagers_if_stale()
+
+    @classmethod
+    def _refresh_villagers_if_stale(cls) -> None:
+        """Re-download villagers.json in the background once it is older than VILLAGERS_MAX_AGE.
+
+        The live cache keeps answering until the new one is built and swapped in.
+        """
+        try:
+            age = time.time() - os.path.getmtime(VILLAGERS_JSON_PATH)
+        except OSError:
+            return
+        if age <= VILLAGERS_MAX_AGE or cls._villager_refresh_running:
+            return
+        cls._villager_refresh_running = True
+
+        def _run() -> None:
+            try:
+                cls._download_and_save_data()
+            finally:
+                cls._villager_refresh_running = False
+
+        logger.info(f"[NOOKIPEDIA] villagers.json is {age / 86400:.0f} days old; refreshing in the background.")
+        threading.Thread(target=_run, name="nookipedia-villagers-refresh", daemon=True).start()
 
     @classmethod
     def _load_villagers(cls) -> None:
@@ -358,14 +392,17 @@ class NookipediaClient:
             except Exception as e:
                 logger.error(f"[NOOKIPEDIA] Failed to write {VILLAGERS_JSON_PATH}: {e}")
 
-            cls._cache = {}
+            # Build the new index on the side and swap it in whole, so lookups during a background
+            # refresh never see a half-filled cache.
+            new_cache: Dict[str, Dict[str, Any]] = {}
             for k, v in villagers_dict.items():
-                norm_k = cls._normalize_name(k)
-                if norm_k:
-                    cls._cache[norm_k] = v
-                raw_k = k.strip().lower()
-                if raw_k and raw_k not in cls._cache:
-                    cls._cache[raw_k] = v
+                cls._index_villager(k, v, new_cache)
+                if v.get("name"):
+                    cls._index_villager(v["name"], v, new_cache)
+            saved_media = cls._read_saved_media().get("villagers")
+            if saved_media:
+                cls._apply_villager_media(saved_media, new_cache)
+            cls._cache = new_cache
             cls._is_loaded = True
 
     @classmethod
