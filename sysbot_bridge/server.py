@@ -101,6 +101,7 @@ ALLOWED_PROXY_PREFIXES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/order/status"),
     ("POST", "/api/order/cancel"),
     ("POST", "/api/click"),
+    ("POST", "/api/stick"),
     ("POST", "/api/drop"),
     ("POST", "/api/clean"),
     ("POST", "/api/turnips"),
