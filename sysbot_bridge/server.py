@@ -7,6 +7,7 @@ Exposes a single secure HTTP endpoint for Cloudflare Tunnel to connect VPS Chobo
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import logging
 import os
@@ -553,7 +554,13 @@ if __name__ == "__main__":
         logger.warning(" Any caller can proxy commands to the 48 Switch bots!")
         logger.warning("=======================================================")
     elif SYSBOT_API_KEY:
-        logger.info("Authentication: ENABLED (SYSBOT_API_KEY active)")
+        # Log a short fingerprint (not the key) so a key mismatch between the
+        # bridge and its callers is diagnosable without exposing the secret.
+        _fp = hashlib.sha256(SYSBOT_API_KEY.encode("utf-8")).hexdigest()[:8]
+        logger.info(
+            "Authentication: ENABLED (SYSBOT_API_KEY active, len=%d, sha256=%s…)",
+            len(SYSBOT_API_KEY), _fp,
+        )
     if CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET:
         logger.info("Cloudflare Access Tokens: ENABLED")
     logger.info("=======================================================")

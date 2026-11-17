@@ -15,28 +15,42 @@ except ImportError:
 _BRIDGE_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _BRIDGE_DIR.parent
 
-# Load configuration from .env files (.env in sysbot_bridge, root .env, or fallback to .env.example)
+# Load configuration from .env files. The .env files are authoritative: they
+# OVERRIDE any pre-existing OS environment variable so that editing .env and
+# restarting the bridge always takes effect (a stale exported SYSBOT_API_KEY
+# used to silently win, causing 401s even though .env was correct).
+#
+# Priority (highest last / wins): OS env  <  root .env  <  sysbot_bridge/.env.
+# The bridge-local .env is loaded last so it beats the repo root .env.
 if load_dotenv is not None:
-    if (_BRIDGE_DIR / ".env").is_file():
-        load_dotenv(_BRIDGE_DIR / ".env")
     if (_REPO_ROOT / ".env").is_file():
-        load_dotenv(_REPO_ROOT / ".env")
+        load_dotenv(_REPO_ROOT / ".env", override=True)
+    if (_BRIDGE_DIR / ".env").is_file():
+        load_dotenv(_BRIDGE_DIR / ".env", override=True)
     if not os.getenv("SYSBOT_API_KEY") and (_BRIDGE_DIR / ".env.example").is_file():
         load_dotenv(_BRIDGE_DIR / ".env.example")
 else:
-    for env_path in (_BRIDGE_DIR / ".env", _REPO_ROOT / ".env", _BRIDGE_DIR / ".env.example"):
+    # Manual fallback (python-dotenv not installed). Load lowest priority first
+    # and let later files override earlier values, matching override=True above.
+    for env_path in (_REPO_ROOT / ".env", _BRIDGE_DIR / ".env"):
         if env_path.is_file():
             try:
                 for line in env_path.read_text(encoding="utf-8").splitlines():
                     clean_line = line.strip()
                     if clean_line and not clean_line.startswith("#") and "=" in clean_line:
                         k, v = clean_line.split("=", 1)
-                        k = k.strip()
-                        v = v.strip().strip("'\"")
-                        if k not in os.environ:
-                            os.environ[k] = v
+                        os.environ[k.strip()] = v.strip().strip("'\"")
             except Exception:
                 pass
+    if not os.getenv("SYSBOT_API_KEY") and (_BRIDGE_DIR / ".env.example").is_file():
+        try:
+            for line in (_BRIDGE_DIR / ".env.example").read_text(encoding="utf-8").splitlines():
+                clean_line = line.strip()
+                if clean_line and not clean_line.startswith("#") and "=" in clean_line:
+                    k, v = clean_line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+        except Exception:
+            pass
 
 # Bridge Server Host & Port (Default to 127.0.0.1 for local-only / Cloudflare Tunnel safety)
 BRIDGE_HOST = os.getenv("BRIDGE_HOST", "127.0.0.1").strip()
