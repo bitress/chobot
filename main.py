@@ -43,6 +43,7 @@ from utils.ops_status import backup_dir_path, record_service_status, start_backu
 from bots import TwitchBot, DiscordCommandBot
 from bots.flight_logger import FlightLoggerCog, FreeFlightCog
 from api import run_flask_app, set_data_manager
+from utils.bridge_launcher import start_bridge
 
 # ============================================================================
 # CONSTANTS
@@ -617,6 +618,9 @@ def main():
     except Exception:
         pass
 
+    # ---- SysBot bridge (separate process, supervised) ----------------------
+    bridge = start_bridge(STOP_EVENT)
+
     # ---- Start requested services ------------------------------------------
     threads: list[threading.Thread] = []
 
@@ -673,6 +677,10 @@ def main():
 
     if data_manager is not None:
         data_manager.stop_auto_refresh()
+
+    if bridge is not None:
+        # Keep the bridge up across OTA restarts; the new process adopts it via the port check.
+        bridge.stop(keep_running=restart_requested)
 
     for t in threads:
         try:
