@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -26,6 +27,75 @@ logger = logging.getLogger("SysBotBridge")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BRIDGE_DIR = REPO_ROOT / "sysbot_bridge"
 LOG_PATH = REPO_ROOT / "logs" / "sysbot_bridge.log"
+
+# When Chobot (re)starts, replace any bridge already on the port with a fresh
+# process instead of adopting it. This guarantees the bridge reloads the current
+# code and SYSBOT_API_KEY on every restart (an adopted/leftover bridge otherwise
+# keeps serving a stale key and 401s all callers). Set to 0 to keep the old
+# adopt-and-reuse behavior (e.g. if the bridge is run standalone via run.bat).
+REPLACE_ON_START = os.getenv("SYSBOT_BRIDGE_REPLACE_ON_START", "1").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
+
+
+def _pids_on_port(port: int) -> list[int]:
+    """Best-effort: PIDs holding a LISTENING socket on the given TCP port."""
+    pids: set[int] = set()
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                # Proto  Local Address  Foreign Address  State  PID
+                if len(parts) >= 5 and parts[3].upper() == "LISTENING" and parts[1].endswith(f":{port}"):
+                    try:
+                        pids.add(int(parts[4]))
+                    except ValueError:
+                        pass
+        else:
+            for cmd in (["ss", "-ltnpH"], ["lsof", f"-nPiTCP:{port}", "-sTCP:LISTEN", "-t"]):
+                try:
+                    out = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
+                except (FileNotFoundError, OSError, subprocess.SubprocessError):
+                    continue
+                if cmd[0] == "lsof":
+                    for tok in out.split():
+                        if tok.isdigit():
+                            pids.add(int(tok))
+                else:  # ss
+                    for line in out.splitlines():
+                        if f":{port} " in line or line.rstrip().endswith(f":{port}"):
+                            m = line.split("pid=")
+                            if len(m) > 1:
+                                num = "".join(ch for ch in m[1] if ch.isdigit())
+                                if num:
+                                    pids.add(int(num))
+                if pids:
+                    break
+    except Exception as exc:  # pragma: no cover - diagnostic only
+        logger.debug("[BRIDGE] port scan failed: %s", exc)
+    pids.discard(os.getpid())  # never target ourselves
+    return sorted(pids)
+
+
+def _kill_pid(pid: int) -> None:
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
+        else:
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(10):
+                time.sleep(0.2)
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    return
+            os.kill(pid, signal.SIGKILL)
+    except Exception as exc:
+        logger.warning("[BRIDGE] Failed to kill PID %d on bridge port: %s", pid, exc)
 
 
 def _bridge_env_value(key: str, default: str) -> str:
@@ -87,6 +157,25 @@ class BridgeSupervisor:
         logger.info("[BRIDGE] Started sysbot_bridge (PID %d) on %s:%d, log: %s",
                     self.proc.pid, self.host, self.port, LOG_PATH)
 
+    def _replace_stale_bridge(self) -> bool:
+        """Kill any process already listening on the bridge port so we can spawn
+        a fresh one. Returns True once the port is free."""
+        pids = _pids_on_port(self.port)
+        if not pids:
+            return not _port_in_use(self.host, self.port)
+        logger.warning(
+            "[BRIDGE] Replacing existing bridge on %s:%d (PID %s) with a fresh process "
+            "so it reloads current code and SYSBOT_API_KEY.",
+            self.host, self.port, ", ".join(map(str, pids)),
+        )
+        for pid in pids:
+            _kill_pid(pid)
+        for _ in range(25):  # wait up to ~5s for the port to free
+            if not _port_in_use(self.host, self.port):
+                return True
+            time.sleep(0.2)
+        return not _port_in_use(self.host, self.port)
+
     def _close_log(self) -> None:
         if self._log_fh:
             try:
@@ -116,7 +205,12 @@ class BridgeSupervisor:
 
             with self._lock:
                 if self.proc is None and not self.stop_event.is_set():
+                    # On (re)start, replace any bridge already on the port with a
+                    # fresh one so it reloads current code and the API key.
+                    if _port_in_use(self.host, self.port) and REPLACE_ON_START:
+                        self._replace_stale_bridge()
                     if _port_in_use(self.host, self.port):
+                        # Still occupied (replace disabled or failed) -> adopt it.
                         if not adopted_logged:
                             logger.info("[BRIDGE] Port %d already in use; reusing the running bridge.", self.port)
                             adopted_logged = True
