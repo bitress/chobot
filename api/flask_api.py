@@ -298,6 +298,8 @@ from api.sub_islands import sub_islands_bp
 app.register_blueprint(sub_islands_bp)
 from api.control_panel import control_panel_bp, init_control_panel_db
 app.register_blueprint(control_panel_bp)
+from api.files import files_bp
+app.register_blueprint(files_bp)
 init_dashboard_db()
 init_control_panel_db()
 record_service_status("flask", mode="api", status="running")
