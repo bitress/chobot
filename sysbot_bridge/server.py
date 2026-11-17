@@ -7,6 +7,7 @@ Exposes a single secure HTTP endpoint for Cloudflare Tunnel to connect VPS Chobo
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import logging
@@ -503,6 +504,72 @@ async def on_cleanup(app: web.Application) -> None:
     logger.info("Shared HTTP client connector closed.")
 
 
+# --- Config hot-reload watcher ------------------------------------------------
+# A running bridge loads SYSBOT_API_KEY once at startup. If the key is rotated in
+# .env, an already-running (or adopted/OTA-leftover) bridge keeps serving the old
+# key and rejects every caller with 401. Rather than kill foreign processes, the
+# bridge watches its .env files and exits when the key changes — both supervisors
+# (run.bat's :loop and Chobot's BridgeSupervisor) respawn it, picking up the new
+# key. Set SYSBOT_BRIDGE_CONFIG_WATCH_SECS=0 to disable.
+_ENV_BRIDGE = Path(__file__).resolve().parent / ".env"
+_ENV_ROOT = Path(_REPO_ROOT) / ".env"
+CONFIG_WATCH_SECS = float(os.getenv("SYSBOT_BRIDGE_CONFIG_WATCH_SECS", "10") or "10")
+
+
+def _read_disk_api_key() -> str | None:
+    """Re-read SYSBOT_API_KEY straight from the .env files (bridge wins over root).
+
+    Mirrors the override priority in config.py. Returns None if no file defines it.
+    """
+    value: str | None = None
+    for path in (_ENV_ROOT, _ENV_BRIDGE):  # lowest priority first; bridge overrides
+        try:
+            if path.is_file():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    s = line.strip()
+                    if s and not s.startswith("#") and s.startswith("SYSBOT_API_KEY="):
+                        value = s.split("=", 1)[1].strip().strip("'\"")
+        except Exception:
+            pass
+    return value
+
+
+async def _config_watcher(app: web.Application) -> None:
+    loaded = SYSBOT_API_KEY
+    loaded_fp = hashlib.sha256(loaded.encode()).hexdigest()[:8] if loaded else "none"
+    try:
+        while True:
+            await asyncio.sleep(CONFIG_WATCH_SECS)
+            current = _read_disk_api_key()
+            if not current or current == loaded:
+                continue
+            # Debounce: confirm it's a settled change, not a mid-save partial read.
+            await asyncio.sleep(1.5)
+            if _read_disk_api_key() != current or current == loaded:
+                continue
+            new_fp = hashlib.sha256(current.encode()).hexdigest()[:8]
+            logger.warning(
+                "SYSBOT_API_KEY changed on disk (loaded sha256=%s… -> now sha256=%s…); "
+                "exiting so the supervisor restarts the bridge with the new key.",
+                loaded_fp, new_fp,
+            )
+            logging.shutdown()
+            os._exit(0)  # supervisor (run.bat / BridgeSupervisor) respawns us
+    except asyncio.CancelledError:
+        pass
+
+
+async def _config_watcher_ctx(app: web.Application):
+    task = None
+    if SYSBOT_API_KEY and CONFIG_WATCH_SECS > 0:
+        task = asyncio.create_task(_config_watcher(app))
+    yield
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def create_app() -> web.Application:
     middlewares = [auth_middleware]
     if CORS_ORIGIN:
@@ -512,6 +579,7 @@ def create_app() -> web.Application:
     app = web.Application(client_max_size=32 * 1024 * 1024, middlewares=middlewares)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
+    app.cleanup_ctx.append(_config_watcher_ctx)
 
     # Core Bridge Routes
     app.router.add_get("/", handle_root)
