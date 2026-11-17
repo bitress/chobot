@@ -1,7 +1,10 @@
+import html
 import json
 import logging
 import os
 import re
+import threading
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -29,6 +32,17 @@ NOOKIPEDIA_ITEMS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "items_nookipedia.json"
 )
+
+# Villager pictures (portrait, photo, icon, house interior/exterior) from Nookipedia's public wiki tables.
+VILLAGER_MEDIA_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "villagers_media.json"
+)
+VILLAGER_MEDIA_MAX_AGE = 90 * 24 * 3600  # Refetch weekly; new villagers/images are rare.
+
+# Nookipedia Cargo field -> nh_details key the website and Discord bot read.
+_CARGO_VILLAGER_FIELDS = {"image_url": "image_url", "photo_url": "photo_url", "icon_url": "icon_url"}
+_CARGO_HOUSE_FIELDS = {"interior_image_url": "house_interior_url", "exterior_image_url": "house_exterior_url"}
 
 ZODIAC = [
     (1, 20, "Capricorn"), (2, 19, "Aquarius"), (3, 21, "Pisces"), (4, 20, "Aries"),
@@ -62,6 +76,9 @@ def _get_sign_and_bday(bday_str: str) -> tuple[str, str, str]:
         except Exception:
             return "", "", "Unknown"
     return "", "", "Unknown"
+
+
+CARGO_API_URL = "https://nookipedia.com/w/api.php"
 
 
 class NookipediaClient:
@@ -99,12 +116,120 @@ class NookipediaClient:
         if compact:
             cls._cache[compact] = villager
 
+    @staticmethod
+    def _cargo_rows(table: str, fields: list[str], key_field: str) -> list[Dict[str, str]]:
+        """All rows of a Nookipedia Cargo table (public wiki API, no key needed).
+
+        Cargo returns field names with underscores turned into spaces; they are turned back here.
+        """
+        rows: list[Dict[str, str]] = []
+        offset = 0
+        while True:
+            resp = requests.get(
+                CARGO_API_URL,
+                params={
+                    "action": "cargoquery", "format": "json", "tables": table,
+                    "fields": ",".join(fields), "limit": 500, "offset": offset,
+                    "order_by": key_field,
+                },
+                headers={"User-Agent": "chobot-villager-sync/1.0"},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if "error" in payload:
+                raise RuntimeError(payload["error"].get("info", "Cargo query failed"))
+            page = [
+                {k.replace(" ", "_"): html.unescape(v or "") for k, v in r.get("title", {}).items()}
+                for r in payload.get("cargoquery", [])
+            ]
+            rows.extend(page)
+            if len(page) < 500:
+                return rows
+            offset += 500
+
+    @classmethod
+    def _download_villager_media(cls) -> Optional[Dict[str, Dict[str, str]]]:
+        """Fetch every NH villager's portrait/photo/icon and house images from Nookipedia and save them."""
+        try:
+            media: Dict[str, Dict[str, str]] = {}
+            for row in cls._cargo_rows("nh_villager", ["name", *_CARGO_VILLAGER_FIELDS], "name"):
+                name = row.get("name", "").strip()
+                if name:
+                    media.setdefault(name, {}).update(
+                        {dest: row.get(src, "") for src, dest in _CARGO_VILLAGER_FIELDS.items() if row.get(src)}
+                    )
+            for row in cls._cargo_rows("nh_house", ["villager", *_CARGO_HOUSE_FIELDS], "villager"):
+                name = row.get("villager", "").strip()
+                if name:
+                    media.setdefault(name, {}).update(
+                        {dest: row.get(src, "") for src, dest in _CARGO_HOUSE_FIELDS.items() if row.get(src)}
+                    )
+        except Exception as e:
+            logger.warning(f"[NOOKIPEDIA] Villager media download failed: {e}")
+            return None
+
+        if not media:
+            return None
+        try:
+            with open(VILLAGER_MEDIA_PATH, "w", encoding="utf-8") as f:
+                json.dump({"fetched_at": int(time.time()), "villagers": media}, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[NOOKIPEDIA] Failed to write {VILLAGER_MEDIA_PATH}: {e}")
+        logger.info(f"[NOOKIPEDIA] Downloaded pictures for {len(media)} villagers from Nookipedia.")
+        return media
+
+    @classmethod
+    def _apply_villager_media(cls, media: Dict[str, Dict[str, str]]) -> None:
+        """Overlay Nookipedia pictures onto the cached villagers (cache values are shared dicts)."""
+        applied = 0
+        for name, urls in media.items():
+            villager = cls._cache.get(name.strip().lower()) or cls._cache.get(cls._normalize_name(name))
+            if not villager or not urls:
+                continue
+            nh = villager.setdefault("nh_details", {})
+            nh.update(urls)
+            if urls.get("image_url"):
+                villager["image_url"] = urls["image_url"]
+            applied += 1
+        logger.info(f"[NOOKIPEDIA] Applied Nookipedia pictures to {applied} villagers.")
+
+    @classmethod
+    def _ensure_villager_media(cls) -> None:
+        """Load saved villager pictures, downloading them if missing and refreshing them in the background if stale."""
+        saved: Dict[str, Any] = {}
+        if os.path.exists(VILLAGER_MEDIA_PATH):
+            try:
+                with open(VILLAGER_MEDIA_PATH, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+            except Exception as e:
+                logger.error(f"[NOOKIPEDIA] Failed to read {VILLAGER_MEDIA_PATH}: {e}")
+
+        if saved.get("villagers"):
+            cls._apply_villager_media(saved["villagers"])
+            if time.time() - saved.get("fetched_at", 0) > VILLAGER_MEDIA_MAX_AGE:
+                def _refresh() -> None:
+                    fresh = cls._download_villager_media()
+                    if fresh:
+                        cls._apply_villager_media(fresh)
+                threading.Thread(target=_refresh, name="nookipedia-media-refresh", daemon=True).start()
+            return
+
+        fresh = cls._download_villager_media()
+        if fresh:
+            cls._apply_villager_media(fresh)
+
     @classmethod
     def _ensure_loaded(cls) -> None:
         """Load villagers.json into memory if exists, or download once on initial start."""
         if cls._is_loaded and cls._cache:
             return
+        cls._load_villagers()
+        if cls._cache:
+            cls._ensure_villager_media()
 
+    @classmethod
+    def _load_villagers(cls) -> None:
         if os.path.exists(VILLAGERS_JSON_PATH):
             try:
                 with open(VILLAGERS_JSON_PATH, "r", encoding="utf-8") as f:

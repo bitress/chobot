@@ -1,0 +1,2918 @@
+{
+  "fetched_at": 1794920498,
+  "villagers": {
+    "Ace": {
+      "image_url": "https://dodo.ac/np/images/9/91/Ace_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/1/12/Ace%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4f/Ace_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d5/House_of_Ace_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/25/House_of_Ace_NH_Model.png"
+    },
+    "Admiral": {
+      "image_url": "https://dodo.ac/np/images/e/ed/Admiral_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/0a/Admiral%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/82/Admiral_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e2/House_of_Admiral_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/8/8b/House_of_Admiral_NH_Model.png"
+    },
+    "Agent S": {
+      "image_url": "https://dodo.ac/np/images/a/a7/Agent_S_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b3/Agent_S%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/51/Agent_S_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/29/House_of_Agent_S_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/ca/House_of_Agent_S_NH_Model.png"
+    },
+    "Agnes": {
+      "image_url": "https://dodo.ac/np/images/4/42/Agnes_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/27/Agnes%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/27/Agnes_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f2/House_of_Agnes_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/89/House_of_Agnes_NH_Model.png"
+    },
+    "Al": {
+      "image_url": "https://dodo.ac/np/images/c/c4/Al_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/7e/Al%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/62/Al_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/87/House_of_Al_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/ea/House_of_Al_NH_Model.png"
+    },
+    "Alfonso": {
+      "image_url": "https://dodo.ac/np/images/e/e4/Alfonso_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e8/Alfonso%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0a/Alfonso_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/10/House_of_Alfonso_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7c/House_of_Alfonso_NH_Model.png"
+    },
+    "Alice": {
+      "image_url": "https://dodo.ac/np/images/e/e1/Alice_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/73/Alice%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1f/Alice_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/9b/House_of_Alice_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/44/House_of_Alice_NH_Model.png"
+    },
+    "Alli": {
+      "image_url": "https://dodo.ac/np/images/8/8e/Alli_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/71/Alli%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/54/Alli_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/cf/House_of_Alli_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5e/House_of_Alli_NH_Model.png"
+    },
+    "Amelia": {
+      "image_url": "https://dodo.ac/np/images/a/ab/Amelia_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c3/Amelia%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d9/Amelia_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/4c/House_of_Amelia_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/44/House_of_Amelia_NH_Model.png"
+    },
+    "Anabelle": {
+      "image_url": "https://dodo.ac/np/images/d/d8/Anabelle_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/25/Anabelle%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/ba/Anabelle_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b9/House_of_Anabelle_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/9/96/House_of_Anabelle_NH_Model.png"
+    },
+    "Anchovy": {
+      "image_url": "https://dodo.ac/np/images/e/ea/Anchovy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a0/Anchovy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/81/Anchovy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/86/House_of_Anchovy_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/3/35/House_of_Anchovy_NH_Model.png"
+    },
+    "Angus": {
+      "image_url": "https://dodo.ac/np/images/5/5f/Angus_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/32/Angus%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e4/Angus_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/37/House_of_Angus_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/30/House_of_Angus_NH_Model.png"
+    },
+    "Anicotti": {
+      "image_url": "https://dodo.ac/np/images/8/80/Anicotti_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b1/Anicotti%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/07/Anicotti_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f3/House_of_Anicotti_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6c/House_of_Anicotti_NH_Model.png"
+    },
+    "Ankha": {
+      "image_url": "https://dodo.ac/np/images/5/56/Ankha_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/ae/Ankha%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1c/Ankha_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/86/House_of_Ankha_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0e/House_of_Ankha_NH_Model.png"
+    },
+    "Annalisa": {
+      "image_url": "https://dodo.ac/np/images/f/f0/Annalisa_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/68/Annalisa%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/3d/Annalisa_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e1/House_of_Annalisa_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4f/House_of_Annalisa_NH_Model.png"
+    },
+    "Annalise": {
+      "image_url": "https://dodo.ac/np/images/c/c4/Annalise_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b3/Annalise%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/54/Annalise_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/28/House_of_Annalise_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a7/House_of_Annalise_NH_Model.png"
+    },
+    "Antonio": {
+      "image_url": "https://dodo.ac/np/images/d/d4/Antonio_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/89/Antonio%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/34/Antonio_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/76/House_of_Antonio_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/18/House_of_Antonio_NH_Model.png"
+    },
+    "Apollo": {
+      "image_url": "https://dodo.ac/np/images/0/0e/Apollo_NH_Transparent.png",
+      "photo_url": "https://dodo.ac/np/images/2/25/Apollo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0b/Apollo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f2/House_of_Apollo_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c6/House_of_Apollo_NH_Model.png"
+    },
+    "Apple": {
+      "image_url": "https://dodo.ac/np/images/5/57/Apple_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/71/Apple%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/91/Apple_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f3/House_of_Apple_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f3/House_of_Apple_NH_Model.png"
+    },
+    "Astrid": {
+      "image_url": "https://dodo.ac/np/images/d/d5/Astrid_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/94/Astrid%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/2a/Astrid_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/ce/House_of_Astrid_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1b/House_of_Astrid_NH_Model.png"
+    },
+    "Audie": {
+      "image_url": "https://dodo.ac/np/images/1/1b/Audie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/66/Audie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/9e/Audie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/24/House_of_Audie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1e/House_of_Audie_NH_Model.png"
+    },
+    "Aurora": {
+      "image_url": "https://dodo.ac/np/images/5/59/Aurora_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/ce/Aurora%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/25/Aurora_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/35/House_of_Aurora_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f2/House_of_Aurora_NH_Model.png"
+    },
+    "Ava": {
+      "image_url": "https://dodo.ac/np/images/c/cc/Ava_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d6/Ava%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/73/Ava_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/09/House_of_Ava_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/25/House_of_Ava_NH_Model.png"
+    },
+    "Avery": {
+      "image_url": "https://dodo.ac/np/images/d/dd/Avery_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9c/Avery%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e2/Avery_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7e/House_of_Avery_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/cf/House_of_Avery_NH_Model.png"
+    },
+    "Axel": {
+      "image_url": "https://dodo.ac/np/images/0/09/Axel_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e3/Axel%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/93/Axel_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/0e/House_of_Axel_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/38/House_of_Axel_NH_Model.png"
+    },
+    "Azalea": {
+      "image_url": "https://dodo.ac/np/images/e/ef/Azalea_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/0/0e/Azalea%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d4/Azalea_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/06/House_of_Azalea_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d1/House_of_Azalea_NH_Exterior.jpg"
+    },
+    "Baabara": {
+      "image_url": "https://dodo.ac/np/images/d/df/Baabara_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/80/Baabara%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4c/Baabara_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/89/House_of_Baabara_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/13/House_of_Baabara_NH_Model.png"
+    },
+    "Bam": {
+      "image_url": "https://dodo.ac/np/images/2/2b/Bam_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/ec/Bam%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/fd/Bam_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/65/House_of_Bam_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/14/House_of_Bam_NH_Model.png"
+    },
+    "Bangle": {
+      "image_url": "https://dodo.ac/np/images/6/68/Bangle_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/34/Bangle%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/ec/Bangle_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8a/House_of_Bangle_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/ef/House_of_Bangle_NH_Model.png"
+    },
+    "Barold": {
+      "image_url": "https://dodo.ac/np/images/9/9d/Barold_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/57/Barold%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b5/Barold_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7e/House_of_Barold_NH_2.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/bf/House_of_Barold_NH_Model.png"
+    },
+    "Bea": {
+      "image_url": "https://dodo.ac/np/images/c/c2/Bea_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c1/Bea%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f6/Bea_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/ea/House_of_Bea_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/01/House_of_Bea_NH_Model.png"
+    },
+    "Beardo": {
+      "image_url": "https://dodo.ac/np/images/c/c0/Beardo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/46/Beardo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/89/Beardo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/ca/House_of_Beardo_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/44/House_of_Beardo_NH_Model.png"
+    },
+    "Beau": {
+      "image_url": "https://dodo.ac/np/images/d/d4/Beau_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8f/Beau%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d3/Beau_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7b/House_of_Beau_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/45/House_of_Beau_NH_Model.png"
+    },
+    "Becky": {
+      "image_url": "https://dodo.ac/np/images/7/74/Becky_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/4f/Becky%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0c/Becky_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/54/House_of_Becky_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/53/House_of_Becky_NH_Model.png"
+    },
+    "Bella": {
+      "image_url": "https://dodo.ac/np/images/c/c0/Bella_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6b/Bella%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/53/Bella_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/32/House_of_Bella_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1f/House_of_Bella_NH_Model.png"
+    },
+    "Benedict": {
+      "image_url": "https://dodo.ac/np/images/3/3a/Benedict_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a9/Benedict%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/40/Benedict_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/1b/House_of_Benedict_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/13/House_of_Benedict_NH_Model.png"
+    },
+    "Benjamin": {
+      "image_url": "https://dodo.ac/np/images/9/97/Benjamin_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9e/Benjamin%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/57/Benjamin_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/9a/House_of_Benjamin_NH_2.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a2/House_of_Benjamin_NH_Model.png"
+    },
+    "Bertha": {
+      "image_url": "https://dodo.ac/np/images/a/a7/Bertha_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/48/Bertha%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/78/Bertha_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d3/House_of_Bertha_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/06/House_of_Bertha_NH_Model.png"
+    },
+    "Bettina": {
+      "image_url": "https://dodo.ac/np/images/b/bd/Bettina_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/0c/Bettina%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a5/Bettina_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/44/House_of_Bettina_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/93/House_of_Bettina_NH_Model.png"
+    },
+    "Bianca": {
+      "image_url": "https://dodo.ac/np/images/6/6f/Bianca_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/79/Bianca%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/ab/Bianca_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/76/House_of_Bianca_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6a/House_of_Bianca_NH_Model.png"
+    },
+    "Biff": {
+      "image_url": "https://dodo.ac/np/images/9/9c/Biff_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6e/Biff%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/07/Biff_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/19/House_of_Biff_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4c/House_of_Biff_NH_Model.png"
+    },
+    "Big Top": {
+      "image_url": "https://dodo.ac/np/images/8/80/Big_Top_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/47/Big_Top%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4a/Big_Top_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/88/House_of_Big_Top_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c5/House_of_Big_Top_NH_Model.png"
+    },
+    "Bill": {
+      "image_url": "https://dodo.ac/np/images/c/c1/Bill_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/11/Bill%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0e/Bill_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e4/House_of_Bill_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4d/House_of_Bill_NH_Model.png"
+    },
+    "Billy": {
+      "image_url": "https://dodo.ac/np/images/2/26/Billy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/72/Billy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d1/Billy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/0e/House_of_Billy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f4/House_of_Billy_NH_Model.png"
+    },
+    "Biskit": {
+      "image_url": "https://dodo.ac/np/images/7/78/Biskit_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e2/Biskit%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/25/Biskit_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/ca/House_of_Biskit_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6e/House_of_Biskit_NH_Model.png"
+    },
+    "Bitty": {
+      "image_url": "https://dodo.ac/np/images/7/74/Bitty_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9a/Bitty%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/43/Bitty_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f2/House_of_Bitty_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/9a/House_of_Bitty_NH_Model.png"
+    },
+    "Blaire": {
+      "image_url": "https://dodo.ac/np/images/7/73/Blaire_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9c/Blaire%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/ac/Blaire_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/2a/House_of_Blaire_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e1/House_of_Blaire_NH_Model.png"
+    },
+    "Blanche": {
+      "image_url": "https://dodo.ac/np/images/d/df/Blanche_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/60/Blanche%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/28/Blanche_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7a/House_of_Blanche_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e2/House_of_Blanche_NH_Model.png"
+    },
+    "Bluebear": {
+      "image_url": "https://dodo.ac/np/images/4/49/Bluebear_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1c/Bluebear%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/52/Bluebear_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/26/House_of_Bluebear_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/95/House_of_Bluebear_NH_Model.png"
+    },
+    "Bob": {
+      "image_url": "https://dodo.ac/np/images/e/ea/Bob_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8e/Bob%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f4/Bob_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e1/House_of_Bob_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e4/House_of_Bob_NH_Model.png"
+    },
+    "Bonbon": {
+      "image_url": "https://dodo.ac/np/images/c/cc/Bonbon_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9d/Bonbon%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/3a/Bonbon_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bf/House_of_Bonbon_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/65/House_of_Bonbon_NH_Model.png"
+    },
+    "Bones": {
+      "image_url": "https://dodo.ac/np/images/2/2b/Bones_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/21/Bones%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/41/Bones_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/3c/House_of_Bones_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/7/76/House_of_Bones_NH_Model.png"
+    },
+    "Boomer": {
+      "image_url": "https://dodo.ac/np/images/7/7d/Boomer_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a7/Boomer%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/5e/Boomer_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5e/House_of_Boomer_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/63/House_of_Boomer_NH_Model.png"
+    },
+    "Boone": {
+      "image_url": "https://dodo.ac/np/images/1/19/Boone_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/24/Boone%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/7e/Boone_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f9/House_of_Boone_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/97/House_of_Boone_NH_Model.png"
+    },
+    "Boots": {
+      "image_url": "https://dodo.ac/np/images/3/3e/Boots_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/81/Boots%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/56/Boots_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/66/House_of_Boots_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/6/65/House_of_Boots_NH_Model.png"
+    },
+    "Boris": {
+      "image_url": "https://dodo.ac/np/images/e/ef/Boris_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/71/Boris%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/cc/Boris_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/ef/House_of_Boris_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3d/House_of_Boris_NH_Model.png"
+    },
+    "Boyd": {
+      "image_url": "https://dodo.ac/np/images/2/21/Boyd_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/24/Boyd%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/5b/Boyd_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7b/House_of_Boyd_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/93/House_of_Boyd_NH_Model.png"
+    },
+    "Bree": {
+      "image_url": "https://dodo.ac/np/images/1/12/Bree_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bd/Bree%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/2d/Bree_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8a/House_of_Bree_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1b/House_of_Bree_NH_Model.png"
+    },
+    "Broccolo": {
+      "image_url": "https://dodo.ac/np/images/6/69/Broccolo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/73/Broccolo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b9/Broccolo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/51/House_of_Broccolo_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/22/House_of_Broccolo_NH_Model.png"
+    },
+    "Broffina": {
+      "image_url": "https://dodo.ac/np/images/7/7a/Broffina_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/25/Broffina%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/eb/Broffina_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/68/House_of_Broffina_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/65/House_of_Broffina_NH_Model.png"
+    },
+    "Bruce": {
+      "image_url": "https://dodo.ac/np/images/0/08/Bruce_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/0e/Bruce%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/9b/Bruce_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b5/House_of_Bruce_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/91/House_of_Bruce_NH_Model.png"
+    },
+    "Bubbles": {
+      "image_url": "https://dodo.ac/np/images/0/0e/Bubbles_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6b/Bubbles%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1d/Bubbles_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f1/House_of_Bubbles_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/73/House_of_Bubbles_NH_Model.png"
+    },
+    "Buck": {
+      "image_url": "https://dodo.ac/np/images/7/7f/Buck_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c6/Buck%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1f/Buck_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a3/House_of_Buck_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/23/House_of_Buck_NH_Model.png"
+    },
+    "Bud": {
+      "image_url": "https://dodo.ac/np/images/1/1f/Bud_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/ce/Bud%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/34/Bud_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/71/House_of_Bud_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3d/House_of_Bud_NH_Model.png"
+    },
+    "Bunnie": {
+      "image_url": "https://dodo.ac/np/images/b/b2/Bunnie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f9/Bunnie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f5/Bunnie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f9/House_of_Bunnie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/62/House_of_Bunnie_NH_Model.png"
+    },
+    "Butch": {
+      "image_url": "https://dodo.ac/np/images/2/2b/Butch_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/85/Butch%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/52/Butch_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/08/House_of_Butch_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/06/House_of_Butch_NH_Model.png"
+    },
+    "Buzz": {
+      "image_url": "https://dodo.ac/np/images/0/05/Buzz_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/71/Buzz%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e5/Buzz_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/24/House_of_Buzz_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/cb/House_of_Buzz_NH_Model.png"
+    },
+    "Cally": {
+      "image_url": "https://dodo.ac/np/images/a/a6/Cally_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d5/Cally%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c0/Cally_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5b/House_of_Cally_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/78/House_of_Cally_NH_Model.png"
+    },
+    "Camofrog": {
+      "image_url": "https://dodo.ac/np/images/e/e1/Camofrog_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9f/Camofrog%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/ff/Camofrog_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f1/House_of_Camofrog_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/58/House_of_Camofrog_NH_Model.png"
+    },
+    "Canberra": {
+      "image_url": "https://dodo.ac/np/images/e/e6/Canberra_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/95/Canberra%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/62/Canberra_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/17/House_of_Canberra_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5b/House_of_Canberra_NH_Model.png"
+    },
+    "Candi": {
+      "image_url": "https://dodo.ac/np/images/5/57/Candi_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a4/Candi%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/6e/Candi_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a8/House_of_Candi_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7f/House_of_Candi_NH_Model.png"
+    },
+    "Carmen": {
+      "image_url": "https://dodo.ac/np/images/e/eb/Carmen_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bc/Carmen%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/08/Carmen_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b6/House_of_Carmen_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/24/House_of_Carmen_NH_Model.png"
+    },
+    "Caroline": {
+      "image_url": "https://dodo.ac/np/images/2/26/Caroline_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/00/Caroline%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d8/Caroline_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/99/House_of_Caroline_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f1/House_of_Caroline_NH_Model.png"
+    },
+    "Carrie": {
+      "image_url": "https://dodo.ac/np/images/6/6a/Carrie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e5/Carrie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/88/Carrie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/26/House_of_Carrie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e0/House_of_Carrie_NH_Model.png"
+    },
+    "Cashmere": {
+      "image_url": "https://dodo.ac/np/images/e/eb/Cashmere_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/37/Cashmere%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/5f/Cashmere_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/30/House_of_Cashmere_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/08/House_of_Cashmere_NH_Model.png"
+    },
+    "Cece": {
+      "image_url": "https://dodo.ac/np/images/9/91/Cece_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/ec/Cece%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/af/Cece_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/95/House_of_Cece_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/bc/House_of_Cece_NH_Model.png"
+    },
+    "Celia": {
+      "image_url": "https://dodo.ac/np/images/0/00/Celia_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/2c/Celia%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b2/Celia_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/20/House_of_Celia_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0a/House_of_Celia_NH_Model.png"
+    },
+    "Cephalobot": {
+      "image_url": "https://dodo.ac/np/images/b/b5/Cephalobot_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/b/b3/Cephalobot%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c3/Cephalobot_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/09/House_of_Cephalobot_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/de/House_of_Cephalobot_NH_Model.png"
+    },
+    "Cesar": {
+      "image_url": "https://dodo.ac/np/images/2/23/Cesar_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bd/Cesar%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/20/Cesar_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b2/House_of_Cesar_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/ce/House_of_Cesar_NH_Model.png"
+    },
+    "Chabwick": {
+      "image_url": "https://dodo.ac/np/images/6/60/Chabwick_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/d/d2/Chabwick%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0d/Chabwick_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/96/House_of_Chabwick_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0f/House_of_Chabwick_NH_Exterior.jpg"
+    },
+    "Chadder": {
+      "image_url": "https://dodo.ac/np/images/3/32/Chadder_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c0/Chadder%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/ef/Chadder_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f4/House_of_Chadder_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/62/House_of_Chadder_NH_Model.png"
+    },
+    "Chai": {
+      "photo_url": "https://dodo.ac/np/images/5/51/Chai%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/ac/Chai_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/0a/House_of_Chai_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d1/House_of_Chai_NH_Model.png"
+    },
+    "Charlise": {
+      "image_url": "https://dodo.ac/np/images/a/ac/Charlise_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/14/Charlise%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/aa/Charlise_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5c/House_of_Charlise_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f0/House_of_Charlise_NH_Model.png"
+    },
+    "Chelsea": {
+      "photo_url": "https://dodo.ac/np/images/0/04/Chelsea%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/40/Chelsea_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/25/House_of_Chelsea_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a8/House_of_Chelsea_NH_Model.png"
+    },
+    "Cheri": {
+      "image_url": "https://dodo.ac/np/images/d/d5/Cheri_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/85/Cheri%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/96/Cheri_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/09/House_of_Cheri_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/9d/House_of_Cheri_NH_Model.png"
+    },
+    "Cherry": {
+      "image_url": "https://dodo.ac/np/images/3/3e/Cherry_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bc/Cherry%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/73/Cherry_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f8/House_of_Cherry_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/64/House_of_Cherry_NH_Model.png"
+    },
+    "Chester": {
+      "image_url": "https://dodo.ac/np/images/a/af/Chester_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c7/Chester%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/cd/Chester_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/24/House_of_Chester_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c8/House_of_Chester_NH_Model.png"
+    },
+    "Chevre": {
+      "image_url": "https://dodo.ac/np/images/c/c9/Chevre_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/ea/Chevre%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/db/Chevre_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/47/House_of_Chevre_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5f/House_of_Chevre_NH_Model.png"
+    },
+    "Chief": {
+      "image_url": "https://dodo.ac/np/images/1/13/Chief_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/08/Chief%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e6/Chief_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/98/House_of_Chief_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/ac/House_of_Chief_NH_Model.png"
+    },
+    "Chops": {
+      "image_url": "https://dodo.ac/np/images/3/32/Chops_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/29/Chops%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/fd/Chops_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/57/House_of_Chops_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5d/House_of_Chops_NH_Model.png"
+    },
+    "Chow": {
+      "image_url": "https://dodo.ac/np/images/d/d1/Chow_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8a/Chow%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b5/Chow_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5b/House_of_Chow_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4b/House_of_Chow_NH_Model.png"
+    },
+    "Chrissy": {
+      "image_url": "https://dodo.ac/np/images/6/6a/Chrissy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c3/Chrissy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/43/Chrissy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/49/House_of_Chrissy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/fc/House_of_Chrissy_NH_Model.png"
+    },
+    "Claude": {
+      "image_url": "https://dodo.ac/np/images/1/1f/Claude_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/15/Claude%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d3/Claude_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/14/House_of_Claude_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b5/House_of_Claude_NH_Model.png"
+    },
+    "Claudia": {
+      "image_url": "https://dodo.ac/np/images/d/d6/Claudia_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bf/Claudia%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0d/Claudia_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f3/House_of_Claudia_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/48/House_of_Claudia_NH_Model.png"
+    },
+    "Clay": {
+      "image_url": "https://dodo.ac/np/images/6/6c/Clay_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/71/Clay%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/20/Clay_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/66/House_of_Clay_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/db/House_of_Clay_NH_Model.png"
+    },
+    "Cleo": {
+      "image_url": "https://dodo.ac/np/images/e/e9/Cleo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f9/Cleo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4a/Cleo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/ef/House_of_Cleo_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d2/House_of_Cleo_NH_Model.png"
+    },
+    "Clyde": {
+      "image_url": "https://dodo.ac/np/images/b/bb/Clyde_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f3/Clyde%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/5a/Clyde_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/07/House_of_Clyde_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a5/House_of_Clyde_NH_Model.png"
+    },
+    "Coach": {
+      "image_url": "https://dodo.ac/np/images/c/c1/Coach_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8d/Coach%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/76/Coach_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/82/House_of_Coach_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/ae/House_of_Coach_NH_Model.png"
+    },
+    "Cobb": {
+      "image_url": "https://dodo.ac/np/images/9/9d/Cobb_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/16/Cobb%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/ce/Cobb_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5a/House_of_Cobb_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/04/House_of_Cobb_NH_Model.png"
+    },
+    "Coco": {
+      "image_url": "https://dodo.ac/np/images/8/83/Coco_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d2/Coco%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c2/Coco_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/13/House_of_Coco_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6d/House_of_Coco_NH_Model.png"
+    },
+    "Cole": {
+      "image_url": "https://dodo.ac/np/images/f/f6/Cole_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/59/Cole%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/79/Cole_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a3/House_of_Cole_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5f/House_of_Cole_NH_Model.png"
+    },
+    "Colton": {
+      "image_url": "https://dodo.ac/np/images/8/8c/Colton_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/4a/Colton%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c5/Colton_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f4/House_of_Colton_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/21/House_of_Colton_NH_Model.png"
+    },
+    "Cookie": {
+      "image_url": "https://dodo.ac/np/images/d/d9/Cookie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/94/Cookie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d9/Cookie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b5/House_of_Cookie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b7/House_of_Cookie_NH_Model.png"
+    },
+    "Cousteau": {
+      "image_url": "https://dodo.ac/np/images/1/1c/Cousteau_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/01/Cousteau%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/3a/Cousteau_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/1d/House_of_Cousteau_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3c/House_of_Cousteau_NH_Model.png"
+    },
+    "Cranston": {
+      "image_url": "https://dodo.ac/np/images/b/b7/Cranston_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/39/Cranston%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/8a/Cranston_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bf/House_of_Cranston_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/2/24/House_of_Cranston_NH_Model.png"
+    },
+    "Croque": {
+      "image_url": "https://dodo.ac/np/images/7/70/Croque_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/eb/Croque%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/75/Croque_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d5/House_of_Croque_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/70/House_of_Croque_NH_Model.png"
+    },
+    "Cube": {
+      "image_url": "https://dodo.ac/np/images/1/10/Cube_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/73/Cube%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/be/Cube_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c8/House_of_Cube_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/68/House_of_Cube_NH_Model.png"
+    },
+    "Curlos": {
+      "image_url": "https://dodo.ac/np/images/3/37/Curlos_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c6/Curlos%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d0/Curlos_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/74/House_of_Curlos_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/16/House_of_Curlos_NH_Model.png"
+    },
+    "Curly": {
+      "image_url": "https://dodo.ac/np/images/3/3d/Curly_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/73/Curly%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a3/Curly_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/59/House_of_Curly_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/12/House_of_Curly_NH_Model.png"
+    },
+    "Curt": {
+      "image_url": "https://dodo.ac/np/images/2/27/Curt_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/40/Curt%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f5/Curt_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/72/House_of_Curt_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4b/House_of_Curt_NH_Model.png"
+    },
+    "Cyd": {
+      "image_url": "https://dodo.ac/np/images/5/5d/Cyd_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1e/Cyd%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/42/Cyd_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/27/House_of_Cyd_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/ab/House_of_Cyd_NH_Model.png"
+    },
+    "Cyrano": {
+      "image_url": "https://dodo.ac/np/images/4/48/Cyrano_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/02/Cyrano%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b4/Cyrano_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f5/House_of_Cyrano_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/25/House_of_Cyrano_NH_Model.png"
+    },
+    "Daisy": {
+      "image_url": "https://dodo.ac/np/images/9/96/Daisy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f0/Daisy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4a/Daisy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/71/House_of_Daisy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/83/House_of_Daisy_NH_Model.png"
+    },
+    "Deena": {
+      "image_url": "https://dodo.ac/np/images/b/b8/Deena_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/63/Deena%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b9/Deena_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/66/House_of_Deena_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/05/House_of_Deena_NH_Model.png"
+    },
+    "Deirdre": {
+      "image_url": "https://dodo.ac/np/images/3/3c/Deirdre_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/08/Deirdre%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/3a/Deirdre_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e6/House_of_Deirdre_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3d/House_of_Deirdre_NH_Model.png"
+    },
+    "Del": {
+      "image_url": "https://dodo.ac/np/images/4/46/Del_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c7/Del%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/8b/Del_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5c/House_of_Del_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4c/House_of_Del_NH_Model.png"
+    },
+    "Deli": {
+      "image_url": "https://dodo.ac/np/images/3/30/Deli_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/ff/Deli%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/da/Deli_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b0/House_of_Deli_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/74/House_of_Deli_NH_Model.png"
+    },
+    "Derwin": {
+      "image_url": "https://dodo.ac/np/images/9/98/Derwin_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1a/Derwin%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/62/Derwin_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/66/House_of_Derwin_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/ff/House_of_Derwin_NH_Model.png"
+    },
+    "Diana": {
+      "image_url": "https://dodo.ac/np/images/1/1f/Diana_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a4/Diana%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c3/Diana_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/32/House_of_Diana_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/71/House_of_Diana_NH_Model.png"
+    },
+    "Diva": {
+      "image_url": "https://dodo.ac/np/images/4/44/Diva_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c1/Diva%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/5b/Diva_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/4e/House_of_Diva_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/55/House_of_Diva_NH_Model.png"
+    },
+    "Dizzy": {
+      "image_url": "https://dodo.ac/np/images/6/63/Dizzy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1f/Dizzy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/77/Dizzy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/49/House_of_Dizzy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/64/House_of_Dizzy_NH_Model.png"
+    },
+    "Dobie": {
+      "image_url": "https://dodo.ac/np/images/7/76/Dobie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1e/Dobie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/ab/Dobie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/34/House_of_Dobie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3a/House_of_Dobie_NH_Model.png"
+    },
+    "Doc": {
+      "image_url": "https://dodo.ac/np/images/c/cd/Doc_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/40/Doc%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/6b/Doc_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d4/House_of_Doc_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/80/House_of_Doc_NH_Model.png"
+    },
+    "Dom": {
+      "image_url": "https://dodo.ac/np/images/7/75/Dom_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8b/Dom%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e1/Dom_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d7/House_of_Dom_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a1/House_of_Dom_NH_Model.png"
+    },
+    "Dora": {
+      "image_url": "https://dodo.ac/np/images/d/de/Dora_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/52/Dora%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/7f/Dora_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/25/House_of_Dora_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/98/House_of_Dora_NH_Model.png"
+    },
+    "Dotty": {
+      "image_url": "https://dodo.ac/np/images/c/cc/Dotty_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b1/Dotty%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c7/Dotty_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/87/House_of_Dotty_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/32/House_of_Dotty_NH_Model.png"
+    },
+    "Drago": {
+      "image_url": "https://dodo.ac/np/images/f/f9/Drago_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d4/Drago%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/bd/Drago_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c3/House_of_Drago_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/71/House_of_Drago_NH_Model.png"
+    },
+    "Drake": {
+      "image_url": "https://dodo.ac/np/images/e/e0/Drake_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/0d/Drake%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/be/Drake_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5f/House_of_Drake_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/6/64/House_of_Drake_NH_Model.png"
+    },
+    "Drift": {
+      "image_url": "https://dodo.ac/np/images/a/ac/Drift_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/49/Drift%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a7/Drift_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5f/House_of_Drift_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/17/House_of_Drift_NH_Model.png"
+    },
+    "Ed": {
+      "image_url": "https://dodo.ac/np/images/c/c9/Ed_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/49/Ed%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4e/Ed_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/ba/House_of_Ed_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c3/House_of_Ed_NH_Model.png"
+    },
+    "Egbert": {
+      "image_url": "https://dodo.ac/np/images/3/3f/Egbert_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/65/Egbert%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c3/Egbert_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bd/House_of_Egbert_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5e/House_of_Egbert_NH_Model.png"
+    },
+    "Elise": {
+      "image_url": "https://dodo.ac/np/images/0/0c/Elise_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/3c/Elise%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/28/Elise_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7a/House_of_Elise_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/ef/House_of_Elise_NH_Model.png"
+    },
+    "Ellie": {
+      "image_url": "https://dodo.ac/np/images/3/38/Ellie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/3d/Ellie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b3/Ellie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7c/House_of_Ellie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/00/House_of_Ellie_NH_Model.png"
+    },
+    "Elmer": {
+      "image_url": "https://dodo.ac/np/images/6/60/Elmer_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/09/Elmer%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b1/Elmer_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/87/House_of_Elmer_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/ca/House_of_Elmer_NH_Model.png"
+    },
+    "Eloise": {
+      "image_url": "https://dodo.ac/np/images/b/b1/Eloise_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/65/Eloise%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/bb/Eloise_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/1c/House_of_Eloise_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/19/House_of_Eloise_NH_Model.png"
+    },
+    "Elvis": {
+      "image_url": "https://dodo.ac/np/images/c/cc/Elvis_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/76/Elvis%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/2a/Elvis_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a7/House_of_Elvis_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/8b/House_of_Elvis_NH_Model.png"
+    },
+    "Erik": {
+      "image_url": "https://dodo.ac/np/images/8/88/Erik_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/ed/Erik%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b7/Erik_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c2/House_of_Erik_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0c/House_of_Erik_NH_Model.png"
+    },
+    "Étoile": {
+      "photo_url": "https://dodo.ac/np/images/0/03/%C3%89toile%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/21/%C3%89toile_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5c/House_of_%C3%89toile_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7c/House_of_%C3%89toile_NH_Model.png"
+    },
+    "Eugene": {
+      "image_url": "https://dodo.ac/np/images/a/ab/Eugene_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/4b/Eugene%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/02/Eugene_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/ca/House_of_Eugene_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/34/House_of_Eugene_NH_Model.png"
+    },
+    "Eunice": {
+      "image_url": "https://dodo.ac/np/images/9/97/Eunice_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1b/Eunice%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/55/Eunice_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b3/House_of_Eunice_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7c/House_of_Eunice_NH_Model.png"
+    },
+    "Faith": {
+      "image_url": "https://dodo.ac/np/images/5/58/Faith_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/0/09/Faith%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f9/Faith_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/96/House_of_Faith_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/87/House_of_Faith_NH_Exterior.jpg"
+    },
+    "Fang": {
+      "image_url": "https://dodo.ac/np/images/9/9d/Fang_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8d/Fang%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/75/Fang_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/4f/House_of_Fang_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a1/House_of_Fang_NH_Model.png"
+    },
+    "Fauna": {
+      "image_url": "https://dodo.ac/np/images/9/91/Fauna_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a5/Fauna%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/29/Fauna_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/6d/House_of_Fauna_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/8d/House_of_Fauna_NH_Model.png"
+    },
+    "Felicity": {
+      "image_url": "https://dodo.ac/np/images/c/c7/Felicity_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/48/Felicity%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f3/Felicity_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/4d/House_of_Felicity_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5b/House_of_Felicity_NH_Model.png"
+    },
+    "Filbert": {
+      "image_url": "https://dodo.ac/np/images/8/81/Filbert_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/4e/Filbert%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/70/Filbert_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/2b/House_of_Filbert_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1a/House_of_Filbert_NH_Model.png"
+    },
+    "Flip": {
+      "image_url": "https://dodo.ac/np/images/c/c3/Flip_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b4/Flip%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f3/Flip_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7b/House_of_Flip_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3f/House_of_Flip_NH_Model.png"
+    },
+    "Flo": {
+      "image_url": "https://dodo.ac/np/images/b/bb/Flo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/74/Flo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/37/Flo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/55/House_of_Flo_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/26/House_of_Flo_NH_Model.png"
+    },
+    "Flora": {
+      "image_url": "https://dodo.ac/np/images/8/8e/Flora_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/10/Flora%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/04/Flora_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/13/House_of_Flora_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/db/House_of_Flora_NH_Model.png"
+    },
+    "Flurry": {
+      "image_url": "https://dodo.ac/np/images/0/03/Flurry_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/96/Flurry%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c7/Flurry_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/57/House_of_Flurry_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7e/House_of_Flurry_NH_Model.png"
+    },
+    "Francine": {
+      "image_url": "https://dodo.ac/np/images/3/34/Francine_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f0/Francine%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1c/Francine_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/06/House_of_Francine_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7c/House_of_Francine_NH_Model.png"
+    },
+    "Frank": {
+      "image_url": "https://dodo.ac/np/images/7/75/Frank_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6a/Frank%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0e/Frank_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/1a/House_of_Frank_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7b/House_of_Frank_NH_Model.png"
+    },
+    "Freckles": {
+      "image_url": "https://dodo.ac/np/images/7/7d/Freckles_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/55/Freckles%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/75/Freckles_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/0d/House_of_Freckles_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c4/House_of_Freckles_NH_Model.png"
+    },
+    "Frett": {
+      "image_url": "https://dodo.ac/np/images/b/b3/Frett_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/9/97/Frett%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/43/Frett_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/ad/House_of_Frett_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/cc/House_of_Frett_NH_Exterior.jpg"
+    },
+    "Freya": {
+      "image_url": "https://dodo.ac/np/images/e/ee/Freya_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d6/Freya%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/29/Freya_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/09/House_of_Freya_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/44/House_of_Freya_NH_Model.png"
+    },
+    "Friga": {
+      "image_url": "https://dodo.ac/np/images/8/8c/Friga_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f5/Friga%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/37/Friga_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f7/House_of_Friga_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/ac/House_of_Friga_NH_Model.png"
+    },
+    "Frita": {
+      "image_url": "https://dodo.ac/np/images/d/d5/Frita_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6a/Frita%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0f/Frita_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/ef/House_of_Frita_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/87/House_of_Frita_NH_Model.png"
+    },
+    "Frobert": {
+      "image_url": "https://dodo.ac/np/images/3/3b/Frobert_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/85/Frobert%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/19/Frobert_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/98/House_of_Frobert_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/17/House_of_Frobert_NH_Model.png"
+    },
+    "Fuchsia": {
+      "image_url": "https://dodo.ac/np/images/6/67/Fuchsia_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/50/Fuchsia%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/08/Fuchsia_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/fb/House_of_Fuchsia_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/ef/House_of_Fuchsia_NH_Model.png"
+    },
+    "Gabi": {
+      "image_url": "https://dodo.ac/np/images/8/86/Gabi_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c9/Gabi%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e9/Gabi_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/9a/House_of_Gabi_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/ef/House_of_Gabi_NH_Model.png"
+    },
+    "Gala": {
+      "image_url": "https://dodo.ac/np/images/e/e6/Gala_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bb/Gala%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f9/Gala_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/46/House_of_Gala_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/bc/House_of_Gala_NH_Model.png"
+    },
+    "Gaston": {
+      "image_url": "https://dodo.ac/np/images/5/59/Gaston_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f3/Gaston%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/cd/Gaston_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8b/House_of_Gaston_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/8e/House_of_Gaston_NH_Model.png"
+    },
+    "Gayle": {
+      "image_url": "https://dodo.ac/np/images/5/5e/Gayle_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f1/Gayle%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/20/Gayle_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/76/House_of_Gayle_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/6/60/House_of_Gayle_NH_Model.png"
+    },
+    "Genji": {
+      "image_url": "https://dodo.ac/np/images/6/67/Genji_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/3b/Genji%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/5d/Genji_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b0/House_of_Genji_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f1/House_of_Genji_NH_Model.png"
+    },
+    "Gigi": {
+      "image_url": "https://dodo.ac/np/images/8/86/Gigi_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/82/Gigi%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/10/Gigi_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/cd/House_of_Gigi_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/13/House_of_Gigi_NH_Model.png"
+    },
+    "Gladys": {
+      "image_url": "https://dodo.ac/np/images/3/35/Gladys_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a3/Gladys%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b3/Gladys_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a2/House_of_Gladys_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/af/House_of_Gladys_NH_Model.png"
+    },
+    "Gloria": {
+      "image_url": "https://dodo.ac/np/images/1/14/Gloria_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/38/Gloria%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4d/Gloria_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8d/House_of_Gloria_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6f/House_of_Gloria_NH_Model.png"
+    },
+    "Goldie": {
+      "image_url": "https://dodo.ac/np/images/8/83/Goldie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/2f/Goldie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/ce/Goldie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/03/House_of_Goldie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/8a/House_of_Goldie_NH_Model.png"
+    },
+    "Gonzo": {
+      "image_url": "https://dodo.ac/np/images/0/09/Gonzo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/2a/Gonzo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/40/Gonzo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/cf/House_of_Gonzo_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b6/House_of_Gonzo_NH_Model.png"
+    },
+    "Goose": {
+      "image_url": "https://dodo.ac/np/images/9/91/Goose_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e7/Goose%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d3/Goose_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/31/House_of_Goose_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a7/House_of_Goose_NH_Model.png"
+    },
+    "Graham": {
+      "image_url": "https://dodo.ac/np/images/a/a1/Graham_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/4b/Graham%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e2/Graham_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7f/House_of_Graham_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b6/House_of_Graham_NH_Model.png"
+    },
+    "Greta": {
+      "image_url": "https://dodo.ac/np/images/b/bd/Greta_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/20/Greta%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d7/Greta_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/90/House_of_Greta_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/58/House_of_Greta_NH_Model.png"
+    },
+    "Grizzly": {
+      "image_url": "https://dodo.ac/np/images/4/4b/Grizzly_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/fb/Grizzly%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/9b/Grizzly_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/54/House_of_Grizzly_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/df/House_of_Grizzly_NH_Model.png"
+    },
+    "Groucho": {
+      "image_url": "https://dodo.ac/np/images/1/1d/Groucho_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/78/Groucho%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/45/Groucho_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/9e/House_of_Groucho_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b4/House_of_Groucho_NH_Model.png"
+    },
+    "Gruff": {
+      "image_url": "https://dodo.ac/np/images/2/25/Gruff_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6c/Gruff%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/9c/Gruff_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d5/House_of_Gruff_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/2/26/House_of_Gruff_NH_Model.png"
+    },
+    "Gwen": {
+      "image_url": "https://dodo.ac/np/images/b/be/Gwen_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/83/Gwen%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/ed/Gwen_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e1/House_of_Gwen_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4b/House_of_Gwen_NH_Model.png"
+    },
+    "Hamlet": {
+      "image_url": "https://dodo.ac/np/images/4/46/Hamlet_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/62/Hamlet%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a0/Hamlet_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/2f/House_of_Hamlet_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/41/House_of_Hamlet_NH_Model.png"
+    },
+    "Hamphrey": {
+      "image_url": "https://dodo.ac/np/images/a/a9/Hamphrey_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/23/Hamphrey%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a1/Hamphrey_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f9/House_of_Hamphrey_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1c/House_of_Hamphrey_NH_Model.png"
+    },
+    "Hans": {
+      "image_url": "https://dodo.ac/np/images/1/15/Hans_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/96/Hans%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/ce/Hans_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d7/House_of_Hans_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/33/House_of_Hans_NH_Model.png"
+    },
+    "Harry": {
+      "image_url": "https://dodo.ac/np/images/1/1a/Harry_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/de/Harry%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b4/Harry_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d6/House_of_Harry_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/60/House_of_Harry_NH_Model.png"
+    },
+    "Hazel": {
+      "image_url": "https://dodo.ac/np/images/1/17/Hazel_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/ec/Hazel%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/ac/Hazel_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/de/House_of_Hazel_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/aa/House_of_Hazel_NH_Model.png"
+    },
+    "Henry": {
+      "image_url": "https://dodo.ac/np/images/2/26/Henry_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/79/Henry%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/2f/Henry_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/83/House_of_Henry_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a1/House_of_Henry_NH_Model.png"
+    },
+    "Hippeux": {
+      "image_url": "https://dodo.ac/np/images/2/26/Hippeux_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9d/Hippeux%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/ec/Hippeux_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/fe/House_of_Hippeux_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/c/cb/House_of_Hippeux_NH_Model.png"
+    },
+    "Hopkins": {
+      "image_url": "https://dodo.ac/np/images/c/c1/Hopkins_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/ab/Hopkins%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4b/Hopkins_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/89/House_of_Hopkins_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/28/House_of_Hopkins_NH_Model.png"
+    },
+    "Hopper": {
+      "image_url": "https://dodo.ac/np/images/c/cb/Hopper_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b6/Hopper%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/82/Hopper_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/3c/House_of_Hopper_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6c/House_of_Hopper_NH_Model.png"
+    },
+    "Hornsby": {
+      "image_url": "https://dodo.ac/np/images/9/95/Hornsby_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/16/Hornsby%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/77/Hornsby_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e1/House_of_Hornsby_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d6/House_of_Hornsby_NH_Model.png"
+    },
+    "Huck": {
+      "image_url": "https://dodo.ac/np/images/1/17/Huck_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a2/Huck%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c4/Huck_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/2d/House_of_Huck_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/2/26/House_of_Huck_NH_Model.png"
+    },
+    "Hugh": {
+      "image_url": "https://dodo.ac/np/images/b/b6/Hugh_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e0/Hugh%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b0/Hugh_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/04/House_of_Hugh_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/cd/House_of_Hugh_NH_Model.png"
+    },
+    "Iggly": {
+      "image_url": "https://dodo.ac/np/images/6/68/Iggly_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/fd/Iggly%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/11/Iggly_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a1/House_of_Iggly_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a7/House_of_Iggly_NH_Model.png"
+    },
+    "Ike": {
+      "image_url": "https://dodo.ac/np/images/3/34/Ike_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/7f/Ike%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c9/Ike_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f6/House_of_Ike_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/cd/House_of_Ike_NH_Model.png"
+    },
+    "Ione": {
+      "image_url": "https://dodo.ac/np/images/4/40/Ione_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/6/6a/Ione%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/62/Ione_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/68/House_of_Ione_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/35/House_of_Ione_NH_Model.png"
+    },
+    "Jacob": {
+      "image_url": "https://dodo.ac/np/images/3/3e/Jacob_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/82/Jacob%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/fa/Jacob_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8f/House_of_Jacob_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b7/House_of_Jacob_NH_Model.png"
+    },
+    "Jacques": {
+      "image_url": "https://dodo.ac/np/images/0/03/Jacques_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/4b/Jacques%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/73/Jacques_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e5/House_of_Jacques_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/d/df/House_of_Jacques_NH_Model.png"
+    },
+    "Jambette": {
+      "image_url": "https://dodo.ac/np/images/3/35/Jambette_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/06/Jambette%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/53/Jambette_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/43/House_of_Jambette_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/fc/House_of_Jambette_NH_Model.png"
+    },
+    "Jay": {
+      "image_url": "https://dodo.ac/np/images/7/7f/Jay_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/5d/Jay%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/ab/Jay_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/1a/House_of_Jay_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3a/House_of_Jay_NH_Model.png"
+    },
+    "Jeremiah": {
+      "image_url": "https://dodo.ac/np/images/9/93/Jeremiah_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8b/Jeremiah%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/ce/Jeremiah_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/47/House_of_Jeremiah_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/60/House_of_Jeremiah_NH_Model.png"
+    },
+    "Jitters": {
+      "image_url": "https://dodo.ac/np/images/a/a6/Jitters_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f8/Jitters%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/51/Jitters_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c1/House_of_Jitters_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d0/House_of_Jitters_NH_Model.png"
+    },
+    "Joey": {
+      "image_url": "https://dodo.ac/np/images/6/66/Joey_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/af/Joey%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a1/Joey_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5b/House_of_Joey_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/72/House_of_Joey_NH_Model.png"
+    },
+    "Judy": {
+      "image_url": "https://dodo.ac/np/images/d/d4/Judy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f8/Judy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c1/Judy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/3c/House_of_Judy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0c/House_of_Judy_NH_Model.png"
+    },
+    "Julia": {
+      "image_url": "https://dodo.ac/np/images/4/42/Julia_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/51/Julia%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f4/Julia_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bc/House_of_Julia_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/36/House_of_Julia_NH_Model.png"
+    },
+    "Julian": {
+      "image_url": "https://dodo.ac/np/images/f/f2/Julian_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/61/Julian%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/20/Julian_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/2c/House_of_Julian_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/88/House_of_Julian_NH_Model.png"
+    },
+    "June": {
+      "image_url": "https://dodo.ac/np/images/8/85/June_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/7c/June%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/29/June_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/24/House_of_June_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/68/House_of_June_NH_Model.png"
+    },
+    "Kabuki": {
+      "image_url": "https://dodo.ac/np/images/2/2a/Kabuki_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/0f/Kabuki%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/64/Kabuki_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/4a/House_of_Kabuki_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/29/House_of_Kabuki_NH_Model.png"
+    },
+    "Katt": {
+      "image_url": "https://dodo.ac/np/images/c/c9/Katt_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bf/Katt%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1b/Katt_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/6b/House_of_Katt_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/73/House_of_Katt_NH_Model.png"
+    },
+    "Keaton": {
+      "image_url": "https://dodo.ac/np/images/3/3b/Keaton_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b7/Keaton%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/28/Keaton_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7e/House_of_Keaton_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/85/House_of_Keaton_NH_Model.png"
+    },
+    "Ken": {
+      "image_url": "https://dodo.ac/np/images/e/e0/Ken_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/ec/Ken%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/26/Ken_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/2e/House_of_Ken_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/ad/House_of_Ken_NH_Model.png"
+    },
+    "Ketchup": {
+      "image_url": "https://dodo.ac/np/images/4/42/Ketchup_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/be/Ketchup%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e5/Ketchup_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a0/House_of_Ketchup_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/75/House_of_Ketchup_NH_Model.png"
+    },
+    "Kevin": {
+      "image_url": "https://dodo.ac/np/images/7/71/Kevin_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/64/Kevin%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/89/Kevin_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/58/House_of_Kevin_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/9b/House_of_Kevin_NH_Model.png"
+    },
+    "Kid Cat": {
+      "image_url": "https://dodo.ac/np/images/c/c3/Kid_Cat_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c2/Kid_Cat%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/18/Kid_Cat_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7b/House_of_Kid_Cat_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/74/House_of_Kid_Cat_NH_Model.png"
+    },
+    "Kidd": {
+      "image_url": "https://dodo.ac/np/images/7/7a/Kidd_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f5/Kidd%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/64/Kidd_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/60/House_of_Kidd_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d4/House_of_Kidd_NH_Model.png"
+    },
+    "Kiki": {
+      "image_url": "https://dodo.ac/np/images/c/c5/Kiki_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/05/Kiki%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/cb/Kiki_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b1/House_of_Kiki_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/74/House_of_Kiki_NH_Model.png"
+    },
+    "Kitt": {
+      "image_url": "https://dodo.ac/np/images/7/75/Kitt_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d8/Kitt%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/fe/Kitt_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f4/House_of_Kitt_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/82/House_of_Kitt_NH_Model.png"
+    },
+    "Kitty": {
+      "image_url": "https://dodo.ac/np/images/2/21/Kitty_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/74/Kitty%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a4/Kitty_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/08/House_of_Kitty_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/21/House_of_Kitty_NH_Model.png"
+    },
+    "Klaus": {
+      "image_url": "https://dodo.ac/np/images/5/5c/Klaus_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/16/Klaus%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/20/Klaus_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/00/House_of_Klaus_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/27/House_of_Klaus_NH_Model.png"
+    },
+    "Knox": {
+      "image_url": "https://dodo.ac/np/images/0/03/Knox_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d4/Knox%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/40/Knox_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/26/House_of_Knox_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1b/House_of_Knox_NH_Model.png"
+    },
+    "Kody": {
+      "image_url": "https://dodo.ac/np/images/2/20/Kody_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/65/Kody%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d3/Kody_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/73/House_of_Kody_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/41/House_of_Kody_NH_Model.png"
+    },
+    "Kyle": {
+      "image_url": "https://dodo.ac/np/images/4/46/Kyle_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/dc/Kyle%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/44/Kyle_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/da/House_of_Kyle_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/67/House_of_Kyle_NH_Model.png"
+    },
+    "Leonardo": {
+      "image_url": "https://dodo.ac/np/images/0/0a/Leonardo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f0/Leonardo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/ca/Leonardo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a8/House_of_Leonardo_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/9/9c/House_of_Leonardo_NH_Model.png"
+    },
+    "Leopold": {
+      "image_url": "https://dodo.ac/np/images/3/3a/Leopold_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c8/Leopold%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/72/Leopold_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/72/House_of_Leopold_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/2/2d/House_of_Leopold_NH_Model.png"
+    },
+    "Lily": {
+      "image_url": "https://dodo.ac/np/images/4/42/Lily_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/ef/Lily%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f4/Lily_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bd/House_of_Lily_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/84/House_of_Lily_NH_Model.png"
+    },
+    "Limberg": {
+      "image_url": "https://dodo.ac/np/images/b/b0/Limberg_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/85/Limberg%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/21/Limberg_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/74/House_of_Limberg_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a2/House_of_Limberg_NH_Model.png"
+    },
+    "Lionel": {
+      "image_url": "https://dodo.ac/np/images/b/bb/Lionel_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/10/Lionel%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f4/Lionel_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d5/House_of_Lionel_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3d/House_of_Lionel_NH_Model.png"
+    },
+    "Lobo": {
+      "image_url": "https://dodo.ac/np/images/d/d1/Lobo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c1/Lobo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/01/Lobo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/cd/House_of_Lobo_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/da/House_of_Lobo_NH_Model.png"
+    },
+    "Lolly": {
+      "image_url": "https://dodo.ac/np/images/1/16/Lolly_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/13/Lolly%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/6c/Lolly_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/4b/House_of_Lolly_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/2d/House_of_Lolly_NH_Model.png"
+    },
+    "Lopez": {
+      "image_url": "https://dodo.ac/np/images/5/53/Lopez_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/79/Lopez%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/54/Lopez_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/6f/House_of_Lopez_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b9/House_of_Lopez_NH_Model.png"
+    },
+    "Louie": {
+      "image_url": "https://dodo.ac/np/images/5/5a/Louie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/08/Louie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/10/Louie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/1d/House_of_Louie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d8/House_of_Louie_NH_Model.png"
+    },
+    "Lucha": {
+      "image_url": "https://dodo.ac/np/images/4/4a/Lucha_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1a/Lucha%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/5d/Lucha_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bc/House_of_Lucha_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/4/44/House_of_Lucha_NH_Model.png"
+    },
+    "Lucky": {
+      "image_url": "https://dodo.ac/np/images/5/59/Lucky_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/7e/Lucky%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/13/Lucky_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/26/House_of_Lucky_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/95/House_of_Lucky_NH_Model.png"
+    },
+    "Lucy": {
+      "image_url": "https://dodo.ac/np/images/e/e5/Lucy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1c/Lucy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/ba/Lucy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/66/House_of_Lucy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/2d/House_of_Lucy_NH_Model.png"
+    },
+    "Lyman": {
+      "image_url": "https://dodo.ac/np/images/a/a5/Lyman_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/19/Lyman%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a4/Lyman_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8d/House_of_Lyman_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b8/House_of_Lyman_NH_Model.png"
+    },
+    "Mac": {
+      "image_url": "https://dodo.ac/np/images/a/ab/Mac_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/01/Mac%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b3/Mac_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/03/House_of_Mac_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/67/House_of_Mac_NH_Model.png"
+    },
+    "Maddie": {
+      "image_url": "https://dodo.ac/np/images/0/06/Maddie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e4/Maddie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/bb/Maddie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f6/House_of_Maddie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a7/House_of_Maddie_NH_Model.png"
+    },
+    "Maelle": {
+      "image_url": "https://dodo.ac/np/images/9/93/Maelle_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/ab/Maelle%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c2/Maelle_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/6c/House_of_Maelle_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5e/House_of_Maelle_NH_Model.png"
+    },
+    "Maggie": {
+      "image_url": "https://dodo.ac/np/images/b/b8/Maggie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/eb/Maggie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/8a/Maggie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/dc/House_of_Maggie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/ba/House_of_Maggie_NH_Model.png"
+    },
+    "Mallary": {
+      "image_url": "https://dodo.ac/np/images/2/28/Mallary_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6a/Mallary%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/02/Mallary_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/04/House_of_Mallary_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6a/House_of_Mallary_NH_Model.png"
+    },
+    "Maple": {
+      "image_url": "https://dodo.ac/np/images/a/a2/Maple_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6d/Maple%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/45/Maple_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f0/House_of_Maple_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/47/House_of_Maple_NH_Model.png"
+    },
+    "Marcel": {
+      "image_url": "https://dodo.ac/np/images/3/3e/Marcel_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/31/Marcel%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a7/Marcel_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/56/House_of_Marcel_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0a/House_of_Marcel_NH_Model.png"
+    },
+    "Marcie": {
+      "image_url": "https://dodo.ac/np/images/2/2b/Marcie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/30/Marcie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d5/Marcie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a6/House_of_Marcie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/90/House_of_Marcie_NH_Model.png"
+    },
+    "Margie": {
+      "image_url": "https://dodo.ac/np/images/5/54/Margie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1c/Margie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/8a/Margie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a7/House_of_Margie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/65/House_of_Margie_NH_Model.png"
+    },
+    "Marina": {
+      "image_url": "https://dodo.ac/np/images/2/25/Marina_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/3b/Marina%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0f/Marina_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/45/House_of_Marina_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/db/House_of_Marina_NH_Model.png"
+    },
+    "Marlo": {
+      "image_url": "https://dodo.ac/np/images/c/c1/Marlo_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/6/6b/Marlo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/03/Marlo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/6c/House_of_Marlo_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/63/House_of_Marlo_NH_Model.png"
+    },
+    "Marshal": {
+      "image_url": "https://dodo.ac/np/images/d/da/Marshal_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e6/Marshal%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/99/Marshal_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/ba/House_of_Marshal_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/75/House_of_Marshal_NH_Model.png"
+    },
+    "Marty": {
+      "photo_url": "https://dodo.ac/np/images/7/74/Marty%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/08/Marty_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/9c/House_of_Marty_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c3/House_of_Marty_NH_Model.png"
+    },
+    "Mathilda": {
+      "image_url": "https://dodo.ac/np/images/5/58/Mathilda_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/2c/Mathilda%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/7f/Mathilda_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/1a/House_of_Mathilda_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/74/House_of_Mathilda_NH_Model.png"
+    },
+    "Megan": {
+      "image_url": "https://dodo.ac/np/images/5/55/Megan_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/7d/Megan%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/66/Megan_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a1/House_of_Megan_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d8/House_of_Megan_NH_Model.png"
+    },
+    "Melba": {
+      "image_url": "https://dodo.ac/np/images/4/43/Melba_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f9/Melba%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0a/Melba_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/3d/House_of_Melba_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e0/House_of_Melba_NH_Model.png"
+    },
+    "Merengue": {
+      "image_url": "https://dodo.ac/np/images/0/0c/Merengue_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/30/Merengue%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e8/Merengue_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a7/House_of_Merengue_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/2d/House_of_Merengue_NH_Model.png"
+    },
+    "Merry": {
+      "image_url": "https://dodo.ac/np/images/4/4f/Merry_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/ad/Merry%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/ed/Merry_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/39/House_of_Merry_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/ba/House_of_Merry_NH_Model.png"
+    },
+    "Midge": {
+      "image_url": "https://dodo.ac/np/images/a/af/Midge_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a0/Midge%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0f/Midge_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d1/House_of_Midge_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/cd/House_of_Midge_NH_Model.png"
+    },
+    "Mineru": {
+      "image_url": "https://dodo.ac/np/images/d/d2/Mineru_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bb/Mineru%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d5/Mineru_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/6e/House_of_Mineru_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/49/House_of_Mineru_NH_Model.png"
+    },
+    "Mint": {
+      "image_url": "https://dodo.ac/np/images/5/5b/Mint_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d5/Mint%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/bf/Mint_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/96/House_of_Mint_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b1/House_of_Mint_NH_Model.png"
+    },
+    "Mira": {
+      "image_url": "https://dodo.ac/np/images/d/d1/Mira_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/da/Mira%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/44/Mira_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5e/House_of_Mira_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/de/House_of_Mira_NH_Model.png"
+    },
+    "Miranda": {
+      "image_url": "https://dodo.ac/np/images/8/8c/Miranda_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/88/Miranda%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/83/Miranda_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/42/House_of_Miranda_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/56/House_of_Miranda_NH_Model.png"
+    },
+    "Mitzi": {
+      "image_url": "https://dodo.ac/np/images/6/63/Mitzi_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/04/Mitzi%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/67/Mitzi_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e7/House_of_Mitzi_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/62/House_of_Mitzi_NH_Model.png"
+    },
+    "Moe": {
+      "image_url": "https://dodo.ac/np/images/a/a4/Moe_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/76/Moe%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/03/Moe_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c4/House_of_Moe_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e6/House_of_Moe_NH_Model.png"
+    },
+    "Molly": {
+      "image_url": "https://dodo.ac/np/images/2/29/Molly_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/41/Molly%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d8/Molly_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/54/House_of_Molly_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/68/House_of_Molly_NH_Model.png"
+    },
+    "Monique": {
+      "image_url": "https://dodo.ac/np/images/c/cc/Monique_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/ca/Monique%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/22/Monique_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/eb/House_of_Monique_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1e/House_of_Monique_NH_Model.png"
+    },
+    "Monty": {
+      "image_url": "https://dodo.ac/np/images/d/d7/Monty_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/83/Monty%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/15/Monty_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/14/House_of_Monty_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0c/House_of_Monty_NH_Model.png"
+    },
+    "Moose": {
+      "image_url": "https://dodo.ac/np/images/e/ee/Moose_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/2b/Moose%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/47/Moose_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/3b/House_of_Moose_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/77/House_of_Moose_NH_Model.png"
+    },
+    "Mott": {
+      "image_url": "https://dodo.ac/np/images/b/b8/Mott_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/88/Mott%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/40/Mott_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/dd/House_of_Mott_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6c/House_of_Mott_NH_Model.png"
+    },
+    "Muffy": {
+      "image_url": "https://dodo.ac/np/images/1/16/Muffy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e5/Muffy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/73/Muffy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7a/House_of_Muffy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/92/House_of_Muffy_NH_Model.png"
+    },
+    "Murphy": {
+      "image_url": "https://dodo.ac/np/images/7/7c/Murphy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/cc/Murphy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/93/Murphy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/25/House_of_Murphy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b0/House_of_Murphy_NH_Model.png"
+    },
+    "Nan": {
+      "image_url": "https://dodo.ac/np/images/b/b8/Nan_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/24/Nan%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/df/Nan_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/98/House_of_Nan_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/cf/House_of_Nan_NH_Model.png"
+    },
+    "Nana": {
+      "image_url": "https://dodo.ac/np/images/b/b1/Nana_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/46/Nana%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/26/Nana_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7a/House_of_Nana_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/57/House_of_Nana_NH_Model.png"
+    },
+    "Naomi": {
+      "image_url": "https://dodo.ac/np/images/f/f6/Naomi_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/0d/Naomi%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a8/Naomi_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/af/House_of_Naomi_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e2/House_of_Naomi_NH_Model.png"
+    },
+    "Nate": {
+      "image_url": "https://dodo.ac/np/images/5/55/Nate_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c0/Nate%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/72/Nate_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/df/House_of_Nate_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/59/House_of_Nate_NH_Model.png"
+    },
+    "Nibbles": {
+      "image_url": "https://dodo.ac/np/images/9/97/Nibbles_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/76/Nibbles%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/26/Nibbles_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8f/House_of_Nibbles_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/91/House_of_Nibbles_NH_Model.png"
+    },
+    "Norma": {
+      "image_url": "https://dodo.ac/np/images/e/e7/Norma_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9f/Norma%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/69/Norma_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7c/House_of_Norma_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c6/House_of_Norma_NH_Model.png"
+    },
+    "O'Hare": {
+      "image_url": "https://dodo.ac/np/images/c/cf/O%27Hare_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/11/O%27Hare%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b2/O%27Hare_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c3/House_of_O%27Hare_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0a/House_of_O%27Hare_NH_Model.png"
+    },
+    "Octavian": {
+      "image_url": "https://dodo.ac/np/images/1/1b/Octavian_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c2/Octavian%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a0/Octavian_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/89/House_of_Octavian_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/66/House_of_Octavian_NH_Model.png"
+    },
+    "Olaf": {
+      "image_url": "https://dodo.ac/np/images/1/11/Olaf_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/ab/Olaf%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/78/Olaf_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/22/House_of_Olaf_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d8/House_of_Olaf_NH_Model.png"
+    },
+    "Olive": {
+      "image_url": "https://dodo.ac/np/images/5/5c/Olive_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/77/Olive%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/db/Olive_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/12/House_of_Olive_NH_2.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f7/House_of_Olive_NH_Model.png"
+    },
+    "Olivia": {
+      "image_url": "https://dodo.ac/np/images/3/36/Olivia_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6f/Olivia%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1e/Olivia_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/86/House_of_Olivia_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/69/House_of_Olivia_NH_Model.png"
+    },
+    "Opal": {
+      "image_url": "https://dodo.ac/np/images/c/ce/Opal_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c1/Opal%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/78/Opal_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/2a/House_of_Opal_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/07/House_of_Opal_NH_Model.png"
+    },
+    "Ozzie": {
+      "image_url": "https://dodo.ac/np/images/3/3a/Ozzie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/27/Ozzie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/cb/Ozzie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/87/House_of_Ozzie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/59/House_of_Ozzie_NH_Model.png"
+    },
+    "Pancetti": {
+      "image_url": "https://dodo.ac/np/images/e/ec/Pancetti_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/95/Pancetti%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/40/Pancetti_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a9/House_of_Pancetti_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d3/House_of_Pancetti_NH_Model.png"
+    },
+    "Pango": {
+      "image_url": "https://dodo.ac/np/images/d/d5/Pango_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/53/Pango%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/7f/Pango_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/35/House_of_Pango_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4f/House_of_Pango_NH_Model.png"
+    },
+    "Paolo": {
+      "image_url": "https://dodo.ac/np/images/5/59/Paolo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/44/Paolo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/df/Paolo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/80/House_of_Paolo_NH_2.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/2f/House_of_Paolo_NH_Model.png"
+    },
+    "Papi": {
+      "image_url": "https://dodo.ac/np/images/a/a7/Papi_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/de/Papi%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/09/Papi_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bc/House_of_Papi_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/65/House_of_Papi_NH_Model.png"
+    },
+    "Pashmina": {
+      "image_url": "https://dodo.ac/np/images/3/3e/Pashmina_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8f/Pashmina%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/6b/Pashmina_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/20/House_of_Pashmina_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c3/House_of_Pashmina_NH_Model.png"
+    },
+    "Pate": {
+      "image_url": "https://dodo.ac/np/images/6/6b/Pate_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/79/Pate%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e5/Pate_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c4/House_of_Pate_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a5/House_of_Pate_NH_Model.png"
+    },
+    "Patty": {
+      "image_url": "https://dodo.ac/np/images/f/f1/Patty_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c0/Patty%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/fe/Patty_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/77/House_of_Patty_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/ea/House_of_Patty_NH_Model.png"
+    },
+    "Paula": {
+      "image_url": "https://dodo.ac/np/images/0/0f/Paula_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d4/Paula%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e4/Paula_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/19/House_of_Paula_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/5/54/House_of_Paula_NH_Model.png"
+    },
+    "Peaches": {
+      "image_url": "https://dodo.ac/np/images/0/0d/Peaches_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/fc/Peaches%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e3/Peaches_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/56/House_of_Peaches_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/8b/House_of_Peaches_NH_Model.png"
+    },
+    "Peanut": {
+      "image_url": "https://dodo.ac/np/images/d/d5/Peanut_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a8/Peanut%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4b/Peanut_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/31/House_of_Peanut_NH_2.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/ba/House_of_Peanut_NH_Model.png"
+    },
+    "Pecan": {
+      "image_url": "https://dodo.ac/np/images/6/60/Pecan_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e0/Pecan%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/12/Pecan_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/3b/House_of_Pecan_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5b/House_of_Pecan_NH_Model.png"
+    },
+    "Peck": {
+      "image_url": "https://dodo.ac/np/images/4/44/Peck_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1a/Peck%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c8/Peck_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/fb/House_of_Peck_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/fb/House_of_Peck_NH_Model.png"
+    },
+    "Peewee": {
+      "image_url": "https://dodo.ac/np/images/2/2a/Peewee_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/26/Peewee%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/24/Peewee_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c9/House_of_Peewee_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/8e/House_of_Peewee_NH_Model.png"
+    },
+    "Peggy": {
+      "image_url": "https://dodo.ac/np/images/2/28/Peggy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f0/Peggy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d9/Peggy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/9b/House_of_Peggy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a5/House_of_Peggy_NH_Model.png"
+    },
+    "Pekoe": {
+      "image_url": "https://dodo.ac/np/images/d/df/Pekoe_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/90/Pekoe%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c4/Pekoe_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d3/House_of_Pekoe_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b4/House_of_Pekoe_NH_Model.png"
+    },
+    "Penelope": {
+      "image_url": "https://dodo.ac/np/images/1/15/Penelope_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/0b/Penelope%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/32/Penelope_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8e/House_of_Penelope_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/ad/House_of_Penelope_NH_Model.png"
+    },
+    "Petri": {
+      "image_url": "https://dodo.ac/np/images/7/7e/Petri_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/0/09/Petri%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/59/Petri_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5d/House_of_Petri_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6e/House_of_Petri_NH_Exterior.jpg"
+    },
+    "Phil": {
+      "image_url": "https://dodo.ac/np/images/f/f2/Phil_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bf/Phil%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/15/Phil_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/ad/House_of_Phil_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/45/House_of_Phil_NH_Model.png"
+    },
+    "Phoebe": {
+      "image_url": "https://dodo.ac/np/images/5/50/Phoebe_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e0/Phoebe%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/71/Phoebe_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d8/House_of_Phoebe_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b6/House_of_Phoebe_NH_Model.png"
+    },
+    "Pierce": {
+      "image_url": "https://dodo.ac/np/images/8/80/Pierce_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/97/Pierce%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/8d/Pierce_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8d/House_of_Pierce_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7a/House_of_Pierce_NH_Model.png"
+    },
+    "Pietro": {
+      "image_url": "https://dodo.ac/np/images/f/fb/Pietro_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a5/Pietro%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/56/Pietro_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/10/House_of_Pietro_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/04/House_of_Pietro_NH_Model.png"
+    },
+    "Pinky": {
+      "image_url": "https://dodo.ac/np/images/b/bf/Pinky_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/2c/Pinky%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0f/Pinky_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/26/House_of_Pinky_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0c/House_of_Pinky_NH_Model.png"
+    },
+    "Piper": {
+      "image_url": "https://dodo.ac/np/images/0/09/Piper_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/31/Piper%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/ec/Piper_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d3/House_of_Piper_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/d/de/House_of_Piper_NH_Model.png"
+    },
+    "Pippy": {
+      "image_url": "https://dodo.ac/np/images/a/a1/Pippy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9c/Pippy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/6b/Pippy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/09/House_of_Pippy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/bb/House_of_Pippy_NH_Model.png"
+    },
+    "Plucky": {
+      "image_url": "https://dodo.ac/np/images/6/63/Plucky_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9b/Plucky%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/5d/Plucky_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d4/House_of_Plucky_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/6c/House_of_Plucky_NH_Model.png"
+    },
+    "Pompom": {
+      "image_url": "https://dodo.ac/np/images/3/32/Pompom_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/fe/Pompom%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/91/Pompom_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/9b/House_of_Pompom_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b5/House_of_Pompom_NH_Model.png"
+    },
+    "Poncho": {
+      "image_url": "https://dodo.ac/np/images/f/f0/Poncho_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/eb/Poncho%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/44/Poncho_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b3/House_of_Poncho_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/5/55/House_of_Poncho_NH_Model.png"
+    },
+    "Poppy": {
+      "image_url": "https://dodo.ac/np/images/c/c4/Poppy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/42/Poppy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/44/Poppy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/fb/House_of_Poppy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7e/House_of_Poppy_NH_Model.png"
+    },
+    "Portia": {
+      "image_url": "https://dodo.ac/np/images/c/ce/Portia_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a2/Portia%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/de/Portia_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/07/House_of_Portia_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/54/House_of_Portia_NH_Model.png"
+    },
+    "Prince": {
+      "image_url": "https://dodo.ac/np/images/a/a6/Prince_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9a/Prince%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/99/Prince_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d2/House_of_Prince_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/11/House_of_Prince_NH_Model.png"
+    },
+    "Puck": {
+      "image_url": "https://dodo.ac/np/images/5/53/Puck_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/5d/Puck%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/6b/Puck_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/74/House_of_Puck_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3e/House_of_Puck_NH_Model.png"
+    },
+    "Puddles": {
+      "image_url": "https://dodo.ac/np/images/f/f9/Puddles_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/04/Puddles%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f8/Puddles_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/05/House_of_Puddles_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/30/House_of_Puddles_NH_Model.png"
+    },
+    "Pudge": {
+      "image_url": "https://dodo.ac/np/images/8/87/Pudge_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/33/Pudge%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4a/Pudge_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/66/House_of_Pudge_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/5/57/House_of_Pudge_NH_Model.png"
+    },
+    "Punchy": {
+      "image_url": "https://dodo.ac/np/images/6/6d/Punchy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d0/Punchy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/50/Punchy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/83/House_of_Punchy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e7/House_of_Punchy_NH_Model.png"
+    },
+    "Purrl": {
+      "image_url": "https://dodo.ac/np/images/a/a2/Purrl_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c1/Purrl%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a0/Purrl_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/00/House_of_Purrl_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/84/House_of_Purrl_NH_Model.png"
+    },
+    "Queenie": {
+      "image_url": "https://dodo.ac/np/images/f/f1/Queenie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b0/Queenie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/15/Queenie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a8/House_of_Queenie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/27/House_of_Queenie_NH_Model.png"
+    },
+    "Quillson": {
+      "image_url": "https://dodo.ac/np/images/e/e4/Quillson_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/0d/Quillson%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1c/Quillson_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/41/House_of_Quillson_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3f/House_of_Quillson_NH_Model.png"
+    },
+    "Quinn": {
+      "image_url": "https://dodo.ac/np/images/a/a2/Quinn_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/0/07/Quinn%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/38/Quinn_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/72/House_of_Quinn_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/17/House_of_Quinn_NH_Exterior.jpg"
+    },
+    "Raddle": {
+      "image_url": "https://dodo.ac/np/images/7/7a/Raddle_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a5/Raddle%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/04/Raddle_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5c/House_of_Raddle_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/2f/House_of_Raddle_NH_Model.png"
+    },
+    "Rasher": {
+      "image_url": "https://dodo.ac/np/images/e/e1/Rasher_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/5f/Rasher%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/38/Rasher_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/dd/House_of_Rasher_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f1/House_of_Rasher_NH_Model.png"
+    },
+    "Raymond": {
+      "image_url": "https://dodo.ac/np/images/2/2a/Raymond_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/fe/Raymond%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f2/Raymond_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/50/House_of_Raymond_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/11/House_of_Raymond_NH_Model.png"
+    },
+    "Renée": {
+      "image_url": "https://dodo.ac/np/images/e/ef/Ren%C3%A9e_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/0f/Ren%C3%A9e%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f6/Ren%C3%A9e_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b8/House_of_Ren%C3%A9e_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/55/House_of_Ren%C3%A9e_NH_Model.png"
+    },
+    "Reneigh": {
+      "image_url": "https://dodo.ac/np/images/9/92/Reneigh_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b6/Reneigh%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f4/Reneigh_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e0/House_of_Reneigh_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/18/House_of_Reneigh_NH_Model.png"
+    },
+    "Rex": {
+      "image_url": "https://dodo.ac/np/images/7/78/Rex_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/19/Rex%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/52/Rex_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/81/House_of_Rex_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a0/House_of_Rex_NH_Model.png"
+    },
+    "Rhonda": {
+      "image_url": "https://dodo.ac/np/images/d/df/Rhonda_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/3e/Rhonda%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/9c/Rhonda_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/44/House_of_Rhonda_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d6/House_of_Rhonda_NH_Model.png"
+    },
+    "Ribbot": {
+      "image_url": "https://dodo.ac/np/images/9/94/Ribbot_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d7/Ribbot%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/87/Ribbot_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/00/House_of_Ribbot_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/42/House_of_Ribbot_NH_Model.png"
+    },
+    "Ricky": {
+      "image_url": "https://dodo.ac/np/images/8/8d/Ricky_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c3/Ricky%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/dd/Ricky_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/32/House_of_Ricky_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/cb/House_of_Ricky_NH_Model.png"
+    },
+    "Rilla": {
+      "photo_url": "https://dodo.ac/np/images/4/4d/Rilla%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/bc/Rilla_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f5/House_of_Rilla_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e8/House_of_Rilla_NH_Model.png"
+    },
+    "Rio": {
+      "image_url": "https://dodo.ac/np/images/7/7e/Rio_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/f/f5/Rio%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/12/Rio_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/08/House_of_Rio_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a6/House_of_Rio_NH_Exterior.jpg"
+    },
+    "Rizzo": {
+      "image_url": "https://dodo.ac/np/images/6/69/Rizzo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/70/Rizzo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/7c/Rizzo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d0/House_of_Rizzo_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/7/73/House_of_Rizzo_NH_Model.png"
+    },
+    "Roald": {
+      "image_url": "https://dodo.ac/np/images/6/63/Roald_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/fc/Roald%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c4/Roald_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/60/House_of_Roald_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b4/House_of_Roald_NH_Model.png"
+    },
+    "Robin": {
+      "image_url": "https://dodo.ac/np/images/8/85/Robin_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/3c/Robin%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/eb/Robin_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/93/House_of_Robin_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/17/House_of_Robin_NH_Model.png"
+    },
+    "Rocco": {
+      "image_url": "https://dodo.ac/np/images/0/02/Rocco_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/fb/Rocco%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/36/Rocco_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d5/House_of_Rocco_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/20/House_of_Rocco_NH_Model.png"
+    },
+    "Rocket": {
+      "image_url": "https://dodo.ac/np/images/5/58/Rocket_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1c/Rocket%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/eb/Rocket_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c3/House_of_Rocket_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7a/House_of_Rocket_NH_Model.png"
+    },
+    "Rod": {
+      "image_url": "https://dodo.ac/np/images/e/ea/Rod_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/ca/Rod%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/16/Rod_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bf/House_of_Rod_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/b7/House_of_Rod_NH_Model.png"
+    },
+    "Rodeo": {
+      "image_url": "https://dodo.ac/np/images/6/6c/Rodeo_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8a/Rodeo%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/99/Rodeo_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5d/House_of_Rodeo_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/0/08/House_of_Rodeo_NH_Model.png"
+    },
+    "Rodney": {
+      "image_url": "https://dodo.ac/np/images/3/35/Rodney_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/35/Rodney%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/14/Rodney_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/4f/House_of_Rodney_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e1/House_of_Rodney_NH_Model.png"
+    },
+    "Rolf": {
+      "image_url": "https://dodo.ac/np/images/9/93/Rolf_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/47/Rolf%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/08/Rolf_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/af/House_of_Rolf_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/db/House_of_Rolf_NH_Model.png"
+    },
+    "Rooney": {
+      "image_url": "https://dodo.ac/np/images/7/79/Rooney_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1f/Rooney%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/fc/Rooney_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/74/House_of_Rooney_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/ed/House_of_Rooney_NH_Model.png"
+    },
+    "Rory": {
+      "image_url": "https://dodo.ac/np/images/d/db/Rory_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/ec/Rory%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/fa/Rory_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/b2/House_of_Rory_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c8/House_of_Rory_NH_Model.png"
+    },
+    "Roscoe": {
+      "image_url": "https://dodo.ac/np/images/8/8e/Roscoe_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/63/Roscoe%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f9/Roscoe_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/11/House_of_Roscoe_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/6/64/House_of_Roscoe_NH_Model.png"
+    },
+    "Rosie": {
+      "image_url": "https://dodo.ac/np/images/6/67/Rosie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bf/Rosie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/92/Rosie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/14/House_of_Rosie_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/38/House_of_Rosie_NH_Model.png"
+    },
+    "Roswell": {
+      "image_url": "https://dodo.ac/np/images/d/df/Roswell_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/0/05/Roswell%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/77/Roswell_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5e/House_of_Roswell_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e5/House_of_Roswell_NH_Model.png"
+    },
+    "Rowan": {
+      "image_url": "https://dodo.ac/np/images/d/df/Rowan_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b4/Rowan%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/17/Rowan_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/41/House_of_Rowan_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/19/House_of_Rowan_NH_Model.png"
+    },
+    "Ruby": {
+      "image_url": "https://dodo.ac/np/images/4/41/Ruby_NH.png",
+      "photo_url": "https://dodo.ac/np/images/f/f0/Ruby%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/3a/Ruby_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/2e/House_of_Ruby_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f6/House_of_Ruby_NH_Model.png"
+    },
+    "Rudy": {
+      "image_url": "https://dodo.ac/np/images/7/7e/Rudy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/79/Rudy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d4/Rudy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/95/House_of_Rudy_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/5/52/House_of_Rudy_NH_Model.png"
+    },
+    "Sally": {
+      "image_url": "https://dodo.ac/np/images/a/a3/Sally_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/6d/Sally%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/8c/Sally_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/42/House_of_Sally_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/86/House_of_Sally_NH_Model.png"
+    },
+    "Samson": {
+      "image_url": "https://dodo.ac/np/images/9/9b/Samson_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/95/Samson%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d3/Samson_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/be/House_of_Samson_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/3f/House_of_Samson_NH_Model.png"
+    },
+    "Sandy": {
+      "image_url": "https://dodo.ac/np/images/a/a9/Sandy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a6/Sandy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/97/Sandy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/9b/House_of_Sandy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4c/House_of_Sandy_NH_Model.png"
+    },
+    "Sasha": {
+      "image_url": "https://dodo.ac/np/images/9/90/Sasha_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/8/87/Sasha%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/8/86/Sasha_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/ca/House_of_Sasha_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5c/House_of_Sasha_NH_Exterior.jpg"
+    },
+    "Savannah": {
+      "image_url": "https://dodo.ac/np/images/4/46/Savannah_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/20/Savannah%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c6/Savannah_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/2/23/House_of_Savannah_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1d/House_of_Savannah_NH_Model.png"
+    },
+    "Scoot": {
+      "image_url": "https://dodo.ac/np/images/e/ec/Scoot_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/85/Scoot%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/37/Scoot_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/cd/House_of_Scoot_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c6/House_of_Scoot_NH_Model.png"
+    },
+    "Shari": {
+      "image_url": "https://dodo.ac/np/images/7/72/Shari_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/96/Shari%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a0/Shari_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c8/House_of_Shari_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/38/House_of_Shari_NH_Model.png"
+    },
+    "Sheldon": {
+      "image_url": "https://dodo.ac/np/images/c/ce/Sheldon_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/86/Sheldon%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/9a/Sheldon_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f8/House_of_Sheldon_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/3/36/House_of_Sheldon_NH_Model.png"
+    },
+    "Shep": {
+      "image_url": "https://dodo.ac/np/images/c/c1/Shep_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a8/Shep%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a8/Shep_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7b/House_of_Shep_NH_2.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/82/House_of_Shep_NH_Model.png"
+    },
+    "Sherb": {
+      "image_url": "https://dodo.ac/np/images/1/18/Sherb_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/5c/Sherb%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d9/Sherb_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/ee/House_of_Sherb_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/49/House_of_Sherb_NH_Model.png"
+    },
+    "Shino": {
+      "image_url": "https://dodo.ac/np/images/2/26/Shino_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/6/6d/Shino%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/9a/Shino_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/40/House_of_Shino_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/4a/House_of_Shino_NH_Model.png"
+    },
+    "Simon": {
+      "image_url": "https://dodo.ac/np/images/6/68/Simon_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c5/Simon%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/7a/Simon_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/31/House_of_Simon_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/53/House_of_Simon_NH_Model.png"
+    },
+    "Skye": {
+      "image_url": "https://dodo.ac/np/images/d/d1/Skye_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/98/Skye%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/92/Skye_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/88/House_of_Skye_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7f/House_of_Skye_NH_Model.png"
+    },
+    "Sly": {
+      "image_url": "https://dodo.ac/np/images/7/70/Sly_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d8/Sly%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/26/Sly_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/14/House_of_Sly_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/22/House_of_Sly_NH_Model.png"
+    },
+    "Snake": {
+      "image_url": "https://dodo.ac/np/images/e/ec/Snake_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/32/Snake%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/09/Snake_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/15/House_of_Snake_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/27/House_of_Snake_NH_Model.png"
+    },
+    "Snooty": {
+      "image_url": "https://dodo.ac/np/images/6/63/Snooty_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/1f/Snooty%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/79/Snooty_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/85/House_of_Snooty_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/25/House_of_Snooty_NH_Model.png"
+    },
+    "Soleil": {
+      "image_url": "https://dodo.ac/np/images/d/de/Soleil_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/5c/Soleil%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/5f/Soleil_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/14/House_of_Soleil_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/23/House_of_Soleil_NH_Model.png"
+    },
+    "Sparro": {
+      "image_url": "https://dodo.ac/np/images/3/32/Sparro_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/44/Sparro%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0c/Sparro_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/95/House_of_Sparro_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/1/18/House_of_Sparro_NH_Model.png"
+    },
+    "Spike": {
+      "image_url": "https://dodo.ac/np/images/f/f1/Spike_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/34/Spike%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/ab/Spike_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/cc/House_of_Spike_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/66/House_of_Spike_NH_Model.png"
+    },
+    "Spork": {
+      "image_url": "https://dodo.ac/np/images/c/c2/Spork_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/cc/Spork%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c2/Spork_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/fc/House_of_Spork_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/26/House_of_Spork_NH_Model.png"
+    },
+    "Sprinkle": {
+      "image_url": "https://dodo.ac/np/images/4/44/Sprinkle_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/7c/Sprinkle%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/7f/Sprinkle_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/c/c9/House_of_Sprinkle_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/81/House_of_Sprinkle_NH_Model.png"
+    },
+    "Sprocket": {
+      "image_url": "https://dodo.ac/np/images/8/8b/Sprocket_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/cc/Sprocket%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4a/Sprocket_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/43/House_of_Sprocket_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/8d/House_of_Sprocket_NH_Model.png"
+    },
+    "Static": {
+      "image_url": "https://dodo.ac/np/images/6/68/Static_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/2a/Static%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/70/Static_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d4/House_of_Static_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/41/House_of_Static_NH_Model.png"
+    },
+    "Stella": {
+      "image_url": "https://dodo.ac/np/images/9/95/Stella_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/77/Stella%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4e/Stella_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/98/House_of_Stella_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f9/House_of_Stella_NH_Model.png"
+    },
+    "Sterling": {
+      "image_url": "https://dodo.ac/np/images/4/4f/Sterling_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/78/Sterling%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/da/Sterling_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a1/House_of_Sterling_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/57/House_of_Sterling_NH_Model.png"
+    },
+    "Stinky": {
+      "image_url": "https://dodo.ac/np/images/9/9c/Stinky_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/99/Stinky%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/ca/Stinky_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/6f/House_of_Stinky_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f3/House_of_Stinky_NH_Model.png"
+    },
+    "Stitches": {
+      "image_url": "https://dodo.ac/np/images/5/56/Stitches_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/26/Stitches%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/dd/Stitches_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/31/House_of_Stitches_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f2/House_of_Stitches_NH_Model.png"
+    },
+    "Stu": {
+      "image_url": "https://dodo.ac/np/images/f/fa/Stu_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/06/Stu%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/ea/Stu_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/98/House_of_Stu_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/8/83/House_of_Stu_NH_Model.png"
+    },
+    "Sydney": {
+      "image_url": "https://dodo.ac/np/images/3/3f/Sydney_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/98/Sydney%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/ac/Sydney_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/91/House_of_Sydney_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/28/House_of_Sydney_NH_Model.png"
+    },
+    "Sylvana": {
+      "image_url": "https://dodo.ac/np/images/f/fc/Sylvana_NH.png",
+      "photo_url": "https://dodo.ac/np/images/6/69/Sylvana%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/b3/Sylvana_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/43/House_of_Sylvana_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e9/House_of_Sylvana_NH_Model.png"
+    },
+    "Sylvia": {
+      "image_url": "https://dodo.ac/np/images/9/93/Sylvia_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/7b/Sylvia%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/5/52/Sylvia_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/8d/House_of_Sylvia_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/72/House_of_Sylvia_NH_Model.png"
+    },
+    "T-Bone": {
+      "image_url": "https://dodo.ac/np/images/e/e0/T-Bone_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/20/T-Bone%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/16/T-Bone_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7a/House_of_T-Bone_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/8/82/House_of_T-Bone_NH_Model.png"
+    },
+    "Tabby": {
+      "image_url": "https://dodo.ac/np/images/2/2f/Tabby_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8b/Tabby%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f3/Tabby_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/80/House_of_Tabby_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/91/House_of_Tabby_NH_Model.png"
+    },
+    "Tad": {
+      "image_url": "https://dodo.ac/np/images/6/67/Tad_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/41/Tad%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e6/Tad_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/ec/House_of_Tad_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c7/House_of_Tad_NH_Model.png"
+    },
+    "Tammi": {
+      "image_url": "https://dodo.ac/np/images/a/a8/Tammi_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/a9/Tammi%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d8/Tammi_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/41/House_of_Tammi_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f8/House_of_Tammi_NH_Model.png"
+    },
+    "Tammy": {
+      "image_url": "https://dodo.ac/np/images/a/aa/Tammy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c7/Tammy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/25/Tammy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/dc/House_of_Tammy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/85/House_of_Tammy_NH_Model.png"
+    },
+    "Tangy": {
+      "image_url": "https://dodo.ac/np/images/6/6f/Tangy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/58/Tangy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e3/Tangy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/de/House_of_Tangy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/16/House_of_Tangy_NH_Model.png"
+    },
+    "Tank": {
+      "image_url": "https://dodo.ac/np/images/d/d9/Tank_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c0/Tank%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a1/Tank_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/64/House_of_Tank_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/15/House_of_Tank_NH_Model.png"
+    },
+    "Tasha": {
+      "image_url": "https://dodo.ac/np/images/3/35/Tasha_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/20/Tasha%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/61/Tasha_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/3c/House_of_Tasha_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/d0/House_of_Tasha_NH_Model.png"
+    },
+    "Teddy": {
+      "image_url": "https://dodo.ac/np/images/b/b9/Teddy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bf/Teddy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/b/bd/Teddy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/aa/House_of_Teddy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/73/House_of_Teddy_NH_Model.png"
+    },
+    "Tex": {
+      "image_url": "https://dodo.ac/np/images/4/44/Tex_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/ea/Tex%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a0/Tex_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/32/House_of_Tex_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1b/House_of_Tex_NH_Model.png"
+    },
+    "Tia": {
+      "image_url": "https://dodo.ac/np/images/0/0d/Tia_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d3/Tia%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/9/93/Tia_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/73/House_of_Tia_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/9c/House_of_Tia_NH_Model.png"
+    },
+    "Tiansheng": {
+      "image_url": "https://dodo.ac/np/images/5/5d/Tiansheng_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/2/24/Tiansheng%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d6/Tiansheng_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f1/House_of_Tiansheng_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/84/House_of_Tiansheng_NH_Exterior.jpg"
+    },
+    "Tiffany": {
+      "image_url": "https://dodo.ac/np/images/f/f0/Tiffany_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/03/Tiffany%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/47/Tiffany_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/52/House_of_Tiffany_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0b/House_of_Tiffany_NH_Model.png"
+    },
+    "Timbra": {
+      "image_url": "https://dodo.ac/np/images/6/6f/Timbra_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/43/Timbra%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a9/Timbra_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/11/House_of_Timbra_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/0a/House_of_Timbra_NH_Model.png"
+    },
+    "Tipper": {
+      "image_url": "https://dodo.ac/np/images/7/75/Tipper_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e1/Tipper%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/4b/Tipper_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/64/House_of_Tipper_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/b/ba/House_of_Tipper_NH_Model.png"
+    },
+    "Toby": {
+      "photo_url": "https://dodo.ac/np/images/f/f6/Toby%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/12/Toby_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/6b/House_of_Toby_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/ae/House_of_Toby_NH_Model.png"
+    },
+    "Tom": {
+      "image_url": "https://dodo.ac/np/images/d/d1/Tom_NH.png",
+      "photo_url": "https://dodo.ac/np/images/e/e8/Tom%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/6f/Tom_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/65/House_of_Tom_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/47/House_of_Tom_NH_Model.png"
+    },
+    "Truffles": {
+      "image_url": "https://dodo.ac/np/images/e/eb/Truffles_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/77/Truffles%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/da/Truffles_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/9/9c/House_of_Truffles_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/53/House_of_Truffles_NH_Model.png"
+    },
+    "Tucker": {
+      "image_url": "https://dodo.ac/np/images/7/7c/Tucker_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9a/Tucker%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/2/20/Tucker_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a8/House_of_Tucker_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5f/House_of_Tucker_NH_Model.png"
+    },
+    "Tulin": {
+      "image_url": "https://dodo.ac/np/images/f/f7/Tulin_NH.png",
+      "photo_url": "https://dodo.ac/np/images/5/5d/Tulin%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/f9/Tulin_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/ec/House_of_Tulin_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/e/e4/House_of_Tulin_NH_Model.png"
+    },
+    "Tutu": {
+      "image_url": "https://dodo.ac/np/images/9/93/Tutu_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/70/Tutu%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/d/d6/Tutu_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f7/House_of_Tutu_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/8/85/House_of_Tutu_NH_Model.png"
+    },
+    "Twiggy": {
+      "image_url": "https://dodo.ac/np/images/6/67/Twiggy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/05/Twiggy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/02/Twiggy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7f/House_of_Twiggy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1a/House_of_Twiggy_NH_Model.png"
+    },
+    "Tybalt": {
+      "image_url": "https://dodo.ac/np/images/0/0f/Tybalt_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/d2/Tybalt%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/3/30/Tybalt_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bd/House_of_Tybalt_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/88/House_of_Tybalt_NH_Model.png"
+    },
+    "Ursala": {
+      "image_url": "https://dodo.ac/np/images/6/65/Ursala_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8b/Ursala%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/76/Ursala_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/7/7d/House_of_Ursala_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/4/42/House_of_Ursala_NH_Model.png"
+    },
+    "Velma": {
+      "image_url": "https://dodo.ac/np/images/5/59/Velma_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/03/Velma%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/cf/Velma_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/4/40/House_of_Velma_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/2f/House_of_Velma_NH_Model.png"
+    },
+    "Vesta": {
+      "image_url": "https://dodo.ac/np/images/7/7c/Vesta_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/2a/Vesta%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/41/Vesta_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/69/House_of_Vesta_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/5/5a/House_of_Vesta_NH_Model.png"
+    },
+    "Vic": {
+      "image_url": "https://dodo.ac/np/images/1/1d/Vic_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/dd/Vic%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a1/Vic_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/db/House_of_Vic_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/3/32/House_of_Vic_NH_Model.png"
+    },
+    "Viché": {
+      "image_url": "https://dodo.ac/np/images/8/81/Vich%C3%A9_NH.png",
+      "photo_url": "https://dodo.ac/np/images/4/4f/Vich%C3%A9%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/ca/Vich%C3%A9_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/3e/House_of_Vich%C3%A9_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/d/de/House_of_Vich%C3%A9_NH_Model.png"
+    },
+    "Victoria": {
+      "image_url": "https://dodo.ac/np/images/d/da/Victoria_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8d/Victoria%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/72/Victoria_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e3/House_of_Victoria_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/c2/House_of_Victoria_NH_Model.png"
+    },
+    "Violet": {
+      "image_url": "https://dodo.ac/np/images/6/6b/Violet_NH.png",
+      "photo_url": "https://dodo.ac/np/images/2/23/Violet%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a4/Violet_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/86/House_of_Violet_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/8/86/House_of_Violet_NH_Model.png"
+    },
+    "Vivian": {
+      "image_url": "https://dodo.ac/np/images/2/24/Vivian_NH.png",
+      "photo_url": "https://dodo.ac/np/images/8/8b/Vivian%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/0a/Vivian_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d2/House_of_Vivian_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/8/81/House_of_Vivian_NH_Model.png"
+    },
+    "Vladimir": {
+      "image_url": "https://dodo.ac/np/images/7/75/Vladimir_NH.png",
+      "photo_url": "https://dodo.ac/np/images/9/9a/Vladimir%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1f/Vladimir_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/15/House_of_Vladimir_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/13/House_of_Vladimir_NH_Model.png"
+    },
+    "Wade": {
+      "image_url": "https://dodo.ac/np/images/5/52/Wade_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/be/Wade%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e7/Wade_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/60/House_of_Wade_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/7/79/House_of_Wade_NH_Model.png"
+    },
+    "Walker": {
+      "image_url": "https://dodo.ac/np/images/0/0f/Walker_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/38/Walker%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/02/Walker_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/8/84/House_of_Walker_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/7/7b/House_of_Walker_NH_Model.png"
+    },
+    "Walt": {
+      "image_url": "https://dodo.ac/np/images/b/bf/Walt_NH.png",
+      "photo_url": "https://dodo.ac/np/images/3/38/Walt%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/6/65/Walt_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/32/House_of_Walt_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/17/House_of_Walt_NH_Model.png"
+    },
+    "Wart Jr.": {
+      "image_url": "https://dodo.ac/np/images/2/21/Wart_Jr._NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c2/Wart_Jr.%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/f/fd/Wart_Jr._NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/fb/House_of_Wart_Jr._NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/a8/House_of_Wart_Jr._NH_Model.png"
+    },
+    "Weber": {
+      "image_url": "https://dodo.ac/np/images/6/66/Weber_NH.png",
+      "photo_url": "https://dodo.ac/np/images/d/db/Weber%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/74/Weber_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/0/01/House_of_Weber_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/0/06/House_of_Weber_NH_Model.png"
+    },
+    "Wendy": {
+      "image_url": "https://dodo.ac/np/images/2/23/Wendy_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/b6/Wendy%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c0/Wendy_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/6/65/House_of_Wendy_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/2c/House_of_Wendy_NH_Model.png"
+    },
+    "Whitney": {
+      "image_url": "https://dodo.ac/np/images/3/36/Whitney_NH.png",
+      "photo_url": "https://dodo.ac/np/images/a/ad/Whitney%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/a/a9/Whitney_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/a/a1/House_of_Whitney_NH_2.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/9/92/House_of_Whitney_NH_Model.png"
+    },
+    "Willow": {
+      "image_url": "https://dodo.ac/np/images/6/62/Willow_NH.png",
+      "photo_url": "https://dodo.ac/np/images/b/bb/Willow%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/c/c4/Willow_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/e/e4/House_of_Willow_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/2/23/House_of_Willow_NH_Model.png"
+    },
+    "Winnie": {
+      "image_url": "https://dodo.ac/np/images/b/b8/Winnie_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/7e/Winnie%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/4/44/Winnie_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/1/1c/House_of_Winnie_NH.png",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1d/House_of_Winnie_NH_Model.png"
+    },
+    "Wolfgang": {
+      "image_url": "https://dodo.ac/np/images/a/aa/Wolfgang_NH.png",
+      "photo_url": "https://dodo.ac/np/images/c/c0/Wolfgang%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/1/1a/Wolfgang_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/5/5c/House_of_Wolfgang_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/a/af/House_of_Wolfgang_NH_Model.png"
+    },
+    "Yuka": {
+      "image_url": "https://dodo.ac/np/images/c/ca/Yuka_NH.png",
+      "photo_url": "https://dodo.ac/np/images/7/72/Yuka%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/7c/Yuka_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/b/bf/House_of_Yuka_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/c/ca/House_of_Yuka_NH_Model.png"
+    },
+    "Zell": {
+      "image_url": "https://dodo.ac/np/images/c/c0/Zell_NH.png",
+      "photo_url": "https://dodo.ac/np/images/0/01/Zell%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/7/78/Zell_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/3/3b/House_of_Zell_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/f/f6/House_of_Zell_NH_Model.png"
+    },
+    "Zoe": {
+      "image_url": "https://dodo.ac/np/images/0/0b/Zoe_amiibo.png",
+      "photo_url": "https://dodo.ac/np/images/8/8c/Zoe%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/0/08/Zoe_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/d/d8/House_of_Zoe_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/1/1b/House_of_Zoe_NH_Exterior.jpg"
+    },
+    "Zucker": {
+      "image_url": "https://dodo.ac/np/images/7/7f/Zucker_NH.png",
+      "photo_url": "https://dodo.ac/np/images/1/13/Zucker%27s_Photo_NH_Texture.png",
+      "icon_url": "https://dodo.ac/np/images/e/e2/Zucker_NH_Villager_Icon.png",
+      "house_interior_url": "https://dodo.ac/np/images/f/f3/House_of_Zucker_NH.jpg",
+      "house_exterior_url": "https://dodo.ac/np/images/6/69/House_of_Zucker_NH_Model.png"
+    }
+  }
+}
