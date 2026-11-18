@@ -234,6 +234,63 @@ async def _perform_drop(
     return embed, True
 
 
+async def _submit_injection(
+    user: discord.abc.User,
+    island: str,
+    villager: str,
+    plot: int | None,
+    *,
+    allow_unadoptable: bool = False,
+) -> tuple[bool, str, str | None]:
+    """
+    Send one injection to the island bot and log it. No access/cooldown checks.
+    Returns (queued, display name, error). error is None with queued=False when the bot didn't respond.
+    """
+    display_name = villager
+    villager_code = villager
+    if is_sanrio_villager(villager):
+        display_name = get_canonical_sanrio_name(villager)
+        villager_code = SANRIO_VILLAGER_CODES.get(villager.strip().lower(), villager)
+    else:
+        try:
+            from utils.data_manager import resolve_villager_code
+            villager_code = resolve_villager_code(villager)
+        except Exception:
+            pass
+
+    try:
+        client = get_island_sysbot_client(island)
+        result = await client.inject_villagers(
+            villager_code,
+            plot=plot,
+            allow_unadoptable=allow_unadoptable or is_sanrio_villager(villager),
+        )
+    except Exception:
+        logger.exception("[DropBot] Injection failed island=%s user=%s villager=%s", island, user.id, display_name)
+        await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, "bot did not respond")
+        return False, display_name, None
+
+    if _is_failure(result):
+        err: str | None = None
+        if isinstance(result, dict):
+            err = result.get("error")
+            if not err and result.get("errors"):
+                errs = result.get("errors")
+                err = errs[0] if isinstance(errs, list) and errs else str(errs)
+            if not err:
+                err = result.get("message")
+        err = str(err or "unknown error")
+        logger.warning("[DropBot] Injection rejected island=%s user=%s villager=%s: %s", island, user.id, display_name, err)
+        await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, err)
+        return False, display_name, err
+
+    await asyncio.to_thread(
+        _log_injection, island, display_name, plot, user.id, True,
+        str(result.get("message") or "Queued via Discord panel"),
+    )
+    return True, display_name, None
+
+
 async def _perform_injection(
     user: discord.abc.User,
     island_raw: str,
@@ -277,55 +334,17 @@ async def _perform_injection(
             hint=f"Injections have a short cooldown. Try again {_cooldown_eta_ts(wait)}.",
         ), False
 
-    display_name = villager
-    villager_code = villager
-    if is_sanrio_villager(villager):
-        display_name = get_canonical_sanrio_name(villager)
-        villager_code = SANRIO_VILLAGER_CODES.get(villager.strip().lower(), villager)
-    else:
-        try:
-            from utils.data_manager import resolve_villager_code
-            villager_code = resolve_villager_code(villager)
-        except Exception:
-            pass
-
-    try:
-        client = get_island_sysbot_client(island)
-        result = await client.inject_villagers(
-            villager_code,
-            plot=plot,
-            allow_unadoptable=allow_unadoptable or is_sanrio_villager(villager),
-        )
-    except Exception:
+    ok, display_name, err = await _submit_injection(user, island, villager, plot, allow_unadoptable=allow_unadoptable)
+    if not ok:
         _pop_cooldown(user.id, island, cooldown_key)
-        logger.exception("[DropBot] Injection failed island=%s user=%s", island, user.id)
-        await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, "bot did not respond")
-        return _err_embed("The island bot didn't respond. Check that it's online and try again."), False
-
-    if _is_failure(result):
-        _pop_cooldown(user.id, island, cooldown_key)
-        err: str | None = None
-        if isinstance(result, dict):
-            err = result.get("error")
-            if not err and result.get("errors"):
-                errs = result.get("errors")
-                err = errs[0] if isinstance(errs, list) and errs else str(errs)
-            if not err:
-                err = result.get("message")
-        err = err or "unknown error"
-        logger.warning("[DropBot] Injection rejected island=%s user=%s: %s", island, user.id, err)
-        await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, str(err))
-        if "not adoptable" in str(err).lower() and (allow_unadoptable or is_sanrio_villager(villager)):
+        if err is None:
+            return _err_embed("The island bot didn't respond. Check that it's online and try again."), False
+        if "not adoptable" in err.lower() and (allow_unadoptable or is_sanrio_villager(villager)):
             return _err_embed(
                 f"The island bot rejected **{display_name}**: `{_sanitize_error_message(err)}`.\n"
                 f"The island bot's SysBot binary must be updated/restarted with Sanrio support enabled."
             ), False
         return _err_embed(f"The injection was rejected: **{_sanitize_error_message(err)}**\nMake sure the island bot is online."), False
-
-    await asyncio.to_thread(
-        _log_injection, island, display_name, plot, user.id, True,
-        str(result.get("message") or "Queued via Discord panel"),
-    )
 
     desc = f"**{display_name}** is queued for injection into **[{island}]({_island_url(island)})**.\n"
     if is_sanrio_villager(villager):
@@ -340,6 +359,81 @@ async def _perform_injection(
     )
     if plot is not None:
         embed.add_field(name="Requested plot", value=str(plot), inline=True)
+    embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+    return embed, True
+
+
+async def _perform_multi_injection(
+    user: discord.abc.User,
+    island_raw: str,
+    entries: list[tuple[str, int | None]],
+    *,
+    cooldown_key: str = "inject",
+) -> tuple[discord.Embed, bool]:
+    """
+    Inject several (regular, non-Sanrio) villagers one after another under a single cooldown.
+    Returns (summary embed, whether at least one injection was queued).
+    """
+    denied = await _access_denied(user)
+    if denied:
+        return _err_embed(denied), False
+    island = _canonical_island(island_raw)
+    if not island:
+        return _err_embed(UNKNOWN_ISLAND_MSG), False
+    if not entries:
+        return _err_embed("Enter at least one villager."), False
+
+    if not await _check_island_online(island):
+        _pop_cooldown(user.id, island, cooldown_key)
+        embed = discord.Embed(
+            title="🔴 Island Bot Offline",
+            description=(
+                f"**{island}**'s bot appears to be offline right now.\n"
+                "Your injections were **not** submitted. Please try again when the bot is back online."
+            ),
+            color=PANEL_EMBED_COLOR_ERR,
+        )
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        return embed, False
+
+    wait = _cooldown_left(user.id, island, cooldown_key)
+    if wait:
+        return _err_embed(
+            f"You can inject again {_cooldown_eta_ts(wait)}.",
+            title="Cooldown Active",
+            hint=f"Injections have a short cooldown. Try again {_cooldown_eta_ts(wait)}.",
+        ), False
+
+    queued: list[str] = []
+    failed: list[str] = []
+    for villager, plot in entries:
+        ok, display_name, err = await _submit_injection(user, island, villager, plot)
+        label = f"**{display_name}**" + (f" (plot {plot})" if plot is not None else "")
+        if ok:
+            queued.append(label)
+        else:
+            reason = _sanitize_error_message(err) if err else "the island bot didn't respond"
+            failed.append(f"{label}: {reason}")
+
+    if not queued:
+        _pop_cooldown(user.id, island, cooldown_key)
+        return _err_embed(
+            "None of the injections went through:\n" + "\n".join(f"• {f}" for f in failed),
+            title="Injection Failed",
+            hint="Make sure the island bot is online and try again.",
+        ), False
+
+    embed = discord.Embed(
+        title=f"🐱 {len(queued)} villager injection{'s' if len(queued) != 1 else ''} queued",
+        description=(
+            f"Queued for **[{island}]({_island_url(island)})**.\n"
+            "You **must be on the island** for the injections to take effect."
+        ),
+        color=PANEL_EMBED_COLOR if not failed else PANEL_EMBED_COLOR_WARN,
+    )
+    embed.add_field(name="✅ Queued", value="\n".join(queued)[:1024], inline=False)
+    if failed:
+        embed.add_field(name="❌ Failed", value="\n".join(failed)[:1024], inline=False)
     embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
     return embed, True
 
@@ -412,3 +506,55 @@ def _injection_guard(
         embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         return None, (embed, occupant.name)
     return None, None
+
+
+def _multi_injection_guard(
+    island: str, entries: list[tuple[str, int | None]], residents: list[_Resident]
+) -> tuple[discord.Embed | None, list[tuple[str, int, str]]]:
+    """
+    (blocked, replacements) for a batch. `blocked` is an error embed when the batch can't make sense
+    (duplicate villagers/plots, or someone who already lives there); `replacements` lists
+    (villager, plot, current resident) for plots that would be overwritten.
+    """
+    seen: set[str] = set()
+    dupes: list[str] = []
+    plot_owner: dict[int, str] = {}
+    plot_clash: list[str] = []
+    for villager, plot in entries:
+        key = _clean_key(villager)
+        if key in seen:
+            dupes.append(villager)
+        seen.add(key)
+        if plot is not None:
+            if plot in plot_owner:
+                plot_clash.append(f"plot {plot} ({plot_owner[plot]} and {villager})")
+            else:
+                plot_owner[plot] = villager
+    if dupes:
+        return _err_embed(
+            f"You listed {', '.join(f'**{d}**' for d in dict.fromkeys(dupes))} more than once.",
+            title="Duplicate Villager",
+            hint="Each villager can only be injected once.",
+        ), []
+    if plot_clash:
+        return _err_embed(
+            "Two villagers can't share a plot: " + "; ".join(plot_clash) + ".",
+            title="Plot Used Twice",
+            hint="Give each villager a different plot, or leave the plot off.",
+        ), []
+    if not residents:
+        return None, []
+
+    resident_keys = {_clean_key(r.name) for r in residents}
+    already = [v for v, _ in entries if _clean_key(v) in resident_keys]
+    if already:
+        return _err_embed(
+            f"{', '.join(f'**{a}**' for a in already)} already live{'s' if len(already) == 1 else ''} on "
+            f"**[{island}]({_island_url(island)})**, and an island can't have the same villager twice.",
+            title="Already a Resident",
+            hint=f"Remove them from the list. Current residents: {', '.join(r.name for r in residents)}",
+        ), []
+
+    by_plot = {r.plot: r.name for r in residents if r.plot is not None}
+    replacements = [(v, p, by_plot[p]) for v, p in entries if p is not None and p in by_plot]
+    return None, replacements

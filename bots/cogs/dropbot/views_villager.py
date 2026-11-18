@@ -14,7 +14,7 @@ from .islands import _canonical_island, _island_url
 from .parsing import _match_villagers
 from .status import _err_embed, build_villager_picker_embed
 from .ui_base import _OwnedView, _adopt, _reply
-from .actions import _fetch_residents, _injection_guard, _perform_injection
+from .actions import _fetch_residents, _injection_guard, _multi_injection_guard, _perform_injection, _perform_multi_injection
 
 logger = logging.getLogger("DropBotCog")
 
@@ -75,6 +75,45 @@ async def _start_injection(
         return
 
     embed, _ = await _perform_injection(interaction.user, island_name, villager, plot)
+    await interaction.edit_original_response(content=None, embed=embed, view=None)
+
+
+async def _start_multi_injection(
+    interaction: discord.Interaction,
+    island_name: str,
+    entries: list[tuple[str, int | None]],
+) -> None:
+    """Guarded entry point for injecting several regular villagers at once. Expects a deferred interaction."""
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+    canonical_island = _canonical_island(island_name) or island_name
+    residents = await _fetch_residents(canonical_island)
+    blocked, replacements = _multi_injection_guard(canonical_island, entries, residents)
+    if blocked:
+        await interaction.edit_original_response(content=None, embed=blocked, view=None)
+        return
+    if replacements:
+        embed = discord.Embed(
+            title="⚠️ Replace these residents?",
+            description=(
+                f"Some plots on **[{canonical_island}]({_island_url(canonical_island)})** are already taken. "
+                "Injecting this list will replace:\n"
+                + "\n".join(f"• Plot **{p}**: {old} → **{new}**" for new, p, old in replacements)
+            ),
+            color=PANEL_EMBED_COLOR_WARN,
+        )
+        embed.add_field(
+            name="Full list",
+            value="\n".join(f"{v}" + (f" (plot {p})" if p is not None else "") for v, p in entries)[:1024],
+            inline=False,
+        )
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        view = MultiInjectionConfirmView(interaction.user.id, island_name, entries, len(replacements))
+        await interaction.edit_original_response(content=None, embed=embed, view=_adopt(view, interaction))
+        return
+
+    embed, _ = await _perform_multi_injection(interaction.user, island_name, entries)
     await interaction.edit_original_response(content=None, embed=embed, view=None)
 
 
@@ -170,6 +209,34 @@ class InjectionConfirmView(_OwnedView):
         embed, ok = await _perform_injection(interaction.user, self.island_name, self.villager, self.plot)
         if ok:
             embed.add_field(name="Replaced", value=f"{self.replacing} → {self.villager}", inline=False)
+        await interaction.edit_original_response(content=None, embed=embed, view=None)
+
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        await interaction.response.edit_message(content="Injection cancelled.", embed=None, view=None)
+
+
+class MultiInjectionConfirmView(_OwnedView):
+    """Confirm a multi-villager injection that would replace known residents."""
+
+    def __init__(self, user_id: int, island_name: str, entries: list[tuple[str, int | None]], replace_count: int):
+        super().__init__(user_id=user_id, timeout=90)
+        self.island_name = island_name
+        self.entries = entries
+
+        confirm = discord.ui.Button(
+            label=f"Inject all ({replace_count} replaced)"[:80], emoji="⚡", style=discord.ButtonStyle.danger, row=0
+        )
+        confirm.callback = self._on_confirm  # type: ignore[assignment]
+        self.add_item(confirm)
+        cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary, row=0)
+        cancel.callback = self._on_cancel  # type: ignore[assignment]
+        self.add_item(cancel)
+
+    async def _on_confirm(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        await interaction.response.defer()
+        embed, _ = await _perform_multi_injection(interaction.user, self.island_name, self.entries)
         await interaction.edit_original_response(content=None, embed=embed, view=None)
 
     async def _on_cancel(self, interaction: discord.Interaction) -> None:

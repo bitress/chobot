@@ -8,7 +8,7 @@ import logging
 import re
 from utils.acnh_catalog import ACNHCatalog, CatalogItem, CatalogVillager
 
-from .constants import CATALOG_ITEM_LIMIT, MAX_DROP_SLOTS, MAX_ITEM_NAME, MAX_STACK
+from .constants import CATALOG_ITEM_LIMIT, MAX_DROP_SLOTS, MAX_ITEM_NAME, MAX_STACK, PLOT_MAX, PLOT_MIN
 
 logger = logging.getLogger("DropBotCog")
 
@@ -92,6 +92,53 @@ def _format_item_for_sysbot(item_name: str, qty: int) -> str:
 def _normalize_items(entries: list[tuple[str, int]]) -> str:
     """Normalize drop items into space-separated hex codes with NO COMMAS."""
     return build_drop_payload(entries)
+
+
+# ─── Multi-villager input parsing ──────────────────────────────────────────────
+
+_VILLAGER_LIST_SPLIT_RE = re.compile(r"[,;\n]+")
+
+
+# "Raymond 3", "Raymond:3", "Raymond @3", "Raymond plot 3". No villager name ends in a digit.
+_VILLAGER_ENTRY_RE = re.compile(r"^(?P<name>.+?)(?:\s*(?::|@|#|\bplot\b)?\s*(?P<plot>\d+))?$", re.IGNORECASE)
+
+
+def is_villager_list(raw: str | None) -> bool:
+    """True when the input names more than one villager (comma, semicolon or newline separated)."""
+    return len([e for e in _VILLAGER_LIST_SPLIT_RE.split(raw or "") if e.strip()]) > 1
+
+
+def parse_villager_list(raw: str) -> tuple[list[tuple[str, int | None]] | None, str | None]:
+    """
+    Parse "Raymond 3, Marshal, Sherb:5" into [(name, plot | None), ...].
+    Returns (entries, None) or (None, user-facing error). Names are not resolved here.
+    """
+    parts = [e.strip() for e in _VILLAGER_LIST_SPLIT_RE.split(raw or "") if e.strip()]
+    if not parts:
+        return None, "Enter at least one villager."
+    max_count = PLOT_MAX - PLOT_MIN + 1
+    if len(parts) > max_count:
+        return None, f"You can inject at most **{max_count}** villagers at once (you entered {len(parts)})."
+
+    entries: list[tuple[str, int | None]] = []
+    for part in parts:
+        m = _VILLAGER_ENTRY_RE.match(part)
+        name = (m.group("name") if m else part).strip()
+        plot_raw = m.group("plot") if m else None
+        # Strip autocomplete decorations ("🐱 Raymond • Cat").
+        if name.startswith("🐱"):
+            name = name[1:].strip()
+        if " • " in name:
+            name = name.split(" • ")[0].strip()
+        if not name:
+            return None, f"I couldn't read “{part[:40]}”. Use `name` or `name plot`, for example `Raymond 3`."
+        plot: int | None = None
+        if plot_raw is not None:
+            plot = int(plot_raw)
+            if not PLOT_MIN <= plot <= PLOT_MAX:
+                return None, f"Plot for **{name[:40]}** must be between {PLOT_MIN} and {PLOT_MAX}."
+        entries.append((name, plot))
+    return entries, None
 
 
 # ─── Villager matching ─────────────────────────────────────────────────────────
