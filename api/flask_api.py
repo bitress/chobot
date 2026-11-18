@@ -50,7 +50,7 @@ from utils.discord_membership import (
     should_refresh,
 )
 from utils.nookipedia import NookipediaClient
-from utils.ops_status import build_health_payload, get_maintenance_settings, record_service_status, set_active_data_manager
+from utils.ops_status import build_health_payload, get_ad_config, get_maintenance_settings, record_service_status, set_active_data_manager
 from api.dashboard import (
     dashboard,
     init_dashboard_db,
@@ -2588,6 +2588,14 @@ def health():
     }
     status_code = 200 if payload["status"] in {"ok", "degraded"} else 503
     return jsonify(payload), status_code
+
+
+@app.route('/api/public/ad-config', methods=['GET'])
+def public_ad_config():
+    """Which ad network chopaeng.com should load: adsense, nitropay or none (settings.ad_provider)."""
+    resp = jsonify(get_ad_config())
+    resp.headers["Cache-Control"] = "public, max-age=60"
+    return resp
 
 # --- ITEM SEARCH ROUTES ---
 

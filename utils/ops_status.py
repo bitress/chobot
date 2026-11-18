@@ -145,6 +145,33 @@ def get_maintenance_settings() -> dict[str, Any]:
     }
 
 
+AD_PROVIDERS = ("adsense", "nitropay", "none")
+
+
+def get_ad_config() -> dict[str, str]:
+    """Which ad network the website should load, from the `ad_provider` setting (edited by hand in the DB).
+
+    `maintenance_disable_ads=true` wins over it, and anything unrecognised falls back to AdSense.
+    """
+    provider = "adsense"
+    try:
+        db = connect_db()
+        try:
+            _ensure_settings_table(db)
+            row = db.execute("SELECT value FROM settings WHERE key = ?", ("ad_provider",)).fetchone()
+            if row:
+                value = str(row["value"] or "").strip().lower()
+                if value in AD_PROVIDERS:
+                    provider = value
+        finally:
+            db.close()
+    except Exception:
+        pass
+    if get_maintenance_settings()["disable_ads"]:
+        provider = "none"
+    return {"provider": provider}
+
+
 def update_maintenance_settings(payload: dict[str, Any]) -> dict[str, Any]:
     updates = {
         "maintenance_mode": "true" if _bool_from_setting(payload.get("maintenance_mode")) else "false",
