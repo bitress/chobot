@@ -18,11 +18,11 @@ from .constants import FORCE_EDIT_SECONDS, MAX_STACK, PANEL_EMBED_COLOR_WARN, PA
 from .state import _close_http
 from .db import _get_panel_row, _init_tables, _load_all_panels, _load_sanrio_wizard_state, _panel_channel_ids_cached, _upsert_panel
 from .islands import _access_denied, _canonical_island, _infer_island, _sub_category_id, _user_can_target
-from .parsing import _get_villager_names, _match_villagers
+from .parsing import _get_villager_names, _match_villagers, is_villager_list, parse_villager_list
 from .status import _build_panel_embed, _embed_signature, _err_embed, build_drop_picker_embed, build_villager_picker_embed, fetch_island_live_status
 from .ui_base import SubRulesPromptView, _adopt, _reply
 from .actions import _perform_drop
-from .views_villager import InteractiveVillagerPickerView, SanrioInjectionWizardView, VillagerChoiceView, _start_injection
+from .views_villager import InteractiveVillagerPickerView, SanrioInjectionWizardView, VillagerChoiceView, _resolve_villager_list, _start_injection, _start_multi_injection
 from .views_catalog import CatalogSearchModal, InteractiveDropPickerView, _show_catalog
 from .panel import ALL_REGISTERED_DYNAMIC_ITEMS, IslandPanelView
 
@@ -406,13 +406,32 @@ class DropBotCog(commands.Cog, name="DropBot"):
     async def villager_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
-        """Real-time autocomplete for villager injection."""
+        """Real-time autocomplete for villager injection.
+
+        For a list ("Raymond 3, Mar") only the last name is searched, and each choice keeps
+        the names already typed so picking one extends the list.
+        """
+        prefix = ""
         cur = (current or "").strip()
+        if "," in cur or ";" in cur:
+            cut = max(cur.rfind(","), cur.rfind(";")) + 1
+            prefix = cur[:cut].rstrip() + " "
+            cur = cur[cut:].strip()
+
+        already = {n.lower() for n, _ in (parse_villager_list(prefix)[0] or [])} if prefix else set()
+
+        def _choice(label: str, name: str) -> app_commands.Choice[str] | None:
+            value = f"{prefix}{name}"
+            if len(value) > 100 or name.lower() in already:
+                return None
+            return app_commands.Choice(name=(f"{prefix}{label}" if prefix else label)[:100], value=value)
+
         if not cur:
             try:
                 catalog = ACNHCatalog.get_instance()
                 popular_v = catalog.get_popular_villagers()
-                return [app_commands.Choice(name=f"{v.emoji} {v.name}", value=v.name) for v in popular_v[:25]]
+                out = [_choice(f"{v.emoji} {v.name}", v.name) for v in popular_v[:25]]
+                return [c for c in out if c]
             except Exception:
                 return []
 
@@ -422,12 +441,14 @@ class DropBotCog(commands.Cog, name="DropBot"):
             choices: list[app_commands.Choice[str]] = []
             seen: set[str] = set()
             for v in hits:
-                name = v.display_name[:100]
+                # Insert the plain name: display_name adds "(Species)", which the matcher doesn't resolve.
+                name = v.name[:100]
                 if name not in seen:
                     seen.add(name)
                     details = f" • {v.species}" if v.species else ""
-                    label = f"🐱 {name}{details}"[:100]
-                    choices.append(app_commands.Choice(name=label, value=name))
+                    choice = _choice(f"🐱 {name}{details}", name)
+                    if choice:
+                        choices.append(choice)
             return choices[:25]
         except Exception as exc:
             logger.warning("[DropBot] villager_autocomplete error: %s", exc)
@@ -721,6 +742,10 @@ class DropBotCog(commands.Cog, name="DropBot"):
             await interaction.response.send_message(embed=embed, view=_adopt(view, interaction), ephemeral=True)
             return
 
+        if is_villager_list(villager):
+            await self._handle_multi_inject(interaction, target_island, villager, plot)
+            return
+
         clean_v = villager.strip()
         if clean_v.startswith("🐱 "):
             clean_v = clean_v[2:].strip()
@@ -756,6 +781,32 @@ class DropBotCog(commands.Cog, name="DropBot"):
         )
         prompt.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         await interaction.followup.send(embed=prompt, view=_adopt(view, interaction), ephemeral=True)
+
+    async def _handle_multi_inject(
+        self,
+        interaction: discord.Interaction,
+        target_island: str,
+        raw: str,
+        plot: int | None,
+    ) -> None:
+        """/inject with several villagers: "Raymond 3, Marshal, Sherb 5"."""
+        if plot is not None:
+            await _reply(
+                interaction,
+                embed=_err_embed(
+                    "The `plot` option only works for a single villager.",
+                    hint="Put the plot after each name instead, for example `Raymond 3, Marshal 5`.",
+                ),
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        resolved, error = await _resolve_villager_list(raw)
+        if error:
+            await interaction.followup.send(embed=error, ephemeral=True)
+            return
+
+        await _start_multi_injection(interaction, target_island, resolved)
 
     async def _handle_sanrio_cmd(
         self,
@@ -849,14 +900,14 @@ class DropBotCog(commands.Cog, name="DropBot"):
     async def slash_drop(self, interaction: discord.Interaction, item: str | None = None, quantity: app_commands.Range[int, 1, MAX_STACK] | None = None, island: str | None = None) -> None:
         await self._handle_drop_cmd(interaction, item, quantity, island)
 
-    @dropbot_group.command(name="inject", description="Inject a villager into a sub-island with live search autocomplete")
-    @app_commands.describe(villager="Villager name to inject (search autocomplete)", plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)", island="Target island (auto-detected if omitted)")
+    @dropbot_group.command(name="inject", description="Inject one or more villagers into a sub-island (e.g. Raymond 3, Marshal)")
+    @app_commands.describe(villager="Villager name, or a comma-separated list with optional plots: Raymond 3, Marshal, Sherb 5", plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)", island="Target island (auto-detected if omitted)")
     @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
     async def dropbot_inject(self, interaction: discord.Interaction, villager: str | None = None, plot: app_commands.Range[int, PLOT_MIN, PLOT_MAX] | None = None, island: str | None = None) -> None:
         await self._handle_inject_cmd(interaction, villager, plot, island)
 
-    @app_commands.command(name="inject", description="Inject a villager into a sub-island with live search autocomplete")
-    @app_commands.describe(villager="Villager name to inject (search autocomplete)", plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)", island="Target island (auto-detected if omitted)")
+    @app_commands.command(name="inject", description="Inject one or more villagers into a sub-island (e.g. Raymond 3, Marshal)")
+    @app_commands.describe(villager="Villager name, or a comma-separated list with optional plots: Raymond 3, Marshal, Sherb 5", plot=f"Plot number ({PLOT_MIN}–{PLOT_MAX}, optional)", island="Target island (auto-detected if omitted)")
     @app_commands.autocomplete(villager=villager_autocomplete, island=island_autocomplete)
     async def slash_inject(self, interaction: discord.Interaction, villager: str | None = None, plot: app_commands.Range[int, PLOT_MIN, PLOT_MAX] | None = None, island: str | None = None) -> None:
         await self._handle_inject_cmd(interaction, villager, plot, island)

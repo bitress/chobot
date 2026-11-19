@@ -704,6 +704,8 @@ def _build_guide_embed(island: str) -> discord.Embed:
         value=(
             f"Enter a name and, optionally, a plot ({PLOT_MIN}–{PLOT_MAX}); leave the plot blank for the next open one. "
             "Misspelled it? I'll suggest close matches before anything happens.\n"
+            "• **Several at once:** pick more than one from the menu, or type a list like `Raymond 3, Marshal, Sherb 5` "
+            "(the number after a name is its plot). They count as one injection for the cooldown.\n"
             "• You can't inject someone who already lives on the island.\n"
             "• If the bot can see that the plot you chose is occupied, you'll get a **before / after** screen and must confirm the swap.\n"
             "• **🎀 Sanrio / Amiibo** villagers use a 2-step wizard. If you get disconnected, reopen it within "
@@ -782,12 +784,12 @@ async def build_drop_picker_embed(island: str, user: discord.abc.User | None = N
 def build_villager_picker_embed(island: str) -> discord.Embed:
     embed = discord.Embed(
         title=f"🐱 Inject Villager — {island}",
-        description=f"Add a villager to the next open plot on **[{island}]({_island_url(island)})**.",
+        description=f"Add one or more villagers to **[{island}]({_island_url(island)})**.",
         color=PANEL_EMBED_COLOR,
     )
-    embed.add_field(name="📋 Menu", value="Pick a popular villager to inject.", inline=True)
+    embed.add_field(name="📋 Menu", value="Pick one or more popular villagers.", inline=True)
     embed.add_field(name="🔍 Search", value="Find one by name or species.", inline=True)
     embed.add_field(name="🎀 Sanrio / Amiibo", value="Special Sanrio injections.", inline=True)
-    embed.add_field(name="✏️ Any name", value="Type any villager manually.", inline=True)
+    embed.add_field(name="✏️ Any name", value="Type a name, or a list like `Raymond 3, Marshal`.", inline=True)
     embed.set_footer(text=f"{PANEL_FOOTER_TEXT} • You must be on the island", icon_url=PANEL_FOOTER_ICON)
     return embed

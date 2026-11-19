@@ -887,10 +887,14 @@ class SysBotClient:
                     if _is_sanrio_code(item):
                         has_sanrio = True
                     payload.append(item)
-            if (allow_unadoptable or has_sanrio) and isinstance(payload, dict):
-                payload.setdefault("allow_unadoptable", True)
-                payload.setdefault("force", True)
-                payload.setdefault("sanrio", True)
+            if allow_unadoptable or has_sanrio:
+                for entry in payload:
+                    if not isinstance(entry, dict):
+                        continue
+                    if allow_unadoptable or _is_sanrio_code(entry.get("villager") or entry.get("villager_name")):
+                        entry.setdefault("allow_unadoptable", True)
+                        entry.setdefault("force", True)
+                        entry.setdefault("sanrio", True)
         else:
             payload = str(villagers)
 
