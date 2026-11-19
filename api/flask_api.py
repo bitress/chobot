@@ -6492,6 +6492,8 @@ PRESENCE_CACHE_SECONDS = 2.0
 PRESENCE_PRUNE_INTERVAL = 30
 PRESENCE_STREAM_MAX_SECONDS = 600
 PRESENCE_STREAMS_PER_SESSION = 3
+PRESENCE_LEAVE_GRACE_SECONDS = 8   # after a leave beacon, how long a reload has to beat again
+PRESENCE_SWEEP_SECONDS = 10        # while anyone listens, re-check who silently dropped out
 PRESENCE_ROLE_RANK = {"admin": 1, "mod": 2, "member": 3}
 _PRESENCE_UTC_OFFSET = 8 * 3600  # "today" follows Philippine time, where the community lives
 
@@ -6558,6 +6560,47 @@ def _prune_presence(conn, now: int, *, force: bool = False) -> None:
         presence_hub.broadcast_radar(_build_radar_payload)
 
 
+_presence_sweeper_lock = threading.Lock()
+_presence_sweeper_started = False
+
+
+def _presence_sweep_once() -> None:
+    """Recompute the radar so people whose beats stopped (closed tab, killed app) drop out of
+    everyone's view within one sweep, instead of waiting for someone else's heartbeat."""
+    if presence_hub.subscriber_count == 0:
+        return
+    conn = get_db()
+    try:
+        _ensure_presence_table(conn)
+        _prune_presence(conn, int(time.time()))
+    finally:
+        conn.close()
+    _invalidate_presence_cache()
+    # Unchanged snapshots are deduped inside the hub, so a quiet sweep sends nothing.
+    presence_hub.broadcast_radar(_build_radar_payload)
+
+
+def _presence_sweeper_loop() -> None:
+    while True:
+        time.sleep(PRESENCE_SWEEP_SECONDS)
+        try:
+            _presence_sweep_once()
+        except Exception as exc:
+            logger.debug("[Presence] Sweep failed: %s", exc)
+
+
+def _ensure_presence_sweeper() -> None:
+    """Start the background sweeper the first time anything needs it (one per process)."""
+    global _presence_sweeper_started
+    if _presence_sweeper_started:
+        return
+    with _presence_sweeper_lock:
+        if _presence_sweeper_started:
+            return
+        threading.Thread(target=_presence_sweeper_loop, name="presence-sweeper", daemon=True).start()
+        _presence_sweeper_started = True
+
+
 def _presence_people(conn, now: int) -> list[dict]:
     """Active presence rows collapsed to one entry per person, roster-ordered.
 
@@ -6577,7 +6620,10 @@ def _presence_people(conn, now: int) -> list[dict]:
     for r in raw:
         row = dict(r)
         key = f"u:{row['user_id']}" if row.get("user_id") else f"s:{row['session_id']}"
-        if key not in people:
+        # Rows arrive newest first; across devices an active one beats an idle one, so a parked
+        # laptop doesn't keep flipping someone to "idle" while they use their phone.
+        held = people.get(key)
+        if held is None or (held.get("status") == "idle" and row.get("status") != "idle"):
             people[key] = row
     def roster_rank(r: dict) -> float:
         rank = PRESENCE_ROLE_RANK.get(r.get("role") or "", 4)
@@ -6773,6 +6819,7 @@ def api_presence_heartbeat():
     session_id = str(data.get("sessionId") or request.headers.get("x-session-id") or "").strip()
     current_island = str(data.get("currentIsland") or "").strip()
     is_idle = bool(data.get("idle"))
+    passive = bool(data.get("passive"))
     viewing_item = _clean_item_key(data.get("viewingItem"))
     ordering_items = _clean_ordering_items(data.get("orderingItems"))
     ordering_json = json.dumps(ordering_items) if ordering_items else ""
@@ -6876,9 +6923,20 @@ def api_presence_heartbeat():
             status = "idle"
 
         previous = conn.execute(
-            "SELECT status, current_island, viewing_item, ordering_items FROM user_online_presence WHERE session_id = ?",
+            "SELECT status, current_activity, `current_path`, current_island, viewing_item, ordering_items "
+            "FROM user_online_presence WHERE session_id = ?",
             (session_id,),
         ).fetchone()
+
+        # A passive beat comes from a background tab while another tab of the same browser is in
+        # front: it only keeps the session alive, so the two tabs don't fight over what we show.
+        if passive and previous is not None:
+            status = previous["status"] or status
+            activity = previous["current_activity"] or activity
+            current_path = previous["current_path"] or current_path
+            current_island = previous["current_island"] or ""
+            viewing_item = _clean_item_key(previous["viewing_item"])
+            ordering_json = previous["ordering_items"] or ""
 
         # UPSERT active session
         conn.execute("""
@@ -6975,11 +7033,18 @@ def api_presence_leave():
     if session_id:
         conn = get_db()
         try:
-            # Only ever remove the exact session; never match by user id from client input
-            conn.execute("DELETE FROM user_online_presence WHERE session_id = ?", (session_id,))
+            # Only ever touch the exact session; never match by user id from client input.
+            # pagehide also fires on reload, so instead of deleting, age the row to expire after a
+            # short grace: a reload beats again within it (no offline blink, no extra visit), a real
+            # close drops out when the sweeper next runs.
+            expire_at = int(time.time()) - PRESENCE_ACTIVE_SECONDS + PRESENCE_LEAVE_GRACE_SECONDS
+            conn.execute(
+                "UPDATE user_online_presence SET last_heartbeat = "
+                "CASE WHEN last_heartbeat > ? THEN ? ELSE last_heartbeat END WHERE session_id = ?",
+                (expire_at, expire_at, session_id),
+            )
             conn.commit()
-            _invalidate_presence_cache()
-            presence_hub.broadcast_radar(_build_radar_payload)
+            _ensure_presence_sweeper()
         except Exception:
             pass
         finally:
@@ -7184,6 +7249,7 @@ def api_presence_stream():
     if session_id and presence_hub.count_for(session_id) >= PRESENCE_STREAMS_PER_SESSION:
         return jsonify({"ok": False, "error": "Too many open streams for this session"}), 429
     sub = presence_hub.subscribe(keys)
+    _ensure_presence_sweeper()
     if sub is None:
         return jsonify({"ok": False, "error": "Stream capacity reached"}), 503
 
