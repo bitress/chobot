@@ -667,7 +667,7 @@ def _upload_map_to_r2(file_bytes: bytes, content_type: str, island_id: str) -> s
         Prefix=f"maps/{island_id}",
     )
     for obj in existing.get("Contents", []):
-        if obj["Key"] != key:
+        if obj["Key"] != key and "/" not in obj["Key"][len("maps/"):]:
             client.delete_object(Bucket=Config.R2_BUCKET_NAME, Key=obj["Key"])
 
     client.put_object(
@@ -675,9 +675,55 @@ def _upload_map_to_r2(file_bytes: bytes, content_type: str, island_id: str) -> s
         Key=key,
         Body=file_bytes,
         ContentType=content_type,
+        CacheControl=MAP_CACHE_CONTROL,
     )
+    _upload_map_thumbnail(client, file_bytes, island_id)
     base = Config.R2_PUBLIC_URL.rstrip("/")
     return f"{base}/{key}"
+
+
+# Map originals are 1-2.5 MB; every list/card view only needs a small preview.
+# The site derives the thumbnail URL from map_url (maps/<id>.<ext> -> maps/thumbs/<id>.webp)
+# and falls back to the original when the thumbnail is missing.
+MAP_THUMB_WIDTH = 640
+MAP_THUMB_QUALITY = 80
+MAP_CACHE_CONTROL = "public, max-age=3600, stale-while-revalidate=86400"
+
+
+def make_map_thumbnail(file_bytes: bytes, width: int = MAP_THUMB_WIDTH) -> bytes | None:
+    """Return a WebP preview of a map image, or None if Pillow is missing or the image can't be read."""
+    try:
+        from PIL import Image
+    except ImportError:
+        logger.warning("Pillow not installed; skipping map thumbnail")
+        return None
+    try:
+        with Image.open(io.BytesIO(file_bytes)) as im:
+            im.load()
+            im = im.convert("RGBA" if "A" in im.getbands() or im.mode == "P" else "RGB")
+            im.thumbnail((width, width * 4), Image.LANCZOS)
+            out = io.BytesIO()
+            im.save(out, "WEBP", quality=MAP_THUMB_QUALITY, method=6)
+            return out.getvalue()
+    except Exception as exc:  # noqa: BLE001 - a bad thumbnail must never fail the upload
+        logger.warning("Map thumbnail generation failed: %s", exc)
+        return None
+
+
+def _upload_map_thumbnail(client, file_bytes: bytes, island_id: str) -> None:
+    thumb = make_map_thumbnail(file_bytes)
+    if thumb is None:
+        return
+    try:
+        client.put_object(
+            Bucket=Config.R2_BUCKET_NAME,
+            Key=f"maps/thumbs/{island_id}.webp",
+            Body=thumb,
+            ContentType="image/webp",
+            CacheControl=MAP_CACHE_CONTROL,
+        )
+    except (ClientError, NoCredentialsError) as exc:
+        logger.warning("Map thumbnail upload failed for %s: %s", island_id, exc)
 
 
 # ---------------------------------------------------------------------------
