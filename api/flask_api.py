@@ -5085,6 +5085,77 @@ def order_villagers():
 # COMMUNITY LOADOUTS & CLOUD SYNC API
 # ============================================================================
 
+POPULAR_LOADOUT_COUNT = 3
+POPULAR_LOADOUT_MIN_VIEWS = 3
+
+
+def _loadout_viewer_id(auth_user) -> str:
+    user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
+    if user_id:
+        return user_id
+    client_header = request.headers.get("x-client-id") or ""
+    ip = request.remote_addr or "127.0.0.1"
+    return f"anon_{client_header}_{ip}"[:64]
+
+
+def _loadout_weekly_views(conn) -> dict:
+    """Distinct viewer-days per loadout over the last 7 UTC days."""
+    since = (datetime.utcnow() - timedelta(days=6)).strftime("%Y-%m-%d")
+    try:
+        rows = conn.execute(
+            "SELECT loadout_id, COUNT(*) AS cnt FROM community_loadout_views WHERE day >= ? GROUP BY loadout_id",
+            (since,),
+        ).fetchall()
+        return {r["loadout_id"]: int(r["cnt"] or 0) for r in rows}
+    except Exception as exc:
+        logger.debug("[Loadouts] weekly views unavailable: %s", exc)
+        return {}
+
+
+def _popular_loadout_ids(weekly_views: dict) -> set:
+    """Top few loadouts by views this week, if they have enough views to mean anything."""
+    ranked = sorted(
+        (item for item in weekly_views.items() if item[1] >= POPULAR_LOADOUT_MIN_VIEWS),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    return {loadout_id for loadout_id, _ in ranked[:POPULAR_LOADOUT_COUNT]}
+
+
+@app.route("/api/loadouts/<loadout_id>/view", methods=["POST"])
+def view_loadout(loadout_id: str):
+    """Count a loadout preview: at most once per viewer per UTC day."""
+    target_id = loadout_id.strip()[:64]
+    if not target_id:
+        return jsonify({"success": False}), 400
+    viewer = _loadout_viewer_id(_current_auth_user())
+    day = datetime.utcnow().strftime("%Y-%m-%d")
+    conn = get_db()
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM community_loadouts WHERE id = ?", (target_id,)
+        ).fetchone()
+        if not exists:
+            return jsonify({"success": False, "error": "Loadout not found"}), 404
+        seen = conn.execute(
+            "SELECT 1 FROM community_loadout_views WHERE loadout_id = ? AND viewer = ? AND day = ?",
+            (target_id, viewer, day),
+        ).fetchone()
+        if not seen:
+            conn.execute(
+                "REPLACE INTO community_loadout_views (loadout_id, viewer, day) VALUES (?, ?, ?)",
+                (target_id, viewer, day),
+            )
+            conn.execute("UPDATE community_loadouts SET views = views + 1 WHERE id = ?", (target_id,))
+            conn.commit()
+        return jsonify({"success": True, "counted": not seen})
+    except Exception as exc:
+        logger.warning("Error counting view for loadout %s: %s", loadout_id, exc)
+        return jsonify({"success": False}), 500
+    finally:
+        conn.close()
+
+
 @app.route("/api/loadouts", methods=["GET"])
 def get_community_loadouts():
     """List public community and official loadouts."""
@@ -5121,6 +5192,9 @@ def get_community_loadouts():
         ).fetchall()
         user_upvoted_ids = {u["loadout_id"] for u in upvoted_rows}
 
+        weekly_views = _loadout_weekly_views(conn)
+        popular_ids = _popular_loadout_ids(weekly_views)
+
         loadouts = []
         for r in rows:
             name = r["name"] or ""
@@ -5144,6 +5218,8 @@ def get_community_loadouts():
                 "userId": r["user_id"],
                 "upvotes": r["upvotes"] or 0,
                 "views": r["views"] or 0,
+                "weeklyViews": weekly_views.get(r["id"], 0),
+                "isPopular": r["id"] in popular_ids,
                 "isOfficial": bool(r["is_official"]),
                 "hasUpvoted": r["id"] in user_upvoted_ids,
                 "createdAt": r["created_at"],

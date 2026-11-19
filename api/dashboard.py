@@ -471,6 +471,16 @@ def init_dashboard_db():
             )
         """)
 
+        # Loadout views: one row per viewer per loadout per UTC day, for "Popular this week"
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS community_loadout_views (
+                loadout_id  VARCHAR(64) NOT NULL,
+                viewer      VARCHAR(64) NOT NULL,
+                day         VARCHAR(10) NOT NULL,
+                PRIMARY KEY (loadout_id, viewer, day)
+            )
+        """)
+
         # User Favorite Islands table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_favorite_islands (
@@ -590,6 +600,10 @@ def init_dashboard_db():
             pass
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_loadout_upvotes_user ON community_loadout_upvotes (user_id)")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_loadout_views_day ON community_loadout_views (day)")
         except Exception:
             pass
         try:
