@@ -11,7 +11,7 @@ from utils.acnh_catalog import ACNHCatalog
 from .constants import PANEL_EMBED_COLOR, PANEL_EMBED_COLOR_WARN, PANEL_FOOTER_ICON, PANEL_FOOTER_TEXT, PLACEHOLDER_VILLAGERS, PLOT_MAX, PLOT_MIN, SANRIO_EMBED_COLOR, SANRIO_VILLAGERS, get_canonical_sanrio_name, is_sanrio_villager
 from .db import _clear_sanrio_wizard_state, _load_sanrio_wizard_state, _save_sanrio_wizard_state
 from .islands import _canonical_island, _island_url
-from .parsing import _match_villagers
+from .parsing import _match_villagers, is_villager_list, parse_villager_list
 from .status import _err_embed, build_villager_picker_embed
 from .ui_base import _OwnedView, _adopt, _reply
 from .actions import _fetch_residents, _injection_guard, _multi_injection_guard, _perform_injection, _perform_multi_injection
@@ -78,14 +78,58 @@ async def _start_injection(
     await interaction.edit_original_response(content=None, embed=embed, view=None)
 
 
+async def _resolve_villager_list(raw: str) -> tuple[list[tuple[str, int | None]], discord.Embed | None]:
+    """
+    Parse and resolve "Raymond 3, Marshal, Sherb 5" to catalog names.
+    Returns (entries, None), or ([], error embed) when anything is unreadable, unknown or Sanrio.
+    """
+    entries, err = parse_villager_list(raw)
+    if err or not entries:
+        return [], _err_embed(err or "Enter at least one villager.")
+
+    resolved: list[tuple[str, int | None]] = []
+    unknown: list[str] = []
+    sanrio: list[str] = []
+    for name, p in entries:
+        exact, candidates = await asyncio.to_thread(_match_villagers, name)
+        if not exact:
+            hint = f" (did you mean {', '.join(candidates[:3])}?)" if candidates else ""
+            unknown.append(f"**{name[:40]}**{hint}")
+        elif is_sanrio_villager(exact):
+            sanrio.append(exact)
+        else:
+            resolved.append((exact, p))
+
+    if unknown:
+        return [], _err_embed(
+            "I couldn't find these villagers:\n" + "\n".join(f"• {u}" for u in unknown),
+            hint="Fix the spelling and try again. Nothing was injected.",
+        )
+    if sanrio:
+        return [], _sanrio_in_batch_embed(sanrio)
+    return resolved, None
+
+
+def _sanrio_in_batch_embed(names: list[str]) -> discord.Embed:
+    return _err_embed(
+        f"{', '.join(f'**{v}**' for v in names)} need{'s' if len(names) == 1 else ''} the Sanrio hot-swap "
+        "wizard and can't be part of a multi-villager injection.",
+        hint="Remove them from the list and use the 🎀 Sanrio / Amiibo wizard for each one. Nothing was injected.",
+    )
+
+
 async def _start_multi_injection(
     interaction: discord.Interaction,
     island_name: str,
     entries: list[tuple[str, int | None]],
 ) -> None:
-    """Guarded entry point for injecting several regular villagers at once. Expects a deferred interaction."""
+    """Guarded entry point for injecting several regular villagers at once."""
+    # Residents lookup can outlast Discord's 3s window. Buttons/selects update their own message.
     if not interaction.response.is_done():
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if interaction.type == discord.InteractionType.component:
+            await interaction.response.defer()
+        else:
+            await interaction.response.defer(ephemeral=True, thinking=True)
 
     canonical_island = _canonical_island(island_name) or island_name
     residents = await _fetch_residents(canonical_island)
@@ -626,17 +670,17 @@ class SanrioInjectionWizardView(_OwnedView):
         self.stop()
 
 
-class InjectVillagerModal(discord.ui.Modal, title="🐱 Inject Villager"):
+class InjectVillagerModal(discord.ui.Modal, title="🐱 Inject Villager(s)"):
     villager_input = discord.ui.TextInput(
-        label="Villager name",
-        style=discord.TextStyle.short,
-        placeholder="e.g. Raymond, Marshal, Shino",
+        label="Villager name, or several separated by commas",
+        style=discord.TextStyle.paragraph,
+        placeholder="Raymond\nor several, each with an optional plot: Raymond 3, Marshal, Sherb 5",
         min_length=2,
-        max_length=64,
+        max_length=400,
         required=True,
     )
     plot_input = discord.ui.TextInput(
-        label=f"Plot ({PLOT_MIN}–{PLOT_MAX}, optional)",
+        label=f"Plot ({PLOT_MIN}–{PLOT_MAX}, optional, single villager only)",
         style=discord.TextStyle.short,
         placeholder="Leave blank for the next available plot",
         min_length=0,
@@ -652,6 +696,23 @@ class InjectVillagerModal(discord.ui.Modal, title="🐱 Inject Villager"):
         await interaction.response.defer(ephemeral=True, thinking=True)
         raw_name = self.villager_input.value.strip()
         raw_plot = self.plot_input.value.strip()
+
+        if is_villager_list(raw_name):
+            if raw_plot:
+                await interaction.followup.send(
+                    embed=_err_embed(
+                        "The plot box only works for a single villager.",
+                        hint="Put the plot after each name instead, for example `Raymond 3, Marshal 5`.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+            resolved, error = await _resolve_villager_list(raw_name)
+            if error:
+                await interaction.followup.send(embed=error, ephemeral=True)
+                return
+            await _start_multi_injection(interaction, self.island_name, resolved)
+            return
 
         plot: int | None = None
         if raw_plot:
@@ -816,6 +877,56 @@ class VillagerPlotPickView(_OwnedView):
         self.stop()
 
 
+class MultiVillagerPickView(_OwnedView):
+    """Confirm several villagers picked from the panel dropdown; plots are filled automatically."""
+
+    def __init__(self, user_id: int, island_name: str, villagers: list[str]):
+        super().__init__(user_id=user_id, timeout=90)
+        self.island_name = island_name
+        self.villagers = villagers
+
+        inject_btn = discord.ui.Button(
+            label=f"Inject all {len(villagers)}", emoji="⚡", style=discord.ButtonStyle.success, row=0
+        )
+        inject_btn.callback = self._on_inject  # type: ignore[assignment]
+        self.add_item(inject_btn)
+        back_btn = discord.ui.Button(label="Back", emoji="↩", style=discord.ButtonStyle.secondary, row=0)
+        back_btn.callback = self._on_back  # type: ignore[assignment]
+        self.add_item(back_btn)
+        cancel_btn = discord.ui.Button(label="Cancel", emoji="✖", style=discord.ButtonStyle.secondary, row=0)
+        cancel_btn.callback = self._on_cancel  # type: ignore[assignment]
+        self.add_item(cancel_btn)
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🐱 Inject {len(self.villagers)} villagers",
+            description=(
+                f"These villagers will be injected into **[{self.island_name}]({_island_url(self.island_name)})**, "
+                "each into the next available plot:\n"
+                + "\n".join(f"• **{v}**" for v in self.villagers)
+                + "\n\nTo choose plots, use **✏️ Type Any Name** with `Raymond 3, Marshal 5`."
+            ),
+            color=PANEL_EMBED_COLOR,
+        )
+        embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        return embed
+
+    async def _on_inject(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        await _start_multi_injection(interaction, self.island_name, [(v, None) for v in self.villagers])
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        view = InteractiveVillagerPickerView(island_name=self.island_name, user_id=self.user_id)
+        await interaction.response.edit_message(
+            embed=build_villager_picker_embed(self.island_name), view=_adopt(view, interaction)
+        )
+
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        await interaction.response.edit_message(content="Injection cancelled.", embed=None, view=None)
+
+
 class VillagerSearchModal(discord.ui.Modal, title="🔍 Search Villager"):
     search_query = discord.ui.TextInput(
         label="Villager Name or Keyword",
@@ -894,8 +1005,10 @@ class InteractiveVillagerPickerView(_OwnedView):
         v_options = v_options[:25]
         if v_options:
             v_select = discord.ui.Select(
-                placeholder="🐱 Choose a popular villager to inject…",
+                placeholder="🐱 Choose one or more popular villagers to inject…",
                 options=v_options,
+                min_values=1,
+                max_values=min(len(v_options), PLOT_MAX - PLOT_MIN + 1),
                 row=0,
             )
             v_select.callback = self._on_villager_select
@@ -919,6 +1032,9 @@ class InteractiveVillagerPickerView(_OwnedView):
 
     async def _on_villager_select(self, interaction: discord.Interaction) -> None:
         vals = (interaction.data or {}).get("values", [])
+        if len(vals) > 1:
+            await self._on_multi_select(interaction, vals)
+            return
         selected_name = vals[0] if vals else ""
         if not selected_name:
             return
@@ -942,6 +1058,14 @@ class InteractiveVillagerPickerView(_OwnedView):
         )
         embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
         await interaction.response.edit_message(embed=embed, view=_adopt(view, interaction))
+
+    async def _on_multi_select(self, interaction: discord.Interaction, names: list[str]) -> None:
+        sanrio = [n for n in names if is_sanrio_villager(n)]
+        if sanrio:
+            await interaction.response.send_message(embed=_sanrio_in_batch_embed(sanrio), ephemeral=True)
+            return
+        view = MultiVillagerPickView(user_id=self.user_id, island_name=self.island_name, villagers=names)
+        await interaction.response.edit_message(embed=view.build_embed(), view=_adopt(view, interaction))
 
     async def _on_sanrio_wizard(self, interaction: discord.Interaction) -> None:
         saved = await asyncio.to_thread(_load_sanrio_wizard_state, self.user_id, self.island_name)

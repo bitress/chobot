@@ -14,7 +14,7 @@ from typing import Any
 from utils.acnh_catalog import ACNHCatalog
 from utils.config import Config
 
-from .constants import FORCE_EDIT_SECONDS, MAX_STACK, PANEL_EMBED_COLOR_WARN, PANEL_FOOTER_ICON, PANEL_FOOTER_TEXT, PLOT_MAX, PLOT_MIN, REFRESH_CONCURRENCY, STICKY_DELAY_SECONDS, STICKY_MAX_WAIT_SECONDS, SUB_RULES_MSG, is_sanrio_villager
+from .constants import FORCE_EDIT_SECONDS, MAX_STACK, PANEL_EMBED_COLOR_WARN, PANEL_FOOTER_ICON, PANEL_FOOTER_TEXT, PLOT_MAX, PLOT_MIN, REFRESH_CONCURRENCY, STICKY_DELAY_SECONDS, STICKY_MAX_WAIT_SECONDS, SUB_RULES_MSG
 from .state import _close_http
 from .db import _get_panel_row, _init_tables, _load_all_panels, _load_sanrio_wizard_state, _panel_channel_ids_cached, _upsert_panel
 from .islands import _access_denied, _canonical_island, _infer_island, _sub_category_id, _user_can_target
@@ -22,7 +22,7 @@ from .parsing import _get_villager_names, _match_villagers, is_villager_list, pa
 from .status import _build_panel_embed, _embed_signature, _err_embed, build_drop_picker_embed, build_villager_picker_embed, fetch_island_live_status
 from .ui_base import SubRulesPromptView, _adopt, _reply
 from .actions import _perform_drop
-from .views_villager import InteractiveVillagerPickerView, SanrioInjectionWizardView, VillagerChoiceView, _start_injection, _start_multi_injection
+from .views_villager import InteractiveVillagerPickerView, SanrioInjectionWizardView, VillagerChoiceView, _resolve_villager_list, _start_injection, _start_multi_injection
 from .views_catalog import CatalogSearchModal, InteractiveDropPickerView, _show_catalog
 from .panel import ALL_REGISTERED_DYNAMIC_ITEMS, IslandPanelView
 
@@ -800,45 +800,10 @@ class DropBotCog(commands.Cog, name="DropBot"):
             )
             return
 
-        entries, err = parse_villager_list(raw)
-        if err or not entries:
-            await _reply(interaction, embed=_err_embed(err or "Enter at least one villager."))
-            return
-
         await interaction.response.defer(ephemeral=True, thinking=True)
-
-        resolved: list[tuple[str, int | None]] = []
-        unknown: list[str] = []
-        sanrio: list[str] = []
-        for name, p in entries:
-            exact, candidates = await asyncio.to_thread(_match_villagers, name)
-            if not exact:
-                hint = f" (did you mean {', '.join(candidates[:3])}?)" if candidates else ""
-                unknown.append(f"**{name[:40]}**{hint}")
-                continue
-            if is_sanrio_villager(exact):
-                sanrio.append(exact)
-                continue
-            resolved.append((exact, p))
-
-        if unknown:
-            await interaction.followup.send(
-                embed=_err_embed(
-                    "I couldn't find these villagers:\n" + "\n".join(f"• {u}" for u in unknown),
-                    hint="Fix the spelling and try again. Nothing was injected.",
-                ),
-                ephemeral=True,
-            )
-            return
-        if sanrio:
-            await interaction.followup.send(
-                embed=_err_embed(
-                    f"{', '.join(f'**{v}**' for v in sanrio)} need{'s' if len(sanrio) == 1 else ''} the Sanrio hot-swap "
-                    "wizard and can't be part of a multi-villager injection.",
-                    hint="Remove them from the list and use `/sanrio` for each one. Nothing was injected.",
-                ),
-                ephemeral=True,
-            )
+        resolved, error = await _resolve_villager_list(raw)
+        if error:
+            await interaction.followup.send(embed=error, ephemeral=True)
             return
 
         await _start_multi_injection(interaction, target_island, resolved)
