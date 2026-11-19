@@ -41,6 +41,7 @@ from utils.discord_http import request as discord_request
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
 from utils.presence_hub import hub as presence_hub, format_sse
 from utils.nickname_format import nickname_warning_for, is_valid_acnh_nickname
+from utils.dodo_log_embed import build_dodo_log_embed, count_recent_reveals
 from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token, update_auth_user
 from utils.discord_membership import (
     DiscordMembershipUnavailable,
@@ -1041,53 +1042,21 @@ def _fire_dodo_webhook(
     display_name = (nickname or "").strip() or (username or "").strip() or "Unknown User"
     # Mention only real Discord IDs: website accounts (u_patreon_…, cp_usr_…) are not in the server
     mention_id = next((str(i).strip() for i in (discord_id, user_id) if str(i or "").strip().isdigit()), "")
-    who = f"<@{mention_id}>" if mention_id else f"**{display_name}**"
 
-    island_url_name = urllib.parse.quote(island_name)
-    island_link = f"https://www.chopaeng.com/island/{island_url_name.lower()}"
-
-    fields = [
-        {
-            "name": "Member",
-            "value": f"{display_name} ({who})" if mention_id else f"{display_name} (website account, not in Discord)",
-        },
-        {
-            "name": "Island",
-            "value": (
-                (f"<#{channel_id}>" if channel_id else "") +
-                f"\n[View Island]({island_link})"
-            ),
-        }
-    ]
-    if char_ign:
-        fields.append({
-            "name": "In-Game Character",
-            "value": f"IGN: **{char_ign}**" + (f" | Island: **{char_island}**" if char_island else ""),
-        })
-
-    embed = {
-        "title": f"Dodo Code Revealed",
-        "color": 0x2ecc71,  # Emerald Green
-        "description": f"{who} has revealed the Dodo code for island <#{channel_id}>",
-        "fields": fields,
-        "image": {
-            "url": "https://i.ibb.co/wybN7Xn/lg4jVMT.gif"
-        },
-        "footer": {
-            "text": "Chopaeng Camp - Dodo Log",
-            "icon_url": "https://www.chopaeng.com/assets/logo-C5oO0bbj.webp"
-        },
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    }
-
-    warning = nickname_warning_for(nickname)
-    if warning:
-        embed["fields"].append(
-            {
-                "name": "Nickname Status",
-                "value": "User nickname is not currently in the required ACNH format.",
-            }
-        )
+    # The reveal row was saved under the Discord ID when there is one, else the website ID
+    repeat_count = count_recent_reveals(mention_id or str(user_id or ""), island_name)
+    embed = build_dodo_log_embed(
+        source="website",
+        island_name=island_name,
+        display_name=display_name,
+        user_id=mention_id,
+        channel_id=channel_id,
+        avatar_url=avatar_url,
+        char_ign=char_ign,
+        char_island=char_island,
+        repeat_count=repeat_count,
+        nickname_warning=bool(nickname_warning_for(nickname)),
+    )
 
     payload = json.dumps({"embeds": [embed]}).encode()
     webhook_execute = url

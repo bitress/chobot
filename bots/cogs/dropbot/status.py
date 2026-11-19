@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from typing import Any
 from utils.config import Config
 from utils.database import connect_db
+from utils.dodo_log_embed import build_dodo_log_embed, count_recent_reveals
+from utils.nickname_format import nickname_warning_for
 from utils.sysbot_api import _INVALID_DODO_CODES, get_island_sysbot_client
 
 from .constants import ACTION_COOLDOWN, CART_TTL_SECONDS, DODO_GIF, LOGO_URL, MAP_CDN_BASE, MAX_DROP_SLOTS, MAX_STACK, PANEL_EMBED_COLOR, PANEL_EMBED_COLOR_ERR, PANEL_EMBED_COLOR_WARN, PANEL_FOOTER_ICON, PANEL_FOOTER_TEXT, PLOT_MAX, PLOT_MIN, _PLACEHOLDER_DODOS
@@ -137,33 +139,20 @@ async def _fire_dropbot_dodo_webhook(
         if _debounced(f"{user_id}:{island_name}"):
             return
 
-        fields = [
-            {"name": "Member", "value": f"{display_name} (<@{user_id}>)"},
-            {
-                "name": "Island",
-                "value": (f"<#{channel_id}>\n" if channel_id else "") + f"[View Island]({_island_url(island_name)})",
-            },
-        ]
         char = await asyncio.to_thread(_lookup_saved_character, user_id)
-        if char:
-            ign, char_isl = char
-            fields.append({
-                "name": "In-Game Character",
-                "value": f"IGN: **{ign}**" + (f" | Island: **{char_isl}**" if char_isl else ""),
-            })
-
-        embed = {
-            "title": "Dodo Code Revealed",
-            "color": 0x2ECC71,
-            "description": (
-                f"<@{user_id}> has revealed the Dodo code for island <#{channel_id}>"
-                if channel_id else f"<@{user_id}> has revealed the Dodo code for **{island_name}**"
-            ),
-            "fields": fields,
-            "image": {"url": DODO_GIF},
-            "footer": {"text": "Chopaeng Camp - Dodo Log", "icon_url": LOGO_URL},
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        ign, char_isl = char if char else ("", "")
+        repeat_count = await asyncio.to_thread(count_recent_reveals, str(user_id), island_name)
+        embed = build_dodo_log_embed(
+            source="discord",
+            island_name=island_name,
+            display_name=display_name or username,
+            user_id=str(user_id),
+            channel_id=channel_id,
+            char_ign=ign or "",
+            char_island=char_isl or "",
+            repeat_count=repeat_count,
+            nickname_warning=bool(nickname_warning_for(display_name)),
+        )
         sep = "&" if "?" in url else "?"
         async with _http().post(
             f"{url}{sep}wait=true",
