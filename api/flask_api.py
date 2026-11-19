@@ -6756,6 +6756,24 @@ def api_presence_heartbeat():
                     native_fruit = pass_row["native_fruit"]
                 if not avatar_url and pass_row["avatar_url"]:
                     avatar_url = pass_row["avatar_url"]
+
+            # No passport IGN: fall back to the user's default saved character (the one the Discord nickname uses)
+            if not ign or not island_name:
+                try:
+                    from utils.unified_auth import resolve_all_user_ids
+                    cand_ids = resolve_all_user_ids(auth_user) or [user_id]
+                    char_row = conn.execute(
+                        f"SELECT ign, island_name FROM user_saved_characters WHERE user_id IN ({','.join('?' for _ in cand_ids)}) "
+                        "ORDER BY is_default DESC, updated_at DESC LIMIT 1",
+                        tuple(cand_ids),
+                    ).fetchone()
+                    if char_row:
+                        if not ign:
+                            ign = str(char_row["ign"] or "").strip()
+                        if not island_name:
+                            island_name = str(char_row["island_name"] or "").strip()
+                except Exception as char_err:
+                    logger.debug("[Presence] Saved character lookup failed: %s", char_err)
         else:
             ip = _visitor_ip() or "127.0.0.1"
             ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:12]
@@ -6996,8 +7014,8 @@ def api_presence_online():
                 "username": r["username"],
                 "displayName": r["display_name"] or r["username"],
                 "avatarUrl": r["avatar_url"] or "https://acnhcdn.com/latest/NpcIcon/der00.png",
-                "ign": r["ign"] or "Resident",
-                "islandName": r["island_name"] or "Island",
+                "ign": r["ign"] or "",
+                "islandName": r["island_name"] or "",
                 "nativeFruit": r["native_fruit"] or "Peach",
                 "role": r["role"] or "resident",
                 "status": r["status"] or "online",
