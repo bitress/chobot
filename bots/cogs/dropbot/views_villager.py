@@ -157,7 +157,12 @@ async def _start_multi_injection(
         await interaction.edit_original_response(content=None, embed=embed, view=_adopt(view, interaction))
         return
 
-    embed, _ = await _perform_multi_injection(interaction.user, island_name, entries)
+    try:
+        embed, ok = await _perform_multi_injection(interaction.user, island_name, entries)
+    except Exception:
+        logger.exception("[DropBot] Multi-inject crashed island=%s user=%s", canonical_island, interaction.user.id)
+        embed, ok = _err_embed("Something went wrong while injecting. Nothing may have been queued; please try again."), False
+    logger.info("[DropBot] Multi-inject finished island=%s user=%s queued=%s", canonical_island, interaction.user.id, ok)
     await interaction.edit_original_response(content=None, embed=embed, view=None)
 
 
@@ -890,7 +895,7 @@ class MultiVillagerPickView(_OwnedView):
         )
         inject_btn.callback = self._on_inject  # type: ignore[assignment]
         self.add_item(inject_btn)
-        back_btn = discord.ui.Button(label="Back", emoji="↩", style=discord.ButtonStyle.secondary, row=0)
+        back_btn = discord.ui.Button(label="Back", emoji="↩️", style=discord.ButtonStyle.secondary, row=0)
         back_btn.callback = self._on_back  # type: ignore[assignment]
         self.add_item(back_btn)
         cancel_btn = discord.ui.Button(label="Cancel", emoji="✖", style=discord.ButtonStyle.secondary, row=0)
@@ -913,6 +918,18 @@ class MultiVillagerPickView(_OwnedView):
 
     async def _on_inject(self, interaction: discord.Interaction) -> None:
         self.stop()
+        logger.info(
+            "[DropBot] Multi-inject clicked island=%s user=%s villagers=%s",
+            self.island_name, interaction.user.id, self.villagers,
+        )
+        # Acknowledge with visible progress straight away; the batch can take a while.
+        progress = discord.Embed(
+            title=f"⏳ Injecting {len(self.villagers)} villagers…",
+            description="\n".join(f"• **{v}**" for v in self.villagers),
+            color=PANEL_EMBED_COLOR,
+        )
+        progress.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
+        await interaction.response.edit_message(content=None, embed=progress, view=None)
         await _start_multi_injection(interaction, self.island_name, [(v, None) for v in self.villagers])
 
     async def _on_back(self, interaction: discord.Interaction) -> None:
@@ -1066,6 +1083,7 @@ class InteractiveVillagerPickerView(_OwnedView):
             return
         view = MultiVillagerPickView(user_id=self.user_id, island_name=self.island_name, villagers=names)
         await interaction.response.edit_message(embed=view.build_embed(), view=_adopt(view, interaction))
+        self.stop()
 
     async def _on_sanrio_wizard(self, interaction: discord.Interaction) -> None:
         saved = await asyncio.to_thread(_load_sanrio_wizard_state, self.user_id, self.island_name)

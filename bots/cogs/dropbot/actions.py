@@ -407,6 +407,7 @@ async def _perform_multi_injection(
     queued: list[str] = []
     failed: list[str] = []
     for villager, plot in entries:
+        logger.info("[DropBot] Multi-inject sending island=%s user=%s villager=%s plot=%s", island, user.id, villager, plot)
         ok, display_name, err = await _submit_injection(user, island, villager, plot)
         label = f"**{display_name}**" + (f" (plot {plot})" if plot is not None else "")
         if ok:
