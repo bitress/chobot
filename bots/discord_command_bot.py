@@ -6177,16 +6177,16 @@ class DiscordCommandBot(commands.Bot):
             intents = discord.Intents.default()
             # Privileged intents are optional and opt-in so the bot does not require
             # privileged gateway intents enabled in the Discord Developer Portal to run.
-            if os.getenv("DISCORD_ALL_INTENTS", "0").lower() in ("1", "true", "yes"):
+            if os.getenv("DISCORD_ALL_INTENTS", "1").lower() in ("1", "true", "yes"):
                 intents.message_content = True
                 intents.members = True
                 intents.presences = True
             else:
-                if os.getenv("DISCORD_MESSAGE_CONTENT_INTENT", "0").lower() in ("1", "true", "yes"):
+                if os.getenv("DISCORD_MESSAGE_CONTENT_INTENT", "1").lower() in ("1", "true", "yes"):
                     intents.message_content = True
-                if os.getenv("DISCORD_MEMBERS_INTENT", "0").lower() in ("1", "true", "yes"):
+                if os.getenv("DISCORD_MEMBERS_INTENT", "1").lower() in ("1", "true", "yes"):
                     intents.members = True
-                if os.getenv("DISCORD_PRESENCES_INTENT", "0").lower() in ("1", "true", "yes"):
+                if os.getenv("DISCORD_PRESENCES_INTENT", "1").lower() in ("1", "true", "yes"):
                     intents.presences = True
 
         super().__init__(command_prefix='!', intents=intents, help_command=None)
