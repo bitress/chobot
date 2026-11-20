@@ -570,7 +570,7 @@ async def _build_panel_embed(island_name: str, status_data: dict | None = None) 
         desc_lines.append(island_desc[:1000])
 
     embed = discord.Embed(
-        title=f"{'🟢' if is_running else '🔴'} {island_name} Map",
+        title=f"{'<a:heartspin:766724170788372510>' if is_running else '<a:CampWarning:1172346431542140961>'} {island_name} Map",
         url=url,
         description="\n".join(desc_lines),
         color=color,
