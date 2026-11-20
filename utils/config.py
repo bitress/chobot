@@ -175,6 +175,8 @@ class Config:
 
     ORDER_BOT_ISLAND = os.getenv('ORDER_BOT_ISLAND', 'Sinta')
     ORDER_BOT_CHANNEL_ID = _get_int('ORDER_BOT_CHANNEL_ID', 1175672083183829075)
+    # Seconds the Order Bot gate stays open after the Dodo code is given (shown as a countdown; SysBot doesn't report it).
+    ORDER_GATE_SECONDS = _get_int('ORDER_GATE_SECONDS', 180)
     ORDER_BOT_DISCORD_ID = _get_int('ORDER_BOT_DISCORD_ID', 1175671093445537802)
     ORDER_BOT_TWITCH_CHANNEL = os.getenv('ORDER_BOT_TWITCH_CHANNEL') or TWITCH_CHANNEL
 

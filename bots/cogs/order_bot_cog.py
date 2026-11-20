@@ -10,11 +10,12 @@ Persistent panel (posted with /orderpanel, refreshed every 30s):
   • 🛒 Start Order   – opens the pocket builder (or the live tracker if an order is already active)
   • 📦 My Order      – live tracker for the active order: queue position, ETA, Dodo, cancel
   • 📋 Queue         – who is in line right now
-  • 🕘 History       – the last 10 orders with one-click reorder
+  • 🕘 History       – the last 10 orders (in item names, also for hex orders) with one-click reorder
   • 📖 Guide         – how ordering works
   • 🌐 Web Order Bot – link to the website
   • 🔔 Notify me     – only while the bot is closed: one DM when it takes orders again
-The panel is sticky: when messages bury it, it is reposted at the bottom of the channel.
+The panel is sticky: when messages bury it, it is reposted at the bottom of the channel. Its status
+says how busy the line is (quiet / steady / busy).
 
 Pocket builder (ephemeral). The order screen shows only Find items · Bundles · Place order, the item
 list, and Type a list · Villager · More; saved loadouts, custom hex and Clear are under More:
@@ -23,7 +24,13 @@ list, and Type a list · Villager · More; saved loadouts, custom hex and Clear 
   • Browse: popular items and popular series; results are paged and filterable by category
   • Filters: category, colour, season/event, and the language item names are shown in
     (search and typed items also understand names in the other game languages)
-  • Tap an item in the pocket to change its quantity (− / + / ×1 / Max) or remove it
+  • The pocket shows a slot bar, groups bigger pockets by category, the newest item's picture, and
+    whether the Order Bot is open and how long the line is
+  • Tap an item in the pocket to change its quantity (− / + / ×1 / Max / Amount…) or remove it; the
+    item menu pages (◀ ▶ options) so all 40 slots are reachable. Remove, Clear and bulk removals offer Undo
+  • Place order opens a review screen (full pocket, line length, reminders); Send order submits it
+  • Find items opens with the member's recently ordered items first; results show what's already
+    in the pocket (🛒×N) and what was ordered before (🕘)
   • Results show a numbered list with a thumbnail; pick one item for its detail screen (picture,
     quantity, colour, custom hex) or several to add them at once; toggle Items / DIYs
   • Edit quantities: every quantity in one text box
@@ -33,7 +40,9 @@ list, and Type a list · Villager · More; saved loadouts, custom hex and Clear 
   • The pocket is saved per user, so an expired menu or a restart doesn't lose it
 
 Order tracking:
-  • The tracker message updates itself while the order moves queued → preparing → ready
+  • The tracker message updates itself while the order moves queued → preparing → ready, with
+    "N people ahead of you", a progress bar and who is being served
+  • Once the gate opens it counts down to when it closes (Config.ORDER_GATE_SECONDS after the Dodo)
   • An "almost your turn" DM goes out when a member who waited reaches the front of the line
   • The Dodo code is sent by DM the moment the gate opens (and shown in the private tracker)
   • An order that ends without a pickup (missed gate, cancelled by the bot) offers a one-tap reorder
@@ -117,6 +126,13 @@ _KIND_LABELS = {"all": ("Type: All", "🏷️"), "items": ("Type: Items", "📦"
 NEXT_UP_POSITION = 2          # DM "almost your turn" when a member reaches this place in line
 NOTIFY_MAX = 300              # most "open again" DMs sent in one go
 PANEL_TITLE_PREFIX = "📦 Order Bot"
+POCKET_PAGE_SIZE = 22         # pocket items per page of the item menu (+ ◀ ▶ and the villager = 25 options)
+SLOTS_WARN_AT = 5             # "N slots left" once this few remain
+GROUP_MIN_LINES = 6           # group the pocket list by category from this many items
+RECENT_ITEMS = 5              # past items offered first when Find items opens
+STATUS_LINE_MAX_AGE = 60      # seconds a cached "Order Bot is open · N in line" line stays fresh
+QUEUE_QUIET_MAX = 2           # panel says "quiet" up to this many in line…
+QUEUE_BUSY_MIN = 8            # …and "busy" from this many
 _MISSED_GATE_MARKERS = ("failed to arrive", "request has been removed", "timed out", "gate closed")
 
 ACTIVE_STATUSES = ("queued", "preparing", "ready")
@@ -134,6 +150,21 @@ def _order_island() -> str:
 
 def _client() -> SysBotClient:
     return get_island_sysbot_client(_order_island(), timeout=10)
+
+
+def _gate_seconds() -> int:
+    """How long the gate stays open after the Dodo code is given. SysBot doesn't report it, so it's configured."""
+    return int(getattr(Config, "ORDER_GATE_SECONDS", 0) or 180)
+
+
+def _bar(done: int, total: int, width: int = 10) -> str:
+    """`▰▰▰▱▱▱▱▱▱▱`: a text progress bar. Anything above zero shows at least one block."""
+    if total <= 0:
+        return "▱" * width
+    filled = max(0, min(width, round(width * done / total)))
+    if done > 0 and filled == 0:
+        filled = 1
+    return "▰" * filled + "▱" * (width - filled)
 
 
 def _embed(title: str, description: str = "", color: int = PANEL_EMBED_COLOR) -> discord.Embed:
@@ -433,6 +464,90 @@ def cart_summary(cart: OrderCart, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _base_name(line: OrderLine) -> str:
+    """"Ironwood dresser (Oak)" -> "Ironwood dresser" for a colour/pattern variant; the name otherwise."""
+    if line.hex and line.name.endswith(")") and " (" in line.name:
+        return line.name.rsplit(" (", 1)[0]
+    return line.name
+
+
+def _pocket_counts(cart: OrderCart) -> dict[str, int]:
+    """Lowercased item name -> how many are in the pocket (all colours together)."""
+    counts: dict[str, int] = {}
+    for line in cart.lines:
+        key = _base_name(line).lower()
+        counts[key] = counts.get(key, 0) + line.qty
+    return counts
+
+
+def _line_item(line: OrderLine) -> CatalogItem | None:
+    """The catalog record behind a pocket line; None for raw hex codes."""
+    catalog = ACNHCatalog.get_instance()
+    for name in dict.fromkeys((_base_name(line), line.name)):
+        item = catalog.get_item(name)
+        if item:
+            return item
+    return None
+
+
+def _line_image(line: OrderLine) -> str:
+    """Picture of a pocket line, in its chosen colour/pattern when it has one."""
+    item = _line_item(line)
+    if item is None:
+        return ""
+    if line.hex:
+        variant = next((v for v in _item_variants(item) if v.item.to_hex().upper() == line.hex), None)
+        if variant and variant.item.image_url:
+            return variant.item.image_url
+    return item.image_url
+
+
+_HEX_NAMES: dict[str, tuple[str, int]] = {}   # hex code -> (item name, stack size), built on first use
+
+
+def _hex_item(code: str) -> tuple[str, int] | None:
+    """(name, stack size) for an order hex code. 16-digit codes that aren't a known look use their base id."""
+    if not _HEX_NAMES:
+        for item in ACNHCatalog.get_instance().items:
+            try:
+                hex_code = item.to_hex().upper()
+                shown = item.display_name
+            except (AttributeError, TypeError, ValueError):   # a few catalog rows have a numeric variation
+                continue
+            if hex_code:
+                _HEX_NAMES.setdefault(hex_code, (shown, _stack_size(item)))
+                _HEX_NAMES.setdefault(hex_code[-4:], (item.name, _stack_size(item)))
+    code = code.upper()
+    return _HEX_NAMES.get(code) or (_HEX_NAMES.get(code[-4:]) if len(code) == 16 else None)
+
+
+def readable_command(command: str, limit: int = 90) -> str:
+    """A stored order command in words: "Gold nugget ×30, Royal crown" instead of raw hex codes."""
+    def short(text: str) -> str:
+        return text if len(text) <= limit else text[: limit - 1] + "…"
+
+    items_text, villager = parse_order_input(command or "")
+    tokens = items_text.split()
+    if not tokens or not all(_HEX_RE.fullmatch(t) for t in tokens):
+        return short(re.sub(r"^!(order|drop)\s*", "", (command or "").strip(), flags=re.IGNORECASE))
+    counts: dict[str, int] = {}
+    for token in tokens:
+        known = _hex_item(token)
+        if known is None:
+            name, qty = token.upper(), 1
+        else:
+            name, stack = known
+            exact = _HEX_NAMES.get(token.upper())
+            # A stack sent as hex carries "quantity - 1" in its first 8 digits.
+            qty = int(token[:8], 16) + 1 if len(token) == 16 and not exact and stack > 1 else 1
+        name = name[:1].upper() + name[1:]   # the catalog stores some names in lowercase
+        counts[name] = counts.get(name, 0) + qty
+    parts = [f"{name} ×{qty}" if qty > 1 else name for name, qty in counts.items()]
+    if villager:
+        parts.append(f"🏠 {villager}")
+    return short(", ".join(parts))
+
+
 # ─── Database helpers (synchronous; call through asyncio.to_thread) ───────────
 
 def _init_tables() -> None:
@@ -617,6 +732,37 @@ def _order_cart(order_id: str) -> OrderCart:
             return cart
     rows = _db_rows("SELECT command FROM order_bot_queue WHERE id = ?", (order_id,))
     return _cart_from_command(rows[0]["command"] or "") if rows else OrderCart()
+
+
+def history_labels(orders: list[dict]) -> dict[str, str]:
+    """order id -> what was ordered, in words: the saved summary for Discord orders, else the command decoded."""
+    ids = [str(o.get("id")) for o in orders if o.get("id")]
+    summaries: dict[str, str] = {}
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        for row in _db_rows(f"SELECT order_id, summary FROM order_bot_discord_orders WHERE order_id IN ({placeholders})", tuple(ids)):
+            if row["summary"]:
+                summaries[str(row["order_id"])] = row["summary"]
+    return {
+        str(o.get("id")): summaries.get(str(o.get("id"))) or readable_command(str(o.get("command") or ""))
+        for o in orders
+    }
+
+
+def _recent_order_names(user_id: int, limit: int = RECENT_ITEMS) -> list[str]:
+    """Items the member ordered from Discord lately, newest first, without duplicates."""
+    rows = _db_rows(
+        "SELECT cart FROM order_bot_discord_orders WHERE user_id = ? AND cart IS NOT NULL ORDER BY created_at DESC LIMIT 10",
+        (str(user_id),),
+    )
+    names: dict[str, str] = {}
+    for row in rows:
+        for line in OrderCart.from_json(row["cart"]).lines:
+            name = _base_name(line)
+            names.setdefault(name.lower(), name)
+            if len(names) >= limit:
+                return list(names.values())
+    return list(names.values())
 
 
 def _next_sent(order_id: str) -> bool:
@@ -812,9 +958,12 @@ def build_order_embed(data: dict, order_id: str, summary: str = "", *, connectio
     note = _friendly_message(data.get("message"))
 
     if status == "ready" and dodo:
+        closes = data.get("gate_closes_at")
+        deadline = f"⏱️ Gate closes about **<t:{int(closes)}:R>** — fly in now.\n" if closes else ""
         embed = _embed(
             f"✈️ Gate open — fly to {island}!",
             f"# `{dodo}`\n"
+            f"{deadline}"
             "Open your gate at the airport → **I want to fly** → **Via Dodo code**.\n"
             "-# ⚠️ This code is yours only. Pick up your items, then leave through the airport.",
         )
@@ -830,7 +979,18 @@ def build_order_embed(data: dict, order_id: str, summary: str = "", *, connectio
     else:
         where = f"Position **#{position}** in line" if position else "In line"
         eta = f" · about **{minutes} min**" if minutes else ""
-        embed = _embed("⏳ Order in the queue", f"{where}{eta}.\nYour Dodo code will be sent to your DMs when it's your turn.")
+        lines = [f"{where}{eta}."]
+        if isinstance(position, int) and position > 0:
+            ahead = position - 1
+            start = max(int(data.get("start_position") or 0), position)
+            people = "Nobody is ahead of you" if ahead == 0 else f"**{ahead}** {'person is' if ahead == 1 else 'people are'} ahead of you"
+            bar = f"`{_bar(start - position, start - 1)}` " if start > 1 else ""
+            lines.append(f"{bar}{people}.")
+        lines.append("Your Dodo code will be sent to your DMs when it's your turn.")
+        embed = _embed("⏳ Order in the queue", "\n".join(lines))
+        serving = data.get("now_serving")
+        if serving:
+            embed.add_field(name="Now serving", value=discord.utils.escape_markdown(str(serving))[:60], inline=True)
 
     if status in _STEP_INDEX:
         current = _STEP_INDEX[status]
@@ -846,7 +1006,38 @@ def build_order_embed(data: dict, order_id: str, summary: str = "", *, connectio
     return embed
 
 
-def build_pocket_embed(cart: OrderCart, username: str, notice: str | None = None) -> discord.Embed:
+def slots_field(cart: OrderCart) -> str:
+    """`**12** / 40` with a bar under it, and a warning once the pocket is nearly full."""
+    left = ORDER_MAX_SLOTS - cart.slots
+    text = f"**{cart.slots}** / {ORDER_MAX_SLOTS}\n`{_bar(cart.slots, ORDER_MAX_SLOTS)}`"
+    if cart.slots and left <= 0:
+        text += "\n⚠️ Pocket full"
+    elif cart.slots and left <= SLOTS_WARN_AT:
+        text += f"\n⚠️ {left} slot{'s' if left != 1 else ''} left"
+    return text
+
+
+def pocket_rows(cart: OrderCart) -> list[str]:
+    """
+    The pocket as numbered rows. Bigger pockets are grouped under category headings; the numbers stay
+    the pocket order so they match the bulk "Edit quantities" box.
+    """
+    numbered = [(i, line) for i, line in enumerate(cart.lines, 1)]
+    if len(numbered) >= GROUP_MIN_LINES:
+        groups: dict[str, list[tuple[int, OrderLine]]] = {}
+        for i, line in numbered:
+            item = _line_item(line)
+            groups.setdefault(item.category if item and item.category else "Other", []).append((i, line))
+        if len(groups) > 1:
+            rows: list[str] = []
+            for category, members in groups.items():
+                rows.append(f"**{category}**")
+                rows += [f"`{i:02}` {line.label}" for i, line in members]
+            return rows
+    return [f"`{i:02}` {line.label}" for i, line in numbered]
+
+
+def build_pocket_embed(cart: OrderCart, username: str, notice: str | None = None, status_line: str | None = None) -> discord.Embed:
     """The order screen. Always tells the member what to do next."""
     embed = _embed("🛒 Your order")
     if cart.is_empty:
@@ -857,16 +1048,50 @@ def build_pocket_embed(cart: OrderCart, username: str, notice: str | None = None
             "3️⃣ I'll DM you a Dodo code when it's your turn — fly in and pick everything up"
         )
     else:
-        rows = [f"`{i:02}` {line.label}" for i, line in enumerate(cart.lines, 1)]
-        text = "\n".join(rows)
+        text = "\n".join(pocket_rows(cart))
         if len(text) > 3400:
-            text = text[:3400] + "\n…"
+            text = text[:3400].rsplit("\n", 1)[0] + "\n…"
         embed.description = (text + "\n\n" if text else "") + "👉 Happy with it? Press **Place order**. Tap an item in the menu to change it."
-    embed.add_field(name="Slots", value=f"**{cart.slots}** / {ORDER_MAX_SLOTS}", inline=True)
+        # The newest item's picture, so the screen shows what was just added.
+        image = next((url for url in (_line_image(line) for line in reversed(cart.lines[-5:])) if url), "")
+        if image:
+            embed.set_thumbnail(url=image)
+    embed.add_field(name="Slots", value=slots_field(cart), inline=True)
     embed.add_field(name="🏠 Villager", value=cart.villager[0] if cart.villager else "None", inline=True)
     embed.add_field(name="Ordering as", value=discord.utils.escape_markdown(username)[:100], inline=True)
+    if status_line:
+        embed.add_field(name="Order Bot", value=status_line, inline=False)
     if notice:
         embed.add_field(name="ℹ️", value=notice[:1000], inline=False)
+    return embed
+
+
+def build_review_embed(cart: OrderCart, username: str, status: dict, queue_data: Any) -> discord.Embed:
+    """Last look before the order is sent: everything in it, where it goes, and how long the wait is."""
+    island = _order_island()
+    embed = _embed("✈️ Check your order", f"This pocket goes to **{island}**. Press **Send order** to join the queue.")
+    text = "\n".join(pocket_rows(cart)) or "—"
+    if len(text) > 3000:
+        text = text[:3000].rsplit("\n", 1)[0] + "\n…"
+    embed.description += "\n\n" + text
+    embed.add_field(name="Slots", value=slots_field(cart), inline=True)
+    embed.add_field(name="🏠 Villager", value=cart.villager[0] if cart.villager else "None", inline=True)
+    embed.add_field(name="Flying in as", value=discord.utils.escape_markdown(username)[:100], inline=True)
+    if _bot_accepting(status):
+        entries = _queue_entries(queue_data)
+        waiting = len(entries) or int(status.get("queue_count") or 0)
+        wait = _queue_wait(entries)
+        line = f"🟢 Open · **{waiting}** in line" + (f" · about **{wait} min** wait" if wait else "") if waiting else "🟢 Open · no wait, you'd be first"
+    else:
+        line = "🔴 Not taking orders right now. Your pocket stays saved, so try again in a bit."
+    embed.add_field(name="Order Bot", value=line, inline=False)
+    embed.add_field(
+        name="Before you send",
+        value="• Keep your **DMs open**, that's where the Dodo code goes\n• Make room in your **in-game pockets**\n"
+              + ("• Have an **empty plot** for your villager\n" if cart.villager else "")
+              + "• Fly in quickly once the gate opens",
+        inline=False,
+    )
     return embed
 
 
@@ -917,6 +1142,32 @@ def _queue_entries(queue_data: Any) -> list[dict]:
     return [e for e in entries if isinstance(e, dict)]
 
 
+def _queue_wait(entries: list[dict]) -> int | None:
+    """Rough wait in minutes for an order placed now (the last ETA in line plus a little), or None."""
+    etas = [int(e["estimated_minutes"]) for e in entries if str(e.get("estimated_minutes") or "").isdigit()]
+    return max(etas) + 2 if etas else None
+
+
+def _busy_label(waiting: int) -> str:
+    if waiting <= QUEUE_QUIET_MAX:
+        return "quiet"
+    if waiting >= QUEUE_BUSY_MIN:
+        return f"busy ({waiting} in line)"
+    return "steady"
+
+
+def status_line(status: dict, queue_data: Any) -> str:
+    """One line for the order screen: is the bot open, and how long is the line."""
+    entries = _queue_entries(queue_data)
+    waiting = len(entries) or int(status.get("queue_count") or 0)
+    if not _bot_accepting(status):
+        return "🔴 Not taking orders right now. You can still build your pocket."
+    if not waiting:
+        return "🟢 Open · no wait"
+    wait = _queue_wait(entries)
+    return f"🟢 Open · **{waiting}** in line" + (f" · about **{wait} min** wait" if wait else "")
+
+
 def build_queue_embed(queue_data: Any, viewer: discord.abc.User | None = None) -> discord.Embed:
     entries = _queue_entries(queue_data)
     if not entries:
@@ -945,7 +1196,7 @@ def build_panel_embed(status: dict, queue_data: Any) -> discord.Embed:
     waiting = len(entries) or int(status.get("queue_count") or 0)
 
     if _bot_accepting(status):
-        state, color = "🟢 **Open** — taking orders", PANEL_EMBED_COLOR
+        state, color = f"🟢 **Open** — taking orders · {_busy_label(waiting)}", PANEL_EMBED_COLOR
     elif status.get("is_running") and status.get("success") is not False:
         state, color = "🟡 **Paused** — not taking orders right now", PANEL_EMBED_COLOR_WARN
     else:
@@ -959,8 +1210,8 @@ def build_panel_embed(status: dict, queue_data: Any) -> discord.Embed:
     )
     embed.add_field(name="Status", value=state, inline=False)
     if waiting:
-        etas = [int(e["estimated_minutes"]) for e in entries if str(e.get("estimated_minutes") or "").isdigit()]
-        wait = f" · new orders wait about **{max(etas) + 2} min**" if etas else ""
+        minutes = _queue_wait(entries)
+        wait = f" · new orders wait about **{minutes} min**" if minutes else ""
         embed.add_field(name="Queue", value=f"**{waiting}** in line{wait}", inline=True)
     else:
         embed.add_field(name="Queue", value="Empty — no wait", inline=True)
@@ -994,32 +1245,55 @@ class PocketView(_OwnedView):
 
     expired_notice = "⌛ This menu expired. Your order is saved — press **Start Order** to continue."
 
-    def __init__(self, cog: "OrderBotCog", user_id: int, username: str):
+    def __init__(self, cog: "OrderBotCog", user_id: int, username: str, *, page: int = 0, undo: str | None = None):
         super().__init__(user_id, timeout=600)
         self.cog = cog
         self.username = username
+        self.undo_snapshot = undo   # the pocket before the last removal; Undo puts it back
+        if undo is None:
+            self.remove_item(self.undo)
         cart = cog.cart(user_id)
         self.place_order.disabled = cart.is_empty
         self.edit_quantities.disabled = not cart.lines
+        pages = max(1, math.ceil(len(cart.lines) / POCKET_PAGE_SIZE))
+        self.page = max(0, min(page, pages - 1))
         if cart.lines or cart.villager:
+            start = self.page * POCKET_PAGE_SIZE
+            shown = cart.lines[start:start + POCKET_PAGE_SIZE]
             options = [
-                discord.SelectOption(label=line.label[:100], value=str(i), emoji="📦")
-                for i, line in enumerate(cart.lines[:24])
+                discord.SelectOption(label=f"{i + 1:02}. {line.label}"[:100], value=str(i), emoji="📦")
+                for i, line in enumerate(shown, start)
             ]
+            if self.page > 0:
+                options.insert(0, discord.SelectOption(
+                    label=f"Previous items ({max(1, start - POCKET_PAGE_SIZE + 1)}–{start})", value=f"page:{self.page - 1}", emoji="◀️",
+                ))
+            if self.page < pages - 1:
+                end = min(len(cart.lines), start + 2 * POCKET_PAGE_SIZE)
+                options.append(discord.SelectOption(
+                    label=f"More items ({start + POCKET_PAGE_SIZE + 1}–{end})", value=f"page:{self.page + 1}", emoji="▶️",
+                ))
             if cart.villager:
                 options.append(discord.SelectOption(label=f"Villager: {cart.villager[0]}"[:100], value="villager", emoji="🏠"))
-            select = discord.ui.Select(placeholder="Tap an item to change color, quantity, or remove…", options=options, row=1)
+            placeholder = "Tap an item to change color, quantity, or remove…"
+            if pages > 1:
+                placeholder = f"Tap an item to change it… (page {self.page + 1}/{pages})"
+            select = discord.ui.Select(placeholder=placeholder, options=options, row=1)
             select.callback = self._edit   # type: ignore[method-assign]
             self.add_item(select)
 
-    async def render(self, interaction: discord.Interaction, notice: str | None = None) -> None:
-        view = PocketView(self.cog, self.user_id, self.username)
-        embed = build_pocket_embed(self.cog.cart(self.user_id), self.username, notice)
+    async def render(self, interaction: discord.Interaction, notice: str | None = None, *, undo: str | None = None) -> None:
+        view = PocketView(self.cog, self.user_id, self.username, page=self.page, undo=undo)
+        embed = self.cog.pocket_embed(self.user_id, self.username, notice)
         await _swap(interaction, self, embed, view)
 
     async def _edit(self, interaction: discord.Interaction) -> None:
         cart = self.cog.cart(self.user_id)
         value = (interaction.data or {}).get("values", [""])[0]
+        if value.startswith("page:") and value[5:].isdigit():
+            self.page = int(value[5:])
+            await self.render(interaction)
+            return
         if value.isdigit() and int(value) < len(cart.lines):
             view = ItemEditView(self, int(value))
             await _swap(interaction, self, view.embed(), view)
@@ -1032,9 +1306,19 @@ class PocketView(_OwnedView):
     # Row 0 is the whole happy path: find items (or a ready-made bundle), then place the order.
     @discord.ui.button(label="Find items", emoji="🔍", style=discord.ButtonStyle.primary, row=0)
     async def find_items(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        """Opens on the popular items, so nothing has to be typed; "Search by name" is one tap away."""
-        hits = await asyncio.to_thread(lambda: ACNHCatalog.get_instance().get_popular_items(limit=RESULTS_PER_PAGE))
-        view = SearchResultsView(self, hits, "Popular items")
+        """
+        Opens on what the member ordered lately, then the popular items, so nothing has to be typed;
+        "Search by name" is one tap away.
+        """
+        def _load() -> tuple[list[CatalogItem], frozenset[str]]:
+            catalog = ACNHCatalog.get_instance()
+            recent = [item for item in (catalog.get_item(n) for n in _recent_order_names(self.user_id)) if item]
+            names = {item.name.lower() for item in recent}
+            popular = [p for p in catalog.get_popular_items(limit=RESULTS_PER_PAGE) if p.name.lower() not in names]
+            return (recent + popular)[:RESULTS_PER_PAGE], frozenset(names)
+
+        hits, recent = await asyncio.to_thread(_load)
+        view = SearchResultsView(self, hits, "Your recent + popular items" if recent else "Popular items", recent=recent)
         await _swap(interaction, self, view.embed(), view)
 
     @discord.ui.button(label="Bundles", emoji="🎁", style=discord.ButtonStyle.secondary, row=0)
@@ -1048,8 +1332,15 @@ class PocketView(_OwnedView):
 
     @discord.ui.button(label="Place order", emoji="✈️", style=discord.ButtonStyle.success, row=0)
     async def place_order(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer()
-        await self.cog.submit_order(interaction, self)
+        """Opens the review screen; the order is sent from there."""
+        await self.cog.review_order(interaction, self)
+
+    @discord.ui.button(label="Undo", emoji="↩️", style=discord.ButtonStyle.secondary, row=0)
+    async def undo(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Only shown right after something was removed: puts the pocket back the way it was."""
+        if self.undo_snapshot is not None:
+            self.cog.replace_cart(self.user_id, OrderCart.from_json(self.undo_snapshot))
+        await self.render(interaction, "↩️ Put back.")
 
     # Row 2: the less common ways to fill an order.
     @discord.ui.button(label="Type a list", emoji="✍️", style=discord.ButtonStyle.secondary, row=2)
@@ -1070,12 +1361,14 @@ class PocketView(_OwnedView):
         await _swap(interaction, self, view.embed(), view)
 
 
-async def _show_pocket(parent: "PocketView | _SubView", interaction: discord.Interaction, notice: str | None = None) -> None:
+async def _show_pocket(
+    parent: "PocketView | _SubView", interaction: discord.Interaction, notice: str | None = None, *, undo: str | None = None,
+) -> None:
     """Return to the order from wherever a modal was opened (the order itself or one of its sub-menus)."""
     if isinstance(parent, PocketView):
-        await parent.render(interaction, notice)
+        await parent.render(interaction, notice, undo=undo)
     else:
-        await parent.back_to_pocket(interaction, notice)
+        await parent.back_to_pocket(interaction, notice, undo=undo)
 
 
 class AddItemsModal(discord.ui.Modal, title="Type the items you want"):
@@ -1110,9 +1403,11 @@ class BulkEditModal(discord.ui.Modal, title="Edit quantities"):
         self.add_item(self.body)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        notice = apply_bulk_edit(self.parent.cog.cart(self.parent.user_id), self.body.value)
+        cart = self.parent.cog.cart(self.parent.user_id)
+        before, count = cart.to_json(), len(cart.lines)
+        notice = apply_bulk_edit(cart, self.body.value)
         self.parent.cog.save_cart(self.parent.user_id)
-        await _show_pocket(self.parent, interaction, notice)
+        await _show_pocket(self.parent, interaction, notice, undo=before if len(cart.lines) < count else None)
 
 
 class ItemHexModal(discord.ui.Modal, title="Custom hex for this item"):
@@ -1134,6 +1429,24 @@ class ItemHexModal(discord.ui.Modal, title="Custom hex for this item"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await self.editor.set_override(interaction, self.code.value.strip())
+
+
+class ItemAmountModal(discord.ui.Modal, title="How many?"):
+    """Type an exact quantity instead of tapping + many times."""
+
+    def __init__(self, editor: "ItemEditView"):
+        super().__init__()
+        self.editor = editor
+        line = editor.line
+        self.qty = discord.ui.TextInput(
+            label=f"Amount (1–{editor._max_qty()})"[:45],
+            default=str(line.qty) if line else "1",
+            max_length=4,
+        )
+        self.add_item(self.qty)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.editor.set_amount(interaction, self.qty.value)
 
 
 class CustomHexModal(discord.ui.Modal, title="Custom command / hex codes"):
@@ -1194,9 +1507,9 @@ class _SubView(_OwnedView):
         self.cog = parent.cog
         self.username = parent.username
 
-    async def back_to_pocket(self, interaction: discord.Interaction, notice: str | None = None) -> None:
-        view = PocketView(self.cog, self.user_id, self.username)
-        await _swap(interaction, self, build_pocket_embed(self.cog.cart(self.user_id), self.username, notice), view)
+    async def back_to_pocket(self, interaction: discord.Interaction, notice: str | None = None, *, undo: str | None = None) -> None:
+        view = PocketView(self.cog, self.user_id, self.username, undo=undo)
+        await _swap(interaction, self, self.cog.pocket_embed(self.user_id, self.username, notice), view)
 
     @discord.ui.button(label="Back to my order", emoji="↩️", style=discord.ButtonStyle.secondary, row=4)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -1241,9 +1554,12 @@ class SearchResultsView(_SubView):
         season: str | None = None,
         whole_category: bool = False,
         kind: str = "all",
+        recent: frozenset[str] = frozenset(),
     ):
         super().__init__(parent)
         self.title = title
+        self.recent = recent   # lowercased names the member ordered lately (marked 🕘)
+        self.in_pocket = _pocket_counts(self.cog.cart(self.user_id))
         self.kind = kind if kind in _KIND_LABELS else "all"   # "all" | "items" | "diy"
         self.all_hits = hits[:CATEGORY_BROWSE_LIMIT]
         self.whole_category = whole_category   # these results are one category loaded from the catalog
@@ -1264,7 +1580,7 @@ class SearchResultsView(_SubView):
                 discord.SelectOption(
                     label=cf.localized_name(item, self.language)[:100],
                     value=str(i),
-                    description=(f"{item.category}" + (f" · stack of {_stack_size(item)}" if _stack_size(item) > 1 else ""))[:100] or None,
+                    description=self._option_description(item),
                     emoji="📜" if item.diy else "📦",
                 )
                 for i, item in enumerate(self.hits)
@@ -1321,6 +1637,18 @@ class SearchResultsView(_SubView):
             self.open_filters.label = f"Filters ({n_filters})"
             self.open_filters.style = discord.ButtonStyle.primary
 
+    def _option_description(self, item: CatalogItem) -> str | None:
+        bits = []
+        have = self.in_pocket.get(item.name.lower())
+        if have:
+            bits.append(f"✓ In pocket ×{have}")
+        elif item.name.lower() in self.recent:
+            bits.append("Ordered before")
+        bits.append(item.category or "")
+        if _stack_size(item) > 1:
+            bits.append(f"stack of {_stack_size(item)}")
+        return " · ".join(b for b in bits if b)[:100] or None
+
     def embed(self, notice: str | None = None) -> discord.Embed:
         total = len(self.filtered)
         described = self.filters.describe()
@@ -1336,12 +1664,11 @@ class SearchResultsView(_SubView):
 
         # Numbered list of this page, like DropBot's catalog: category, looks, DIY, and what is already ordered.
         if self.hits:
-            ordered = {line.name.lower() for line in cart.lines}
             rows: list[str] = []
             used = 0
             for i, item in enumerate(self.hits, self.page * RESULTS_PER_PAGE + 1):
-                base = item.name.lower()
-                mark = "🛒 " if any(n == base or n.startswith(base + " (") for n in ordered) else ""
+                have = self.in_pocket.get(item.name.lower())
+                mark = f"🛒×{have} " if have else ("🕘 " if item.name.lower() in self.recent else "")
                 bits = [f"`{item.category}`"]
                 looks = len(_item_variants(item))
                 if looks > 1:
@@ -1379,6 +1706,7 @@ class SearchResultsView(_SubView):
             season=self.season,
             whole_category=self.whole_category,
             kind=kind or self.kind,
+            recent=self.recent,
         )
 
     async def _show(self, interaction: discord.Interaction, current: _SubView, view: "SearchResultsView", notice: str | None = None) -> None:
@@ -1458,11 +1786,8 @@ class SearchResultsView(_SubView):
 
     @discord.ui.button(label="Place order", emoji="✈️", style=discord.ButtonStyle.success, row=4)
     async def place_order(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        """Order straight from the item list, without going back to the order screen first."""
-        await interaction.response.defer()
-        self.stop()
-        # On failure submit_order shows the order screen with the reason.
-        await self.cog.submit_order(interaction, PocketView(self.cog, self.user_id, self.username))
+        """Order straight from the item list, without going back to the order screen first (via the review)."""
+        await self.cog.review_order(interaction, self)
 
     @discord.ui.button(label="Filters", emoji="🎛️", style=discord.ButtonStyle.secondary, row=3)
     async def open_filters(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -1474,7 +1799,7 @@ class SearchResultsView(_SubView):
         view = SearchResultsView(
             self, self.all_hits, self.title,
             category=filters.category, color=filters.color, season=filters.season,
-            whole_category=self.whole_category, kind=self.kind,
+            whole_category=self.whole_category, kind=self.kind, recent=self.recent,
         )
         await _swap(interaction, None, view.embed(), view)
 
@@ -1484,6 +1809,7 @@ class MoreView(_SubView):
 
     def __init__(self, parent: "PocketView | _SubView"):
         super().__init__(parent)
+        self._confirming = False
         self.clear.disabled = self.cog.cart(self.user_id).is_empty
 
     def embed(self) -> discord.Embed:
@@ -1504,11 +1830,18 @@ class MoreView(_SubView):
 
     @discord.ui.button(label="Clear order", emoji="🗑️", style=discord.ButtonStyle.danger, row=0)
     async def clear(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Two taps, like Cancel order; the order screen then offers Undo."""
+        if not self._confirming:
+            self._confirming = True
+            button.label = "Tap again to clear everything"
+            await interaction.response.edit_message(view=self)
+            return
         cart = self.cog.cart(self.user_id)
+        before = cart.to_json()
         cart.lines.clear()
         cart.villager = None
         self.cog.save_cart(self.user_id)
-        await self.back_to_pocket(interaction, "Order cleared.")
+        await self.back_to_pocket(interaction, "Order cleared.", undo=before)
 
 
 class ItemEditView(_SubView):
@@ -1583,13 +1916,7 @@ class ItemEditView(_SubView):
     def _catalog_item(self) -> CatalogItem | None:
         """The catalog record behind this line; None for raw hex codes."""
         line = self.line
-        if line is None:
-            return None
-        names = [line.name]
-        if line.hex and line.name.endswith(")") and " (" in line.name:
-            names.insert(0, line.name.rsplit(" (", 1)[0])   # "Ironwood dresser (Oak)" -> the base item
-        catalog = ACNHCatalog.get_instance()
-        return next((item for item in (catalog.get_item(n) for n in names) if item), None)
+        return _line_item(line) if line is not None else None
 
     def _load_variants(self) -> list[_Variant]:
         """Every look of this line's item; [] for raw hex codes and items with a single look."""
@@ -1712,10 +2039,26 @@ class ItemEditView(_SubView):
         if self.draft is not None and self.results is not None:
             await self.results.add_line_and_stay(interaction, self, self.draft)
             return
+        before = None
         if line is not None and self.index is not None:
-            self.cog.cart(self.user_id).lines.pop(self.index)
+            cart = self.cog.cart(self.user_id)
+            before = cart.to_json()
+            cart.lines.pop(self.index)
             self.cog.save_cart(self.user_id)
-        await self.back_to_pocket(interaction, f"Removed **{line.label}**." if line else None)
+        await self.back_to_pocket(interaction, f"Removed **{line.label}**." if line else None, undo=before)
+
+    async def set_amount(self, interaction: discord.Interaction, raw: str) -> None:
+        """The "Amount…" box: any number, capped like the buttons."""
+        text = raw.strip().lstrip("x×").strip()
+        if not text.isdigit() or int(text) < 1:
+            await self._rerender(interaction, f"`{raw.strip()[:12]}` isn't an amount. Type a whole number from 1 to {self._max_qty()}.")
+            return
+        wanted = int(text)
+        await self._set(interaction, wanted)
+
+    @discord.ui.button(label="Amount…", emoji="🔢", style=discord.ButtonStyle.secondary, row=3)
+    async def amount(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ItemAmountModal(self))
 
     @discord.ui.button(label="Custom hex", emoji="#️⃣", style=discord.ButtonStyle.secondary, row=3)
     async def custom_hex(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -1836,13 +2179,14 @@ class SaveLoadoutModal(discord.ui.Modal, title="Save this pocket"):
 class HistoryView(_SubView):
     """Past orders with one-click reorder (loads the old order into the pocket)."""
 
-    def __init__(self, parent: PocketView, orders: list[dict]):
+    def __init__(self, parent: PocketView, orders: list[dict], labels: dict[str, str] | None = None):
         super().__init__(parent)
         self.orders = [o for o in orders if o.get("command")][:25]
+        labels = labels or {}
         if self.orders:
             options = [
                 discord.SelectOption(
-                    label=(str(o["command"])[:97] + "…") if len(str(o["command"])) > 98 else str(o["command"]),
+                    label=_history_label(o, labels, 100),
                     value=str(i),
                     description=f"{o.get('status', '')} · {time.strftime('%b %d', time.gmtime(int(o.get('created_at') or 0)))}"[:100],
                     emoji="🔁",
@@ -1865,16 +2209,42 @@ class HistoryView(_SubView):
         await self.back_to_pocket(interaction, "Loaded your past order. Review it, then place the order.")
 
 
-def build_history_embed(orders: list[dict]) -> discord.Embed:
+def _history_label(order: dict, labels: dict[str, str], limit: int) -> str:
+    """What an order contained, in words (falls back to its stored command)."""
+    text = labels.get(str(order.get("id"))) or readable_command(str(order.get("command") or ""), limit)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def build_history_embed(orders: list[dict], labels: dict[str, str] | None = None) -> discord.Embed:
     if not orders:
         return _embed("🕘 Order history", "No orders yet. Press **Start Order** to place your first one!")
     icons = {"completed": "✅", "cancelled": "🚫", "error": "⚠️", "ready": "✈️", "preparing": "🛠️", "queued": "⏳"}
+    labels = labels or {}
     rows = []
     for order in orders[:10]:
-        command = str(order.get("command") or "")
-        command = command if len(command) <= 80 else command[:79] + "…"
-        rows.append(f"{icons.get(str(order.get('status')), '•')} <t:{int(order.get('created_at') or 0)}:R> — `{command}`")
-    return _embed("🕘 Order history", "\n".join(rows)[:4000])
+        what = discord.utils.escape_markdown(_history_label(order, labels, 120))
+        rows.append(f"{icons.get(str(order.get('status')), '•')} <t:{int(order.get('created_at') or 0)}:R> — {what}")
+    embed = _embed("🕘 Order history", "\n".join(rows)[:4000])
+    if any(o.get("command") for o in orders):
+        embed.description += "\n\n-# Pick one in the menu to load it into your pocket again."
+    return embed
+
+
+class ReviewView(_SubView):
+    """The last screen before an order is sent: the full pocket, the line, and a Send button."""
+
+    def __init__(self, parent: "PocketView | _SubView", accepting: bool):
+        super().__init__(parent)
+        self.send.disabled = not accepting or self.cog.cart(self.user_id).is_empty
+        self.back.label = "Change something"
+        self.back.emoji = "✏️"
+
+    @discord.ui.button(label="Send order", emoji="✈️", style=discord.ButtonStyle.success, row=0)
+    async def send(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        self.stop()
+        # On failure submit_order shows the order screen with the reason.
+        await self.cog.submit_order(interaction, PocketView(self.cog, self.user_id, self.username))
 
 
 # ─── Views: order tracker ─────────────────────────────────────────────────────
@@ -2011,6 +2381,9 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
         self._open_streak = 0                              # consecutive refreshes the bot was open
         self._notify_pending = True                        # subscribers may be waiting (unknown at startup)
         self._next_notified: set[str] = set()              # order ids that got the "almost your turn" DM
+        self._status_line: str | None = None               # "🟢 Open · 4 in line" for the order screen
+        self._status_at = 0.0                              # monotonic time _status_line was built
+        self._now_serving: str | None = None               # who the Order Bot is serving, from the last queue read
 
     def _panel_view(self, is_open: bool) -> OrderPanelView:
         view = self._panel_views.get(is_open)
@@ -2051,6 +2424,20 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
             self._carts[user_id] = await asyncio.to_thread(_load_cart, user_id)
             await asyncio.to_thread(cf.get_user_language, user_id)   # cached for the catalog views
         return self._carts[user_id]
+
+    def pocket_embed(self, user_id: int, username: str, notice: str | None = None) -> discord.Embed:
+        """The order screen with the latest known Order Bot status (open? how long is the line?)."""
+        fresh = self._status_line if time.monotonic() - self._status_at < STATUS_LINE_MAX_AGE * 3 else None
+        return build_pocket_embed(self.cart(user_id), username, notice, fresh)
+
+    async def refresh_status_line(self) -> None:
+        """Re-read the bot status and queue when the cached line is old. Never raises."""
+        if self._status_line and time.monotonic() - self._status_at < STATUS_LINE_MAX_AGE:
+            return
+        try:
+            await self._panel_state()
+        except Exception as exc:
+            logger.debug("[OrderBot] Could not refresh the status line: %s", exc)
 
     def save_cart(self, user_id: int) -> None:
         _spawn(asyncio.to_thread(_save_cart, user_id, self.cart(user_id)))
@@ -2162,9 +2549,22 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
         if villager:
             notes.append(await self.set_villager(user.id, villager))
         notice = "\n".join(n for n in notes if n) or None
+        await self.refresh_status_line()
         view = PocketView(self, user.id, username)
-        embed = build_pocket_embed(self.cart(user.id), username, notice)
+        embed = self.pocket_embed(user.id, username, notice)
         await interaction.followup.send(embed=embed, view=_adopt(view, interaction), ephemeral=True)
+
+    async def review_order(self, interaction: discord.Interaction, parent: "PocketView | _SubView") -> None:
+        """Place order → the review screen with the full pocket, the line, and Send order."""
+        await interaction.response.defer()
+        cart = self.cart(parent.user_id)
+        if cart.is_empty:
+            await _show_pocket(parent, interaction, "❌ Your pocket is empty.")
+            return
+        client = _client()
+        status, queue_data = await asyncio.gather(client.get_bot_status(), client.get_queue())
+        view = ReviewView(parent, _bot_accepting(status))
+        await _swap(interaction, parent, build_review_embed(cart, parent.username, status, queue_data), view)
 
     async def show_my_order(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -2189,11 +2589,12 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         orders = await _client().get_user_order_history(str(interaction.user.id), limit=10)
+        labels = await asyncio.to_thread(history_labels, orders)
         await self.load_cart(interaction.user.id)
         parent = PocketView(self, interaction.user.id, username)
         parent.stop()   # only used to carry the cog/user/username into the sub-menu
-        view = HistoryView(parent, orders)
-        await interaction.followup.send(embed=build_history_embed(orders), view=_adopt(view, interaction), ephemeral=True)
+        view = HistoryView(parent, orders, labels)
+        await interaction.followup.send(embed=build_history_embed(orders, labels), view=_adopt(view, interaction), ephemeral=True)
 
     # ── Submit / cancel ───────────────────────────────────────────────────────
 
@@ -2305,6 +2706,8 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
         last_sig: tuple | None = None
         last_status = ""
         misses = 0
+        start_position = 0          # furthest back in line we've seen; the progress bar counts from here
+        ready_at: float | None = None   # when the gate opened (SysBot doesn't say when it closes)
         data = initial
 
         async def show(embed: discord.Embed, *, final: bool = False, final_view: discord.ui.View | None = None) -> None:
@@ -2333,7 +2736,19 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
                     status, data = "completed", {**data, "status": "completed", "message": ""}
                 last_status = status
 
-                sig = (status, data.get("queue_position"), data.get("estimated_minutes"), data.get("dodo_code"), data.get("message"))
+                position_now = data.get("queue_position")
+                if status == "queued" and isinstance(position_now, int):
+                    start_position = max(start_position, position_now)
+                data = {**data, "start_position": start_position, "now_serving": self._now_serving if status == "queued" else None}
+                if status == "ready" and data.get("dodo_code"):
+                    ready_at = ready_at or time.time()
+                    if not data.get("gate_closes_at"):
+                        data["gate_closes_at"] = int(ready_at + _gate_seconds())
+
+                sig = (
+                    status, data.get("queue_position"), data.get("estimated_minutes"), data.get("dodo_code"),
+                    data.get("message"), data.get("now_serving"),
+                )
                 ended_early = status in ("cancelled", "error")   # no pickup: offer the same pocket again
                 if sig != last_sig:
                     last_sig = sig
@@ -2446,6 +2861,9 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
         status, queue_data = await asyncio.gather(client.get_bot_status(), client.get_queue())
         embed = build_panel_embed(status, queue_data)
         is_open = _bot_accepting(status)
+        self._status_line, self._status_at = status_line(status, queue_data), time.monotonic()
+        serving = queue_data.get("current_active_user") if isinstance(queue_data, dict) else None
+        self._now_serving = str(serving) if serving else None
         sig = json.dumps([is_open, embed.description, [(f.name, f.value) for f in embed.fields]])
         self._last_panel = (embed, sig, is_open)
         return embed, sig, is_open
