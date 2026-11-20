@@ -200,12 +200,12 @@ def source_badge(source: str | None) -> str:
 
 
 def format_row(row: RevealRow, number: int | None = None) -> str:
-    """Two lines: who (with source badge), then when and the Dodo Log link."""
+    """Two lines: who (with source badge), then a muted line with when and the Dodo Log link."""
     num = f"`{number:>2}` " if number is not None else ""
     log = f" · [Log]({row.message_url})" if row.message_url.startswith("http") else ""
     return (
         f"{num}{source_badge(row.source)} {format_member(row)}\n"
-        f"<t:{row.created_at}:f> · <t:{row.created_at}:R>{log}"
+        f"-# <t:{row.created_at}:f> · <t:{row.created_at}:R>{log}"
     )
 
 
@@ -222,6 +222,41 @@ def _window_label(window: str) -> str:
 
 
 LEGEND = "🌐 website · 💬 Discord · ❔ before source tracking"
+MEDALS = ("🥇", "🥈", "🥉")
+BAR_WIDTH = 8
+STAFF_FOOTER = "Staff only • Updates this message for everyone"
+
+
+def legend_for(by_source: dict[str, int] | None = None) -> str:
+    """Badge legend; with counts, only the sources that actually appear."""
+    if not by_source:
+        return LEGEND
+    names = {"website": "🌐 website", "discord": "💬 Discord", "": "❔ before source tracking"}
+    parts = [text for key, text in names.items() if by_source.get(key)]
+    return " · ".join(parts) or LEGEND
+
+
+def activity_bar(count: int, peak: int, width: int = BAR_WIDTH) -> str:
+    """Monospace bar scaled to the busiest island; any activity shows at least one block."""
+    filled = 0 if peak <= 0 or count <= 0 else min(width, max(1, round(width * count / peak)))
+    return f"`{'▰' * filled}{'▱' * (width - filled)}`"
+
+
+def _rank_badge(rank: int) -> str:
+    return MEDALS[rank - 1] if rank <= len(MEDALS) else f"`{rank:>2}`"
+
+
+def _decorate(embed: discord.Embed, footer: str) -> discord.Embed:
+    """House style shared with the other Camp embeds: footer line image and branded footer."""
+    line = getattr(Config, "FOOTER_LINE", None)
+    if line:
+        embed.set_image(url=line)
+    embed.set_footer(text=f"{footer} • Chopaeng Camp™")
+    return embed
+
+
+def _refreshed_by(viewer_id: int | None) -> str:
+    return f"-# Refreshed by <@{viewer_id}>" if viewer_id else ""
 
 
 @dataclass
@@ -257,36 +292,47 @@ def build_overview_embed(
     counts: dict[str, IslandActivity] | None = None,
     viewer_id: int | None = None,
 ) -> discord.Embed:
-    """Landing view: how to use the panel, plus which sub islands were busiest in the window."""
+    """Landing view: how to use the panel, a stat strip, and which sub islands were busiest."""
     label = _window_label(window)
+    intro = [
+        "Pick a **sub island** below to see who revealed its Dodo code, and when.",
+        "-# Times show in your own timezone · change the window from the 🕒 menu",
+    ]
+    if viewer_id:
+        intro.append(_refreshed_by(viewer_id))
+    any_activity = counts is None or any(a.count for a in counts.values())
     embed = discord.Embed(
-        title="🛬 Dodo reveal log",
-        description=(
-            "Pick a **sub island** below to see who revealed its Dodo code, and when.\n"
-            f"Times show in your own timezone. {LEGEND}."
-        ),
-        color=COLOR_PANEL,
+        title="🛬 Dodo Reveal Log",
+        description="\n".join(intro),
+        color=COLOR_PANEL if any_activity else COLOR_EMPTY,
         timestamp=discord.utils.utcnow(),
     )
+    embed.set_author(name=f"Overview · {label}")
+
     if counts is not None:
         active = sorted(((i, a) for i, a in counts.items() if a.count), key=lambda x: (-x[1].count, x[0].lower()))
         quiet = sorted((i for i, a in counts.items() if not a.count), key=str.lower)
         total = sum(a.count for _, a in active)
+
+        embed.add_field(name="Reveals", value=f"**{total}**", inline=True)
+        embed.add_field(name="Active islands", value=f"**{len(active)}** / {len(counts)}", inline=True)
+        embed.add_field(name="Busiest", value=f"**{_esc(active[0][0])}**" if active else "—", inline=True)
+
         if active:
+            peak = active[0][1].count
             lines: list[str] = []
             size = 0
             for rank, (island, act) in enumerate(active, 1):
-                line = f"`{rank:>2}` 👑 **{_esc(island)}** · {_plural(act.count, 'reveal')} · last <t:{act.last}:R>"
+                line = (
+                    f"{_rank_badge(rank)} {activity_bar(act.count, peak)} **{_esc(island)}** · "
+                    f"{_plural(act.count, 'reveal')} · <t:{act.last}:R>"
+                )
                 if size + len(line) + 1 > 980:  # field value limit is 1024
-                    lines.append(f"… and {len(active) - rank + 1} more")
+                    lines.append(f"-# … and {len(active) - rank + 1} more")
                     break
                 lines.append(line)
                 size += len(line) + 1
-            embed.add_field(
-                name=f"Most active · {label.lower()} · {_plural(total, 'reveal')}",
-                value="\n".join(lines),
-                inline=False,
-            )
+            embed.add_field(name=f"Most active · {label.lower()}", value="\n".join(lines), inline=False)
         else:
             embed.add_field(
                 name=f"Most active · {label.lower()}",
@@ -294,16 +340,13 @@ def build_overview_embed(
                 inline=False,
             )
         if quiet:
-            value = ", ".join(_esc(i) for i in quiet)
+            value = " · ".join(_esc(i) for i in quiet)
             embed.add_field(
                 name=f"Quiet · no reveals ({len(quiet)})",
                 value=value if len(value) <= 1024 else value[:1020] + "…",
                 inline=False,
             )
-    if viewer_id:
-        embed.add_field(name="​", value=f"_Refreshed by <@{viewer_id}>_", inline=False)
-    embed.set_footer(text="Staff only • Results update this message for everyone • Chopaeng Camp™")
-    return embed
+    return _decorate(embed, STAFF_FOOTER)
 
 
 def build_intro_embed() -> discord.Embed:
@@ -317,22 +360,22 @@ def build_results_embed(island: str, window: str, page: int, data: RevealPage, v
     page = min(max(page, 0), pages - 1)
     lines: list[str] = []
     if data.total:
-        sources = "  ".join(
+        sources = " · ".join(
             f"{SOURCE_LABELS.get(key, UNKNOWN_SOURCE)[0]} {data.by_source[key]}"
             for key in ("website", "discord", "")
             if data.by_source.get(key)
         )
         lines.append(
             f"**{_plural(data.total, 'reveal')}** by **{_plural(data.unique_members, 'member')}**"
-            + (f"  ·  {sources}" if sources else "")
+            + (f" · {sources}" if sources else "")
         )
         if data.repeaters:
-            lines.append("🔁 Most reveals: " + " · ".join(f"{format_member(r)} ×{n}" for r, n in data.repeaters))
+            lines.append("🔁 Repeat revealers: " + " · ".join(f"{format_member(r)} **×{n}**" for r, n in data.repeaters))
     else:
         lines.append(f"No Dodo reveals for **{_esc(island)}** in the {label.lower()}.")
-        lines.append("Try a longer window from the 🕒 menu, or pick another island.")
+        lines.append("-# Try a longer window from the 🕒 menu, or pick another island.")
     if viewer_id:
-        lines.append(f"_Refreshed by <@{viewer_id}>_")
+        lines.append(_refreshed_by(viewer_id))
 
     body = "\n".join(lines)
     first = page * PAGE_SIZE + 1
@@ -358,10 +401,10 @@ def build_results_embed(island: str, window: str, page: int, data: RevealPage, v
     embed.set_author(name=f"Dodo reveal log · {label}")
     if data.total and shown:
         last = first + shown - 1
-        embed.set_footer(text=f"{first}–{last} of {data.total} · Page {page + 1} of {pages} · {LEGEND}")
+        footer = f"{first}–{last} of {data.total} · Page {page + 1} of {pages} • {legend_for(data.by_source)}"
     else:
-        embed.set_footer(text=LEGEND)
-    return embed
+        footer = STAFF_FOOTER
+    return _decorate(embed, footer)
 
 
 # ---------------------------------------------------------------------------
