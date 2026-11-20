@@ -291,6 +291,81 @@ async def _submit_injection(
     return True, display_name, None
 
 
+async def _submit_injection_batch(
+    user: discord.abc.User,
+    island: str,
+    entries: list[tuple[str, int | None]],
+) -> list[tuple[str, int | None, str | None]]:
+    """
+    Send several (non-Sanrio) injections to the island bot in ONE request and log each.
+
+    They must go together: the island bot hands out free plots per request, so separate requests
+    for villagers without a plot would all land on plot 1 and overwrite each other.
+    Returns (display name, plot, error) per entry in input order; error is None when queued
+    (plot is then the one the island bot actually assigned, if it reported it).
+    """
+    try:
+        from utils.data_manager import resolve_villager_code
+    except Exception:
+        resolve_villager_code = None  # type: ignore[assignment]
+
+    codes: list[str] = []
+    payload: list[dict[str, Any]] = []
+    for villager, plot in entries:
+        code = villager
+        if resolve_villager_code is not None:
+            try:
+                code = resolve_villager_code(villager) or villager
+            except Exception:
+                pass
+        codes.append(code)
+        item: dict[str, Any] = {"villager": code}
+        if plot is not None:
+            item["plot"] = plot
+        payload.append(item)
+
+    try:
+        client = get_island_sysbot_client(island)
+        result = await client.inject_villagers(payload)
+    except Exception:
+        logger.exception("[DropBot] Batch injection failed island=%s user=%s", island, user.id)
+        result = None
+
+    if not isinstance(result, dict):
+        out = [(v, p, "the island bot didn't respond") for v, p in entries]
+        for v, p in entries:
+            await asyncio.to_thread(_log_injection, island, v, p, user.id, False, "bot did not respond")
+        return out
+
+    # Match what the island bot queued back to our entries by internal villager code.
+    injected = [i for i in (result.get("injected") or []) if isinstance(i, dict)]
+    errors = [str(e) for e in (result.get("errors") or [])]
+    fallback_err = str(result.get("error") or result.get("message") or "unknown error")
+
+    out: list[tuple[str, int | None, str | None]] = []
+    for (villager, plot), code in zip(entries, codes):
+        key = code.strip().lower().removeprefix("villager:")
+        hit = next(
+            (i for i in injected if str(i.get("internal_name") or "").strip().lower() == key),
+            None,
+        )
+        if hit is not None:
+            injected.remove(hit)
+            assigned = hit.get("plot")
+            final_plot = int(assigned) if isinstance(assigned, int) else plot
+            out.append((villager, final_plot, None))
+            await asyncio.to_thread(
+                _log_injection, island, villager, final_plot, user.id, True,
+                str(result.get("message") or "Queued via Discord panel"),
+            )
+        else:
+            err = next((e for e in errors if f"'{code}'" in e or f"'{villager}'" in e), fallback_err)
+            out.append((villager, plot, err))
+            logger.warning("[DropBot] Injection rejected island=%s user=%s villager=%s: %s", island, user.id, villager, err)
+            await asyncio.to_thread(_log_injection, island, villager, plot, user.id, False, err)
+    return out
+
+
 async def _perform_injection(
     user: discord.abc.User,
     island_raw: str,
@@ -405,15 +480,15 @@ async def _perform_multi_injection(
         ), False
 
     queued: list[str] = []
+    queued_names: list[str] = []
     failed: list[str] = []
-    for villager, plot in entries:
-        ok, display_name, err = await _submit_injection(user, island, villager, plot)
+    for display_name, plot, err in await _submit_injection_batch(user, island, entries):
         label = f"**{display_name}**" + (f" (plot {plot})" if plot is not None else "")
-        if ok:
+        if err is None:
             queued.append(label)
+            queued_names.append(f"**{display_name}**")
         else:
-            reason = _sanitize_error_message(err) if err else "the island bot didn't respond"
-            failed.append(f"{label}: {reason}")
+            failed.append(f"{label}: {_sanitize_error_message(err)}")
 
     if not queued:
         _pop_cooldown(user.id, island, cooldown_key)
@@ -423,11 +498,18 @@ async def _perform_multi_injection(
             hint="Make sure the island bot is online and try again.",
         ), False
 
+    if len(queued_names) == 1:
+        waiting = f"{queued_names[0]} is waiting for you on the island!"
+    else:
+        waiting = (
+            f"{', '.join(queued_names[:-1])} and {queued_names[-1]} "
+            "are waiting for you on the island!"
+        )
     embed = discord.Embed(
         title=f"🐱 {len(queued)} villager injection{'s' if len(queued) != 1 else ''} queued",
         description=(
             f"Queued for **[{island}]({_island_url(island)})**.\n"
-            "You **must be on the island** for the injections to take effect."
+            f"{waiting}"
         ),
         color=PANEL_EMBED_COLOR if not failed else PANEL_EMBED_COLOR_WARN,
     )
