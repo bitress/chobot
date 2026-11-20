@@ -6223,7 +6223,7 @@ class DiscordCommandBot(commands.Bot):
             discord.Activity(type=discord.ActivityType.listening, name="Isabelle's announcements 📢"),
 
             discord.Activity(type=discord.ActivityType.watching, name="twitch.tv/chopaeng 📺"),
-            discord.Activity(type=discord.ActivityType.watching, name="46x Treasure Islands 🏝️"),
+            discord.Activity(type=discord.ActivityType.watching, name="47x Treasure Islands 🏝️"),
             discord.Activity(type=discord.ActivityType.watching, name="chat spam !order 🤖"),
             discord.Activity(type=discord.ActivityType.watching, name="someone break the max bells glitch 💰 | !maxbells"),
             discord.Activity(type=discord.ActivityType.watching, name="endless dodocode interference ✈️"),
@@ -6252,6 +6252,27 @@ class DiscordCommandBot(commands.Bot):
             discord.Activity(type=discord.ActivityType.listening, name="who am i?"),
             discord.Activity(type=discord.ActivityType.listening, name="try asking me question."),
             discord.Activity(type=discord.ActivityType.listening, name="have you seen Game of Thrones?"),
+
+            discord.Activity(type=discord.ActivityType.watching, name="Orville forget the flight plan ✈️"),
+            discord.Activity(type=discord.ActivityType.watching, name="Wilbur's questionable piloting 🛩️"),
+            discord.Activity(type=discord.ActivityType.watching, name="another failed Dodo Code 🦤"),
+            discord.Activity(type=discord.ActivityType.watching, name="someone stuck at the airport 🛫"),
+            discord.Activity(type=discord.ActivityType.playing, name="Dodo Airlines simulator ✈️"),
+            discord.Activity(type=discord.ActivityType.competing, name="fastest airport departure 💨"),
+
+            discord.Activity(type=discord.ActivityType.watching, name="47 islands, zero patience 🏝️"),
+            discord.Activity(type=discord.ActivityType.watching, name="someone collecting everything 💰"),
+            discord.Activity(type=discord.ActivityType.watching, name="the next island wipe 🧹"),
+            discord.Activity(type=discord.ActivityType.playing, name="island hopping with ChoPaeng 🌴"),
+            discord.Activity(type=discord.ActivityType.playing, name="delivering dreams, one order at a time 📦"),
+            discord.Activity(type=discord.ActivityType.listening, name="!order being used for the 100th time 🤖"),
+
+            discord.Activity(type=discord.ActivityType.watching, name="Winter coming to the islands ❄️"),
+            discord.Activity(type=discord.ActivityType.watching, name="the last of the treasure hunters 🏝️"),
+            discord.Activity(type=discord.ActivityType.playing, name="Among Us at the airport 🚀"),
+            discord.Activity(type=discord.ActivityType.listening, name="the K.K. of Thrones 🎸"),
+            discord.Activity(type=discord.ActivityType.watching, name="the Odyssey of lost Dodo Codes 🌊"),
+            discord.Activity(type=discord.ActivityType.playing, name="there and back again: island edition 📖"),
 
         ])
 
