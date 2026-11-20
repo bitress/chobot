@@ -1185,7 +1185,7 @@ def _search_discord_nickname_matches(ign: str, origin: str) -> list[dict] | None
 
 def _match_flight_like_logger(conn, flight: dict) -> tuple[str, dict, str | None]:
     """Run the flight logger's lookup order. Returns (verdict, detail, user_id)."""
-    from utils.flight_matching import ign_matches_dodo_reveal
+    from utils.flight_matching import ign_matches_dodo_reveal, nickname_contradicts_flight
 
     ign, origin, dest, ts = flight["ign"], flight["origin_island"], flight["destination"], flight["timestamp"]
     found: list[dict] = []
@@ -1210,7 +1210,8 @@ def _match_flight_like_logger(conn, flight: dict) -> tuple[str, dict, str | None
             (clean_text(dest), ts - 7200, ts + 300),
         ).fetchall()
         for uid, username, nickname in rows:
-            if ign_matches_dodo_reveal(ign, username, nickname):
+            # A reveal by someone whose "IGN | Island" nickname is a different identity is not them.
+            if ign_matches_dodo_reveal(ign, username, nickname) and not nickname_contradicts_flight(nickname, ign, origin):
                 found, found_via = [{"id": str(uid), "name": nickname or username or str(uid)}], "dodo_reveal"
                 break
 

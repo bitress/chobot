@@ -27,6 +27,7 @@ from utils.flight_matching import (
     get_allowed_identity_count,
     ign_matches_dodo_reveal,
     is_strict_nick_match,
+    nickname_contradicts_flight,
     normalize_identity_text,
     parse_member_nick,
     split_options,
@@ -1689,9 +1690,14 @@ class FlightLoggerCog(commands.Cog):
         return None
 
     async def lookup_dodo_reveal_member(
-        self, guild: discord.Guild | None, ign: str, destination: str, max_age_seconds: int = 7200
+        self, guild: discord.Guild | None, ign: str, destination: str, max_age_seconds: int = 7200,
+        origin: str | None = None,
     ) -> tuple[discord.Member | None, str | None]:
-        """Look up member and reveal message URL from recent dodo_reveal_messages by island + IGN."""
+        """Look up member and reveal message URL from recent dodo_reveal_messages by island + IGN.
+
+        With `origin`, members whose "IGN | Island" nickname names a different identity are
+        skipped, so a loose name match cannot verify someone else's flight.
+        """
         if not guild:
             return None, None
         dest_clean = clean_text(destination)
@@ -1718,6 +1724,12 @@ class FlightLoggerCog(commands.Cog):
                 try:
                     uid = int(uid_raw)
                     member = await self._resolve_member(guild, uid)
+                    if member and origin is not None and nickname_contradicts_flight(member.display_name, ign, origin):
+                        logger.info(
+                            f"[FLIGHT] Dodo reveal by {member.id} ({member.display_name!r}) not linked to "
+                            f"{ign} from {origin}: nickname names a different identity."
+                        )
+                        continue
                     if member:
                         return member, message_url or None
                 except Exception:
@@ -1734,6 +1746,12 @@ class FlightLoggerCog(commands.Cog):
             if not user_id_raw.isdigit():
                 continue
             member = await self._resolve_member(guild, int(user_id_raw))
+            if member and nickname_contradicts_flight(member.display_name, ign, origin):
+                logger.info(
+                    f"[FLIGHT] Saved character of {member.id} ({member.display_name!r}) not linked to "
+                    f"{ign} from {origin}: nickname names a different identity."
+                )
+                continue
             if member:
                 return member
         return None
@@ -3260,7 +3278,7 @@ class FlightLoggerCog(commands.Cog):
 
             # 3. Check Dodo reveal records from DB
             if not found and target_guild:
-                reveal_member, reveal_url = await self.lookup_dodo_reveal_member(target_guild, ign_raw, dest_raw)
+                reveal_member, reveal_url = await self.lookup_dodo_reveal_member(target_guild, ign_raw, dest_raw, origin=island_raw)
                 if reveal_member:
                     found = [reveal_member]
                     match_source = "dodo_reveal"

@@ -132,6 +132,20 @@ def nickname_matches_flight(display_name: str, ign: str, origin_island: str) -> 
     )
 
 
+def nickname_contradicts_flight(display_name: str, ign: str, origin_island: str) -> bool:
+    """True when a member's nickname names an "IGN | Island" identity that is not this flight.
+
+    Fallback matches (saved characters, Dodo reveals) must not verify a traveler whose
+    registered nickname says they are someone else; a nickname without "|" says nothing.
+    """
+    ign_opts, island_opts = parse_member_nick(display_name or "")
+    if not ign_opts or not island_opts:
+        return False
+    return not is_strict_nick_match(
+        normalize_identity_text(ign), normalize_identity_text(origin_island), ign_opts, island_opts
+    )
+
+
 # Members who joined before the one-character/island rule may keep two identities.
 LEGACY_TWO_IDENTITY_CUTOFF_UTC = datetime.datetime(2022, 9, 1, tzinfo=datetime.timezone.utc)
 LEGACY_TWO_IDENTITY_LIMIT = 2
