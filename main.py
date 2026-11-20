@@ -44,6 +44,7 @@ from bots import TwitchBot, DiscordCommandBot
 from bots.flight_logger import FlightLoggerCog, FreeFlightCog
 from api import run_flask_app, set_data_manager
 from utils.bridge_launcher import start_bridge
+from utils import ota_update
 
 # ============================================================================
 # CONSTANTS
@@ -605,6 +606,8 @@ def main():
             f"({len(data_manager.cache)} items). Skipping initial fetch."
         )
     start_backup_scheduler(STOP_EVENT)
+    # Lets the website's /dashboard/api/update shut everything down for an OTA restart.
+    ota_update.set_stop_hook(STOP_EVENT.set)
     logger.info(f"[DATA] Cache status: {len(data_manager.cache)} items ready ✓")
 
     # ---- Signal handling ---------------------------------------------------
@@ -674,6 +677,7 @@ def main():
 
     # ---- Shutdown ----------------------------------------------------------
     STOP_EVENT.set()
+    restart_requested = restart_requested or ota_update.restart_was_requested()
 
     if data_manager is not None:
         data_manager.stop_auto_refresh()

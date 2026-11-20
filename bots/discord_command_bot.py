@@ -34,6 +34,7 @@ from utils.acnh_catalog import ACNHCatalog
 from utils.nickname_format import is_valid_acnh_nickname, nickname_warning_for, NICKNAME_FORMAT_EXAMPLE
 from utils.chopaeng_ai import get_ai_answer, conversation_store, add_chat_message
 from utils.ops_status import create_sqlite_backup, get_maintenance_settings
+from utils.ota_update import UPDATE_ALLOWED_USER_IDS, find_git_executable, run_git_pull
 from utils.sysbot_api import get_island_sysbot_client, _INVALID_DODO_CODES
 from utils.sysbot_telemetry import get_cached_island_telemetry
 from bots.cogs.drop_bot_cog import DropBotCog
@@ -406,10 +407,6 @@ def _discord_conv_key(message: discord.Message) -> str:
     """Return a stable per-user-per-channel key for conversation history."""
     guild_id = message.guild.id if message.guild else "dm"
     return f"discord:{guild_id}:{message.channel.id}:{message.author.id}"
-
-# Only these Discord users may run /update (server or DM), regardless of server permissions.
-UPDATE_ALLOWED_USER_IDS = frozenset({712983261684432897, 660198924946243609})
-
 
 def is_update_authorized():
     """Check: command is limited to UPDATE_ALLOWED_USER_IDS and works in DMs."""
@@ -1435,27 +1432,7 @@ class RebootConfirmView(discord.ui.View):
 
 
 def _find_git_executable() -> str | None:
-    """Find git executable from PATH or common installation paths."""
-    git_cmd = shutil.which("git")
-    if git_cmd:
-        return git_cmd
-
-    candidates = [
-        # Linux / Unix
-        "/usr/bin/git",
-        "/usr/local/bin/git",
-        "/bin/git",
-        # Windows
-        r"C:\Program Files\Git\cmd\git.exe",
-        r"C:\Program Files\Git\bin\git.exe",
-        r"C:\Program Files (x86)\Git\cmd\git.exe",
-        r"C:\Program Files (x86)\Git\bin\git.exe",
-        os.path.expanduser(r"~\AppData\Local\Programs\Git\cmd\git.exe"),
-    ]
-    for c in candidates:
-        if os.path.isfile(c) and (os.name == "nt" or os.access(c, os.X_OK)):
-            return c
-    return None
+    return find_git_executable()
 
 
 def build_sub_rules_embed(guild: Optional[discord.Guild] = None) -> discord.Embed:
@@ -5384,44 +5361,26 @@ class DiscordCommandCog(commands.Cog):
         except Exception as exc:
             logger.warning("[DISCORD] Pre-update backup failed: %s", exc)
 
-        project_root = Path(__file__).resolve().parent.parent
-        git_bin = _find_git_executable()
-        if not git_bin:
-            await ctx.reply(
-                "❌ **Git executable not found**: `git` is not installed or not in PATH on the server running ChoBot.\n"
-                "Please install Git on the host (e.g. `sudo apt update && sudo apt install -y git` on Linux) to use `/update`."
-            )
-            return
-
-        # Run git pull, forcing English output for reliable message parsing
-        try:
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    [git_bin, 'pull'],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    cwd=str(project_root),
-                    env={**os.environ, 'LANG': 'C', 'LC_ALL': 'C'},
+        result = await asyncio.get_running_loop().run_in_executor(None, run_git_pull)
+        if result["returncode"] is None:
+            if "not found" in (result["error"] or ""):
+                await ctx.reply(
+                    "❌ **Git executable not found**: `git` is not installed or not in PATH on the server running ChoBot.\n"
+                    "Please install Git on the host (e.g. `sudo apt update && sudo apt install -y git` on Linux) to use `/update`."
                 )
-            )
-            git_output = result.stdout.strip() or result.stderr.strip() or "No output."
-        except Exception as e:
-            logger.exception("[DISCORD] Git pull failed: %s", e)
-            await ctx.reply(f"Git pull failed: `{e}`")
+            else:
+                await ctx.reply(f"Git pull failed: `{result['error']}`")
             return
 
-        await ctx.reply(f"```\n{git_output[:GIT_OUTPUT_MAX_LENGTH]}\n```")
+        await ctx.reply(f"```\n{result['output'][:GIT_OUTPUT_MAX_LENGTH]}\n```")
 
-        if result.returncode != 0:
+        if not result["ok"]:
             await ctx.reply(
-                f"Git pull failed (exit code {result.returncode}). Not restarting."
+                f"Git pull failed (exit code {result['returncode']}). Not restarting."
             )
             return
 
-        if "already up to date" in git_output.lower():
+        if not result["updated"]:
             await ctx.reply("Already up to date. No restart needed.")
             return
 
@@ -6177,16 +6136,16 @@ class DiscordCommandBot(commands.Bot):
             intents = discord.Intents.default()
             # Privileged intents are optional and opt-in so the bot does not require
             # privileged gateway intents enabled in the Discord Developer Portal to run.
-            if os.getenv("DISCORD_ALL_INTENTS", "1").lower() in ("1", "true", "yes"):
+            if os.getenv("DISCORD_ALL_INTENTS", "0").lower() in ("1", "true", "yes"):
                 intents.message_content = True
                 intents.members = True
                 intents.presences = True
             else:
-                if os.getenv("DISCORD_MESSAGE_CONTENT_INTENT", "1").lower() in ("1", "true", "yes"):
+                if os.getenv("DISCORD_MESSAGE_CONTENT_INTENT", "0").lower() in ("1", "true", "yes"):
                     intents.message_content = True
-                if os.getenv("DISCORD_MEMBERS_INTENT", "1").lower() in ("1", "true", "yes"):
+                if os.getenv("DISCORD_MEMBERS_INTENT", "0").lower() in ("1", "true", "yes"):
                     intents.members = True
-                if os.getenv("DISCORD_PRESENCES_INTENT", "1").lower() in ("1", "true", "yes"):
+                if os.getenv("DISCORD_PRESENCES_INTENT", "0").lower() in ("1", "true", "yes"):
                     intents.presences = True
 
         super().__init__(command_prefix='!', intents=intents, help_command=None)

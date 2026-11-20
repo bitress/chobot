@@ -8,9 +8,11 @@ be selected with configuration.
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any, Iterable
 from urllib.parse import quote_plus
@@ -180,6 +182,32 @@ class StaticCursor:
         return [Row(row, self._columns) for row in rows]
 
 
+# Async DB work runs on its own threads, not asyncio's default executor (only cpu+4
+# threads, shared with everything else). Checkouts and work on held connections use
+# separate executors: when the pool is drained, threads blocked waiting for a
+# connection would otherwise take every worker, and the coroutines holding connections
+# could never run the query/close that gives one back (pool timeouts until each wait expires).
+_ASYNC_ACQUIRE_WORKERS = 8
+_ASYNC_WORK_WORKERS = 48  # >= pool_size + max_overflow, so every held connection can progress
+_executor_lock = threading.Lock()
+_executors: dict[str, ThreadPoolExecutor] = {}
+
+
+def _executor(kind: str) -> ThreadPoolExecutor:
+    pool = _executors.get(kind)
+    if pool is None:
+        with _executor_lock:
+            pool = _executors.get(kind)
+            if pool is None:
+                workers = _ASYNC_ACQUIRE_WORKERS if kind == "acquire" else _ASYNC_WORK_WORKERS
+                pool = _executors[kind] = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"db-{kind}")
+    return pool
+
+
+async def _run_db(kind: str, fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(_executor(kind), functools.partial(fn, *args))
+
+
 class AsyncCursor:
     def __init__(self, cursor: Cursor):
         self._cursor = cursor
@@ -193,10 +221,10 @@ class AsyncCursor:
         return self._cursor.lastrowid
 
     async def fetchone(self):
-        return await asyncio.to_thread(self._cursor.fetchone)
+        return await _run_db("work", self._cursor.fetchone)
 
     async def fetchall(self):
-        return await asyncio.to_thread(self._cursor.fetchall)
+        return await _run_db("work", self._cursor.fetchall)
 
 
 class AsyncConnection:
@@ -205,12 +233,12 @@ class AsyncConnection:
 
     async def __aenter__(self):
         if self._conn is None:
-            acquire_task = asyncio.create_task(asyncio.to_thread(connect_db))
+            acquire_task = asyncio.ensure_future(_run_db("acquire", connect_db))
             try:
                 self._conn = await asyncio.shield(acquire_task)
             except asyncio.CancelledError:
                 conn = await acquire_task
-                await asyncio.to_thread(conn.close)
+                await _run_db("work", conn.close)
                 raise
         return self
 
@@ -225,18 +253,18 @@ class AsyncConnection:
         return False
 
     async def execute(self, sql: str, params: Iterable[Any] | None = None):
-        cursor = await asyncio.to_thread(self._get_connection().execute, sql, params)
+        cursor = await _run_db("work", self._get_connection().execute, sql, params)
         return AsyncCursor(cursor)
 
     async def commit(self):
-        await asyncio.to_thread(self._get_connection().commit)
+        await _run_db("work", self._get_connection().commit)
 
     async def rollback(self):
-        await asyncio.to_thread(self._get_connection().rollback)
+        await _run_db("work", self._get_connection().rollback)
 
     async def close(self):
         if self._conn is not None:
-            await asyncio.to_thread(self._conn.close)
+            await _run_db("work", self._conn.close)
 
     def _get_connection(self) -> Connection:
         if self._conn is None:

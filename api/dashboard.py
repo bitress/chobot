@@ -52,11 +52,12 @@ from utils.db_migration import (
 from utils.ops_status import (
     backup_dir_path,
     build_health_payload,
+    create_sqlite_backup,
     get_active_data_manager,
     list_backups,
     update_maintenance_settings,
 )
-from utils import island_access
+from utils import island_access, ota_update
 
 logger = logging.getLogger("Dashboard")
 
@@ -3060,6 +3061,67 @@ def api_backup_download(filename):
     return send_from_directory(backup_dir, safe_name, as_attachment=True)
 
 
+@dashboard.route("/api/update", methods=["POST"])
+def api_ota_update():
+    """OTA update, like Discord /update: git pull, then restart the process if code changed.
+
+    Bearer auth only (DASHBOARD_SECRET, or the website token of a UPDATE_ALLOWED_USER_IDS
+    user): /dashboard/api/* POSTs skip the CSRF check, so a cookie session is not accepted.
+    Body (optional): {"restart": false} pulls without restarting.
+    """
+    if not _check_bearer():
+        user = _dashboard_bearer_user()
+        if not user:
+            return jsonify({"ok": False, "error": "Unauthorized"}), 401
+        if not any(
+            ota_update.is_update_allowed_user(user.get(key))
+            for key in ("discord_id", "user_id", "id")
+        ):
+            logger.warning("Unauthorized OTA update attempt by user_id=%s", user.get("user_id"))
+            return jsonify({"ok": False, "error": "Forbidden"}), 403
+
+    data = request.get_json(silent=True) or {}
+    want_restart = data.get("restart", True) is not False
+
+    backup = None
+    try:
+        backup = create_sqlite_backup("pre_update")
+    except Exception as exc:
+        logger.warning("Pre-update backup failed: %s", exc)
+
+    result = ota_update.run_git_pull()
+    restarting = bool(result["updated"] and want_restart and ota_update.request_restart(delay_seconds=1.5))
+
+    _record_audit_event(
+        "ota_update",
+        "git pull",
+        {"ok": result["ok"], "updated": result["updated"], "restarting": restarting,
+         "returncode": result["returncode"], "output": result["output"][:2000]},
+    )
+    logger.info("[OTA] Website update: ok=%s updated=%s restarting=%s", result["ok"], result["updated"], restarting)
+
+    if result["returncode"] is None and result["error"] == "Another update is already running.":
+        status = 409
+    elif not result["ok"]:
+        status = 500
+    else:
+        status = 200
+    return jsonify({
+        "ok": result["ok"],
+        "updated": result["updated"],
+        "restarting": restarting,
+        "output": result["output"],
+        "error": result["error"],
+        "backup": (backup or {}).get("file") if (backup or {}).get("ok") else None,
+        "message": (
+            result["error"] if not result["ok"]
+            else "Update pulled. Restarting now." if restarting
+            else "Update pulled. Restart skipped." if result["updated"]
+            else "Already up to date. No restart needed."
+        ),
+    }), status
+
+
 @dashboard.route("/api/maintenance-mode", methods=["POST"])
 @api_auth_required
 def api_maintenance_mode():
@@ -3997,81 +4059,84 @@ def api_island_update(name):
     island_id = name.lower()
     data      = request.get_json(silent=True) or {}
 
-    # Open the DB ONCE. Let Flask's app context teardown handle the closing.
+    # Every return path below must give the connection back to the pool.
     db = get_db()
+    try:
     
-    row      = db.execute("SELECT * FROM islands WHERE id = ?", (island_id,)).fetchone()
-    existing = _row_to_island_dict(dict(row)) if row else {}
+        row      = db.execute("SELECT * FROM islands WHERE id = ?", (island_id,)).fetchone()
+        existing = _row_to_island_dict(dict(row)) if row else {}
 
-    cat    = data.get("cat",    existing.get("cat",    "public"))
-    theme  = data.get("theme",  existing.get("theme",  "teal"))
-    status = data.get("status", existing.get("status", "OFFLINE"))
+        cat    = data.get("cat",    existing.get("cat",    "public"))
+        theme  = data.get("theme",  existing.get("theme",  "teal"))
+        status = data.get("status", existing.get("status", "OFFLINE"))
 
-    if cat    not in ALLOWED_CATEGORIES: return jsonify({"error": f"cat must be one of {ALLOWED_CATEGORIES}"}),  400
-    if theme  not in ALLOWED_THEMES:     return jsonify({"error": f"theme must be one of {ALLOWED_THEMES}"}),    400
-    if status not in ALLOWED_STATUSES:   return jsonify({"error": f"status must be one of {ALLOWED_STATUSES}"}), 400
+        if cat    not in ALLOWED_CATEGORIES: return jsonify({"error": f"cat must be one of {ALLOWED_CATEGORIES}"}),  400
+        if theme  not in ALLOWED_THEMES:     return jsonify({"error": f"theme must be one of {ALLOWED_THEMES}"}),    400
+        if status not in ALLOWED_STATUSES:   return jsonify({"error": f"status must be one of {ALLOWED_STATUSES}"}), 400
 
-    items_in = data.get("items", existing.get("items", []))
-    if isinstance(items_in, str):
+        items_in = data.get("items", existing.get("items", []))
+        if isinstance(items_in, str):
+            try:
+                items_in = json.loads(items_in)
+            except ValueError:
+                items_in = [i.strip() for i in items_in.split(",") if i.strip()]
+
+        display_name = data.get("display_name", data.get("displayName", existing.get("display_name")))
+        display_name = (display_name or "").strip() or None
+    
+        is_visible = _json_bool(data, "is_visible", _json_bool(data, "isVisible", existing.get("is_visible", True)))
+
+        dodo_code = data.get("dodoCode", data.get("dodo_code", existing.get("dodo_code")))
+        if (dodo_code or "").strip().upper() == REFRESHING_DODO_CODE:
+            status = STATUS_REFRESHING
+
+        # Safely handle the visitors cast to avoid 500s on empty strings/None
+        raw_visitors = data.get("visitors", existing.get("visitors", 0))
         try:
-            items_in = json.loads(items_in)
-        except ValueError:
-            items_in = [i.strip() for i in items_in.split(",") if i.strip()]
+            visitors_count = int(raw_visitors) if raw_visitors not in [None, ""] else 0
+        except (ValueError, TypeError):
+            visitors_count = 0
 
-    display_name = data.get("display_name", data.get("displayName", existing.get("display_name")))
-    display_name = (display_name or "").strip() or None
-    
-    is_visible = _json_bool(data, "is_visible", _json_bool(data, "isVisible", existing.get("is_visible", True)))
-
-    dodo_code = data.get("dodoCode", data.get("dodo_code", existing.get("dodo_code")))
-    if (dodo_code or "").strip().upper() == REFRESHING_DODO_CODE:
-        status = STATUS_REFRESHING
-
-    # Safely handle the visitors cast to avoid 500s on empty strings/None
-    raw_visitors = data.get("visitors", existing.get("visitors", 0))
-    try:
-        visitors_count = int(raw_visitors) if raw_visitors not in [None, ""] else 0
-    except (ValueError, TypeError):
-        visitors_count = 0
-
-    try:
-        db.execute(
-            """INSERT INTO islands
-                   (id, name, display_name, is_visible, type, items, theme, cat, description, seasonal,
-                    status, visitors, dodo_code, map_url, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET
-                   name=excluded.name, display_name=excluded.display_name,
-                   is_visible=excluded.is_visible, type=excluded.type, items=excluded.items,
-                   theme=excluded.theme, cat=excluded.cat, description=excluded.description,
-                   seasonal=excluded.seasonal, status=excluded.status,
-                   visitors=excluded.visitors, dodo_code=excluded.dodo_code,
-                   updated_at=excluded.updated_at""",
-            (
-                island_id,
-                data.get("name", existing.get("name", island_id)).upper(),
-                display_name,
-                1 if is_visible else 0, # Safer bool to int cast
-                data.get("type", existing.get("type", "")),
-                json.dumps(items_in),
-                theme, 
-                cat,
-                data.get("description", existing.get("description", "")),
-                data.get("seasonal",    existing.get("seasonal", "")),
-                status,
-                visitors_count,
-                dodo_code,
-                existing.get("map_url"),
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-        db.commit()
-    except Exception as e:
-        # If it still 500s, this will expose exactly why in your server logs
-        print(f"[!] DB Execute Error on Island Update: {e}")
-        return jsonify({"error": "Database operation failed."}), 500
+        try:
+            db.execute(
+                """INSERT INTO islands
+                       (id, name, display_name, is_visible, type, items, theme, cat, description, seasonal,
+                        status, visitors, dodo_code, map_url, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       name=excluded.name, display_name=excluded.display_name,
+                       is_visible=excluded.is_visible, type=excluded.type, items=excluded.items,
+                       theme=excluded.theme, cat=excluded.cat, description=excluded.description,
+                       seasonal=excluded.seasonal, status=excluded.status,
+                       visitors=excluded.visitors, dodo_code=excluded.dodo_code,
+                       updated_at=excluded.updated_at""",
+                (
+                    island_id,
+                    data.get("name", existing.get("name", island_id)).upper(),
+                    display_name,
+                    1 if is_visible else 0, # Safer bool to int cast
+                    data.get("type", existing.get("type", "")),
+                    json.dumps(items_in),
+                    theme, 
+                    cat,
+                    data.get("description", existing.get("description", "")),
+                    data.get("seasonal",    existing.get("seasonal", "")),
+                    status,
+                    visitors_count,
+                    dodo_code,
+                    existing.get("map_url"),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            db.commit()
+        except Exception as e:
+            # If it still 500s, this will expose exactly why in your server logs
+            print(f"[!] DB Execute Error on Island Update: {e}")
+            return jsonify({"error": "Database operation failed."}), 500
         
-    return jsonify({"status": "ok", "id": island_id})
+        return jsonify({"status": "ok", "id": island_id})
+    finally:
+        db.close()
 
 
     

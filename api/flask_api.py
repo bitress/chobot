@@ -3958,6 +3958,8 @@ def delete_pocket_bundle(bundle_id):
     except Exception as exc:
         logger.warning("Error deleting pocket bundle: %s", exc)
         return jsonify({"error": "Failed to delete bundle"}), 500
+    finally:
+        conn.close()
 # ============================================================================
 # SHARED POCKETS API (Short unique-id pocket URLs)
 # ============================================================================
