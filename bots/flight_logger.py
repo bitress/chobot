@@ -1596,6 +1596,15 @@ class FlightLoggerCog(commands.Cog):
         self._pending_dodo_requests: dict[int, dict] = {}
         self._recent_flight_keys: dict[tuple[str, str], float] = {}
         self._chunk_lock = asyncio.Lock()
+        # The event loop only keeps weak references to tasks; hold them here so a
+        # flight being processed in the background is not garbage-collected mid-run.
+        self._background_tasks: set[asyncio.Task] = set()
+
+    def _spawn(self, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     def _prune_stale_caches(self):
         """Prune in-memory alert, flight dedupe, and dodo request caches to prevent unbounded growth over days."""
@@ -3218,7 +3227,7 @@ class FlightLoggerCog(commands.Cog):
             ign_norm = self.normalize_identity_text(ign_raw)
             isl_norm = self.normalize_identity_text(island_raw)
             self.last_processed = discord.utils.utcnow()
-            asyncio.create_task(
+            self._spawn(
                 self._process_flight_log(message.guild, ign_raw, island_raw, dest_raw, ign_norm, isl_norm, message.jump_url, content)
             )
 
@@ -3447,189 +3456,191 @@ class FlightLoggerCog(commands.Cog):
 
             # Post authorized-traveler log to the xlog channel.
             xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
-            if xlog_channel:
-                guild_icon = guild.icon.url if guild and guild.icon else None
-                member_line = "\n".join(_format_user_for_embed(m) for m in found_members)
-                destination_link = self.get_island_channel_link(destination)
+            guild_icon = guild.icon.url if guild and guild.icon else None
+            member_line = "\n".join(_format_user_for_embed(m) for m in found_members)
+            destination_link = self.get_island_channel_link(destination)
 
-                desc_lines = []
-                if message_url:
-                    content_preview = message_content.strip() if message_content else "View original message"
-                    if len(content_preview) > 100:
-                        content_preview = content_preview[:97] + "..."
-                    desc_lines.append(f"[{content_preview}]({message_url})")
-                desc_lines.append(f"Member Linked: {member_line}")
+            desc_lines = []
+            if message_url:
+                content_preview = message_content.strip() if message_content else "View original message"
+                if len(content_preview) > 100:
+                    content_preview = content_preview[:97] + "..."
+                desc_lines.append(f"[{content_preview}]({message_url})")
+            desc_lines.append(f"Member Linked: {member_line}")
 
-                # Add roles/subscription info for the matched member
-                member = found_members[0]
-                # Ensure we have up-to-date roles (member cache can be stale/partial).
+            # Add roles/subscription info for the matched member
+            member = found_members[0]
+            # Ensure we have up-to-date roles (member cache can be stale/partial).
+            try:
+                member = await guild.fetch_member(member.id)
+            except Exception:
+                pass
+            member_roles = [r for r in member.roles if r.name != "@everyone"]
+            has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in member_roles)
+            
+            dest_clean = clean_text(destination)
+            channel_id = self.island_map.get(dest_clean) or self._resolve_island_channel_id(destination)
+            dest_channel = guild.get_channel(channel_id) if channel_id else None
+            sub_roles = island_tier_roles(guild, destination, dest_channel)
+
+            # Subscription Analysis
+            cog = self
+            await self._ensure_sub_roles_loaded()
+            ign_opts, island_opts = self.parse_member_nick(member.display_name)
+            max_identities = self.calculate_max_identities(member.display_name)
+
+            # Tier roles count as subscriptions even when the channel-overwrite cache is
+            # empty or stale, so the alert never reports "None detected" for a subscriber.
+            all_member_subs = self.member_sub_roles(member)
+            current_island_subs = [r for r in member.roles if r.id in sub_roles]
+            # Discord's own permission check is authoritative: the synced DB roles can lag
+            # behind channel overwrites, but a member who can view the island channel has access.
+            can_view_island = False
+            if not current_island_subs and dest_channel is not None:
                 try:
-                    member = await guild.fetch_member(member.id)
-                except Exception:
-                    pass
-                member_roles = [r for r in member.roles if r.name != "@everyone"]
-                has_access = any(r.id == Config.ISLAND_ACCESS_ROLE for r in member_roles)
-                
-                dest_clean = clean_text(destination)
-                channel_id = self.island_map.get(dest_clean) or self._resolve_island_channel_id(destination)
-                dest_channel = guild.get_channel(channel_id) if channel_id else None
-                sub_roles = island_tier_roles(guild, destination, dest_channel)
+                    can_view_island = dest_channel.permissions_for(member).view_channel
+                except Exception as perm_err:
+                    logger.debug(f"[FLIGHT] permissions_for failed for {member.id} on {dest_channel.id}: {perm_err}")
+                if can_view_island:
+                    current_island_subs = list(all_member_subs)
+                    logger.info(
+                        f"[FLIGHT] {member.id} can view #{dest_channel.name} but has none of the synced "
+                        f"roles for {destination}; islands.required_roles is likely stale."
+                    )
+            other_subs = [r for r in all_member_subs if r.id not in sub_roles and r not in current_island_subs]
+            required_destination_roles = [
+                role for role in (guild.get_role(role_id) for role_id in sub_roles)
+                if role is not None
+            ]
+            allowed_identities = self.get_allowed_identity_count(member, len(all_member_subs))
+            recent_identity_events, _authorized_target = await self._get_actionable_identity_events(
+                member.id,
+                guild_id,
+                ign,
+            )
 
-                # Subscription Analysis
-                cog = self
-                await self._ensure_sub_roles_loaded()
-                ign_opts, island_opts = self.parse_member_nick(member.display_name)
-                max_identities = self.calculate_max_identities(member.display_name)
-
-                # Tier roles count as subscriptions even when the channel-overwrite cache is
-                # empty or stale, so the alert never reports "None detected" for a subscriber.
-                all_member_subs = self.member_sub_roles(member)
-                current_island_subs = [r for r in member.roles if r.id in sub_roles]
-                # Discord's own permission check is authoritative: the synced DB roles can lag
-                # behind channel overwrites, but a member who can view the island channel has access.
-                can_view_island = False
-                if not current_island_subs and dest_channel is not None:
-                    try:
-                        can_view_island = dest_channel.permissions_for(member).view_channel
-                    except Exception as perm_err:
-                        logger.debug(f"[FLIGHT] permissions_for failed for {member.id} on {dest_channel.id}: {perm_err}")
-                    if can_view_island:
-                        current_island_subs = list(all_member_subs)
-                        logger.info(
-                            f"[FLIGHT] {member.id} can view #{dest_channel.name} but has none of the synced "
-                            f"roles for {destination}; islands.required_roles is likely stale."
-                        )
-                other_subs = [r for r in all_member_subs if r.id not in sub_roles and r not in current_island_subs]
-                required_destination_roles = [
-                    role for role in (guild.get_role(role_id) for role_id in sub_roles)
-                    if role is not None
-                ]
-                allowed_identities = self.get_allowed_identity_count(member, len(all_member_subs))
-                recent_identity_events, _authorized_target = await self._get_actionable_identity_events(
-                    member.id,
-                    guild_id,
+            if max_identities > allowed_identities:
+                # SUSPICIOUS: Automatically trigger manual alert flow
+                await self._trigger_automatic_flag(
                     ign,
+                    island,
+                    destination,
+                    member,
+                    max_identities,
+                    len(all_member_subs),
+                    allowed_identities,
+                    message_url,
+                    message_content,
+                    embed_timestamp,
+                    island_type=island_type,
+                    recent_identity_events=recent_identity_events,
+                    visit_id=visit_id,
+                )
+                return
+
+            # Members with no sub at all are flagged too: the island access role alone
+            # (rules accepted) does not open a sub island.
+            is_staff = island_access.is_mod([str(r.id) for r in member.roles]) or member.guild_permissions.administrator
+            if sub_roles and not current_island_subs and not can_view_island and not is_staff:
+                await self._trigger_island_access_mismatch_flag(
+                    ign,
+                    island,
+                    destination,
+                    member,
+                    visit_id,
+                    required_destination_roles,
+                    all_member_subs,
+                    recent_identity_events,
+                    message_url,
+                    embed_timestamp,
+                )
+                return
+
+            if recent_identity_events:
+                await self._trigger_recent_identity_flag(
+                    ign,
+                    island,
+                    destination,
+                    member,
+                    recent_identity_events,
+                    visit_id,
+                    message_url,
+                    embed_timestamp,
+                )
+                return
+
+            # Design: Use a block with emoji and clear separation
+            # A subscription opens the island on its own, so subs are always listed; the
+            # Island Access role (rules accepted) is shown separately, not as a gate.
+            if has_access:
+                desc_lines.append(
+                    f"<a:starpink:784055540321091584> **Has Island Access?** Yes"
+                )
+            elif not current_island_subs:
+                desc_lines.append(
+                    f"<a:CampWarning:1172346431542140961> **No Island Access Role**"
                 )
 
-                if max_identities > allowed_identities:
-                    # SUSPICIOUS: Automatically trigger manual alert flow
-                    await self._trigger_automatic_flag(
-                        ign,
-                        island,
-                        destination,
-                        member,
-                        max_identities,
-                        len(all_member_subs),
-                        allowed_identities,
-                        message_url,
-                        message_content,
-                        embed_timestamp,
-                        island_type=island_type,
-                        recent_identity_events=recent_identity_events,
-                        visit_id=visit_id,
-                    )
-                    return
-
-                # Members with no sub at all are flagged too: the island access role alone
-                # (rules accepted) does not open a sub island.
-                is_staff = island_access.is_mod([str(r.id) for r in member.roles]) or member.guild_permissions.administrator
-                if sub_roles and not current_island_subs and not can_view_island and not is_staff:
-                    await self._trigger_island_access_mismatch_flag(
-                        ign,
-                        island,
-                        destination,
-                        member,
-                        visit_id,
-                        required_destination_roles,
-                        all_member_subs,
-                        recent_identity_events,
-                        message_url,
-                        embed_timestamp,
-                    )
-                    return
-
-                if recent_identity_events:
-                    await self._trigger_recent_identity_flag(
-                        ign,
-                        island,
-                        destination,
-                        member,
-                        recent_identity_events,
-                        visit_id,
-                        message_url,
-                        embed_timestamp,
-                    )
-                    return
-
-                # Design: Use a block with emoji and clear separation
-                # A subscription opens the island on its own, so subs are always listed; the
-                # Island Access role (rules accepted) is shown separately, not as a gate.
-                if has_access:
-                    desc_lines.append(
-                        f"<a:starpink:784055540321091584> **Has Island Access?** Yes"
-                    )
-                elif not current_island_subs:
-                    desc_lines.append(
-                        f"<a:CampWarning:1172346431542140961> **No Island Access Role**"
-                    )
-
-                if current_island_subs:
-                    sub_lines = [r.mention for r in current_island_subs]
-                    desc_lines.append(
-                        f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
-                    )
-                elif has_access:
-                    desc_lines.append(
-                        f"<a:CampWarning:1172346431542140961> **Subscription(s):**\n> None detected for this island."
-                    )
-
-                if other_subs:
-                    other_lines = [r.mention for r in other_subs]
-                    desc_lines.append(
-                        f"<a:heartside:784055539881214002> **Other Subscription(s):**\n> " + "\n> ".join(other_lines)
-                    )
-
-                if len(all_member_subs) > 1:
-                    desc_lines.append(f"> <:ChoLove:818216528449241128> **Multiple Subscriptions Detected**")
-
-                desc_lines.append("\nLog details matched with a member.")
-
-                embed = discord.Embed(
-                    title=f"<:Cho_Check:1456715827213504593> Verified Flight",
-                    description="\n".join(desc_lines),
-                    color=COLOR_SUCCESS,
-                    timestamp=embed_timestamp,
+            if current_island_subs:
+                sub_lines = [r.mention for r in current_island_subs]
+                desc_lines.append(
+                    f"<a:heartside:784055539881214002> **Subscription(s):**\n> " + "\n> ".join(sub_lines)
                 )
-                embed.add_field(name="IGN",         value=f"```yaml\n{ign}```",           inline=True)
-                embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
-                embed.add_field(name="Destination", value=destination_link,               inline=True)
-                if resolved_authorized_target is not None:
-                    embed.add_field(
-                        name="Visitor",
-                        value=f"```yaml\n{ign} from {island.title()}```",
-                        inline=True,
-                    )
-                    embed.add_field(name="Target", value=member_line, inline=True)
-                    embed.add_field(name="Cleared By", value="Previous authorization", inline=True)
-                    embed.add_field(name="Matched From", value=f"`#{resolved_authorized_target['id']}`", inline=True)
-                if visit_id is not None:
-                    embed.add_field(name="Visit ID", value=f"`#{visit_id}`",              inline=True)
+            elif has_access:
+                desc_lines.append(
+                    f"<a:CampWarning:1172346431542140961> **Subscription(s):**\n> None detected for this island."
+                )
 
-                # Merge any pending dodo-code request from this member into the embed,
-                # suppressing the separate "Dodo Code Requested" xlog entry.
-                dodo_req = self.pop_pending_dodo_request(found_members[0].id)
-                if dodo_req is not None:
-                    embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+            if other_subs:
+                other_lines = [r.mention for r in other_subs]
+                desc_lines.append(
+                    f"<a:heartside:784055539881214002> **Other Subscription(s):**\n> " + "\n> ".join(other_lines)
+                )
 
-                embed.set_image(url=Config.FOOTER_LINE)
-                embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
+            if len(all_member_subs) > 1:
+                desc_lines.append(f"> <:ChoLove:818216528449241128> **Multiple Subscriptions Detected**")
 
-                flag_view = VerifiedFlightFlagView(bot=self.bot)
-                if message_url:
-                    flag_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
-                if dodo_req is not None and dodo_req.get('reply_msg'):
-                    flag_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
-                
+            desc_lines.append("\nLog details matched with a member.")
+
+            embed = discord.Embed(
+                title=f"<:Cho_Check:1456715827213504593> Verified Flight",
+                description="\n".join(desc_lines),
+                color=COLOR_SUCCESS,
+                timestamp=embed_timestamp,
+            )
+            embed.add_field(name="IGN",         value=f"```yaml\n{ign}```",           inline=True)
+            embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
+            embed.add_field(name="Destination", value=destination_link,               inline=True)
+            if resolved_authorized_target is not None:
+                embed.add_field(
+                    name="Visitor",
+                    value=f"```yaml\n{ign} from {island.title()}```",
+                    inline=True,
+                )
+                embed.add_field(name="Target", value=member_line, inline=True)
+                embed.add_field(name="Cleared By", value="Previous authorization", inline=True)
+                embed.add_field(name="Matched From", value=f"`#{resolved_authorized_target['id']}`", inline=True)
+            if visit_id is not None:
+                embed.add_field(name="Visit ID", value=f"`#{visit_id}`",              inline=True)
+
+            # Merge any pending dodo-code request from this member into the embed,
+            # suppressing the separate "Dodo Code Requested" xlog entry.
+            dodo_req = self.pop_pending_dodo_request(found_members[0].id)
+            if dodo_req is not None:
+                embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+
+            embed.set_image(url=Config.FOOTER_LINE)
+            embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
+
+            flag_view = VerifiedFlightFlagView(bot=self.bot)
+            if message_url:
+                flag_view.add_item(discord.ui.Button(label="View Flight Standing", url=message_url, style=discord.ButtonStyle.link))
+            if dodo_req is not None and dodo_req.get('reply_msg'):
+                flag_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
+            
+            # The access checks above run even without a verbose xlog channel; only the
+            # verified-flight audit entry needs it.
+            if xlog_channel:
                 await xlog_channel.send(embed=embed, view=flag_view)
         else:
             destination_link = self.get_island_channel_link(destination)
@@ -4295,7 +4306,7 @@ class FlightLoggerCog(commands.Cog):
             embed.set_footer(text="Kept: the test visit and alert stay until a moderator handles them.")
         else:
             embed.set_footer(text="The test visit and its alert are removed in 10 minutes. Match Log posts in xlog stay.")
-            asyncio.create_task(self._flight_test_cleanup(
+            self._spawn(self._flight_test_cleanup(
                 visit_id, alert_channel_id, alert_message_id, started, (clean_text(test_ign), clean_text(dest)),
             ))
 
