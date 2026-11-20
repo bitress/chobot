@@ -133,7 +133,7 @@ class GetDodoButton(
         if not dodo:
             _pop_cooldown(interaction.user.id, self.island, "dodo")
             embed = discord.Embed(
-                title="🔄 Dodo code unavailable",
+                title="<a:ACNHoof:760260918709190656> Dodo code unavailable",
                 description=(
                     f"The Dodo code for **{island}** is refreshing, or the bot is offline.\n"
                     "Please try again in a moment."
@@ -145,12 +145,12 @@ class GetDodoButton(
             return
 
         embed = discord.Embed(
-            title=f"🦤 Dodo Code — {island}",
+            title=f"<a:heartspin:766724170788372510> Dodo Code — {island}",
             url=_island_url(island),
             description=(
                 f"# `{dodo}`\n\n"
                 f"**[Visit {island} Page]({_island_url(island)})**\n\n"
-                "-# ⚠️ Private code • Walk to airport to leave • Character | Island nick • Don't litter"
+                "-# <a:heartside:784055539881214002> Private code • Walk to airport to leave • Character | Island nick • Don't litter"
             ),
             color=PANEL_EMBED_COLOR,
         )
