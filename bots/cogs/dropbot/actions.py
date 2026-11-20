@@ -422,10 +422,13 @@ async def _perform_injection(
         return _err_embed(f"The injection was rejected: **{_sanitize_error_message(err)}**\nMake sure the island bot is online."), False
 
     desc = f"**{display_name}** is queued for injection into **[{island}]({_island_url(island)})**.\n"
-    if is_sanrio_villager(villager):
-        desc += "Enter Plot 1's house on the island to invite them to move to your island! 🎀"
+    if is_sanrio_villager(villager) or allow_unadoptable:
+        desc += (
+            "Enter Plot 1's house on the island to invite them to move to your island! 🎀\n"
+            "You **must be on the island** for the injection to take effect."
+        )
     else:
-        desc += "You **must be on the island** for the injection to take effect."
+        desc += f"**{display_name}** is waiting for you on the island!"
 
     embed = discord.Embed(
         title="🐱 Villager injection queued",
