@@ -291,6 +291,21 @@ async def _submit_injection(
     return True, display_name, None
 
 
+def _villager_image(name: str) -> str:
+    """Catalog photo (or icon) URL for a villager, or "" when the catalog has no exact match."""
+    try:
+        from utils.acnh_catalog import ACNHCatalog
+        catalog = ACNHCatalog.get_instance()
+        v = catalog.get_villager(name)
+        # get_villager falls back to fuzzy matching; only trust a real name/ID hit so we never show the wrong face.
+        if v and (catalog.normalize_text(v.name) == catalog.normalize_text(name)
+                  or v.villager_id == name.strip().lower().removeprefix("villager:")):
+            return v.photo_url or v.icon_url
+    except Exception:
+        logger.debug("[DropBot] no catalog image for villager %s", name, exc_info=True)
+    return ""
+
+
 async def _submit_injection_batch(
     user: discord.abc.User,
     island: str,
@@ -435,6 +450,9 @@ async def _perform_injection(
         description=desc,
         color=PANEL_EMBED_COLOR,
     )
+    image = await asyncio.to_thread(_villager_image, display_name)
+    if image:
+        embed.set_thumbnail(url=image)
     if plot is not None:
         embed.add_field(name="Requested plot", value=str(plot), inline=True)
     embed.set_footer(text=PANEL_FOOTER_TEXT, icon_url=PANEL_FOOTER_ICON)
@@ -516,6 +534,9 @@ async def _perform_multi_injection(
         ),
         color=PANEL_EMBED_COLOR if not failed else PANEL_EMBED_COLOR_WARN,
     )
+    image = await asyncio.to_thread(_villager_image, queued_names[0].strip("*"))
+    if image:
+        embed.set_thumbnail(url=image)
     embed.add_field(name="✅ Queued", value="\n".join(queued)[:1024], inline=False)
     if failed:
         embed.add_field(name="❌ Failed", value="\n".join(failed)[:1024], inline=False)
