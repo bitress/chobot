@@ -183,6 +183,7 @@ class Config:
     # ChoPaeng Console Order API ({API_BASE_URL}/api/order)
     ORDER_API_URL = (os.getenv('ORDER_API_URL') or '').rstrip('/') or f"{API_BASE_URL}/api/order"
 
+
     # SysBot.ACNHOrders HTTP REST API
     # Set SYSBOT_API_URL to the address where SysBot is running, e.g. http://localhost:5202
     # Leave blank to disable live SysBot API integration.

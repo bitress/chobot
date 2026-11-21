@@ -38,6 +38,7 @@ REPLACE_ON_START = os.getenv("SYSBOT_BRIDGE_REPLACE_ON_START", "1").strip().lowe
 )
 
 
+
 def _pids_on_port(port: int) -> list[int]:
     """Best-effort: PIDs holding a LISTENING socket on the given TCP port."""
     pids: set[int] = set()
