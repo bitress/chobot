@@ -1184,6 +1184,13 @@ class SysBotClient:
                 return res
         return res if isinstance(res, dict) else {"success": False, "error": f"HTTP {code}"}
 
+    def get_player_positions_sync(self) -> dict:
+        """Fetch every player's map tile via GET /api/players/positions (reads Switch RAM, ~1s cache on SysBot)."""
+        res, code = self._get("/api/players/positions")
+        if code == 200 and isinstance(res, dict):
+            return res
+        return res if isinstance(res, dict) else {"success": False, "error": f"HTTP {code}"}
+
     async def get_island_map_data(self) -> dict:
         """Fetch live interactive island map item dots asynchronously."""
         return await asyncio.to_thread(self.get_island_map_data_sync)

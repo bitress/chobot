@@ -575,6 +575,72 @@ def build_telemetry_payload(
 # 7. LIVE PLAYERS TRACKER
 # ============================================================================
 
+_POSITIONS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_POSITIONS_CACHE_LOCK = threading.Lock()
+_POSITIONS_CACHE_TTL = 2.0
+
+
+def viewer_can_see_positions(viewer: dict[str, Any] | None, island_name: str) -> bool:
+    """
+    Where players stand follows the Dodo code rule: anyone may see it on free islands,
+    only viewers with access (or mods) on member/sub islands.
+    """
+    from utils import island_access
+
+    if not island_access.is_member_island(None, None, island_name):
+        return True
+    if not viewer:
+        return False
+    return island_access.has_island_access(
+        viewer.get("roles", []), [], False, island_name=island_name, user=viewer,
+    )
+
+
+def fetch_island_player_positions(island_name: str) -> dict[str, Any] | None:
+    """
+    Fetch /api/players/positions for one island, shared across viewers for a couple of seconds
+    so several open maps do not each make SysBot read Switch memory.
+    Returns None when the island's SysBot is unreachable or does not support positions.
+    """
+    key = (island_name or "").strip().lower()
+    if not key:
+        return None
+
+    now = time.monotonic()
+    with _POSITIONS_CACHE_LOCK:
+        hit = _POSITIONS_CACHE.get(key)
+        if hit and now - hit[0] <= _POSITIONS_CACHE_TTL:
+            return hit[1]
+
+    try:
+        from utils.sysbot_api import get_island_sysbot_client
+        data = get_island_sysbot_client(island_name, timeout=4).get_player_positions_sync()
+    except Exception as exc:
+        logger.debug(f"[CatalogMapService] Player positions fetch note for {island_name}: {exc}")
+        data = None
+
+    if not isinstance(data, dict) or not data.get("success") or not isinstance(data.get("players"), list):
+        data = None
+
+    with _POSITIONS_CACHE_LOCK:
+        _POSITIONS_CACHE[key] = (now, data)  # cache misses too, so an old SysBot build is not hammered
+    return data
+
+
+def _positions_by_name(positions: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Group SysBot position rows by lower-cased name, in slot order (two visitors can share a name)."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    rows = sorted(
+        (p for p in positions.get("players") or [] if isinstance(p, dict)),
+        key=lambda p: p.get("slot") if isinstance(p.get("slot"), int) else 99,
+    )
+    for p in rows:
+        name = str(p.get("name") or "").strip().lower()
+        if name:
+            grouped.setdefault(name, []).append(p)
+    return grouped
+
+
 def build_live_players_payload(
     island_filter: str | None = None,
     viewer: dict[str, Any] | None = None,
@@ -633,17 +699,34 @@ def build_live_players_payload(
             "visitors": v_list,
         }
 
+        # Positions only for a single-island request (an open map), never the all-islands
+        # overview: that would make every SysBot read Switch memory on each poll.
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        if target_filter and v_list and data.get("is_online") and viewer_can_see_positions(viewer, isl_name):
+            positions = fetch_island_player_positions(isl_name)
+            if positions:
+                grouped = _positions_by_name(positions)
+                by_island[isl_name]["positions_tracking"] = positions.get("visitor_tracking") or "unknown"
+
         for p in v_list:
             clean_p = str(p).strip()
             arr_info = recent_arrivals.get((norm_key, clean_p.lower()), {})
-            players_list.append({
+            entry: dict[str, Any] = {
                 "name": clean_p,
                 "island": isl_name,
                 "status": "visiting",
                 "origin_island": arr_info.get("origin_island", ""),
                 "arrived_at": arr_info.get("arrived_at"),
                 "is_host": clean_p.lower() in ("chopaeng", "cho paeng"),
-            })
+            }
+            matches = grouped.get(clean_p.lower())
+            if matches:
+                pos = matches.pop(0)
+                if pos.get("has_position") and pos.get("x") is not None and pos.get("y") is not None:
+                    entry["x"] = pos["x"]
+                    entry["y"] = pos["y"]
+                    entry["acre"] = pos.get("acre")
+            players_list.append(entry)
 
     return {
         "ok": True,

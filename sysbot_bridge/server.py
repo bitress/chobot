@@ -125,6 +125,7 @@ ALLOWED_PROXY_PREFIXES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/island/map"),
     ("GET", "/api/island"),
     ("GET", "/api/players/live"),
+    ("GET", "/api/players/positions"),
     ("GET", "/api/logs"),
 )
 

@@ -321,6 +321,12 @@ def get_engine():
             "pool_size": 20,
             "max_overflow": 20,
             "pool_timeout": 15,
+            # MariaDB 11.6.2+ enables innodb_snapshot_isolation, so under the default
+            # REPEATABLE READ a write to a row another connection changed after this
+            # transaction's first read fails with 1020 "Record has changed since last read"
+            # (e.g. two tabs' presence heartbeats: SELECT the session, then UPSERT it).
+            # READ COMMITTED reads fresh data per statement and never raises 1020.
+            "isolation_level": "READ COMMITTED",
         })
     engine = create_engine(get_database_url(), **kwargs)
     if get_backend() == "sqlite":

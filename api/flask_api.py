@@ -7475,6 +7475,25 @@ def api_get_island_map(island_name: str):
     }), 503
 
 
+def _redact_map_player_positions(data: Any, island_name: str) -> Any:
+    """
+    SysBot's map data carries each player's tile. The cache is shared across viewers, so strip
+    the coordinates per request for anyone who could not see that island's Dodo code.
+    """
+    players = data.get("players") if isinstance(data, dict) else None
+    if not isinstance(players, list) or not players:
+        return data
+    from utils.catalog_map_service import viewer_can_see_positions
+    if viewer_can_see_positions(_current_auth_user(), island_name):
+        return data
+    redacted = dict(data)
+    redacted["players"] = [
+        {k: v for k, v in p.items() if k not in ("x", "y", "acre")} if isinstance(p, dict) else p
+        for p in players
+    ]
+    return redacted
+
+
 @app.route("/api/island/map/data", methods=["GET"])
 @app.route("/api/map/data", methods=["GET"])
 @app.route("/api/islands/<island_name>/map/data", methods=["GET"])
@@ -7529,7 +7548,7 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
     if not force:
         cached_val = map_cache.get(cache_key)
         if cached_val is not None:
-            return jsonify(cached_val)
+            return jsonify(_redact_map_player_positions(cached_val, resolved_island))
 
     # 1. Primary: Query SysBot HttpApiServer.cs live RAM
     try:
@@ -7539,9 +7558,9 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
                 if fmt in ("website", "unified", "modal"):
                     converted = _convert_sysbot_map_data_to_website(data, resolved_island)
                     map_cache.set(cache_key, converted, ttl=30.0)
-                    return jsonify(converted)
+                    return jsonify(_redact_map_player_positions(converted, resolved_island))
                 map_cache.set(cache_key, data, ttl=30.0)
-                return jsonify(data)
+                return jsonify(_redact_map_player_positions(data, resolved_island))
     except Exception as exc:
         logging.getLogger("flask_api").debug(f"SysBot live map data fetch note for {resolved_island}: {exc}")
 
