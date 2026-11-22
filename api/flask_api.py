@@ -17,6 +17,7 @@ import hmac
 import secrets as _secrets
 import logging
 import queue
+import gzip
 import threading
 import urllib.parse
 import urllib.error
@@ -305,6 +306,43 @@ record_service_status("flask", mode="api", status="running")
 
 # Suppress Flask/Werkzeug standard logs
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
+
+
+# The origin's uplink to Cloudflare is slow (~10 KB/s measured), and responses went out
+# uncompressed: a 3 MB island map took 50-90 s, so the site's map spun "forever".
+# Cloudflare asks the origin for gzip and re-encodes for browsers, so gzip here cuts the
+# bytes on that link ~15x. Streams (presence SSE) and send_file passthroughs are left alone.
+_GZIP_MIN_BYTES = 1024
+_GZIP_MIMETYPES = (
+    "application/json",
+    "application/javascript",
+    "text/html",
+    "text/plain",
+    "text/css",
+    "text/javascript",
+    "image/svg+xml",
+)
+
+
+@app.after_request
+def _gzip_response(resp):
+    try:
+        if "gzip" not in (request.headers.get("Accept-Encoding") or "").lower():
+            return resp
+        if resp.direct_passthrough or resp.is_streamed or resp.status_code in (204, 304) or resp.status_code < 200:
+            return resp
+        if resp.headers.get("Content-Encoding") or resp.mimetype not in _GZIP_MIMETYPES:
+            return resp
+        data = resp.get_data()
+        if len(data) < _GZIP_MIN_BYTES:
+            return resp
+        resp.set_data(gzip.compress(data, compresslevel=5))
+        resp.headers["Content-Encoding"] = "gzip"
+        resp.headers["Content-Length"] = str(len(resp.get_data()))
+        resp.vary.add("Accept-Encoding")
+    except Exception as exc:  # never fail a request because compression did
+        logger.debug("gzip response skipped: %s", exc)
+    return resp
 
 
 # Patreon cache
