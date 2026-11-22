@@ -7,6 +7,7 @@ into islands.required_roles (see DiscordCommandBot.fetch_islands).
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -57,7 +58,19 @@ def canonical_island_key(value: str | None) -> str:
     """Normalize an island or channel name for matching (e.g. '01 Hiraya' -> 'hiraya')."""
     if not value:
         return ""
-    raw = str(value).strip().lower()
+    value = str(value)
+    if len(value) > 256:
+        return _canonical_island_key(value)
+    return _canonical_island_key_cached(value)
+
+
+@functools.lru_cache(maxsize=4096)
+def _canonical_island_key_cached(value: str) -> str:
+    return _canonical_island_key(value)
+
+
+def _canonical_island_key(value: str) -> str:
+    raw = value.strip().lower()
     raw = re.sub(r"^sub[\s_-]*island[\s_-]*", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"^\d+[\s_-]*", "", raw)
     return clean_text(raw)

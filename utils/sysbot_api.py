@@ -40,6 +40,66 @@ _SYSBOT_STATUS_MAP = {
 }
 
 
+class _SharedTLSAdapter(HTTPAdapter):
+    """HTTPAdapter whose connections share one pre-built TLS context.
+
+    By default requests hands urllib3 the certifi bundle *path*, so every new HTTPS connection
+    re-parses the whole CA bundle (load_verify_locations) before its handshake. The telemetry
+    worker opens many connections (one per island, more when SysBot times out), and that CPU
+    work holds the GIL, slowing every API request in the process.
+    """
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = _tls_context()
+        return super().init_poolmanager(*args, **kwargs)
+
+    def cert_verify(self, conn, url, verify, cert):
+        super().cert_verify(conn, url, verify, cert)
+        if verify is True:
+            # The shared context already trusts the default CAs; a path here would reload them.
+            conn.ca_certs = None
+            conn.ca_cert_dir = None
+
+
+_TLS_CONTEXT = None
+_SHARED_SESSION: Optional[requests.Session] = None
+_SHARED_SESSION_LOCK = threading.Lock()
+
+
+def _tls_context():
+    global _TLS_CONTEXT
+    if _TLS_CONTEXT is None:
+        import ssl
+        import certifi
+        _TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    return _TLS_CONTEXT
+
+
+def _shared_session() -> requests.Session:
+    """One session for every SysBotClient: all islands sit behind the same SysBot host, so
+    sharing the pool lets keep-alive connections be reused across islands instead of each of
+    48 clients holding (and re-handshaking) its own."""
+    global _SHARED_SESSION
+    with _SHARED_SESSION_LOCK:
+        if _SHARED_SESSION is None:
+            session = requests.Session()
+            retry = Retry(
+                total=1,
+                connect=False,  # Never retry when target actively refused connection / offline
+                read=1,
+                status=1,
+                backoff_factor=0.3,
+                status_forcelist=[502, 503, 504],
+                allowed_methods=["GET", "POST", "DELETE"],
+                raise_on_status=False,
+            )
+            adapter = _SharedTLSAdapter(max_retries=retry, pool_connections=8, pool_maxsize=32)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            _SHARED_SESSION = session
+        return _SHARED_SESSION
+
+
 def _ensure_order_table():
     """Ensure the database schema and order_bot_queue table exist."""
     try:
@@ -218,20 +278,7 @@ class SysBotClient:
 
     def _get_session(self) -> requests.Session:
         if self._session is None:
-            self._session = requests.Session()
-            retry = Retry(
-                total=1,
-                connect=False,  # Never retry when target actively refused connection / offline
-                read=1,
-                status=1,
-                backoff_factor=0.3,
-                status_forcelist=[502, 503, 504],
-                allowed_methods=["GET", "POST", "DELETE"],
-                raise_on_status=False,
-            )
-            adapter = HTTPAdapter(max_retries=retry, pool_connections=5, pool_maxsize=10)
-            self._session.mount("https://", adapter)
-            self._session.mount("http://", adapter)
+            self._session = _shared_session()
         return self._session
 
     def _headers(self) -> dict:

@@ -157,10 +157,8 @@ class Connection:
         self._conn.rollback()
 
     def close(self):
-        try:
-            self._conn.rollback()
-        except Exception:
-            pass
+        # Returning the connection to the pool already rolls back (reset_on_return="rollback"),
+        # so an explicit rollback here was a second round-trip on every request.
         self._conn.close()
 
 

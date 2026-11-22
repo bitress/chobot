@@ -3,6 +3,7 @@ Helper Utilities Module
 Common functions used across bots and APIs
 """
 
+import functools
 import re
 import unicodedata
 try:
@@ -49,6 +50,21 @@ def normalize_text(s: str) -> str:
 
 
 def clean_text(text: str) -> str:
+    """Cached wrapper: island/IGN matching calls this thousands of times per request on the same
+    few dozen names, and the Unicode normalisation below is the expensive part."""
+    if not text:
+        return ""
+    if isinstance(text, str) and len(text) <= 256:
+        return _clean_text_cached(text)
+    return _clean_text_uncached(text)
+
+
+@functools.lru_cache(maxsize=4096)
+def _clean_text_cached(text: str) -> str:
+    return _clean_text_uncached(text)
+
+
+def _clean_text_uncached(text: str) -> str:
     """Clean text for island matching: alphanumeric only, no accents, lowercase.
 
     Handles fancy Unicode bot names, including:

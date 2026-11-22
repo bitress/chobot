@@ -44,6 +44,8 @@ def _prune_notified_arrivals(now: float) -> None:
     for key in [k for k, ts in _NOTIFIED_ARRIVALS.items() if now - ts >= _NOTIFIED_ARRIVALS_WINDOW]:
         _NOTIFIED_ARRIVALS.pop(key, None)
 _CONSECUTIVE_ERRORS: Dict[str, int] = {}
+# Last is_online written to island_bot_status per island (keys come from configured islands only).
+_SYNCED_ONLINE: Dict[str, int] = {}
 _CACHE_LOCK = threading.Lock()
 
 _JOIN_REGEX = re.compile(
@@ -676,21 +678,28 @@ def poll_all_islands(max_workers: int = 12) -> Dict[str, Dict[str, Any]]:
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(poll_single_island, islands))
 
-    # Update island_bot_status in DB so legacy readers see presence without Discord
-    try:
-        now_iso = datetime.now(timezone.utc).isoformat()
-        with connect_db() as conn:
-            with _CACHE_LOCK:
-                for isl_lower, data in _TELEMETRY_CACHE.items():
+    # Update island_bot_status in DB so legacy readers see presence without Discord.
+    # Snapshot under the lock and write outside it: request handlers read _TELEMETRY_CACHE once
+    # per island, so holding the lock across ~48 DB round-trips stalled every /api/islands call.
+    # Only islands whose online state changed are written (readers only use is_online).
+    with _CACHE_LOCK:
+        snapshot = {k: 1 if v.get("is_online") else 0 for k, v in _TELEMETRY_CACHE.items()}
+    changed = [(k, online) for k, online in snapshot.items() if _SYNCED_ONLINE.get(k) != online]
+    if changed:
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            with connect_db() as conn:
+                for isl_lower, online in changed:
                     conn.execute("""
                         INSERT INTO island_bot_status (island_id, is_online, updated_at)
                         VALUES (?, ?, ?)
                         ON CONFLICT(island_id) DO UPDATE SET
                             is_online = excluded.is_online,
                             updated_at = excluded.updated_at
-                    """, (isl_lower, 1 if data.get("is_online") else 0, now_iso))
-    except Exception as exc:
-        logger.debug(f"[SysBotTelemetry] Failed to sync island_bot_status: {exc}")
+                    """, (isl_lower, online, now_iso))
+            _SYNCED_ONLINE.update(changed)
+        except Exception as exc:
+            logger.debug(f"[SysBotTelemetry] Failed to sync island_bot_status: {exc}")
 
     return get_all_cached_telemetry(mask_sub_dodo=True)
 
