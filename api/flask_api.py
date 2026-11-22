@@ -40,7 +40,7 @@ from utils import island_access
 from utils.database import connect_db
 from utils.discord_http import request as discord_request
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
-from utils.presence_hub import hub as presence_hub, format_sse
+from utils.presence_hub import hub as presence_hub, format_sse, redact_radar
 from utils.nickname_format import nickname_warning_for, is_valid_acnh_nickname
 from utils.dodo_log_embed import build_dodo_log_embed, count_recent_reveals
 from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token, update_auth_user
@@ -7256,6 +7256,7 @@ def api_presence_online():
 
         people = _presence_people(conn, now)
         viewer = _current_auth_user()
+        signed_in = bool(_auth_user_id(viewer))
         viewer_session = _presence_session_for(
             str(request.headers.get("x-session-id") or request.args.get("sessionId") or "").strip(),
             viewer,
@@ -7290,16 +7291,19 @@ def api_presence_online():
                 "lastHeartbeat": r["last_heartbeat"],
             }
 
-        residents = [to_resident(r) for r in people[:PRESENCE_ROSTER_LIMIT]]
+        # Who is online is for signed-in members only; signed-out visitors get the counts.
+        residents = [to_resident(r) for r in people[:PRESENCE_ROSTER_LIMIT]] if signed_in else []
 
         # Friends are returned in full so one past the roster cap is not missed.
-        friend_names = _friend_usernames(conn, viewer_uid) if viewer_uid else set()
+        friend_names = _friend_usernames(conn, viewer_uid) if signed_in else set()
         friends_online = [
             to_resident(r) for r in people
             if not r.get("is_guest") and str(r.get("username") or "").lower() in friend_names
         ]
 
         radar = _radar_summary(people)
+        if not signed_in:
+            radar = redact_radar(radar)
         return jsonify({
             "ok": True,
             "success": True,
@@ -7308,7 +7312,8 @@ def api_presence_online():
             "activeOnlineCount": radar["totalOnline"],
             "authenticated_count": radar["authenticatedCount"],
             "guest_count": radar["guestCount"],
-            "roster_truncated": radar["totalOnline"] > len(residents),
+            "roster_truncated": signed_in and radar["totalOnline"] > len(residents),
+            "roster_requires_auth": not signed_in,
             "residents": residents,
             "friends_online": friends_online,
             "radar": radar,
@@ -7331,9 +7336,12 @@ def api_presence_radar():
     try:
         _ensure_presence_table(conn)
         _prune_presence(conn, now)
+        radar = _radar_summary(_presence_people(conn, now))
+        if not _auth_user_id(_current_auth_user()):
+            radar = redact_radar(radar)
         return jsonify({
             "ok": True,
-            "radar": _radar_summary(_presence_people(conn, now)),
+            "radar": radar,
             "traffic": _site_traffic(conn, now),
             "timestamp": now,
         })
@@ -7366,7 +7374,8 @@ def api_presence_stream():
 
     if session_id and presence_hub.count_for(session_id) >= PRESENCE_STREAMS_PER_SESSION:
         return jsonify({"ok": False, "error": "Too many open streams for this session"}), 429
-    sub = presence_hub.subscribe(keys)
+    signed_in = bool(_auth_user_id(auth_user))
+    sub = presence_hub.subscribe(keys, authed=signed_in)
     _ensure_presence_sweeper()
     if sub is None:
         return jsonify({"ok": False, "error": "Stream capacity reached"}), 503
@@ -7374,8 +7383,9 @@ def api_presence_stream():
     conn = get_db()
     try:
         _ensure_presence_table(conn)
+        radar = _radar_summary(_presence_people(conn, now))
         hello = {
-            "radar": _radar_summary(_presence_people(conn, now)),
+            "radar": radar if signed_in else redact_radar(radar),
             "traffic": _site_traffic(conn, now),
             "waves": _claim_pending_waves(conn, now, username, session_id),
         }
@@ -7421,24 +7431,16 @@ def api_presence_send_wave():
         return jsonify({"ok": False, "error": "Target user or session is required"}), 400
 
     auth_user = _current_auth_user()
+    if not _auth_user_id(auth_user):
+        return jsonify({"ok": False, "error": "Sign in to wave at residents"}), 401
     now = int(time.time())
 
-    from_username = str(data.get("fromUsername") or data.get("from_username") or "").strip()
-    from_display_name = str(data.get("fromDisplayName") or data.get("from_display_name") or "").strip()
-    from_avatar_url = str(data.get("fromAvatarUrl") or data.get("from_avatar_url") or "").strip()
-
-    if auth_user:
-        if not from_username:
-            from_username = str(auth_user.get("username") or auth_user.get("discord_name") or "")
-        if not from_display_name:
-            from_display_name = str(auth_user.get("nickname") or auth_user.get("name") or from_username)
-        if not from_avatar_url:
-            from_avatar_url = str(auth_user.get("avatar") or auth_user.get("avatar_url") or "")
-
+    # Sender identity comes only from the signed-in account, never the request body.
+    from_username = str(auth_user.get("username") or auth_user.get("discord_name") or "").strip()
+    from_display_name = str(auth_user.get("nickname") or auth_user.get("name") or from_username).strip()
+    from_avatar_url = str(auth_user.get("avatar") or auth_user.get("avatar_url") or "").strip()
     if not from_username:
-        sess = str(request.headers.get("x-session-id") or data.get("sessionId") or "").strip()
-        short = sess[-4:] if len(sess) >= 4 else "0001"
-        from_username = f"Resident #{short}"
+        return jsonify({"ok": False, "error": "Your account has no username"}), 400
     if not from_display_name:
         from_display_name = from_username
     if not from_avatar_url:

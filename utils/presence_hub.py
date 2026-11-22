@@ -19,12 +19,21 @@ QUEUE_SIZE = 32
 BROADCAST_MIN_INTERVAL = 2.0
 
 
-class Subscriber:
-    __slots__ = ("keys", "queue", "created_at")
+def redact_radar(payload: dict) -> dict:
+    """Radar for signed-out viewers: counts only, no named residents on islands."""
+    out = dict(payload)
+    out["islands"] = [{**entry, "residents": []} for entry in payload.get("islands") or []]
+    return out
 
-    def __init__(self, keys: Iterable[str]):
+
+class Subscriber:
+    __slots__ = ("keys", "queue", "created_at", "authed")
+
+    def __init__(self, keys: Iterable[str], authed: bool = False):
         # Lower-cased identifiers this connection answers to (session ids, usernames).
         self.keys = frozenset(k.strip().lower() for k in keys if k and k.strip())
+        # Signed-in connections may see who is online; others get counts only.
+        self.authed = authed
         self.queue: "queue.Queue[tuple[str, dict]]" = queue.Queue(maxsize=QUEUE_SIZE)
         self.created_at = time.time()
 
@@ -47,8 +56,8 @@ class PresenceHub:
         self._pending_timer: threading.Timer | None = None
 
     # ── subscription ────────────────────────────────────────────────────────
-    def subscribe(self, keys: Iterable[str]) -> Subscriber | None:
-        sub = Subscriber(keys)
+    def subscribe(self, keys: Iterable[str], authed: bool = False) -> Subscriber | None:
+        sub = Subscriber(keys, authed)
         with self._lock:
             if len(self._subscribers) >= self._max:
                 return None
@@ -122,7 +131,10 @@ class PresenceHub:
             if encoded == self._last_radar_json:
                 return
             self._last_radar_json = encoded
-        self.publish_all("radar", payload)
+            targets = list(self._subscribers)
+        public = redact_radar(payload)
+        for s in targets:
+            s.offer("radar", payload if s.authed else public)
 
 
 hub = PresenceHub()
