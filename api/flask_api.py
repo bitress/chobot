@@ -1599,6 +1599,25 @@ ALLOWED_STATUSES = {"ONLINE", "SUB ONLY", "REFRESHING", "OFFLINE"}
 # AUTH ROUTES  (Discord OAuth for public website subscribers)
 # ============================================================================
 
+@app.route("/robots.txt")
+def robots_txt():
+    """This host is the website's API, not pages: keep every crawler off it.
+    A crawler rendering the site once sent ~220k requests here in two hours and timed it out.
+
+    Cloudflare's managed robots.txt is put in front of this and contains "User-agent: *" /
+    "Allow: /", which wins over a "Disallow: /" for the same group. A group naming the crawler
+    takes priority over "*", so the crawlers that render pages are listed by name.
+    """
+    crawlers = (
+        "Googlebot", "bingbot", "AhrefsBot", "AhrefsSiteAudit", "SemrushBot", "MJ12bot", "DotBot",
+        "YandexBot", "Baiduspider", "Applebot", "DuckDuckBot", "PetalBot", "DataForSeoBot", "*",
+    )
+    body = "".join(f"User-agent: {name}\n" for name in crawlers) + "Disallow: /\n"
+    resp = Response(body, mimetype="text/plain")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
 @app.route("/api/auth/discord")
 def auth_discord():
     """Initiate Discord OAuth flow for public website users & subscribers."""
