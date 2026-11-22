@@ -433,7 +433,15 @@ def _overwrite_view_roles(channel) -> dict[int, str]:
     return roles
 
 
-TIER_ROLE_IDS: set[int] = {int(r) for r in island_access.ROLE_ID_TO_TIER_NAME if str(r).isdigit()}
+# How log_result's member was found when it was not by "IGN | Island" nickname.
+MATCH_SOURCE_LABELS = {
+    "saved_character": "saved website character",
+    "dodo_reveal": "Dodo reveal",
+    "recent_authorization": "previous authorization",
+}
+
+
+TIER_ROLE_IDS: set[int] ={int(r) for r in island_access.ROLE_ID_TO_TIER_NAME if str(r).isdigit()}
 
 
 def non_subscription_role_ids() -> set[int]:
@@ -2614,6 +2622,109 @@ class FlightLoggerCog(commands.Cog):
 
             await xlog_channel.send(embed=xlog_embed, view=xlog_view)
 
+    async def _trigger_nickname_format_flag(
+        self,
+        ign,
+        island,
+        destination,
+        member,
+        match_source,
+        visit_id,
+        message_url,
+        timestamp,
+    ):
+        """Flag a member linked by a fallback (Dodo reveal, saved character, ...) whose
+        nickname is not in the required "IGN | Island" format, so it was never checked."""
+        guild = self.bot.get_guild(Config.GUILD_ID)
+        if guild is None:
+            logger.error(f"[FLIGHT] Guild {Config.GUILD_ID} unavailable, aborting nickname-format flag for {ign}")
+            return
+        guild_icon = guild.icon.url if guild.icon else None
+        destination_link = self.get_island_channel_link(destination)
+        source_label = MATCH_SOURCE_LABELS.get(match_source, match_source or "unknown")
+        reason_text = f"Nickname not in IGN | Island format (matched via {source_label})"
+        await self.set_visit_verdict(
+            visit_id,
+            "nickname_format",
+            {
+                "reason": reason_text,
+                "member": {"id": str(member.id), "name": member.display_name},
+                "found_via": match_source,
+            },
+            review_status="pending",
+        )
+
+        output_channel = self.bot.get_channel(Config.FLIGHT_LOG_CHANNEL_ID)
+        alert_msg = None
+        dodo_req = None
+        if output_channel:
+            alert_embed = discord.Embed(
+                description=(
+                    f"### <a:CampWarning:1172346431542140961> Invalid Nickname Format\n"
+                    f"Member {_format_user_for_embed(member)} was linked to this flight for "
+                    f"**{destination_link}** via {source_label}, but their nickname is not "
+                    f"`IGN | Island`, so it could not be checked.\n"
+                    f"**Nickname:** `{discord.utils.escape_markdown(member.display_name)}`\n"
+                    f"Use the buttons below to take action."
+                ),
+                color=COLOR_INVESTIGATION,
+                timestamp=timestamp,
+            )
+            alert_embed.add_field(name="Traveler (IGN)", value=f"```yaml\n{ign}```", inline=True)
+            alert_embed.add_field(name="Origin Island", value=f"```yaml\n{island.title()}```", inline=True)
+            alert_embed.add_field(name="Destination", value=destination_link, inline=True)
+            if visit_id:
+                alert_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            dodo_req = self.pop_pending_dodo_request(member.id)
+            if dodo_req is not None:
+                alert_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+            alert_embed.set_image(url=Config.FOOTER_LINE)
+            alert_embed.set_footer(text="Chopaeng Camp - Flight Logger", icon_url=guild_icon)
+
+            action_view = TravelerActionView(self.bot, ign, visit_id=visit_id)
+            alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
+            await self.set_visit_alert(visit_id, alert_msg)
+
+            await self.add_warning(
+                member.id,
+                guild.id,
+                f"Auto-flagged: {reason_text}",
+                self.bot.user.id,
+                visit_id,
+                action_type='FLAG',
+            )
+
+        xlog_channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        if xlog_channel:
+            xlog_embed = discord.Embed(
+                title="Flagged Flight",
+                description=(
+                    f"**{_format_user_for_embed(member)}**\n"
+                    f"**Auto-Flag:** {reason_text}"
+                ),
+                color=COLOR_INVESTIGATION,
+                timestamp=timestamp,
+            )
+            xlog_embed.add_field(name="IGN", value=f"```yaml\n{ign}```", inline=True)
+            xlog_embed.add_field(name="Island Name", value=f"```yaml\n{island.title()}```", inline=True)
+            xlog_embed.add_field(name="Destination", value=destination_link, inline=True)
+            if dodo_req is not None:
+                xlog_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+            if visit_id:
+                xlog_embed.add_field(name="Visit ID", value=f"`#{visit_id}`", inline=True)
+            xlog_embed.set_image(url=Config.FOOTER_LINE)
+            xlog_embed.set_footer(text="Chopaeng Camp - Match Log", icon_url=guild_icon)
+
+            xlog_view = discord.ui.View()
+            if message_url:
+                xlog_view.add_item(discord.ui.Button(label="View Flight Log", url=message_url, style=discord.ButtonStyle.link))
+            if dodo_req is not None and dodo_req.get('reply_msg'):
+                xlog_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
+            if alert_msg:
+                xlog_view.add_item(discord.ui.Button(label="View Alert", url=alert_msg.jump_url, style=discord.ButtonStyle.link))
+
+            await xlog_channel.send(embed=xlog_embed, view=xlog_view)
+
     async def _trigger_island_access_mismatch_flag(
         self,
         ign,
@@ -3556,6 +3667,26 @@ class FlightLoggerCog(commands.Cog):
                 )
                 return
 
+            # A fallback match (Dodo reveal, saved character, prior authorization) never
+            # checked the nickname; one not in "IGN | Island" format must be reviewed.
+            if (
+                match_source in MATCH_SOURCE_LABELS
+                and resolved_authorized_target is None
+                and not (ign_opts and island_opts)
+                and not is_staff
+            ):
+                await self._trigger_nickname_format_flag(
+                    ign,
+                    island,
+                    destination,
+                    member,
+                    match_source,
+                    visit_id,
+                    message_url,
+                    embed_timestamp,
+                )
+                return
+
             if recent_identity_events:
                 await self._trigger_recent_identity_flag(
                     ign,
@@ -3622,6 +3753,8 @@ class FlightLoggerCog(commands.Cog):
                 embed.add_field(name="Matched From", value=f"`#{resolved_authorized_target['id']}`", inline=True)
             if visit_id is not None:
                 embed.add_field(name="Visit ID", value=f"`#{visit_id}`",              inline=True)
+            if match_source in MATCH_SOURCE_LABELS and resolved_authorized_target is None:
+                embed.add_field(name="Matched Via", value=MATCH_SOURCE_LABELS[match_source], inline=True)
 
             # Merge any pending dodo-code request from this member into the embed,
             # suppressing the separate "Dodo Code Requested" xlog entry.
