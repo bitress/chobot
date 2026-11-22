@@ -152,22 +152,29 @@ def _user_has_island_access(user: Optional[Dict[str, Any]], island_name: str) ->
 _SUB_ISLAND_STATES: Dict[str, Dict[str, Any]] = {}
 
 
+def _new_island_state(clean: str) -> Dict[str, Any]:
+    return {
+        "island": clean,
+        "gate_status": "ONLINE",
+        "dodo_code": "".join(random.choices("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", k=5)),
+        "visitors": 0,
+        "is_busy": False,
+        "queue_count": 0,
+        "readiness": "ready",
+        "plots": [
+            {"plot": i, "villager": f"Resident {i}", "status": "occupied"}
+            for i in range(1, 11)
+        ],
+    }
+
+
 def _get_island_state(island_name: str) -> Dict[str, Any]:
     clean = _clean_island_name(island_name)
+    if clean not in (Config.SUB_ISLANDS or []):
+        # Unknown names come from request URLs: answer with a throwaway state, never store it.
+        return _new_island_state(clean)
     if clean not in _SUB_ISLAND_STATES:
-        _SUB_ISLAND_STATES[clean] = {
-            "island": clean,
-            "gate_status": "ONLINE",
-            "dodo_code": "".join(random.choices("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", k=5)),
-            "visitors": 0,
-            "is_busy": False,
-            "queue_count": 0,
-            "readiness": "ready",
-            "plots": [
-                {"plot": i, "villager": f"Resident {i}", "status": "occupied"}
-                for i in range(1, 11)
-            ],
-        }
+        _SUB_ISLAND_STATES[clean] = _new_island_state(clean)
     return _SUB_ISLAND_STATES[clean]
 
 

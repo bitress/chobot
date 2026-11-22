@@ -258,6 +258,27 @@ class Config:
         return None
 
     @classmethod
+    def resolve_known_island(cls, island_name: str | None) -> Optional[str]:
+        """Canonical name of a configured island, or None.
+
+        Accepts a configured island name (any case, optional "Sub Island " prefix) or one of
+        their SysBot ports. URLs, arbitrary ports and unknown names are rejected: the result is
+        used to build SysBot URLs that carry SYSBOT_API_KEY, so request input must not reach it.
+        """
+        cleaned = re.sub(r"^sub\s+island\s+", "", str(island_name or "").strip(), flags=re.IGNORECASE).strip()
+        if not cleaned:
+            return None
+        if cleaned.isdigit():
+            return cls.get_island_name_from_port(cleaned)
+        known = [*cls.ALL_ISLAND_PORT_ORDER, cls.ORDER_BOT_ISLAND, *cls.SYSBOT_ISLAND_URLS.keys()]
+        for name in known:
+            if name and name.lower() == cleaned.lower():
+                return name
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,31}", cleaned) and os.getenv(f"SYSBOT_API_{cleaned.upper()}"):
+            return cleaned.title()
+        return None
+
+    @classmethod
     def get_island_sysbot_url(cls, island_name: str) -> str:
         """Resolve the SysBot API endpoint for a given island."""
         cleaned = re.sub(r"^sub\s+island\s+", "", (str(island_name or "")).strip(), flags=re.IGNORECASE).strip()

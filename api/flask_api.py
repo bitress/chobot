@@ -70,9 +70,12 @@ CHOBOT_SQLITE_DB = "chobot.db"
 
 
 def _client_ip() -> str:
-    """Return the most useful client IP for audit logging."""
-    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
-    return forwarded or request.headers.get("X-Real-IP", "").strip() or request.remote_addr or ""
+    """Return the most useful client IP for audit logging and rate limits.
+
+    Not the raw X-Forwarded-For: its first entry is whatever the client sent, so keying a rate
+    limit on it let anyone dodge the limit (and grow the limiter) with a made-up header.
+    """
+    return _visitor_ip()
 
 
 def _visitor_ip() -> str:
@@ -696,6 +699,11 @@ def _safe_error(exc: BaseException, fallback: str = "Something went wrong. Pleas
     return fallback
 
 
+def _is_staff_viewer() -> bool:
+    user = _current_auth_user()
+    return bool(user and (user.get("is_admin") or user.get("is_mod")))
+
+
 def _public_presence_id(session_id: str) -> str:
     """Opaque roster id. The raw session id (usr_<discord id>) is a credential, so never expose it."""
     key = str(getattr(Config, "FLASK_SECRET_KEY", "") or "cp_secret").encode("utf-8")
@@ -1117,6 +1125,16 @@ def _load_profile_visit_stats(user_id: str) -> dict:
 
 
 _DODO_WEBHOOK_DEBOUNCE = {}
+
+
+def _prune_debounce(store: dict, ttl: float, now: float, max_size: int = 2000) -> None:
+    """Drop expired entries once a debounce map grows, so it cannot grow without bound."""
+    if len(store) < max_size:
+        return
+    for key in [k for k, ts in store.items() if now - ts >= ttl]:
+        store.pop(key, None)
+    if len(store) >= max_size:
+        store.clear()
 _DODO_WEBHOOK_DEBOUNCE_TTL = 300  # 5 minutes
 
 def _fire_dodo_webhook(
@@ -1143,6 +1161,7 @@ def _fire_dodo_webhook(
     last_fired = _DODO_WEBHOOK_DEBOUNCE.get(cache_key)
     if last_fired and now - last_fired < _DODO_WEBHOOK_DEBOUNCE_TTL:
         return
+    _prune_debounce(_DODO_WEBHOOK_DEBOUNCE, _DODO_WEBHOOK_DEBOUNCE_TTL, now)
     _DODO_WEBHOOK_DEBOUNCE[cache_key] = now
 
     display_name = (nickname or "").strip() or (username or "").strip() or "Unknown User"
@@ -2187,6 +2206,7 @@ def api_suggestions():
             "error": f"Please wait {remaining}s before submitting another suggestion.",
             "cooldownSeconds": remaining,
         }), 429
+    _prune_debounce(_SUGGESTIONS_WEBHOOK_DEBOUNCE, _SUGGESTIONS_WEBHOOK_DEBOUNCE_TTL, now)
     _SUGGESTIONS_WEBHOOK_DEBOUNCE[cache_key] = now
 
     threading.Thread(
@@ -3243,11 +3263,13 @@ def get_island_access():
 
 @app.route('/api/islands/<name>/visitors', methods=['GET'])
 def get_island_visitors(name):
-    """Get the current visitor list for a single island by name via SysBot API.
+    """Get the current visitor list for a single island by name via SysBot API (staff only: lists IGNs).
 
     Queries SysBot telemetry and live API first, with fallback to Visitors.txt.
     Returns 404 if the island is completely unknown.
     """
+    if not _is_staff_viewer():
+        return jsonify({"success": False, "error": "Admin or Moderator access required."}), 403
     target = name.strip().upper()
     try:
         from utils.sysbot_telemetry import get_cached_island_telemetry, _is_sub_island
@@ -3338,19 +3360,23 @@ def api_load_balancer_status():
 
 @app.route('/api/flights/live', methods=['GET'])
 def api_live_flights():
-    """Real-time visitor overview across all 48 islands without Discord."""
+    """Real-time visitor overview across all 48 islands without Discord (staff only: lists IGNs)."""
+    if not _is_staff_viewer():
+        return jsonify({"success": False, "error": "Admin or Moderator access required."}), 403
     from utils.sysbot_telemetry import get_live_visitor_overview
     return jsonify(get_live_visitor_overview())
 
 
 @app.route('/api/flights/history', methods=['GET'])
 def api_flight_history():
-    """Historical island visitor arrivals from SQLite island_visits."""
+    """Historical island visitor arrivals from SQLite island_visits (staff only: anyone's travel by IGN)."""
+    if not _is_staff_viewer():
+        return jsonify({"success": False, "error": "Admin or Moderator access required."}), 403
     from utils.sysbot_telemetry import get_flight_history
     island = request.args.get("island")
     ign = request.args.get("ign")
-    limit = int(request.args.get("limit", 50))
-    offset = int(request.args.get("offset", 0))
+    limit = request.args.get("limit", 50, type=int) or 50
+    offset = max(request.args.get("offset", 0, type=int) or 0, 0)
     history = get_flight_history(island_name=island, ign=ign, limit=limit, offset=offset)
     return jsonify({
         "success": True,
@@ -3361,9 +3387,11 @@ def api_flight_history():
 
 @app.route('/api/islands/<name>/activity', methods=['GET'])
 def api_island_activity(name):
-    """Recent island activity events (arrivals, departures, dodo updates, crashes) without Discord."""
+    """Recent island activity events (arrivals, departures, dodo updates, crashes); staff only."""
+    if not _is_staff_viewer():
+        return jsonify({"success": False, "error": "Admin or Moderator access required."}), 403
     from utils.sysbot_telemetry import get_recent_island_events
-    limit = int(request.args.get("limit", 50))
+    limit = request.args.get("limit", 50, type=int) or 50
     event_type = request.args.get("type")
     events = get_recent_island_events(island_name=name, event_type=event_type, limit=limit)
     return jsonify({
@@ -7573,7 +7601,10 @@ def _resolve_target_island_and_client(island_param: Optional[str] = None):
         resolved_island = getattr(Config, "DEFAULT_ISLAND", None)
         target_url = Config.get_island_sysbot_url(resolved_island) if resolved_island else None
 
-    client = SysBotClientPool.get_client(resolved_island) if resolved_island else None
+    try:
+        client = SysBotClientPool.get_client(resolved_island) if resolved_island else None
+    except ValueError:
+        client = None  # not a configured island: no SysBot to ask
     return resolved_island, target_url, client
 
 

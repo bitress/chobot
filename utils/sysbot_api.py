@@ -1214,7 +1214,14 @@ class SysBotClientPool:
         self._lock = threading.Lock()
 
     def _get_client_impl(self, island_name: str, timeout: int = 5) -> SysBotClient:
-        clean = re.sub(r"^sub\s+island\s+", "", (island_name or "").strip(), flags=re.IGNORECASE).strip().title()
+        # Only configured islands get a client. Names often come straight from request URLs, and
+        # an unknown one would both point the API key at an attacker-chosen URL (direct URL, port,
+        # or path injected into SYSBOT_URL_TEMPLATE) and add a pooled client that is never freed.
+        clean = ""
+        if (island_name or "").strip():
+            clean = Config.resolve_known_island(island_name) or ""
+            if not clean:
+                raise ValueError(f"Unknown island: {str(island_name).strip()[:40]}")
         url = Config.get_island_sysbot_url(clean)
         cache_key = f"{clean.lower()}:{url}"
         with self._lock:

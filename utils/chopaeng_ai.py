@@ -2172,6 +2172,10 @@ async def _try_order_assistant(
     
     if len(valid_variants) > 1:
         if conversation_key:
+            # Abandoned conversations are otherwise only cleared when the same key asks again.
+            cutoff = time.time() - 300
+            for stale in [k for k, v in _order_state_store.items() if v.get("timestamp", 0) < cutoff]:
+                _order_state_store.pop(stale, None)
             _order_state_store[conversation_key] = {
                 "item_data": item,
                 "variants": valid_variants,

@@ -605,9 +605,11 @@ def fetch_island_player_positions(island_name: str) -> dict[str, Any] | None:
     """
     if not getattr(Config, "PLAYER_POSITIONS_ENABLED", False):
         return None
-    key = (island_name or "").strip().lower()
-    if not key:
+    # Keyed by configured island only, so request-supplied names cannot grow the cache.
+    known = Config.resolve_known_island(island_name)
+    if not known:
         return None
+    key = known.lower()
 
     now = time.monotonic()
     with _POSITIONS_CACHE_LOCK:

@@ -100,8 +100,12 @@ def _load_token(token: str) -> dict | None:
 def make_auth_token(user_data: dict) -> str:
     """Create a restart-safe opaque token for a Discord-authenticated user."""
     token = secrets.token_urlsafe(32)
-    expires_at = int(time.time()) + AUTH_TOKEN_TTL
+    now = int(time.time())
+    expires_at = now + AUTH_TOKEN_TTL
     with _auth_tokens_lock:
+        # Expired tokens are otherwise only dropped when presented again, which most never are.
+        for stale in [t for t, e in _auth_tokens.items() if int(e["expires_at"]) < now]:
+            _auth_tokens.pop(stale, None)
         _auth_tokens[token] = {"user": user_data, "expires_at": expires_at}
     _save_token(token, user_data, expires_at)
     return token

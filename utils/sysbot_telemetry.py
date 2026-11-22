@@ -33,6 +33,16 @@ _LAST_EVENT_IDS: Dict[str, int] = {}
 _SENT_WEBHOOK_EVENT_IDS: set[tuple[str, int]] = set()
 _PREV_ISLAND_VISITORS: Dict[str, list[str]] = {}
 _NOTIFIED_ARRIVALS: Dict[tuple[str, str], float] = {}  # (island_lower, player_lower) -> timestamp
+_NOTIFIED_ARRIVALS_WINDOW = 90  # seconds an arrival suppresses a repeat notification
+
+
+def _prune_notified_arrivals(now: float) -> None:
+    """Forget arrivals past the dedupe window; caller holds _CACHE_LOCK. Otherwise every
+    (island, player) ever seen stays in memory for the life of the process."""
+    if len(_NOTIFIED_ARRIVALS) < 2000:
+        return
+    for key in [k for k, ts in _NOTIFIED_ARRIVALS.items() if now - ts >= _NOTIFIED_ARRIVALS_WINDOW]:
+        _NOTIFIED_ARRIVALS.pop(key, None)
 _CONSECUTIVE_ERRORS: Dict[str, int] = {}
 _CACHE_LOCK = threading.Lock()
 
@@ -558,6 +568,7 @@ def poll_single_island(island_name: str) -> Dict[str, Any]:
                     last_arr_ts = _NOTIFIED_ARRIVALS.get((clean_name.lower(), p_clean.lower()), 0)
                     if (now_ts_arrival - last_arr_ts) < 90:
                         continue
+                    _prune_notified_arrivals(now_ts_arrival)
                     _NOTIFIED_ARRIVALS[(clean_name.lower(), p_clean.lower())] = now_ts_arrival
 
                 # Look up origin island from SysBot last_arrival if available
