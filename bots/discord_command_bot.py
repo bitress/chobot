@@ -408,6 +408,53 @@ def _discord_conv_key(message: discord.Message) -> str:
     guild_id = message.guild.id if message.guild else "dm"
     return f"discord:{guild_id}:{message.channel.id}:{message.author.id}"
 
+# ── Island status panel: which channel holds the sticky island-status embed ──────────────────
+# One row. channel_id "0" means the panel was removed on purpose; no row at all means it has never
+# been set, so the panel stays in Config.XLOG_VERBOSE_CHANNEL_ID as before.
+# Synchronous; call through asyncio.to_thread.
+
+def _load_island_status_panel() -> dict[str, int | None] | None:
+    try:
+        with connect_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS island_status_panels (
+                    channel_id VARCHAR(64) PRIMARY KEY,
+                    message_id VARCHAR(64),
+                    updated_at INTEGER
+                )
+                """
+            )
+            conn.commit()
+            row = conn.execute("SELECT channel_id, message_id FROM island_status_panels LIMIT 1").fetchone()
+    except Exception as exc:
+        logger.warning(f"[DISCORD] Could not read island status panel: {exc}")
+        return None
+    if not row:
+        return None
+
+    def _as_id(value: Any) -> int | None:
+        try:
+            return int(value) or None
+        except (TypeError, ValueError):
+            return None
+
+    return {"channel_id": _as_id(row["channel_id"]), "message_id": _as_id(row["message_id"])}
+
+
+def _save_island_status_panel(channel_id: int | None, message_id: int | None) -> None:
+    try:
+        with connect_db() as conn:
+            conn.execute("DELETE FROM island_status_panels")
+            conn.execute(
+                "INSERT INTO island_status_panels (channel_id, message_id, updated_at) VALUES (?, ?, ?)",
+                (str(channel_id or 0), str(message_id) if message_id else None, int(time.time())),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning(f"[DISCORD] Could not save island status panel: {exc}")
+
+
 def is_update_authorized():
     """Check: command is limited to UPDATE_ALLOWED_USER_IDS and works in DMs."""
     async def predicate(ctx):
@@ -1739,6 +1786,9 @@ class DiscordCommandCog(commands.Cog):
         self._revive_lock = asyncio.Lock()
         self._island_sticky_lock = asyncio.Lock()
         self.island_status_sticky_message: discord.Message | None = None
+        # Row from island_status_panels, loaded once; None until loaded or when never set.
+        self._island_status_panel: dict[str, int | None] | None = None
+        self._island_status_panel_loaded = False
 
         # island_clean -> True (down) / False (up); None = not yet initialized
         self.island_down_states: dict[str, bool | None] = {}
@@ -2303,7 +2353,7 @@ class DiscordCommandCog(commands.Cog):
             force_repost: bool = False,
         ) -> None:
         async with self._island_sticky_lock:
-            target_channel = channel or self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+            target_channel = channel or await self._island_status_channel()
             if not isinstance(target_channel, discord.TextChannel):
                 return
 
@@ -2379,49 +2429,70 @@ class DiscordCommandCog(commands.Cog):
             embed.set_image(url=Config.FOOTER_LINE)
 
             previous_message = self.island_status_sticky_message
+            if previous_message and previous_message.channel.id != target_channel.id:
+                previous_message = None
 
-            if force_repost:
-                if previous_message and previous_message.channel.id == target_channel.id:
-                    try:
-                        await previous_message.delete()
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
-                        logger.warning(f"[DISCORD] Could not delete previous sticky island status message: {exc}")
-                    self.island_status_sticky_message = None
-                    previous_message = None
-            else:
-                if previous_message and previous_message.channel.id == target_channel.id:
-                    try:
-                        await previous_message.edit(embed=embed)
-                        return
-                    except (discord.NotFound, discord.HTTPException) as exc:
-                        logger.warning(f"[DISCORD] Previous sticky island status message unavailable, sending a new one: {exc}")
-                        self.island_status_sticky_message = None
-                        previous_message = None
+            # Sticky = always the newest message in the channel. While nothing has been posted below
+            # it, edit it in place; once something has, move it back to the bottom (send new, then
+            # delete the old one).
+            if previous_message and force_repost:
+                newest = await self._newest_message_in(target_channel)
+                if newest is not None and newest.id == previous_message.id:
+                    force_repost = False
 
-            if previous_message is None:
+            if previous_message and not force_repost:
                 try:
-                    async for msg in target_channel.history(limit=100):
-                        if msg.author.id != self.bot.user.id:
-                            continue
-                        if not msg.embeds:
-                            continue
-                        embed_obj = msg.embeds[0]
-                        if not embed_obj.footer or not embed_obj.footer.text:
-                            continue
-                        footer_text = embed_obj.footer.text
-                        if footer_text.startswith("Island status") or footer_text.startswith("This message is kept pinned"):
-                            try:
-                                await msg.delete()
-                            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                                pass
-                except (discord.Forbidden, discord.HTTPException) as exc:
-                    logger.warning(f"[DISCORD] Failed to clean old island status sticky messages in {target_channel.id}: {exc}")
+                    await previous_message.edit(embed=embed)
+                    return
+                except (discord.NotFound, discord.HTTPException) as exc:
+                    logger.warning(f"[DISCORD] Previous sticky island status message unavailable, sending a new one: {exc}")
+                    self.island_status_sticky_message = previous_message = None
 
             try:
                 message = await target_channel.send(embed=embed, silent=True)
-                self.island_status_sticky_message = message
             except Exception as exc:
                 logger.warning(f"[DISCORD] Failed to refresh island status sticky embed in {target_channel.id}: {exc}")
+                return
+            self.island_status_sticky_message = message
+            self._island_status_panel = {"channel_id": target_channel.id, "message_id": message.id}
+            self._island_status_panel_loaded = True
+            await asyncio.to_thread(_save_island_status_panel, target_channel.id, message.id)
+
+            # Exactly one sticky: remove the one we replaced plus any copies a previous process left.
+            await self._delete_existing_island_status_sticky_messages(target_channel, keep_id=message.id)
+            self.island_status_sticky_message = message
+
+    async def _island_status_channel(self) -> discord.TextChannel | None:
+        """The panel's channel: the one saved by /islandstatuspanel, else XLOG_VERBOSE_CHANNEL_ID."""
+        if not self._island_status_panel_loaded:
+            self._island_status_panel = await asyncio.to_thread(_load_island_status_panel)
+            self._island_status_panel_loaded = True
+        panel = self._island_status_panel
+        channel_id = panel["channel_id"] if panel else Config.XLOG_VERBOSE_CHANNEL_ID
+        if not channel_id:
+            return None  # removed with /islandstatuspanel remove:True
+        channel = self.bot.get_channel(channel_id)
+        return channel if isinstance(channel, discord.TextChannel) else None
+
+    @staticmethod
+    async def _newest_message_in(channel: discord.TextChannel) -> discord.Message | None:
+        try:
+            async for msg in channel.history(limit=1):
+                return msg
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(f"[DISCORD] Could not read newest message in #{channel.name}: {exc}")
+        return None
+
+    def _is_island_status_sticky(self, msg: discord.Message) -> bool:
+        """This bot's island-status embed, current title or one of the older footer styles."""
+        if not self.bot.user or msg.author.id != self.bot.user.id or not msg.embeds:
+            return False
+        embed_obj = msg.embeds[0]
+        footer_text = embed_obj.footer.text if embed_obj.footer and embed_obj.footer.text else ""
+        # The /islands command replies with the same title but a "Requested by …" footer; keep those.
+        if (embed_obj.title or "").strip() == "🏝️ Island Status" and footer_text.startswith("Chopaeng Camp"):
+            return True
+        return footer_text.startswith("Island status") or footer_text.startswith("This message is kept pinned")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -2927,11 +2998,7 @@ class DiscordCommandCog(commands.Cog):
 
         try:
             async for msg in channel.history(limit=50):
-                if msg.author.id != self.bot.user.id or not msg.embeds:
-                    continue
-                embed_obj = msg.embeds[0]
-                footer_text = embed_obj.footer.text if embed_obj.footer else ""
-                if footer_text and footer_text.startswith("Island status"):
+                if self._is_island_status_sticky(msg):
                     self.island_status_sticky_message = msg
                     return
         except discord.Forbidden:
@@ -2939,9 +3006,11 @@ class DiscordCommandCog(commands.Cog):
         except discord.HTTPException as exc:
             logger.warning(f"[DISCORD] Failed to read island status history in #{channel.name}: {exc}")
 
-    async def _delete_existing_island_status_sticky_messages(self, channel: discord.TextChannel) -> None:
-        """Delete stale island-status sticky messages left behind by a previous bot process,
-        so a restart always starts from a clean slate (same pattern as the Free Dodo board)."""
+    async def _delete_existing_island_status_sticky_messages(
+            self, channel: discord.TextChannel, keep_id: int | None = None,
+        ) -> None:
+        """Delete island-status sticky messages other than keep_id: the one just replaced and any
+        left behind by a previous bot process, so only one ever exists."""
         if not self.bot.user:
             return
 
@@ -2949,14 +3018,7 @@ class DiscordCommandCog(commands.Cog):
         messages_to_delete = []
         try:
             async for msg in channel.history(limit=100):
-                if msg.author.id != self.bot.user.id or not msg.embeds:
-                    continue
-                embed_obj = msg.embeds[0]
-                footer_text = embed_obj.footer.text if embed_obj.footer else ""
-                if footer_text and (
-                    footer_text.startswith("Island status")
-                    or footer_text.startswith("This message is kept pinned")
-                ):
+                if msg.id != keep_id and self._is_island_status_sticky(msg):
                     messages_to_delete.append(msg)
         except discord.Forbidden:
             logger.warning(f"[DISCORD] Missing permission to delete old island status messages in #{channel.name}")
@@ -2971,7 +3033,8 @@ class DiscordCommandCog(commands.Cog):
             try:
                 await channel.delete_messages(batch)
                 deleted += len(batch)
-            except discord.Forbidden:
+            except (discord.Forbidden, discord.HTTPException):
+                # Bulk delete refuses messages older than 14 days; delete those one by one.
                 for msg in batch:
                     try:
                         await msg.delete()
@@ -2983,7 +3046,8 @@ class DiscordCommandCog(commands.Cog):
             except Exception as e:
                 logger.warning(f"[DISCORD] Failed to bulk delete batch: {e}")
 
-        self.island_status_sticky_message = None
+        if keep_id is None:
+            self.island_status_sticky_message = None
         if deleted:
             logger.info(f"[DISCORD] Deleted {deleted} stale island status message(s) in #{channel.name}")
 
@@ -3071,14 +3135,78 @@ class DiscordCommandCog(commands.Cog):
             await asyncio.sleep(0.5)
         await self.fetch_free_islands()
 
+    @app_commands.command(name="islandstatuspanel", description="Post the sticky Island Status panel in this channel")
+    @app_commands.describe(remove="Remove the panel instead of posting it here")
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.guild_only()
+    async def slash_islandstatuspanel(self, interaction: discord.Interaction, remove: bool = False) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        channel = interaction.channel
+        if not remove and not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send("❌ The panel can only be posted in a regular text channel.", ephemeral=True)
+            return
+
+        async with self._island_sticky_lock:
+            # Take the panel down wherever it is now; the refresh below posts it in the new channel.
+            await self._island_status_channel()  # make sure the saved row is loaded
+            old = self.island_status_sticky_message
+            saved = self._island_status_panel or {}
+            if old is None and saved.get("channel_id") and saved.get("message_id"):
+                old_channel = self.bot.get_channel(saved["channel_id"])
+                if isinstance(old_channel, discord.TextChannel):
+                    old = old_channel.get_partial_message(saved["message_id"])
+            if old is not None:
+                with contextlib.suppress(discord.HTTPException):
+                    await old.delete()
+            # Also sweep any older copies left in the previous channel (stuck ones from before this fix).
+            old_channel = self.bot.get_channel(saved.get("channel_id") or Config.XLOG_VERBOSE_CHANNEL_ID or 0)
+            if isinstance(old_channel, discord.TextChannel):
+                await self._delete_existing_island_status_sticky_messages(old_channel)
+            self.island_status_sticky_message = None
+
+            new_channel_id = None if remove else channel.id
+            self._island_status_panel = {"channel_id": new_channel_id, "message_id": None}
+            self._island_status_panel_loaded = True
+            self.island_status_sticky_startup_cleanup_done = True
+            await asyncio.to_thread(_save_island_status_panel, new_channel_id, None)
+
+        if remove:
+            logger.info(f"[DISCORD] Island status panel removed by {interaction.user}")
+            await interaction.followup.send(
+                "✅ Island Status panel removed. Run `/islandstatuspanel` in a channel to post it again.",
+                ephemeral=True,
+            )
+            return
+
+        await self._refresh_island_status_sticky_message(channel, force_repost=True)
+        logger.info(f"[DISCORD] Island status panel moved to #{channel.name} ({channel.id}) by {interaction.user}")
+        await interaction.followup.send(
+            f"✅ Island Status panel posted in <#{channel.id}>. It stays at the bottom of this channel.",
+            ephemeral=True,
+        )
+
     @tasks.loop(seconds=60)
     async def island_status_sticky_loop(self):
-        channel = self.bot.get_channel(Config.XLOG_VERBOSE_CHANNEL_ID)
+        channel = await self._island_status_channel()
         if not isinstance(channel, discord.TextChannel):
             return
 
         if not self.island_status_sticky_startup_cleanup_done:
-            await self._delete_existing_island_status_sticky_messages(channel)
+            # After a restart, take over the sticky saved in the database (else the newest one in the
+            # channel) and delete any other copies; the refresh below edits it if it is still at the
+            # bottom, else moves it there.
+            saved_id = (self._island_status_panel or {}).get("message_id")
+            if saved_id and not self.island_status_sticky_message:
+                try:
+                    self.island_status_sticky_message = await channel.fetch_message(saved_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+            await self._load_existing_island_status_sticky_message(channel)
+            current = self.island_status_sticky_message
+            await self._delete_existing_island_status_sticky_messages(
+                channel, keep_id=current.id if current else None,
+            )
             self.island_status_sticky_startup_cleanup_done = True
 
         try:
