@@ -195,6 +195,11 @@ class Config:
     SYSBOT_BASE_PORT = _get_int("SYSBOT_BASE_PORT", 8201)
     SYSBOT_URL_TEMPLATE = os.getenv("SYSBOT_URL_TEMPLATE", "").strip()
     SYSBOT_ISLAND_URLS: dict[str, str] = {}
+    # Ask SysBot /api/players/positions for live player tiles. Off by default: each request
+    # makes SysBot read Switch memory and (re)start its position poller, which competes with
+    # the bot's main loop (Dodo codes, arrivals, drops) for the Switch connection. Turn on once
+    # SysBot reliably reports visitor_tracking "ok".
+    PLAYER_POSITIONS_ENABLED = os.getenv("PLAYER_POSITIONS_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
 
     # Multi-Provider OAuth Settings (Discord, Twitch, Patreon, YouTube)
     DISCORD_LOGIN_ENABLED = os.getenv("DISCORD_LOGIN_ENABLED", "true").lower() in ("true", "1", "yes")

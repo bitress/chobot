@@ -600,8 +600,11 @@ def fetch_island_player_positions(island_name: str) -> dict[str, Any] | None:
     """
     Fetch /api/players/positions for one island, shared across viewers for a couple of seconds
     so several open maps do not each make SysBot read Switch memory.
-    Returns None when the island's SysBot is unreachable or does not support positions.
+    Returns None when positions are switched off (PLAYER_POSITIONS_ENABLED), or the island's
+    SysBot is unreachable or does not support positions.
     """
+    if not getattr(Config, "PLAYER_POSITIONS_ENABLED", False):
+        return None
     key = (island_name or "").strip().lower()
     if not key:
         return None
@@ -702,7 +705,13 @@ def build_live_players_payload(
         # Positions only for a single-island request (an open map), never the all-islands
         # overview: that would make every SysBot read Switch memory on each poll.
         grouped: dict[str, list[dict[str, Any]]] = {}
-        if target_filter and v_list and data.get("is_online") and viewer_can_see_positions(viewer, isl_name):
+        if (
+            target_filter
+            and v_list
+            and data.get("is_online")
+            and getattr(Config, "PLAYER_POSITIONS_ENABLED", False)
+            and viewer_can_see_positions(viewer, isl_name)
+        ):
             positions = fetch_island_player_positions(isl_name)
             if positions:
                 grouped = _positions_by_name(positions)
