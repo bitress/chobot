@@ -6496,6 +6496,9 @@ def _ensure_waves_table(conn):
 
 PRESENCE_ACTIVE_SECONDS = 75   # a session counts as online while its last beat is this recent
 PRESENCE_ROW_SECONDS = 90      # rows older than this are deleted
+# Hidden/parked tabs keep beating (as idle) forever; past this they leave the radar until they
+# come back. created_at marks the start of the current active or idle stretch.
+PRESENCE_IDLE_HIDE_SECONDS = 30 * 60
 PRESENCE_ROSTER_LIMIT = 50
 PRESENCE_CACHE_SECONDS = 2.0
 PRESENCE_PRUNE_INTERVAL = 30
@@ -6622,8 +6625,10 @@ def _presence_people(conn, now: int) -> list[dict]:
             return rows
 
     raw = conn.execute(
-        "SELECT * FROM user_online_presence WHERE last_heartbeat >= ? ORDER BY last_heartbeat DESC LIMIT 1000",
-        (now - PRESENCE_ACTIVE_SECONDS,),
+        "SELECT * FROM user_online_presence WHERE last_heartbeat >= ? "
+        "AND NOT (status = 'idle' AND created_at < ?) "
+        "ORDER BY last_heartbeat DESC LIMIT 1000",
+        (now - PRESENCE_ACTIVE_SECONDS, now - PRESENCE_IDLE_HIDE_SECONDS),
     ).fetchall()
     people: dict[str, dict] = {}
     for r in raw:
@@ -6976,6 +6981,12 @@ def api_presence_heartbeat():
                 is_subscriber = excluded.is_subscriber,
                 sub_tier = excluded.sub_tier,
                 is_booster = excluded.is_booster,
+                -- Restart the clock on going idle or coming back, so "since" means this stretch.
+                created_at = CASE
+                    WHEN (user_online_presence.status = 'idle') != (excluded.status = 'idle')
+                    THEN excluded.created_at
+                    ELSE user_online_presence.created_at
+                END,
                 last_heartbeat = excluded.last_heartbeat
         """, (
             session_id, user_id, username, display_name, avatar_url, role, status,
