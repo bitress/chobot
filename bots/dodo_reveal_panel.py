@@ -222,9 +222,7 @@ def _window_label(window: str) -> str:
 
 
 LEGEND = "🌐 website · 💬 Discord · ❔ before source tracking"
-MEDALS = ("🥇", "🥈", "🥉")
 BAR_WIDTH = 8
-STAFF_FOOTER = "Staff only • Updates this message for everyone"
 
 
 def legend_for(by_source: dict[str, int] | None = None) -> str:
@@ -243,15 +241,15 @@ def activity_bar(count: int, peak: int, width: int = BAR_WIDTH) -> str:
 
 
 def _rank_badge(rank: int) -> str:
-    return MEDALS[rank - 1] if rank <= len(MEDALS) else f"`{rank:>2}`"
+    return f"`{rank:>2}`"
 
 
-def _decorate(embed: discord.Embed, footer: str) -> discord.Embed:
+def _decorate(embed: discord.Embed, footer: str | None = None) -> discord.Embed:
     """House style shared with the other Camp embeds: footer line image and branded footer."""
     line = getattr(Config, "FOOTER_LINE", None)
     if line:
         embed.set_image(url=line)
-    embed.set_footer(text=f"{footer} • Chopaeng Camp™")
+    embed.set_footer(text=f"{footer} • Chopaeng Camp™" if footer else "Chopaeng Camp™")
     return embed
 
 
@@ -296,7 +294,6 @@ def build_overview_embed(
     label = _window_label(window)
     intro = [
         "Pick a **sub island** below to see who revealed its Dodo code, and when.",
-        "-# Times show in your own timezone · change the window from the 🕒 menu",
     ]
     if viewer_id:
         intro.append(_refreshed_by(viewer_id))
@@ -346,7 +343,7 @@ def build_overview_embed(
                 value=value if len(value) <= 1024 else value[:1020] + "…",
                 inline=False,
             )
-    return _decorate(embed, STAFF_FOOTER)
+    return _decorate(embed)
 
 
 def build_intro_embed() -> discord.Embed:
@@ -373,7 +370,6 @@ def build_results_embed(island: str, window: str, page: int, data: RevealPage, v
             lines.append("🔁 Repeat revealers: " + " · ".join(f"{format_member(r)} **×{n}**" for r, n in data.repeaters))
     else:
         lines.append(f"No Dodo reveals for **{_esc(island)}** in the {label.lower()}.")
-        lines.append("-# Try a longer window from the 🕒 menu, or pick another island.")
     if viewer_id:
         lines.append(_refreshed_by(viewer_id))
 
@@ -403,7 +399,7 @@ def build_results_embed(island: str, window: str, page: int, data: RevealPage, v
         last = first + shown - 1
         footer = f"{first}–{last} of {data.total} · Page {page + 1} of {pages} • {legend_for(data.by_source)}"
     else:
-        footer = STAFF_FOOTER
+        footer = None
     return _decorate(embed, footer)
 
 

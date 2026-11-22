@@ -144,12 +144,12 @@ def build_dodo_log_embed(
 
     return {
         "author": author,
-        "title": f"🛬 Dodo code revealed · {island_name}"[:256],
+        "title": f"🛬 Dodo code revealed on {island_name.lower()}"[:256],
         "url": island_url(island_name),
         "description": f"<t:{now}:f> · <t:{now}:R>",
         "color": color,
         "fields": fields,
-        "thumbnail": {"url": DODO_GIF},
-        "footer": {"text": f"Chopaeng Camp · Dodo Log · {source_label}", "icon_url": LOGO_URL},
+        "image": {"url": DODO_GIF},
+        "footer": {"text": f"Chopaeng Camp™ · Dodo Log · {source_label}", "icon_url": LOGO_URL},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
