@@ -7603,23 +7603,28 @@ def api_get_island_map(island_name: str):
     }), 503
 
 
-def _redact_map_player_positions(data: Any, island_name: str) -> Any:
+# Seconds a successful map/data response may be reused by Cloudflare's edge. The origin's uplink is
+# slow (~3-10 KB/s), so the first viewer pays the download and later viewers get the edge copy.
+MAP_DATA_EDGE_CACHE_SECONDS = 30
+
+
+def _public_map_data(data: Any) -> Any:
     """
-    SysBot's map data carries each player's tile. The cache is shared across viewers, so strip
-    the coordinates per request for anyone who could not see that island's Dodo code.
+    Map data minus the visitors: their tiles are per-viewer (only those who could see the Dodo
+    code may see them) and the map draws pins from /api/players/live anyway. Without them the
+    response is identical for everyone, so Cloudflare can cache it.
     """
-    players = data.get("players") if isinstance(data, dict) else None
-    if not isinstance(players, list) or not players:
-        return data
-    from utils.catalog_map_service import viewer_can_see_positions
-    if viewer_can_see_positions(_current_auth_user(), island_name):
-        return data
-    redacted = dict(data)
-    redacted["players"] = [
-        {k: v for k, v in p.items() if k not in ("x", "y", "acre")} if isinstance(p, dict) else p
-        for p in players
-    ]
-    return redacted
+    if isinstance(data, dict) and "players" in data:
+        data = {k: v for k, v in data.items() if k != "players"}
+    return data
+
+
+def _map_data_response(data: Any, *, cacheable: bool):
+    resp = jsonify(data)
+    resp.headers["Cache-Control"] = (
+        f"public, max-age=0, s-maxage={MAP_DATA_EDGE_CACHE_SECONDS}" if cacheable else "no-store"
+    )
+    return resp
 
 
 @app.route("/api/island/map/data", methods=["GET"])
@@ -7660,13 +7665,14 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
                 "map_data_url": f"/api/islands/{name}/map/data",
                 "map_url": f"/api/islands/{name}/map",
             })
-        return jsonify({
+        # Mods see SysBot ports here, so this listing must never be shared through the edge cache.
+        return _map_data_response({
             "ok": True,
             "success": True,
             "total_islands": len(all_islands_data),
             "count": len(all_islands_data),
             "islands": all_islands_data,
-        })
+        }, cacheable=False)
 
     force = request.args.get("refresh", "").lower() in ("1", "true", "yes")
     fmt = request.args.get("format", "").lower()
@@ -7676,7 +7682,7 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
     if not force:
         cached_val = map_cache.get(cache_key)
         if cached_val is not None:
-            return jsonify(_redact_map_player_positions(cached_val, resolved_island))
+            return _map_data_response(cached_val, cacheable=True)
 
     # 1. Primary: Query SysBot HttpApiServer.cs live RAM
     try:
@@ -7684,20 +7690,19 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
             data = client.get_island_map_data_sync()
             if isinstance(data, dict) and data.get("dots") is not None and data.get("names") is not None:
                 if fmt in ("website", "unified", "modal"):
-                    converted = _convert_sysbot_map_data_to_website(data, resolved_island)
-                    map_cache.set(cache_key, converted, ttl=30.0)
-                    return jsonify(_redact_map_player_positions(converted, resolved_island))
+                    data = _convert_sysbot_map_data_to_website(data, resolved_island)
+                data = _public_map_data(data)
                 map_cache.set(cache_key, data, ttl=30.0)
-                return jsonify(_redact_map_player_positions(data, resolved_island))
+                return _map_data_response(data, cacheable=not force)
     except Exception as exc:
         logging.getLogger("flask_api").debug(f"SysBot live map data fetch note for {resolved_island}: {exc}")
 
     # SysBot is the only map source (no .nhl files on disk).
-    return jsonify({
+    return _map_data_response({
         "success": False,
         "error": "Island map is unavailable: SysBot is offline or unreachable.",
         "island_name": resolved_island,
-    }), 503
+    }, cacheable=False), 503
 
 
 @app.route("/api/islands/<island_name>/map/search", methods=["GET"])
