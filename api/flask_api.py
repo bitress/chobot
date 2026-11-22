@@ -308,6 +308,47 @@ record_service_status("flask", mode="api", status="running")
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 
+# ── Request timing ───────────────────────────────────────────────────────────
+# Every response carries Server-Timing: app;dur=<ms> (time inside Flask, including gzip), so
+# slowness can be split from the outside: small app time + slow response = network/uplink;
+# large app time = CPU or database. Requests over SLOW_REQUEST_MS are logged with the DB pool's
+# state, which shows whether requests are queueing for a connection.
+# Registered before the gzip hook on purpose: after_request hooks run in reverse order, so this
+# one runs last and its duration includes compression.
+SLOW_REQUEST_MS = int(os.getenv("SLOW_REQUEST_MS", "1000") or 1000)
+
+
+@app.before_request
+def _start_request_timer():
+    request.environ["chobot.t0"] = time.perf_counter()
+
+
+def _db_pool_status() -> str:
+    try:
+        from utils.database import get_backend, get_engine
+        if get_backend() == "sqlite":
+            return "sqlite"
+        pool = get_engine().pool
+        return f"in_use={pool.checkedout()} idle={pool.checkedin()} overflow={pool.overflow()} size={pool.size()}"
+    except Exception as exc:  # diagnostics must never break a request
+        return f"unknown ({exc.__class__.__name__})"
+
+
+@app.after_request
+def _record_request_timing(resp):
+    t0 = request.environ.get("chobot.t0")
+    if t0 is None:
+        return resp
+    ms = (time.perf_counter() - t0) * 1000
+    resp.headers["Server-Timing"] = f"app;dur={ms:.0f}"
+    if ms >= SLOW_REQUEST_MS:
+        logger.warning(
+            "[SLOW] %s %s -> %s in %.0f ms (threads=%d, db pool %s)",
+            request.method, request.path, resp.status_code, ms, threading.active_count(), _db_pool_status(),
+        )
+    return resp
+
+
 # The origin's uplink to Cloudflare is slow (~10 KB/s measured), and responses went out
 # uncompressed: a 3 MB island map took 50-90 s, so the site's map spun "forever".
 # Cloudflare asks the origin for gzip and re-encodes for browsers, so gzip here cuts the
@@ -583,6 +624,33 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
     if not force_refresh and not should_refresh(user):
         return user
 
+    # A page fires several authed requests at once; once the 5-minute check is due, each of them
+    # would call Discord. Only the first refreshes; the rest carry on with the cached profile,
+    # which that refresh is about to replace (or revoke).
+    # An explicit force_refresh waits its turn instead, since that caller needs fresh roles.
+    refresh_lock = _auth_refresh_lock_for(str(user.get("user_id") or token))
+    if not refresh_lock.acquire(blocking=force_refresh, timeout=15 if force_refresh else -1):
+        return user
+    try:
+        return _refresh_auth_user(token, user)
+    finally:
+        refresh_lock.release()
+
+
+_AUTH_REFRESH_LOCKS: dict[str, threading.Lock] = {}
+_AUTH_REFRESH_LOCKS_GUARD = threading.Lock()
+
+
+def _auth_refresh_lock_for(key: str) -> threading.Lock:
+    with _AUTH_REFRESH_LOCKS_GUARD:
+        lock = _AUTH_REFRESH_LOCKS.get(key)
+        if lock is None:
+            lock = _AUTH_REFRESH_LOCKS[key] = threading.Lock()
+        return lock
+
+
+def _refresh_auth_user(token: str, user: dict) -> dict | None:
+    """Re-check the user's Discord membership and roles; None when the session must end."""
     if not getattr(Config, "DISCORD_LOGIN_ENABLED", False):
         try:
             from utils.unified_auth import get_unified_account_by_id
@@ -1798,8 +1866,14 @@ def auth_callback():
 
 @app.route("/api/auth/me")
 def auth_me():
-    """Return the current authenticated user's info."""
-    user = _current_auth_user(force_refresh=True)
+    """Return the current authenticated user's info.
+
+    Every page load calls this first, so it follows the normal refresh policy (Discord is re-checked
+    once the cached roles are 5 minutes old) instead of calling Discord on every visit. Pass
+    ?refresh=1 to re-read roles right now, as the "Sync now" / "Check again" buttons do.
+    """
+    force = request.args.get("refresh", "").strip().lower() in ("1", "true", "yes")
+    user = _current_auth_user(force_refresh=force)
     if not user:
         return jsonify({"logged_in": False}), 200
 
@@ -1952,13 +2026,18 @@ def api_get_my_moderation_notices():
 
 @app.route("/api/profile")
 def api_profile():
-    """Return the authenticated user's Discord profile and ChoPaeng activity."""
+    """Return the authenticated user's Discord profile and ChoPaeng activity.
+
+    ?fields=user skips the per-island access scan and the visit-history queries, for pages that
+    only show who the user is (the /me dashboard).
+    """
     user = _current_auth_user()
     if not user:
         return jsonify({"error": "Authentication required"}), 401
 
-    subscriptions = _load_profile_subscriptions(user)
-    visits = _load_profile_visit_stats(user.get("user_id", ""))
+    user_only = request.args.get("fields", "").strip().lower() == "user"
+    subscriptions = {} if user_only else _load_profile_subscriptions(user)
+    visits = {} if user_only else _load_profile_visit_stats(user.get("user_id", ""))
 
     conn = get_db()
     favorite_islands = []
