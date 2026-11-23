@@ -2664,7 +2664,8 @@ class FlightLoggerCog(commands.Cog):
                     f"Member {_format_user_for_embed(member)} was linked to this flight for "
                     f"**{destination_link}** via {source_label}, but their nickname is not "
                     f"`IGN | Island`, so it could not be checked.\n"
-                    f"**Nickname:** `{discord.utils.escape_markdown(member.display_name)}`\n"
+                    # A code span shows text literally: only a backtick could break it.
+                    f"**Nickname:** `{member.display_name.replace('`', 'ˋ')}`\n"
                     f"Use the buttons below to take action."
                 ),
                 color=COLOR_INVESTIGATION,

@@ -70,12 +70,34 @@ def split_options(raw: str) -> list[str]:
     return out
 
 
+# Characters that look like "|" and that members use as the nickname separator,
+# e.g. "Honeydew~ ⏐~Sakura~" (U+23D0). "/" is not one: it separates options.
+_PIPE_LOOKALIKES = str.maketrans({
+    "⏐": "|",  # ⏐ vertical line extension
+    "｜": "|",  # ｜ fullwidth vertical line
+    "│": "|",  # │ box drawings light vertical
+    "┃": "|",  # ┃ box drawings heavy vertical
+    "∣": "|",  # ∣ divides
+    "ǀ": "|",  # ǀ latin letter dental click
+    "❘": "|",  # ❘ light vertical bar
+    "׀": "|",  # ׀ hebrew paseq
+    "।": "|",  # । devanagari danda
+    "¦": "|",  # ¦ broken bar
+})
+
+
+def normalize_nick_separators(display_name: str) -> str:
+    """Map "|" lookalikes in a nickname to "|"."""
+    return (display_name or "").translate(_PIPE_LOOKALIKES)
+
+
 def parse_member_nick(display_name: str) -> tuple[list[str], list[str]]:
     """Split an "IGN | Island" style nickname into normalized IGN and island options."""
     if not display_name:
         return [], []
 
-    # Support ONLY | as a nick separator
+    # Support ONLY | (or a lookalike of it) as a nick separator
+    display_name = normalize_nick_separators(display_name)
     if '|' not in display_name:
         return [], []
     chunks = [c.strip() for c in display_name.split('|') if c.strip()]
@@ -158,7 +180,7 @@ def calculate_max_identities(display_name: str) -> int:
     "IGN | Isl1/Isl2 | Isl3" and "IGN | Isl1 | Isl2 | Isl3" both claim 3 islands.
     The total is the larger of the IGN count and the island count.
     """
-    if not display_name or '|' not in display_name:
+    if not display_name or '|' not in normalize_nick_separators(display_name):
         return 1
     ign_opts, island_opts = parse_member_nick(display_name)
     return max(1, len(ign_opts), len(island_opts))
