@@ -109,6 +109,11 @@ class GetDodoButton(
     _btn_style = discord.ButtonStyle.success
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        # Acknowledge first: Discord drops the interaction if nothing answers within 3 s, and the
+        # access check below can hit the DB (via a thread) when its cache is cold. _reply sends
+        # the denial as a follow-up once deferred.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         denied = await _access_denied(interaction.user)
         if denied:
             view = SubRulesPromptView() if denied == SUB_RULES_MSG else None
@@ -119,8 +124,6 @@ class GetDodoButton(
         if cd > 0:
             await _reply(interaction, embed=_err_embed(f"⏳ Please wait **{cd:.1f}s** before requesting the Dodo code again."))
             return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
 
         resolved = await _resolve_client(interaction, self.island)
         if not resolved:
@@ -243,6 +246,7 @@ class GuideButton(
     _btn_row = 1
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)  # before the DB-backed access check
         denied = await _access_denied(interaction.user)
         if denied:
             view = SubRulesPromptView() if denied == SUB_RULES_MSG else None

@@ -7893,9 +7893,21 @@ def api_list_island_maps():
 
 
 
+def _warm_stream_status() -> None:
+    """Fill the Twitch/YouTube status caches at startup so no visitor waits on the first lookup."""
+    try:
+        from utils.twitch_api import get_stream_status
+        from utils.youtube_live import get_live_status
+        get_stream_status()
+        get_live_status()
+    except Exception as exc:  # both never raise, but a warm-up must never take the server down
+        logger.debug("Stream status warm-up skipped: %s", exc)
+
+
 def run_flask_app(host='0.0.0.0', port=8100):
     """Run Flask app with retry logic for port binding after OTA restart."""
     logger.info(f"[FLASK] Starting API server on {host}:{port}...")
+    threading.Thread(target=_warm_stream_status, name="WarmStreamStatus", daemon=True).start()
     max_retries = 5
     retry_delay = 3  # seconds between attempts
     for attempt in range(1, max_retries + 1):

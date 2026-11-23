@@ -27,17 +27,21 @@ REQUEST_TIMEOUT_SECONDS = 5
 # Renew the app token a little before Twitch says it expires.
 TOKEN_EXPIRY_MARGIN_SECONDS = 300
 
-# One lock for token + status: concurrent requests wait for a single in-flight Twitch call
-# instead of each firing their own when the cache expires.
+# Held while calling Twitch (token + status), so only one call is ever in flight.
 _lock = threading.Lock()
 _token: dict = {"value": None, "expires_at": 0.0}
 _status_cache: dict[str, tuple[float, dict]] = {}
+# Background refreshes of an expired status, one per channel at a time.
+_refreshing: dict[str, threading.Thread] = {}
+_refreshing_guard = threading.Lock()
 
 
 def _reset_for_tests() -> None:
     with _lock:
         _token.update(value=None, expires_at=0.0)
         _status_cache.clear()
+    with _refreshing_guard:
+        _refreshing.clear()
 
 
 def _is_configured() -> bool:
@@ -107,25 +111,58 @@ def get_stream_status(login: str | None = None) -> dict:
 
     Never raises. If Twitch can't be reached, the last known status is returned with "stale": True,
     or "offline" if there is none, so a Twitch outage can't break the page.
+
+    Only the first call after startup waits for Twitch. Once a status is known, an expired one is
+    returned at once while a background thread refreshes it: the origin's network is slow, and a
+    synchronous refresh held every concurrent /api/stream/status request for 1-2 s each minute.
     """
     login = (login or Config.TWITCH_CHANNEL or "chopaeng").strip().lower()
     if not _is_configured():
         return _offline(login)
 
+    cached = _status_cache.get(login)
+    if cached:
+        if cached[0] <= time.time():
+            _start_background_refresh(login)
+        return cached[1]
+
+    with _lock:  # cold cache: one caller asks Twitch, concurrent callers wait for its answer
+        cached = _status_cache.get(login)
+        if cached:
+            return cached[1]
+        return _refresh_locked(login)
+
+
+def _refresh_locked(login: str) -> dict:
+    """Fetch and store the status; caller holds _lock."""
     now = time.time()
+    cached = _status_cache.get(login)
+    try:
+        status = _fetch_status(login)
+        ttl = STATUS_TTL_SECONDS
+    except Exception as exc:  # network errors, bad credentials, unexpected payloads
+        logger.warning("Twitch stream status for %s unavailable: %s", login, exc)
+        previous = cached[1] if cached else None
+        status = {**previous, "stale": True} if previous else {**_offline(login), "stale": True}
+        ttl = ERROR_TTL_SECONDS
+
+    _status_cache[login] = (now + ttl, status)
+    return status
+
+
+def _start_background_refresh(login: str) -> None:
+    with _refreshing_guard:
+        running = _refreshing.get(login)
+        if running and running.is_alive():
+            return
+        thread = threading.Thread(target=_background_refresh, args=(login,), name=f"TwitchStatus-{login}", daemon=True)
+        _refreshing[login] = thread
+        thread.start()
+
+
+def _background_refresh(login: str) -> None:
     with _lock:
         cached = _status_cache.get(login)
-        if cached and cached[0] > now:
-            return cached[1]
-
-        try:
-            status = _fetch_status(login)
-            ttl = STATUS_TTL_SECONDS
-        except Exception as exc:  # network errors, bad credentials, unexpected payloads
-            logger.warning("Twitch stream status for %s unavailable: %s", login, exc)
-            previous = cached[1] if cached else None
-            status = {**previous, "stale": True} if previous else {**_offline(login), "stale": True}
-            ttl = ERROR_TTL_SECONDS
-
-        _status_cache[login] = (now + ttl, status)
-        return status
+        if cached and cached[0] > time.time():
+            return  # someone else refreshed it meanwhile
+        _refresh_locked(login)

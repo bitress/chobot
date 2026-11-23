@@ -40,8 +40,12 @@ _CANONICAL = re.compile(r'<link rel="canonical" href="([^"]+)"')
 _VIDEO_DETAILS = re.compile(r'"videoDetails":\{"videoId":"([\w-]{11})","title":"((?:[^"\\]|\\.)*)"')
 _WATCHING_NOW = re.compile(r'"originalViewCount":"(\d+)"')
 
+# Held while fetching from YouTube, so only one fetch is ever in flight.
 _lock = threading.Lock()
 _status_cache: dict[str, tuple[float, dict]] = {}
+# Background refreshes of an expired status, one per channel at a time.
+_refreshing: dict[str, threading.Thread] = {}
+_refreshing_guard = threading.Lock()
 
 
 class YouTubePageChanged(Exception):
@@ -51,6 +55,8 @@ class YouTubePageChanged(Exception):
 def _reset_for_tests() -> None:
     with _lock:
         _status_cache.clear()
+    with _refreshing_guard:
+        _refreshing.clear()
 
 
 def _offline(channel_id: str) -> dict:
@@ -132,25 +138,57 @@ def get_live_status(channel_id: str | None = None) -> dict:
 
     Never raises. On failure the last known status is returned with "stale": True, or an
     offline-but-stale result if there is none.
+
+    Only the first call after startup waits for YouTube; after that an expired status is returned
+    at once while a background thread refreshes it (see twitch_api.get_stream_status).
     """
     channel_id = (channel_id or Config.YOUTUBE_CHANNEL_ID or "").strip()
     if not channel_id:
         return {"live": False, "channel_id": "", "url": "", "stale": True}
 
+    cached = _status_cache.get(channel_id)
+    if cached:
+        if cached[0] <= time.time():
+            _start_background_refresh(channel_id)
+        return cached[1]
+
+    with _lock:  # cold cache: one caller fetches, concurrent callers wait for its answer
+        cached = _status_cache.get(channel_id)
+        if cached:
+            return cached[1]
+        return _refresh_locked(channel_id)
+
+
+def _refresh_locked(channel_id: str) -> dict:
+    """Fetch and store the status; caller holds _lock."""
     now = time.time()
+    cached = _status_cache.get(channel_id)
+    try:
+        status = _fetch_status(channel_id)
+        ttl = STATUS_TTL_SECONDS
+    except Exception as exc:  # network errors, consent/bot pages, markup changes
+        logger.warning("YouTube live status for %s unavailable: %s", channel_id, exc)
+        previous = cached[1] if cached else None
+        status = {**previous, "stale": True} if previous else {**_offline(channel_id), "stale": True}
+        ttl = ERROR_TTL_SECONDS
+
+    _status_cache[channel_id] = (now + ttl, status)
+    return status
+
+
+def _start_background_refresh(channel_id: str) -> None:
+    with _refreshing_guard:
+        running = _refreshing.get(channel_id)
+        if running and running.is_alive():
+            return
+        thread = threading.Thread(target=_background_refresh, args=(channel_id,), name="YouTubeLiveStatus", daemon=True)
+        _refreshing[channel_id] = thread
+        thread.start()
+
+
+def _background_refresh(channel_id: str) -> None:
     with _lock:
         cached = _status_cache.get(channel_id)
-        if cached and cached[0] > now:
-            return cached[1]
-
-        try:
-            status = _fetch_status(channel_id)
-            ttl = STATUS_TTL_SECONDS
-        except Exception as exc:  # network errors, consent/bot pages, markup changes
-            logger.warning("YouTube live status for %s unavailable: %s", channel_id, exc)
-            previous = cached[1] if cached else None
-            status = {**previous, "stale": True} if previous else {**_offline(channel_id), "stale": True}
-            ttl = ERROR_TTL_SECONDS
-
-        _status_cache[channel_id] = (now + ttl, status)
-        return status
+        if cached and cached[0] > time.time():
+            return  # someone else refreshed it meanwhile
+        _refresh_locked(channel_id)
