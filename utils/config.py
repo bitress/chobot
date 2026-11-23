@@ -199,7 +199,7 @@ class Config:
     # makes SysBot read Switch memory and (re)start its position poller, which competes with
     # the bot's main loop (Dodo codes, arrivals, drops) for the Switch connection. Turn on once
     # SysBot reliably reports visitor_tracking "ok".
-    PLAYER_POSITIONS_ENABLED = os.getenv("PLAYER_POSITIONS_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
+    PLAYER_POSITIONS_ENABLED = os.getenv("PLAYER_POSITIONS_ENABLED", "true").strip().lower() in ("true", "1", "yes", "on")
 
     # Multi-Provider OAuth Settings (Discord, Twitch, Patreon, YouTube)
     DISCORD_LOGIN_ENABLED = os.getenv("DISCORD_LOGIN_ENABLED", "true").lower() in ("true", "1", "yes")
