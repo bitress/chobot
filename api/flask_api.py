@@ -3125,7 +3125,7 @@ def get_islands():
     # Sort stably: port order first (if in 48 configured ports), then alphabetically
     results.sort(key=lambda x: (all_islands.get(x['canonical_name'], {}).get('port_index', 999), x['name']))
 
-    return jsonify({
+    resp = jsonify({
         "meta": {
             "timestamp": datetime.now().isoformat(),
             "source": "sysbot_api",
@@ -3134,6 +3134,26 @@ def get_islands():
         },
         "data": results,
     })
+    resp.headers["Cache-Control"] = _islands_cache_control()
+    return resp
+
+
+# Seconds Cloudflare may serve a signed-out /api/islands response from its edge. The origin's
+# uplink is slow and lossy (a 9 KB response can take 10+ s), so most visitors should never reach it.
+# The zone's "Islands list (signed-out)" Cache Rule only matches requests without Authorization /
+# X-API-Key and keys the cache on Origin (CORS echoes it back), so signed-in viewers, who can see
+# sub-island access and mod fields, always get a fresh per-user response.
+ISLANDS_EDGE_CACHE_SECONDS = 5
+ISLANDS_EDGE_STALE_SECONDS = 30
+
+
+def _islands_cache_control() -> str:
+    if request.headers.get("Authorization") or request.headers.get("X-API-Key"):
+        return "private, no-store"
+    return (
+        f"public, max-age=0, s-maxage={ISLANDS_EDGE_CACHE_SECONDS}, "
+        f"stale-while-revalidate={ISLANDS_EDGE_STALE_SECONDS}"
+    )
 
 
 @app.route('/api/browser/islands', methods=['GET'])
