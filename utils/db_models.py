@@ -81,11 +81,13 @@ class IslandVisit(Base):
     __tablename__ = "island_visits"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    ign: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    # No single-column indexes on ign/destination/user_id/guild_id: the composite indexes
+    # below (and ix_island_visits_dest_ts from sysbot_telemetry) lead with these columns.
+    ign: Mapped[str] = mapped_column(String(255), nullable=False)
     origin_island: Mapped[str] = mapped_column(String(255), nullable=False)
-    destination: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    user_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
-    guild_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    destination: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(BigInteger)
+    guild_id: Mapped[int | None] = mapped_column(BigInteger)
     authorized: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     island_type: Mapped[str] = mapped_column(String(64), nullable=False, default="sub", index=True)
