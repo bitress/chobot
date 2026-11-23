@@ -7908,6 +7908,8 @@ def run_flask_app(host='0.0.0.0', port=8100):
     """Run Flask app with retry logic for port binding after OTA restart."""
     logger.info(f"[FLASK] Starting API server on {host}:{port}...")
     threading.Thread(target=_warm_stream_status, name="WarmStreamStatus", daemon=True).start()
+    from utils import stall_watchdog
+    stall_watchdog.start()
     max_retries = 5
     retry_delay = 3  # seconds between attempts
     for attempt in range(1, max_retries + 1):

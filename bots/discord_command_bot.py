@@ -1779,6 +1779,12 @@ class DiscordCommandCog(commands.Cog):
         self.sub_island_lookup = {}
         self.free_island_lookup = {}
         self.order_island_lookup = {}
+        # Island channel lookups are rebuilt only at startup, when a guild channel changes, or on
+        # /refresh; the minute loops call fetch_* and get the cached result otherwise.
+        self._sub_islands_fresh = False
+        self._free_islands_fresh = False
+        # Category ids already reported missing, so a bad id is logged once instead of every minute.
+        self._missing_categories_logged: set[int] = set()
         self.free_dodo_board_messages: list[discord.Message] = []
         self.free_dodo_board_fingerprints: list[str] = []
         self.free_dodo_board_startup_cleanup_done = False
@@ -2118,8 +2124,46 @@ class DiscordCommandCog(commands.Cog):
             logger.error(f"[DISCORD] Error in item_autocomplete: {e}")
             return []
 
-    async def fetch_islands(self):
-        """Fetch island channels from Discord sub-category"""
+    def _log_missing_category(self, label: str, category_id) -> None:
+        if category_id in self._missing_categories_logged:
+            return
+        self._missing_categories_logged.add(category_id)
+        logger.error(
+            f"[DISCORD] {label} category {category_id} not found. "
+            f"Check the id in .env; this is logged once until a channel change or /refresh."
+        )
+
+    def _mark_island_channels_stale(self) -> None:
+        self._sub_islands_fresh = False
+        self._free_islands_fresh = False
+        self._missing_categories_logged.clear()
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel):
+        if getattr(channel.guild, "id", None) == Config.GUILD_ID:
+            self._mark_island_channels_stale()
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel):
+        if getattr(channel.guild, "id", None) == Config.GUILD_ID:
+            self._mark_island_channels_stale()
+
+    @commands.Cog.listener()
+    async def on_guild_channel_update(self, before, after):
+        # Only renames, moves between categories and permission changes affect the lookups.
+        if getattr(after.guild, "id", None) != Config.GUILD_ID:
+            return
+        if (
+            before.name != after.name
+            or getattr(before, "category_id", None) != getattr(after, "category_id", None)
+            or before.overwrites != after.overwrites
+        ):
+            self._mark_island_channels_stale()
+
+    async def fetch_islands(self, force: bool = False):
+        """Fetch island channels from Discord sub-category (cached until a channel changes)."""
+        if self._sub_islands_fresh and not force:
+            return
         guild = self.bot.get_guild(Config.GUILD_ID)
         if not guild:
             logger.error(f"[DISCORD] Guild {Config.GUILD_ID} not found.")
@@ -2127,7 +2171,7 @@ class DiscordCommandCog(commands.Cog):
 
         category = discord.utils.get(guild.categories, id=Config.CATEGORY_ID)
         if not category:
-            logger.error(f"[DISCORD] Category {Config.CATEGORY_ID} not found.")
+            self._log_missing_category("Sub island", Config.CATEGORY_ID)
             return
 
         temp_lookup = {}
@@ -2182,10 +2226,13 @@ class DiscordCommandCog(commands.Cog):
             Config.SUB_ISLANDS = fetched_islands
             Config.TWITCH_SUB_ISLANDS = fetched_islands
 
+        self._sub_islands_fresh = True
         logger.info(f"[DISCORD] Dynamic Island Fetch Complete. Found {count} islands.")
 
-    async def fetch_free_islands(self):
-        """Fetch free island channels from the free-island Discord category."""
+    async def fetch_free_islands(self, force: bool = False):
+        """Fetch free island channels from the free-island Discord category (cached until a channel changes)."""
+        if self._free_islands_fresh and not force:
+            return
         guild = self.bot.get_guild(Config.GUILD_ID)
         if not guild:
             logger.error(f"[DISCORD] Guild {Config.GUILD_ID} not found.")
@@ -2197,7 +2244,7 @@ class DiscordCommandCog(commands.Cog):
 
         category = discord.utils.get(guild.categories, id=Config.FREE_CATEGORY_ID)
         if not category:
-            logger.error(f"[DISCORD] Free island category {Config.FREE_CATEGORY_ID} not found.")
+            self._log_missing_category("Free island", Config.FREE_CATEGORY_ID)
             return
 
         temp_lookup = {}
@@ -2222,6 +2269,7 @@ class DiscordCommandCog(commands.Cog):
         if fetched_islands:
             Config.FREE_ISLANDS = fetched_islands
 
+        self._free_islands_fresh = True
         logger.info(f"[DISCORD] Dynamic Free Island Fetch Complete. Found {count} islands.")
 
     def cog_unload(self):
@@ -5465,8 +5513,9 @@ class DiscordCommandCog(commands.Cog):
         await ctx.reply("Refreshing cache and island links...")
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self.data_manager.update_cache)
-        await self.fetch_islands()
-        await self.fetch_free_islands()
+        self._missing_categories_logged.clear()
+        await self.fetch_islands(force=True)
+        await self.fetch_free_islands(force=True)
         count = len(getattr(self, 'island_map', {})) 
         await ctx.reply(f"Done. Linked {count} islands.")
 
