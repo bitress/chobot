@@ -3905,116 +3905,85 @@ def villager_route(name):
     })
 
 
-_HUMAN_MEMBERS_CACHE: dict[str, Any] = {"payload": None, "ts": 0.0}
-_HUMAN_MEMBERS_TTL = 600
+_HUMAN_MEMBERS_CACHE: dict[str, Any] = {"payload": None, "ts": 0.0, "failed_ts": 0.0}
+_HUMAN_MEMBERS_TTL = 600         # a good count is reused for 10 minutes
+_HUMAN_MEMBERS_FAIL_TTL = 60     # after a failure, wait a minute before asking Discord again
+_DISCORD_INVITE_CODE = "chopaeng"
+_DISCORD_API = "https://discord.com/api/v10"
+
+
+def _discord_member_count(guild_id: str) -> tuple[int, str] | None:
+    """(approximate member count, guild name) from one Discord request, or None.
+
+    Asks the guild endpoint with the bot token first, then the public invite (no token needed),
+    so the count survives a missing or revoked token. Discord's approximate count includes bots;
+    it is fine for a "34k+" badge and needs neither the privileged members intent nor paging.
+    """
+    token = str(Config.DISCORD_TOKEN or "").strip()
+    attempts: list[tuple[str, dict[str, str]]] = []
+    if token:
+        auth = token if token.lower().startswith("bot ") else f"Bot {token}"
+        attempts.append((f"{_DISCORD_API}/guilds/{guild_id}", {"Authorization": auth}))
+    attempts.append((f"{_DISCORD_API}/invites/{_DISCORD_INVITE_CODE}", {}))
+
+    for url, headers in attempts:
+        try:
+            resp = requests.get(url, params={"with_counts": "true"}, headers=headers, timeout=5)
+            data = resp.json() if resp.ok else None
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("member count: %s failed: %s", url.rsplit("/", 2)[-2], exc)
+            continue
+        if not isinstance(data, dict):
+            logger.warning("member count: %s returned HTTP %s", url.rsplit("/", 2)[-2], resp.status_code)
+            continue
+        guild = data.get("guild") if "guild" in data else data
+        if not isinstance(guild, dict) or str(guild.get("id")) != guild_id:
+            continue  # an invite that points at some other server
+        count = data.get("approximate_member_count")
+        if isinstance(count, int) and count > 0:
+            return count, str(guild.get("name") or "")
+    return None
 
 
 @app.route("/api/v1/guild/human-members")
 @app.route("/api/stats")
 def guild_human_members():
-    """Return the count of human (non-bot) members in the configured Discord guild.
+    """Public Discord member count for the website's "Join the Discord" badges.
 
-    Uses the Discord REST API to paginate through all guild members and
-    counts only those where the ``bot`` field is falsy.
-
-    Returns:
-        200  - success with human_members count
-        403  - bot is not in the guild (Missing Access)
-        404  - guild does not exist
-        503  - Discord token / GUILD_ID not configured, or member intent unavailable
+    200 {success, guild_id, guild_name, discord_members, human_members}
+    503 when Discord can't be reached; the website then keeps its built-in fallback number.
+    (``human_members`` is kept for old callers; it is the same approximate count.)
     """
-    # Public and unauthenticated, and each miss pages through the whole guild on Discord's
-    # REST API, so serve a cached count rather than letting callers drive that traffic.
+    # Public and unauthenticated: serve from cache so callers can't drive Discord traffic.
+    now = time.time()
     cached = _HUMAN_MEMBERS_CACHE["payload"]
-    if cached and time.time() - _HUMAN_MEMBERS_CACHE["ts"] < _HUMAN_MEMBERS_TTL:
+    if cached and now - _HUMAN_MEMBERS_CACHE["ts"] < _HUMAN_MEMBERS_TTL:
         return jsonify(cached)
 
-    unavailable = ({"success": False, "error": "Member count is temporarily unavailable."}, 503)
+    unavailable = {"success": False, "error": "Member count is temporarily unavailable."}
+    if now - _HUMAN_MEMBERS_CACHE["failed_ts"] < _HUMAN_MEMBERS_FAIL_TTL:
+        return (jsonify(cached), 200) if cached else (jsonify(unavailable), 503)
+
     guild_id = str(Config.GUILD_ID or "").strip()
     if not guild_id or guild_id in ("0", "None"):
-        logger.error("human-members: GUILD_ID is not configured")
-        return jsonify(unavailable[0]), unavailable[1]
+        logger.error("member count: GUILD_ID is not configured")
+        return jsonify(unavailable), 503
 
-    auth_value = _discord_bot_auth_value()
-    if not auth_value:
-        logger.error("human-members: Discord bot token is not configured")
-        return jsonify(unavailable[0]), unavailable[1]
+    result = _discord_member_count(guild_id)
+    if result is None:
+        _HUMAN_MEMBERS_CACHE["failed_ts"] = now
+        # A stale count beats none.
+        return (jsonify(cached), 200) if cached else (jsonify(unavailable), 503)
 
-    # Step 1: Verify the guild exists and the bot can see it.
-    guild_payload = _discord_api_json(f"/guilds/{guild_id}")
-
-    if guild_payload is None:
-        # Network / token error â€“ treat as service unavailable.
-        return jsonify(unavailable[0]), unavailable[1]
-
-    if isinstance(guild_payload, dict):
-        error_code = guild_payload.get("code")
-        if error_code == 10004 or guild_payload.get("message") == "Unknown Guild":
-            return jsonify(unavailable[0]), unavailable[1]
-        if error_code in (50013, 50001):
-            return jsonify(unavailable[0]), unavailable[1]
-        if "message" in guild_payload and "id" not in guild_payload:
-            return jsonify(unavailable[0]), unavailable[1]
-
-    guild_name = guild_payload.get("name", "") if isinstance(guild_payload, dict) else ""
-
-    # Step 2: Paginate through guild members and count humans.
-    human_count = 0
-    after = 0  # snowflake cursor; 0 means start from the beginning
-    page_limit = 1000  # maximum allowed by Discord
-    first_page = True
-
-    while True:
-        path = f"/guilds/{guild_id}/members?limit={page_limit}&after={after}"
-        members_payload = _discord_api_json(path)
-
-        if members_payload is None:
-            return jsonify(unavailable[0]), unavailable[1]
-
-        # Discord returns an error dict when the bot lacks GUILD_MEMBERS intent
-        # or when access is denied.
-        if isinstance(members_payload, dict):
-            error_code = members_payload.get("code")
-            if error_code == 10004:
-                return jsonify(unavailable[0]), unavailable[1]
-            if error_code in (50013, 50001):
-                return jsonify(unavailable[0]), unavailable[1]
-            return jsonify(unavailable[0]), unavailable[1]
-
-        if not isinstance(members_payload, list):
-            return jsonify(unavailable[0]), unavailable[1]
-
-        # If the first page returns an empty list the bot is in the guild but
-        # member intent (GUILD_MEMBERS privileged intent) is not enabled.
-        if first_page and len(members_payload) == 0:
-            logger.error("human-members: empty member page (GUILD_MEMBERS intent likely disabled)")
-            return jsonify(unavailable[0]), unavailable[1]
-        first_page = False
-
-        for member in members_payload:
-            user = member.get("user") or {}
-            if not user.get("bot"):
-                human_count += 1
-
-        # If we received fewer entries than the page limit, we have reached the end.
-        if len(members_payload) < page_limit:
-            break
-
-        # Advance the cursor to the last member's user ID for the next page.
-        last_member = members_payload[-1]
-        last_user_id = (last_member.get("user") or {}).get("id")
-        if not last_user_id:
-            break
-        after = int(last_user_id)
-
+    count, guild_name = result
     payload = {
         "success": True,
         "guild_id": int(guild_id),
         "guild_name": guild_name,
-        "human_members": human_count,
-        "discord_members": human_count,
+        "human_members": count,
+        "discord_members": count,
     }
-    _HUMAN_MEMBERS_CACHE.update(payload=payload, ts=time.time())
+    _HUMAN_MEMBERS_CACHE.update(payload=payload, ts=now, failed_ts=0.0)
     return jsonify(payload)
 
 
