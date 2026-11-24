@@ -111,13 +111,13 @@ logger = logging.getLogger("OrderBotCog")
 
 ORDER_MAX_SLOTS = 40          # one full pocket, same as the website
 SUBMIT_COOLDOWN = 15.0        # seconds between order submissions per member
-POLL_SECONDS = 5.0            # tracker poll interval while waiting in line
-POLL_SECONDS_READY = 15.0     # ...and once the gate is open
+POLL_SECONDS = 3.0            # tracker poll interval while waiting in line
+POLL_SECONDS_READY = 5.0     # ...and once the gate is open
 TRACK_MAX_SECONDS = 60 * 60   # stop following an order after an hour
 TOKEN_SECONDS = 14 * 60       # an interaction's message can be edited for 15 minutes
 ACTIVE_ORDER_WINDOW = 2 * 60 * 60   # ignore "active" DB rows older than this (stale after a crash)
 MAX_LOADOUTS = 10
-PANEL_REFRESH_SECONDS = 30
+PANEL_REFRESH_SECONDS = 5
 RESULTS_PER_PAGE = 25         # catalog results shown per page (Discord's select limit)
 SEARCH_LIMIT = 100             # most catalog results kept for one search
 CATEGORY_BROWSE_LIMIT = 300    # most items loaded when browsing a whole category
