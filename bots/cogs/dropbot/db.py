@@ -104,6 +104,9 @@ def _init_tables() -> None:
                 )
                 """
             )
+            # House (1-10) the wizard uses for the placeholder and the swap; added after the table shipped.
+            with contextlib.suppress(Exception):
+                conn.execute("ALTER TABLE sanrio_wizard_state ADD COLUMN plot INTEGER")
             with contextlib.suppress(Exception):
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_island_drops_log_island_id ON island_drops_log (island_name, id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_villager_inj_island_id ON villager_injections_log (island_name, id)")
@@ -348,21 +351,23 @@ def _save_sanrio_wizard_state(
     target: str,
     placeholder: str,
     step1_done: bool,
+    plot: int | None = None,
 ) -> None:
     try:
         with connect_db() as conn:
             conn.execute(
                 """
                 INSERT INTO sanrio_wizard_state
-                    (user_id, island_name, target_villager, placeholder_villager, step1_done, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (user_id, island_name, target_villager, placeholder_villager, step1_done, plot, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, island_name) DO UPDATE SET
                     target_villager=excluded.target_villager,
                     placeholder_villager=excluded.placeholder_villager,
                     step1_done=excluded.step1_done,
+                    plot=excluded.plot,
                     updated_at=excluded.updated_at
                 """,
-                (str(user_id), island, target, placeholder, 1 if step1_done else 0, int(time.time())),
+                (str(user_id), island, target, placeholder, 1 if step1_done else 0, plot, int(time.time())),
             )
             conn.commit()
     except Exception as exc:
@@ -375,7 +380,7 @@ def _load_sanrio_wizard_state(user_id: int, island: str | None = None) -> dict[s
             if island:
                 row = conn.execute(
                     """
-                    SELECT island_name, target_villager, placeholder_villager, step1_done, updated_at
+                    SELECT island_name, target_villager, placeholder_villager, step1_done, plot, updated_at
                     FROM sanrio_wizard_state
                     WHERE user_id = ? AND island_name = ?
                     """,
@@ -384,7 +389,7 @@ def _load_sanrio_wizard_state(user_id: int, island: str | None = None) -> dict[s
             else:
                 row = conn.execute(
                     """
-                    SELECT island_name, target_villager, placeholder_villager, step1_done, updated_at
+                    SELECT island_name, target_villager, placeholder_villager, step1_done, plot, updated_at
                     FROM sanrio_wizard_state
                     WHERE user_id = ?
                     ORDER BY updated_at DESC LIMIT 1
@@ -411,6 +416,8 @@ def _load_sanrio_wizard_state(user_id: int, island: str | None = None) -> dict[s
                     "target_villager": row["target_villager"],
                     "placeholder_villager": row["placeholder_villager"],
                     "step1_done": bool(row["step1_done"]),
+                    # Rows from before the house choice existed have no plot: the user picks again.
+                    "plot": row["plot"] if row["plot"] is not None and 1 <= int(row["plot"]) <= 10 else None,
                     "updated_at": ts or time.time(),
                 }
     except Exception as exc:

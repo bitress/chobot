@@ -863,6 +863,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
                 target_villager=target_v,
                 placeholder_villager=placeholder_v,
                 step1_done=True,
+                plot=saved.get("plot"),
             )
             wizard.last_status = "✈️ **Resumed Session (Step 2 Ready):** Pick up right where you left off!"
         else:
@@ -873,6 +874,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
             )
         wizard._orig_interaction = interaction
         await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+        await wizard.load_residents(interaction)
 
     # ── Registered slash commands (/dropbot X and /X) ─────────────────────────
 

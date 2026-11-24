@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import discord
 import logging
 import re
@@ -28,7 +29,7 @@ async def _start_injection(
     """Unified entry point for all villager injections.
     
     Checks is_sanrio_villager first. If Sanrio, launches the hot-swap wizard
-    (ignoring the plot argument because hot-swap uses Plot 1).
+    (with `plot`, if given, preselected as its house; the user can still change it).
     Otherwise executes the regular injection.
     """
     if is_sanrio_villager(villager):
@@ -36,15 +37,18 @@ async def _start_injection(
         saved = await asyncio.to_thread(_load_sanrio_wizard_state, interaction.user.id, island_name)
         step1_done = False
         placeholder = "Raymond"
+        house = plot
         if saved and saved.get("target_villager", "").lower() == canonical.lower():
             step1_done = bool(saved.get("step1_done"))
             placeholder = saved.get("placeholder_villager") or "Raymond"
+            house = saved.get("plot") or plot
         wizard = SanrioInjectionWizardView(
             island_name=island_name,
             user_id=interaction.user.id,
             target_villager=canonical,
             placeholder_villager=placeholder,
             step1_done=step1_done,
+            plot=house,
         )
         if step1_done:
             wizard.last_status = "✈️ **Resumed Session (Step 2 Ready):** Pick up right where you left off!"
@@ -55,6 +59,7 @@ async def _start_injection(
             await interaction.response.edit_message(content=None, embed=embed, view=_adopt(wizard, interaction))
         else:
             await interaction.response.send_message(embed=embed, view=_adopt(wizard, interaction), ephemeral=True)
+        await wizard.load_residents(interaction)
         return
 
     # Guardrails need a live lookup, which can outlast Discord's 3s response window, so acknowledge first.
@@ -181,14 +186,7 @@ class CustomAmiiboModal(discord.ui.Modal, title="✏️ Custom Amiibo / Villager
         if is_sanrio_villager(target):
             target = get_canonical_sanrio_name(target)
         self.wizard_view.target_villager = target
-        await asyncio.to_thread(
-            _save_sanrio_wizard_state,
-            self.wizard_view.user_id,
-            self.wizard_view.island_name,
-            self.wizard_view.target_villager,
-            self.wizard_view.placeholder_villager,
-            self.wizard_view.step1_done,
-        )
+        await self.wizard_view._persist()
         self.wizard_view._rebuild_items()
         await interaction.response.edit_message(
             embed=self.wizard_view.build_embed(),
@@ -196,9 +194,9 @@ class CustomAmiiboModal(discord.ui.Modal, title="✏️ Custom Amiibo / Villager
         )
 
 
-class CustomPlaceholderModal(discord.ui.Modal, title="✏️ Custom Plot 1 Placeholder"):
+class CustomPlaceholderModal(discord.ui.Modal, title="✏️ Custom Placeholder"):
     name_input = discord.ui.TextInput(
-        label="Placeholder Villager Name (Plot 1)",
+        label="Placeholder villager name",
         placeholder="e.g. Raymond, Marshal, Shino, Sasha",
         min_length=2,
         max_length=40,
@@ -213,14 +211,7 @@ class CustomPlaceholderModal(discord.ui.Modal, title="✏️ Custom Plot 1 Place
         raw_name = self.name_input.value.strip()
         exact, _ = _match_villagers(raw_name)
         self.wizard_view.placeholder_villager = exact or raw_name.title()
-        await asyncio.to_thread(
-            _save_sanrio_wizard_state,
-            self.wizard_view.user_id,
-            self.wizard_view.island_name,
-            self.wizard_view.target_villager,
-            self.wizard_view.placeholder_villager,
-            self.wizard_view.step1_done,
-        )
+        await self.wizard_view._persist()
         self.wizard_view._rebuild_items()
         await interaction.response.edit_message(
             embed=self.wizard_view.build_embed(),
@@ -301,6 +292,7 @@ class SanrioInjectionWizardView(_OwnedView):
         target_villager: str = "Chai",
         placeholder_villager: str = "Raymond",
         step1_done: bool = False,
+        plot: int | None = None,
     ):
         super().__init__(user_id=user_id, timeout=900)  # 15 min — matches interaction token lifetime
         self.island_name = island_name
@@ -310,7 +302,52 @@ class SanrioInjectionWizardView(_OwnedView):
         self.step2_done = False
         self.presence_warned = False
         self.last_status: str | None = None
+        # House number 1-10 that both the placeholder and the swap go into. Required before Step 1.
+        self.plot: int | None = plot if plot is not None and PLOT_MIN <= plot <= PLOT_MAX else None
+        # Who lives on the island (house numbers 1-10 when SysBot reports them); filled by load_residents().
+        self.residents: list = []
         self._rebuild_items()
+
+    def _house_text(self) -> str:
+        return f"House {self.plot}" if self.plot is not None else "your chosen house"
+
+    def _occupant(self, house: int) -> str | None:
+        return next((r.name for r in self.residents if r.plot == house), None)
+
+    def _lives_here(self, name: str) -> bool:
+        key = re.sub(r"[^a-z0-9]", "", name.lower())
+        return any(re.sub(r"[^a-z0-9]", "", r.name.lower()) == key for r in self.residents)
+
+    async def _persist(self) -> None:
+        await asyncio.to_thread(
+            _save_sanrio_wizard_state,
+            self.user_id,
+            self.island_name,
+            self.target_villager,
+            self.placeholder_villager,
+            self.step1_done,
+            self.plot,
+        )
+
+    async def load_residents(self, interaction: discord.Interaction) -> None:
+        """Fill in who lives in each house after the wizard is on screen (the lookup can outlast 3s)."""
+        try:
+            residents = await _fetch_residents(_canonical_island(self.island_name) or self.island_name)
+        except Exception:
+            return
+        if not residents:
+            return
+        self.residents = residents
+        # The placeholder can't be someone who already lives there (the island refuses a duplicate),
+        # so swap a default like Raymond for the first preset who doesn't, until Step 1 is done.
+        if not self.step1_done and self._lives_here(self.placeholder_villager):
+            spare = next((name for name, _d, _e in PLACEHOLDER_VILLAGERS if not self._lives_here(name)), None)
+            if spare:
+                self.placeholder_villager = spare
+                await self._persist()
+        self._rebuild_items()
+        with contextlib.suppress(Exception):
+            await interaction.edit_original_response(embed=self.build_embed(), view=self)
 
     def _rebuild_items(self) -> None:
         self.clear_items()
@@ -351,7 +388,7 @@ class SanrioInjectionWizardView(_OwnedView):
             )
         )
         target_select = discord.ui.Select(
-            placeholder=f"🎯 Target: {self.target_villager} (Plot 1)",
+            placeholder=f"🎯 Target: {self.target_villager}",
             options=target_opts[:25],
             row=0,
             disabled=self.step2_done,
@@ -359,13 +396,15 @@ class SanrioInjectionWizardView(_OwnedView):
         target_select.callback = self._on_target_select
         self.add_item(target_select)
 
-        # Row 1: Placeholder Select (Plot 1)
+        # Row 1: Placeholder Select
         ph_opts: list[discord.SelectOption] = []
         ph_in_presets = False
         for name, desc, emoji in PLACEHOLDER_VILLAGERS:
             is_def = (name.lower() == self.placeholder_villager.lower())
             if is_def:
                 ph_in_presets = True
+            if self._lives_here(name) and not self.step1_done:
+                desc = f"Already lives on {self.island_name}, pick someone else"
             ph_opts.append(
                 discord.SelectOption(
                     label=name,
@@ -380,7 +419,7 @@ class SanrioInjectionWizardView(_OwnedView):
                 0,
                 discord.SelectOption(
                     label=self.placeholder_villager[:100],
-                    description="Custom placeholder for Plot 1"[:100],
+                    description="Custom placeholder"[:100],
                     emoji="🐱",
                     value=self.placeholder_villager[:100],
                     default=True,
@@ -389,13 +428,13 @@ class SanrioInjectionWizardView(_OwnedView):
         ph_opts.append(
             discord.SelectOption(
                 label="Type Custom Placeholder…",
-                description="Enter any villager to hold Plot 1"[:100],
+                description="Enter any villager to hold the house"[:100],
                 emoji="✏️",
                 value="custom",
             )
         )
         placeholder_select = discord.ui.Select(
-            placeholder=f"📦 Placeholder: {self.placeholder_villager} (Plot 1)",
+            placeholder=f"📦 Placeholder: {self.placeholder_villager}",
             options=ph_opts[:25],
             row=1,
             disabled=self.step1_done or self.step2_done,
@@ -403,13 +442,46 @@ class SanrioInjectionWizardView(_OwnedView):
         placeholder_select.callback = self._on_placeholder_select
         self.add_item(placeholder_select)
 
-        # Row 2: Step 1 and Step 2 Action Buttons
-        step1_label = f"1️⃣ Inject {self.placeholder_villager} (Plot 1)"[:80]
+        # Row 2: House select (required; locked once the placeholder is in, so the swap lands in the same house)
+        known = bool(self.residents) and all(r.plot is not None for r in self.residents)
+        house_opts: list[discord.SelectOption] = []
+        for house in range(PLOT_MIN, PLOT_MAX + 1):
+            occupant = self._occupant(house)
+            if occupant:
+                desc = f"{occupant} lives here. Step 1 replaces them."
+            elif known:
+                desc = "Free"
+            elif self.residents:
+                desc = "Who lives here isn't reported"
+            else:
+                desc = "The placeholder replaces whoever lives here"
+            house_opts.append(discord.SelectOption(
+                label=f"House {house}",
+                description=desc[:100],
+                emoji="🏠",
+                value=str(house),
+                default=(house == self.plot),
+            ))
+        house_select = discord.ui.Select(
+            placeholder=f"🏠 {self._house_text()}" if self.plot is not None else "🏠 Choose the house to use (required)",
+            options=house_opts,
+            row=2,
+            disabled=self.step1_done or self.step2_done,
+        )
+        house_select.callback = self._on_house_select
+        self.add_item(house_select)
+
+        # Row 3: Step 1 and Step 2 Action Buttons
+        step1_label = (
+            f"1️⃣ Inject {self.placeholder_villager} ({self._house_text()})"
+            if self.plot is not None
+            else "1️⃣ Choose a house first"
+        )[:80]
         step1_btn = discord.ui.Button(
             label=step1_label,
             style=discord.ButtonStyle.primary if not self.step1_done else discord.ButtonStyle.secondary,
-            disabled=self.step1_done or self.step2_done,
-            row=2,
+            disabled=self.step1_done or self.step2_done or self.plot is None,
+            row=3,
         )
         step1_btn.callback = self._on_step1
         self.add_item(step1_btn)
@@ -418,8 +490,8 @@ class SanrioInjectionWizardView(_OwnedView):
         step2_btn = discord.ui.Button(
             label=step2_label,
             style=discord.ButtonStyle.success if self.step1_done else discord.ButtonStyle.secondary,
-            disabled=(not self.step1_done) or self.step2_done,
-            row=2,
+            disabled=(not self.step1_done) or self.step2_done or self.plot is None,
+            row=3,
         )
         step2_btn.callback = self._on_step2
         self.add_item(step2_btn)
@@ -429,7 +501,8 @@ class SanrioInjectionWizardView(_OwnedView):
                 label="I already did Step 1",
                 emoji="⏭️",
                 style=discord.ButtonStyle.secondary,
-                row=2,
+                row=3,
+                disabled=self.plot is None,
             )
             skip_btn.callback = self._on_skip_step1
             self.add_item(skip_btn)
@@ -437,17 +510,17 @@ class SanrioInjectionWizardView(_OwnedView):
             force_btn = discord.ui.Button(
                 label="⚠️ Confirm On Island, Inject",
                 style=discord.ButtonStyle.danger,
-                row=2,
+                row=3,
             )
             force_btn.callback = self._on_force_step2
             self.add_item(force_btn)
 
-        # Row 3: Navigation Buttons
+        # Row 4: Navigation Buttons
         back_btn = discord.ui.Button(
             label="Regular Villagers",
             emoji="🔙",
             style=discord.ButtonStyle.secondary,
-            row=3,
+            row=4,
         )
         back_btn.callback = self._on_back
         self.add_item(back_btn)
@@ -456,7 +529,7 @@ class SanrioInjectionWizardView(_OwnedView):
             label="Close",
             emoji="✖",
             style=discord.ButtonStyle.secondary,
-            row=3,
+            row=4,
         )
         close_btn.callback = self._on_close
         self.add_item(close_btn)
@@ -469,30 +542,44 @@ class SanrioInjectionWizardView(_OwnedView):
         else:
             s1, s2, s3, s4 = "✅", "✅", "✅", "👉"
 
+        house = self._house_text()
         tracker = (
-            f"{s1} **1.** Inject {self.placeholder_villager} → Plot 1\n"
+            f"{s1} **1.** Inject {self.placeholder_villager} → {house}\n"
             f"{s2} **2.** Fly to {self.island_name}\n"
             f"{s3} **3.** Inject {self.target_villager} (live)\n"
-            f"{s4} **4.** Talk to Plot 1 resident"
+            f"{s4} **4.** Talk to the resident of {house}"
         )
 
         embed = discord.Embed(
             title=f"🎀 Sanrio & Amiibo Injection Wizard — {self.island_name}",
             description=(
                 f"{tracker}\n\n"
-                f"⚠️ **Important:** Don't leave Plot 1 empty or move the placeholder out before Step 2."
+                f"⚠️ **Important:** Don't leave {house} empty or move the placeholder out before Step 2."
             ),
             color=SANRIO_EMBED_COLOR,
         )
 
-        if not self.step1_done and not self.step2_done:
+        if self.plot is None and not self.step2_done:
+            curr = (
+                f"Pick the house to use from the **🏠 menu**. **{self.placeholder_villager}** moves in there first, "
+                f"then gets swapped for **{self.target_villager}**."
+            )
+        elif not self.step1_done and not self.step2_done:
             curr = f"Click **1️⃣ Inject {self.placeholder_villager}** before boarding your flight."
         elif self.step1_done and not self.step2_done:
             curr = f"Fly to **[{self.island_name}]({_island_url(self.island_name)})** now! Once you land, click **2️⃣ Inject {self.target_villager}**."
         else:
-            curr = "🎉 **VILLAGER INJECTED!** Walk into Plot 1's house on the island, talk to the resident inside, and invite them to move in!"
+            curr = f"🎉 **VILLAGER INJECTED!** Walk into {house} on the island, talk to the resident inside, and invite them to move in!"
 
         embed.add_field(name="📌 Current Step", value=curr, inline=False)
+
+        occupant = self._occupant(self.plot) if self.plot is not None else None
+        if occupant and not self.step1_done:
+            embed.add_field(
+                name="⚠️ Replaces a resident",
+                value=f"**{occupant}** lives in {house} now. Step 1 replaces them with the placeholder.",
+                inline=False,
+            )
 
         if self.last_status:
             embed.add_field(name="📢 Latest Update", value=self.last_status[:1024], inline=False)
@@ -503,14 +590,7 @@ class SanrioInjectionWizardView(_OwnedView):
     async def _on_skip_step1(self, interaction: discord.Interaction) -> None:
         self.step1_done = True
         self.last_status = "⏭️ Marked Step 1 as done. Click **2️⃣ Inject** once you land on the island!"
-        await asyncio.to_thread(
-            _save_sanrio_wizard_state,
-            self.user_id,
-            self.island_name,
-            self.target_villager,
-            self.placeholder_villager,
-            True,
-        )
+        await self._persist()
         self._rebuild_items()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
@@ -523,14 +603,19 @@ class SanrioInjectionWizardView(_OwnedView):
             await interaction.response.send_modal(CustomAmiiboModal(self))
             return
         self.target_villager = val
-        await asyncio.to_thread(
-            _save_sanrio_wizard_state,
-            self.user_id,
-            self.island_name,
-            self.target_villager,
-            self.placeholder_villager,
-            self.step1_done,
-        )
+        await self._persist()
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_house_select(self, interaction: discord.Interaction) -> None:
+        vals = (interaction.data or {}).get("values", [])
+        if not vals or not str(vals[0]).isdigit():
+            return
+        house = int(vals[0])
+        if not PLOT_MIN <= house <= PLOT_MAX or self.step1_done:
+            return
+        self.plot = house
+        await self._persist()
         self._rebuild_items()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
@@ -543,38 +628,42 @@ class SanrioInjectionWizardView(_OwnedView):
             await interaction.response.send_modal(CustomPlaceholderModal(self))
             return
         self.placeholder_villager = val
-        await asyncio.to_thread(
-            _save_sanrio_wizard_state,
-            self.user_id,
-            self.island_name,
-            self.target_villager,
-            self.placeholder_villager,
-            self.step1_done,
-        )
+        await self._persist()
         self._rebuild_items()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
+    async def _needs_house(self, interaction: discord.Interaction) -> bool:
+        if self.plot is not None:
+            return False
+        self.last_status = "🏠 Choose which house to use first."
+        self._rebuild_items()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        return True
+
     async def _on_step1(self, interaction: discord.Interaction) -> None:
+        if await self._needs_house(interaction):
+            return
+        if self._lives_here(self.placeholder_villager):
+            self.last_status = (
+                f"⚠️ **{self.placeholder_villager}** already lives on {self.island_name}, so they can't be the placeholder. "
+                "Pick someone else from the 📦 menu."
+            )
+            self._rebuild_items()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+            return
         await interaction.response.defer()
         embed_res, ok = await _perform_injection(
             interaction.user,
             self.island_name,
             self.placeholder_villager,
-            plot=1,
+            plot=self.plot,
             cooldown_key="sanrio1",
         )
         if ok:
             self.step1_done = True
-            await asyncio.to_thread(
-                _save_sanrio_wizard_state,
-                self.user_id,
-                self.island_name,
-                self.target_villager,
-                self.placeholder_villager,
-                True,
-            )
+            await self._persist()
             self.last_status = (
-                f"✅ **Placeholder Injected!** `{self.placeholder_villager}` is queued in Plot 1.\n"
+                f"✅ **Placeholder Injected!** `{self.placeholder_villager}` is queued in {self._house_text()}.\n"
                 f"🛫 **Take flight to [{self.island_name}]({_island_url(self.island_name)}) now!**\n"
                 f"Once you land on the island, click **Step 2** below."
             )
@@ -586,6 +675,8 @@ class SanrioInjectionWizardView(_OwnedView):
         await interaction.edit_original_response(embed=self.build_embed(), view=self)
 
     async def _on_step2(self, interaction: discord.Interaction) -> None:
+        if await self._needs_house(interaction):
+            return
         await interaction.response.defer()
         from utils.island_presence import verify_user_on_island_async
 
@@ -612,7 +703,7 @@ class SanrioInjectionWizardView(_OwnedView):
             interaction.user,
             self.island_name,
             self.target_villager,
-            plot=1,
+            plot=self.plot,
             cooldown_key="sanrio2",
             allow_unadoptable=True,
         )
@@ -621,8 +712,8 @@ class SanrioInjectionWizardView(_OwnedView):
             await asyncio.to_thread(_clear_sanrio_wizard_state, self.user_id, self.island_name)
             self.last_status = (
                 f"🎉 **VILLAGER INJECTED!**\n\n"
-                f"🏠 **Go to Plot 1's house now!**\n"
-                f"• Enter Plot 1's house on the island.\n"
+                f"🏠 **Go to {self._house_text()} now!**\n"
+                f"• Enter {self._house_text()} on the island.\n"
                 f"• Talk to the resident inside *(they will visually look like `{self.placeholder_villager}`)*.\n"
                 f"• Invite them to move to your island! 🎀"
             )
@@ -634,12 +725,14 @@ class SanrioInjectionWizardView(_OwnedView):
         await interaction.edit_original_response(embed=self.build_embed(), view=self)
 
     async def _on_force_step2(self, interaction: discord.Interaction) -> None:
+        if await self._needs_house(interaction):
+            return
         await interaction.response.defer()
         embed_res, ok = await _perform_injection(
             interaction.user,
             self.island_name,
             self.target_villager,
-            plot=1,
+            plot=self.plot,
             cooldown_key="sanrio2",
             allow_unadoptable=True,
         )
@@ -648,8 +741,8 @@ class SanrioInjectionWizardView(_OwnedView):
             await asyncio.to_thread(_clear_sanrio_wizard_state, self.user_id, self.island_name)
             self.last_status = (
                 f"🎉 **VILLAGER INJECTED!**\n\n"
-                f"🏠 **Go to Plot 1's house now!**\n"
-                f"• Enter Plot 1's house on the island.\n"
+                f"🏠 **Go to {self._house_text()} now!**\n"
+                f"• Enter {self._house_text()} on the island.\n"
                 f"• Talk to the resident inside *(they will visually look like `{self.placeholder_villager}`)*.\n"
                 f"• Invite them to move to your island! 🎀"
             )
@@ -1076,10 +1169,12 @@ class InteractiveVillagerPickerView(_OwnedView):
             target_villager=(saved or {}).get("target_villager") or "Chai",
             placeholder_villager=(saved or {}).get("placeholder_villager") or "Raymond",
             step1_done=resumed,
+            plot=(saved or {}).get("plot"),
         )
         if resumed:
             wizard.last_status = "✈️ **Resumed (Step 2 ready):** pick up where you left off."
         await interaction.response.edit_message(embed=wizard.build_embed(), view=wizard)
+        await wizard.load_residents(interaction)
 
     async def _on_search_villager(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(VillagerSearchModal(island_name=self.island_name))
