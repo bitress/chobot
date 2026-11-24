@@ -35,6 +35,7 @@ from thefuzz import process, fuzz
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.serving import ThreadedWSGIServer
 
+from utils import island_residents
 from utils.config import Config
 from utils import island_access
 from utils.database import connect_db
@@ -3557,8 +3558,11 @@ def api_island_drop(name):
 @app.route('/api/islands/<name>/villager/inject', methods=['POST'])
 def api_island_villager_inject(name):
     """
-    Inject villager(s) into house plots 0–9 on a specific island via SysBot HTTP API.
-    Body: { "villager": "Raymond", "plot": 0 } or { "villagers": [...], "plot": ... } or { "command": "!mvi ..." }
+    Move villager(s) into houses on a specific island via SysBot. Plots are SysBot indexes 0-9.
+    Body: {"villager", "name"?, "plot"?, "confirm_replace"?}
+       or {"villagers": [{"villager", "name"?, "plot"}], "confirm_replace"?}
+       or {"command": "!mvi ..."} (legacy, unchecked).
+    409 with a `code` when the move-in clashes with current residents.
     """
     user = _current_auth_user()
     if not user:
@@ -3585,7 +3589,7 @@ def api_island_villager_inject(name):
     is_viewer_admin = bool(user.get("is_admin"))
     is_viewer_mod = bool(user.get("is_mod")) or is_viewer_admin
     if not is_viewer_mod and not _has_island_access(user.get("roles", []), [], is_viewer_mod, island_name=clean_name, user=user):
-        return jsonify({"success": False, "error": f"You do not have the required membership tier to inject villagers on {clean_name}."}), 403
+        return jsonify({"success": False, "error": f"You do not have access to move villagers in on {clean_name}. It needs a higher membership tier."}), 403
 
     if not is_viewer_admin and not _user_has_sub_rules(user):
         return jsonify({
@@ -3596,47 +3600,104 @@ def api_island_villager_inject(name):
         }), 403
 
     body = request.get_json(silent=True) or {}
-    villager = body.get("villager") or body.get("villagers") or body.get("villager_name")
-    plot = body.get("plot") if body.get("plot") is not None else body.get("plot_number")
     command = (body.get("command") or "").strip()
+    confirm_replace = bool(body.get("confirm_replace"))
 
-    if not villager and not command:
+    # Plots are SysBot house indexes 0-9 (the website shows them as House 1-10).
+    # Parsed with `is not None`, never `or`: plot 0 is a real house, not "any free plot".
+    raw_plot = body.get("plot") if body.get("plot") is not None else body.get("plot_number")
+    plot = island_residents.parse_plot(raw_plot)
+    if raw_plot not in (None, "") and plot is None:
+        return jsonify({"success": False, "error": "Pick a house from 1 to 10.", "code": "bad_plot"}), 400
+
+    # entries: (SysBot villager code, display name for checks/messages, plot)
+    entries: list[tuple[str, str, int | None]] = []
+    raw_list = body.get("villagers")
+    if isinstance(raw_list, list):
+        if not 1 <= len(raw_list) <= 10:
+            return jsonify({"success": False, "error": "Move in between 1 and 10 villagers at a time."}), 400
+        for item in raw_list:
+            if not isinstance(item, dict):
+                return jsonify({"success": False, "error": "Each villager needs a name and a house."}), 400
+            code = str(item.get("villager") or item.get("villager_name") or "").strip()
+            item_plot = island_residents.parse_plot(item.get("plot"))
+            if not code or item_plot is None:
+                return jsonify({"success": False, "error": "Each villager needs a name and a house from 1 to 10.", "code": "bad_plot"}), 400
+            entries.append((code, str(item.get("name") or code).strip(), item_plot))
+    else:
+        single = body.get("villager") or body.get("villager_name")
+        if isinstance(single, str) and single.strip():
+            code = single.strip()
+            entries.append((code, str(body.get("name") or code).strip(), plot))
+
+    if not entries and not command:
         return jsonify({"success": False, "error": "Villager or injection command is required."}), 400
 
     from utils.data_manager import resolve_villager_code
-    if villager:
-        villager = resolve_villager_code(str(villager))
-    if command:
-        command = resolve_villager_code(command)
-
     from utils.sysbot_api import get_island_sysbot_client
     client = get_island_sysbot_client(clean_name, timeout=5)
 
-    if command:
-        resp = client.inject_villagers_sync(command)
-    else:
-        resp = client.inject_villagers_sync(villagers=villager, plot=plot)
+    replacements: list = []
+    if entries:
+        # Same guardrails as the Discord /inject command, checked against who lives there right now.
+        # Names that are still raw "villager:<id>" codes can't be compared, so they skip the resident checks.
+        residents = island_residents.get_live_residents(clean_name, fresh=True)
+        checkable = [(n, p) for _c, n, p in entries if not n.lower().startswith("villager:")]
+        blocking, replacements = island_residents.find_clashes(checkable, residents or [])
+        if blocking:
+            first = blocking[0]
+            messages = {
+                "already_resident": f"{first.villager} already lives on {clean_name}. An island can't have the same villager twice.",
+                "duplicate_villager": f"{first.villager} is in the list twice.",
+                "duplicate_plot": f"Two villagers are going to house {(first.plot or 0) + 1}.",
+            }
+            return jsonify({
+                "success": False,
+                "error": messages.get(first.code, "These move-ins clash."),
+                "code": first.code,
+                "clashes": [c.to_json() for c in blocking],
+                "residents": [r.to_json() for r in residents or []],
+            }), 409
+        if replacements and not confirm_replace:
+            return jsonify({
+                "success": False,
+                "error": "That would replace someone who lives there now. Confirm to go ahead.",
+                "code": "plot_occupied",
+                "replacements": [c.to_json() for c in replacements],
+                "residents": [r.to_json() for r in residents or []],
+            }), 409
 
-    # Log to villager_injections_log
+        payload = [
+            {"villager": resolve_villager_code(c), **({"plot": p} if p is not None else {})}
+            for c, _n, p in entries
+        ]
+        resp = client.inject_villagers_sync(payload[0] if len(payload) == 1 else payload)
+    else:
+        resp = client.inject_villagers_sync(resolve_villager_code(command))
+
+    if resp.get("success"):
+        island_residents.forget(clean_name)
+
+    names = ", ".join(n for _c, n, _p in entries) or command
     status_str = "queued" if resp.get("success") else "failed"
     try:
         from utils.sysbot_telemetry import ensure_telemetry_schema
         ensure_telemetry_schema()
         db = get_db()
         try:
-            v_name = villager if isinstance(villager, str) else json.dumps(villager)
-            db.execute("""
-                INSERT INTO villager_injections_log
-                (island_name, villager_name, plot_number, requested_by_user_id, status, response_message)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                clean_name,
-                str(v_name or command or ""),
-                int(plot) if plot is not None else 0,
-                str(user.get("user_id") or ""),
-                status_str,
-                str(resp.get("message") or resp.get("error") or ""),
-            ))
+            for _c, n, p in entries or [(command, command, None)]:
+                db.execute("""
+                    INSERT INTO villager_injections_log
+                    (island_name, villager_name, plot_number, requested_by_user_id, status, response_message)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    clean_name,
+                    n,
+                    p if p is not None else -1,  # -1: SysBot picked the house
+                    str(user.get("user_id") or ""),
+                    status_str,
+                    str(resp.get("message") or resp.get("error") or ""),
+                ))
             db.commit()
         finally:
             db.close()
@@ -3645,18 +3706,52 @@ def api_island_villager_inject(name):
 
     _record_api_audit_event("island_villager_inject", clean_name.upper(), {
         "user_id": user.get("user_id"),
-        "villager": str(villager or command),
+        "villager": names,
         "plot": plot,
+        "replaced": [c.occupant for c in replacements],
         "success": bool(resp.get("success")),
     })
 
+    single_entry = entries[0] if len(entries) == 1 else None
     return jsonify({
         "success": bool(resp.get("success")),
         "island": clean_name,
-        "villager": villager,
-        "plot": plot,
+        "villager": single_entry[1] if single_entry else names,
+        "plot": single_entry[2] if single_entry else plot,
+        "error": None if resp.get("success") else (resp.get("error") or resp.get("message") or "The island bot didn't accept the move-in."),
         "message": resp.get("message") or f"Villager injection sent to {clean_name}!",
         "sysbot_response": resp,
+    })
+
+
+@app.route('/api/islands/<name>/residents', methods=['GET'])
+def api_island_residents(name):
+    """
+    Villagers living on an island right now, with SysBot house indexes (0-9) when it reports them.
+    live=false means SysBot couldn't be reached and the names come from the shared villager list.
+    """
+    clean_name = re.sub(r"^sub\s+island\s+", "", (name or "").strip(), flags=re.IGNORECASE).strip().title()
+    known = {n.lower(): n for n in (getattr(Config, "ALL_ISLAND_PORT_ORDER", None) or [])}
+    if known and clean_name.lower() not in known:
+        return jsonify({"success": False, "error": "Unknown island."}), 404
+    clean_name = known.get(clean_name.lower(), clean_name)
+
+    residents = island_residents.get_live_residents(clean_name)
+    if residents is not None:
+        return jsonify({
+            "success": True,
+            "island": clean_name,
+            "live": True,
+            "residents": [r.to_json() for r in residents],
+        })
+
+    manifest, _source = _get_sysbot_villagers_manifest()
+    names = manifest.get(clean_name.title()) or manifest.get(clean_name) or []
+    return jsonify({
+        "success": True,
+        "island": clean_name,
+        "live": False,
+        "residents": [{"name": n, "plot": None} for n in names],
     })
 
 

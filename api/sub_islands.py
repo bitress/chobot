@@ -243,79 +243,8 @@ def get_sub_island_plots(name: str):
     })
 
 
-@sub_islands_bp.route("/api/islands/<name>/villagers/inject", methods=["POST"])
-def inject_sub_island_villager(name: str):
-    auth_user = _get_auth_from_request()
-    if not auth_user:
-        return jsonify({"success": False, "error": "Authentication required"}), 401
-
-    clean = _clean_island_name(name)
-    if not _user_has_island_access(auth_user, clean):
-        return jsonify({"success": False, "error": f"You do not have access to {clean}."}), 403
-
-    from api.flask_api import _user_has_sub_rules
-    if not auth_user.get("is_admin") and not _user_has_sub_rules(auth_user):
-        return jsonify({
-            "success": False,
-            "error": "You must review and accept the Subscriber Island Rules first before injecting villagers.",
-            "code": "missing_sub_rules_acceptance",
-            "requires_sub_rules": True,
-        }), 403
-
-    data = request.get_json() or {}
-    villager_name = (data.get("villager") or data.get("villager_name") or "").strip()
-    plot_num = data.get("plot") or data.get("plot_number")
-    if plot_num is not None:
-        try:
-            plot_num = int(plot_num)
-        except (ValueError, TypeError):
-            plot_num = None
-
-    if not villager_name:
-        return jsonify({"success": False, "error": "Villager name is required."}), 400
-
-    from utils.sysbot_api import get_island_sysbot_client
-    client = get_island_sysbot_client(clean, timeout=3)
-    resp = client.inject_villagers_sync(villager_name, plot=plot_num)
-
-    # Log injection audit event
-    status_str = "queued" if resp.get("success") else "failed"
-    try:
-        from utils.sysbot_telemetry import ensure_telemetry_schema
-        ensure_telemetry_schema()
-        with connect_db() as conn:
-            conn.execute("""
-                INSERT INTO villager_injections_log
-                (island_name, villager_name, plot_number, requested_by_user_id, status, response_message)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                clean,
-                villager_name,
-                plot_num or 0,
-                str(auth_user.get("user_id") or ""),
-                status_str,
-                resp.get("message") or resp.get("error") or "",
-            ))
-    except Exception as exc:
-        logger.debug(f"Audit log error: {exc}")
-
-    # Optimistic in-memory update
-    if plot_num and 1 <= plot_num <= 10:
-        state = _get_island_state(clean)
-        state["plots"][plot_num - 1] = {
-            "plot": plot_num,
-            "villager": villager_name,
-            "status": "in_boxes",
-            "adoptable": True,
-        }
-
-    return jsonify({
-        "success": bool(resp.get("success")),
-        "island": clean,
-        "villager": villager_name,
-        "plot": plot_num,
-        "response": resp,
-    })
+# Villager move-ins: POST /api/islands/<name>/villagers/inject lives in api/flask_api.py
+# (api_island_villager_inject). A second copy here used to shadow it.
 
 
 @sub_islands_bp.route("/api/islands/<name>/drop-status", methods=["GET"])
