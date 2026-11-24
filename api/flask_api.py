@@ -3991,29 +3991,28 @@ def guild_human_members():
 # POCKET BUNDLES API (Persistent database presets & custom loadouts)
 # ============================================================================
 
+_POCKET_BUNDLES_LIST_LIMIT = 300
+
+
+def _owns_pocket_bundle(auth_user: dict | None, created_by: Any) -> bool:
+    """True when the signed-in user created this bundle (created_by holds their username or user id)."""
+    if not auth_user or not created_by:
+        return False
+    owner = str(created_by).strip().lower()
+    mine = {str(auth_user.get(k) or "").strip().lower() for k in ("username", "user_id")}
+    mine.discard("")
+    return owner in mine
+
+
 @app.route("/api/bundles", methods=["GET"])
 def get_pocket_bundles():
-    """Return list of official and accessible custom pocket bundles."""
-    auth_user = _current_auth_user()
-    user_id = str(auth_user.get("user_id", "")) if auth_user else None
-    username = str(auth_user.get("username", "")) if auth_user else None
-    is_admin = bool(auth_user.get("is_admin")) if auth_user else False
-
+    """Every pocket bundle, official first, then community bundles newest first. Public."""
     conn = get_db()
     try:
-        if is_admin:
-            rows = conn.execute(
-                "SELECT * FROM pocket_bundles ORDER BY is_official DESC, created_at DESC"
-            ).fetchall()
-        elif user_id or username:
-            rows = conn.execute(
-                "SELECT * FROM pocket_bundles WHERE is_official = 1 OR created_by = ? OR created_by = ? ORDER BY is_official DESC, created_at DESC",
-                (user_id or "", username or "")
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM pocket_bundles WHERE is_official = 1 ORDER BY created_at DESC"
-            ).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM pocket_bundles ORDER BY is_official DESC, created_at DESC LIMIT ?",
+            (_POCKET_BUNDLES_LIST_LIMIT,),
+        ).fetchall()
 
         bundles = []
         for r in rows:
@@ -4040,8 +4039,10 @@ def get_pocket_bundles():
 
 @app.route("/api/bundles", methods=["POST"])
 def create_pocket_bundle():
-    """Create a new pocket bundle (custom or official)."""
+    """Create a new pocket bundle (custom or official). Bundles are public, so sign-in is required."""
     auth_user = _current_auth_user()
+    if not auth_user:
+        return jsonify({"error": "Sign in to save a bundle."}), 401
     data = request.get_json() or {}
     name = (data.get("name") or "").strip()
     if not name:
@@ -4057,7 +4058,7 @@ def create_pocket_bundle():
 
     is_admin = bool(auth_user.get("is_admin")) if auth_user else False
     is_official = 1 if (is_official_req and is_admin) else 0
-    created_by = auth_user.get("username") or auth_user.get("user_id") or "Community" if auth_user else "Community"
+    created_by = auth_user.get("username") or auth_user.get("user_id") or "Community"
 
     now_iso = datetime.utcnow().isoformat()
     conn = get_db()
@@ -4107,6 +4108,8 @@ def update_pocket_bundle(bundle_id):
         is_admin = bool(auth_user.get("is_admin")) if auth_user else False
         if existing["is_official"] and not is_admin:
             return jsonify({"error": "Only admins can edit official bundles"}), 403
+        if not is_admin and not _owns_pocket_bundle(auth_user, existing["created_by"]):
+            return jsonify({"error": "You can only edit bundles you created"}), 403
 
         name = data.get("name") or existing["name"]
         description = data.get("description") if "description" in data else existing["description"]
@@ -4160,6 +4163,8 @@ def delete_pocket_bundle(bundle_id):
         is_admin = bool(auth_user.get("is_admin")) if auth_user else False
         if existing["is_official"] and not is_admin:
             return jsonify({"error": "Only admins can delete official bundles"}), 403
+        if not is_admin and not _owns_pocket_bundle(auth_user, existing["created_by"]):
+            return jsonify({"error": "You can only delete bundles you created"}), 403
 
         conn.execute("DELETE FROM pocket_bundles WHERE id = ?", (bundle_id,))
         conn.commit()

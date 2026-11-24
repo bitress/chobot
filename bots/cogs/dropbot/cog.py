@@ -92,7 +92,7 @@ class DropBotCog(commands.Cog, name="DropBot"):
 
     # ── Auto-refresh ──────────────────────────────────────────────────────────
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=5)
     async def auto_refresh_panels_loop(self) -> None:
         """Refresh all active panels in parallel; skip edits when nothing visible changed."""
         panels = await asyncio.to_thread(_load_all_panels)

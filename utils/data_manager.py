@@ -958,8 +958,31 @@ def get_popular_series() -> list[tuple[str, str, str]]:
     return ACNHCatalog.get_instance().get_popular_series()
 
 
+def _bundle_items(row: dict) -> list:
+    """A bundle's items, from whichever layout the row uses.
+
+    The website saves ``order_items``/``drop_items`` (see /api/bundles); older rows and the SQLAlchemy
+    model use ``items_json``. Drop-pocket items win, since this feeds the drop bot.
+    """
+    for key in ("drop_items", "order_items", "items_json"):
+        raw = row.get(key)
+        if not raw:
+            continue
+        try:
+            items = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            continue
+        if isinstance(items, list) and items:
+            return items
+    return []
+
+
 def get_pocket_bundles(max_slots: int = 9, connect_db_func=None) -> list[tuple[str, str, str, str]]:
-    """Return official pocket bundles directly from the database table (no hardcoded bundles)."""
+    """Pocket bundles for the Discord drop bot: official first, then community bundles, newest first.
+
+    Returns up to 25 (Discord's select-menu limit) as (name, description, item code, emoji).
+    ``SELECT *`` on purpose: the table's columns differ between deployments (see ``_bundle_items``).
+    """
     bundles: list[tuple[str, str, str, str]] = []
     try:
         if connect_db_func is None:
@@ -967,29 +990,38 @@ def get_pocket_bundles(max_slots: int = 9, connect_db_func=None) -> list[tuple[s
             connect_db_func = connect_db
         with connect_db_func() as conn:
             rows = conn.execute(
-                "SELECT name, description, category, items_json FROM pocket_bundles WHERE is_official = 1 ORDER BY created_at DESC LIMIT 25"
+                "SELECT * FROM pocket_bundles ORDER BY is_official DESC, created_at DESC LIMIT 100"
             ).fetchall()
-            for r in rows:
-                name = r.get("name")
-                desc = r.get("description") or f"{r.get('category') or 'Official'} Bundle"
-                items_raw = r.get("items_json") or "[]"
-                try:
-                    items_list = json.loads(items_raw) if isinstance(items_raw, str) else items_raw
-                    tokens = []
-                    for it in items_list[:max_slots]:
-                        if isinstance(it, dict):
-                            nm = it.get("name") or it.get("id") or ""
-                            qty = it.get("quantity") or it.get("count") or 1
-                            tokens.append(f"{nm} {qty}".strip())
-                        elif isinstance(it, str):
-                            tokens.append(it)
-                    if tokens:
-                        code = ", ".join(tokens)
-                        bundles.append((name, desc[:100], code, "🎒"))
-                except Exception:
-                    continue
     except Exception as exc:
-        logger.debug("[DataManager] Could not fetch DB pocket bundles: %s", exc)
+        logger.warning("[DataManager] Could not fetch pocket bundles: %s", exc)
+        return bundles
+
+    for r in rows:
+        row = dict(r)
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        official = bool(row.get("is_official"))
+        tokens = []
+        for it in _bundle_items(row)[:max_slots]:
+            if isinstance(it, dict):
+                nm = it.get("name") or it.get("itemName") or it.get("itemId") or it.get("id") or ""
+                qty = it.get("quantity") or it.get("count") or 1
+                if nm:
+                    tokens.append(f"{nm} {qty}".strip())
+            elif isinstance(it, str) and it.strip():
+                tokens.append(it.strip())
+        if not tokens:
+            continue
+        desc = str(row.get("description") or "").strip()
+        if not official:
+            creator = str(row.get("created_by") or "").strip() or "Community"
+            desc = f"By {creator}" + (f" · {desc}" if desc else "")
+        elif not desc:
+            desc = f"{row.get('category') or 'Official'} Bundle"
+        bundles.append((name[:100], desc[:100], ", ".join(tokens), "⭐" if official else "🎒"))
+        if len(bundles) >= 25:
+            break
     return bundles
 
 
