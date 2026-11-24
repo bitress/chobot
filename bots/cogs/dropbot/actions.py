@@ -234,6 +234,22 @@ async def _perform_drop(
     return embed, True
 
 
+def _to_sysbot_plot(house: int | None) -> int | None:
+    """House number people use (1-10) -> SysBot house index (0-9). None lets SysBot pick."""
+    return None if house is None else house - 1
+
+
+def _from_sysbot_plot(index: Any) -> int | None:
+    """SysBot house index (0-9) -> house number (1-10); None when absent or out of range."""
+    if isinstance(index, bool):
+        return None
+    try:
+        house = int(index) + 1
+    except (TypeError, ValueError):
+        return None
+    return house if PLOT_MIN <= house <= PLOT_MAX else None
+
+
 async def _submit_injection(
     user: discord.abc.User,
     island: str,
@@ -258,16 +274,17 @@ async def _submit_injection(
         except Exception:
             pass
 
+    sysbot_plot = _to_sysbot_plot(plot)
     try:
         client = get_island_sysbot_client(island)
         result = await client.inject_villagers(
             villager_code,
-            plot=plot,
+            plot=sysbot_plot,
             allow_unadoptable=allow_unadoptable or is_sanrio_villager(villager),
         )
     except Exception:
         logger.exception("[DropBot] Injection failed island=%s user=%s villager=%s", island, user.id, display_name)
-        await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, "bot did not respond")
+        await asyncio.to_thread(_log_injection, island, display_name, sysbot_plot, user.id, False, "bot did not respond")
         return False, display_name, None
 
     if _is_failure(result):
@@ -281,11 +298,11 @@ async def _submit_injection(
                 err = result.get("message")
         err = str(err or "unknown error")
         logger.warning("[DropBot] Injection rejected island=%s user=%s villager=%s: %s", island, user.id, display_name, err)
-        await asyncio.to_thread(_log_injection, island, display_name, plot, user.id, False, err)
+        await asyncio.to_thread(_log_injection, island, display_name, sysbot_plot, user.id, False, err)
         return False, display_name, err
 
     await asyncio.to_thread(
-        _log_injection, island, display_name, plot, user.id, True,
+        _log_injection, island, display_name, sysbot_plot, user.id, True,
         str(result.get("message") or "Queued via Discord panel"),
     )
     return True, display_name, None
@@ -336,7 +353,7 @@ async def _submit_injection_batch(
         codes.append(code)
         item: dict[str, Any] = {"villager": code}
         if plot is not None:
-            item["plot"] = plot
+            item["plot"] = _to_sysbot_plot(plot)
         payload.append(item)
 
     try:
@@ -349,7 +366,7 @@ async def _submit_injection_batch(
     if not isinstance(result, dict):
         out = [(v, p, "the island bot didn't respond") for v, p in entries]
         for v, p in entries:
-            await asyncio.to_thread(_log_injection, island, v, p, user.id, False, "bot did not respond")
+            await asyncio.to_thread(_log_injection, island, v, _to_sysbot_plot(p), user.id, False, "bot did not respond")
         return out
 
     # Match what the island bot queued back to our entries by internal villager code.
@@ -366,18 +383,20 @@ async def _submit_injection_batch(
         )
         if hit is not None:
             injected.remove(hit)
-            assigned = hit.get("plot")
-            final_plot = int(assigned) if isinstance(assigned, int) else plot
+            # SysBot reports the house index it actually used; show it as a house number.
+            final_plot = _from_sysbot_plot(hit.get("plot"))
+            if final_plot is None:
+                final_plot = plot
             out.append((villager, final_plot, None))
             await asyncio.to_thread(
-                _log_injection, island, villager, final_plot, user.id, True,
+                _log_injection, island, villager, _to_sysbot_plot(final_plot), user.id, True,
                 str(result.get("message") or "Queued via Discord panel"),
             )
         else:
             err = next((e for e in errors if f"'{code}'" in e or f"'{villager}'" in e), fallback_err)
             out.append((villager, plot, err))
             logger.warning("[DropBot] Injection rejected island=%s user=%s villager=%s: %s", island, user.id, villager, err)
-            await asyncio.to_thread(_log_injection, island, villager, plot, user.id, False, err)
+            await asyncio.to_thread(_log_injection, island, villager, _to_sysbot_plot(plot), user.id, False, err)
     return out
 
 
@@ -547,7 +566,7 @@ async def _perform_multi_injection(
 @dataclass(frozen=True)
 class _Resident:
     name: str
-    plot: int | None   # only set when the island bot reports an explicit plot number
+    plot: int | None   # house number 1-10, only set when the island bot reports which house
 
 
 def _parse_residents(raw: Any) -> list[_Resident]:
@@ -559,14 +578,15 @@ def _parse_residents(raw: Any) -> list[_Resident]:
     for entry in entries:
         if isinstance(entry, dict):
             name = str(entry.get("name") or entry.get("Name") or "").strip()
+            # SysBot reports house indexes 0-9; residents carry the 1-10 house number people see.
             plot = next(
-                (int(v) for v in (entry.get("plot"), entry.get("Plot")) if str(v).isdigit()),
+                (h for h in (_from_sysbot_plot(entry.get(k)) for k in ("plot", "Plot")) if h is not None),
                 None,
             )
         else:
             name, plot = str(entry or "").strip(), None
         if name:
-            residents.append(_Resident(name, plot if plot is not None and PLOT_MIN <= plot <= PLOT_MAX else None))
+            residents.append(_Resident(name, plot))
     return residents
 
 

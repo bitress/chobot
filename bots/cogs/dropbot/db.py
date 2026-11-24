@@ -334,7 +334,7 @@ def _log_injection(island: str, villager: str, plot: int | None, user_id: int, o
                 (island_name, villager_name, plot_number, requested_by_user_id, status, response_message)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (island, villager, plot if plot is not None else 0, str(user_id),
+                (island, villager, plot if plot is not None else -1, str(user_id),  # SysBot index 0-9; -1 = it picked
                  "queued" if ok else "failed", message[:500]),
             )
             conn.commit()

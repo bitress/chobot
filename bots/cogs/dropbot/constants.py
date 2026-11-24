@@ -46,7 +46,8 @@ MAX_STACK      = 30     # highest quantity per item
 MAX_ITEM_NAME  = 60
 
 
-# Villager plots: 1 through 10 (matching in-game plots and API backend).
+# House numbers people type and see: 1 through 10. SysBot counts houses 0-9; actions.py
+# converts with _to_sysbot_plot/_from_sysbot_plot where it talks to SysBot, and nowhere else.
 PLOT_MIN = 1
 
 
