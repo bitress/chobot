@@ -389,12 +389,6 @@ def _gzip_response(resp):
     return resp
 
 
-# Patreon cache
-patreon_cache = {
-    "list": {"data": None, "timestamp": None},
-    "posts": {}
-}
-
 # Data manager will be set from main.py
 data_manager = None
 _fallback_item_cache = None
@@ -1333,31 +1327,33 @@ def extract_image_from_html(html_content):
     return match.group(1) if match else None
 
 
-def process_post_attributes(post_id, attrs):
+def process_post_attributes(post_id, attrs, unlocked=False, required_tier=None):
     """Process Patreon post attributes.
 
     Posts are fetched with the creator's token, which can read patron-only posts. Those are served as
-    teasers only (title, date, link to Patreon): no body, embed or images, since this route is public.
+    teasers only (title, date, link to Patreon): no body, embed or images. ``unlocked=True`` serves
+    the full post; only pass it after ``_viewer_can_read_post`` said the signed-in viewer may read it.
     """
     is_public = bool(attrs.get("is_public"))
+    show_body = is_public or unlocked
     image_url = None
 
-    if is_public and attrs.get("embed_data"):
+    if show_body and attrs.get("embed_data"):
         embed = attrs["embed_data"]
         if "image" in embed and "url" in embed["image"]:
             image_url = embed["image"]["url"]
         elif "thumbnail_url" in embed:
             image_url = embed["thumbnail_url"]
 
-    if is_public and not image_url:
+    if show_body and not image_url:
         image_url = extract_image_from_html(attrs.get("content"))
 
-    return {
+    out = {
         "id": post_id,
         "attributes": {
-            "embed_data": attrs.get("embed_data") if is_public else None,
+            "embed_data": attrs.get("embed_data") if show_body else None,
             "title": attrs["title"],
-            "content": attrs["content"] if is_public else "",
+            "content": (attrs.get("content") or "") if show_body else "",
             "published_at": attrs["published_at"],
             "url": attrs["url"],
             "is_public": attrs["is_public"],
@@ -1365,6 +1361,70 @@ def process_post_attributes(post_id, attrs):
         },
         "type": "post"
     }
+    if not is_public:
+        out["attributes"]["unlocked"] = bool(unlocked)
+        out["attributes"]["required_tier"] = required_tier
+    return out
+
+
+def _patreon_tiers_by_id() -> dict[str, dict]:
+    """Campaign tiers keyed by ID (the Patreon client caches them for 10 minutes). {} on failure."""
+    try:
+        from utils.patreon import patreon
+        return {str(t["id"]): t for t in patreon.tiers(published_only=False)}
+    except Exception as exc:
+        logger.warning("Patreon tiers unavailable: %s", exc)
+        return {}
+
+
+def _post_required_tier(attrs, tiers_by_id) -> dict | None:
+    """Cheapest tier that can read a patron-only post, for the "who can read this" label."""
+    if attrs.get("is_public"):
+        return None
+    tiers = [tiers_by_id[str(t)] for t in attrs.get("tiers") or [] if str(t) in tiers_by_id]
+    if not tiers:
+        return None
+    cheapest = min(tiers, key=lambda t: t.get("amount_cents") or 0)
+    return {"title": cheapest.get("title"), "amount_cents": cheapest.get("amount_cents") or 0}
+
+
+def _viewer_can_read_post(user, attrs, tiers_by_id) -> bool:
+    """Whether the signed-in (Discord) viewer may read a patron-only Patreon post.
+
+    - Staff can read everything.
+    - A post open to the Free tier needs only a signed-in account: following on Patreon is free,
+      and checking the ~9k-member list on every view is too slow.
+    - Otherwise the viewer needs the Discord role (or tier name) of one of the post's tiers.
+      Patreon gives each paid tier a Discord role, so a linked patron has it automatically.
+    """
+    if attrs.get("is_public"):
+        return True
+    if not user:
+        return False
+    roles = {str(r) for r in (user.get("roles") or [])}
+    if user.get("is_admin") or user.get("is_mod") or _is_mod(list(roles)):
+        return True
+    try:
+        from utils.discord_membership import _admin_role_ids
+        if roles & _admin_role_ids():
+            return True
+    except Exception:
+        pass
+
+    tiers = [tiers_by_id.get(str(t)) for t in attrs.get("tiers") or []]
+    tiers = [t for t in tiers if t]
+    if not tiers:
+        return False  # unknown tiers (lookup failed): stay locked
+    if any((t.get("amount_cents") or 0) == 0 for t in tiers):
+        return True
+
+    lowered = {r.lower() for r in roles}
+    for tier in tiers:
+        if roles & {str(r) for r in (tier.get("discord_role_ids") or [])}:
+            return True
+        if (tier.get("title") or "").lower() in lowered:
+            return True
+    return False
 
 
 _file_cache: dict = {}
@@ -3698,64 +3758,60 @@ def api_island_villager_inject(name):
 
 @app.route("/api/patreon/posts", methods=["GET"])
 def get_patreon_posts():
-    """Get recent Patreon posts (cached 15 min)"""
-    now = datetime.now()
-    if patreon_cache["list"]["data"] and patreon_cache["list"]["timestamp"]:
-        if (now - patreon_cache["list"]["timestamp"]) < timedelta(minutes=15):
-            return jsonify(patreon_cache["list"]["data"])
+    """Recent Patreon posts, newest first (the Patreon client caches them 15 min).
 
-    url = f"https://www.patreon.com/api/oauth2/v2/campaigns/{Config.PATREON_CAMPAIGN_ID}/posts"
-    headers = {"Authorization": f"Bearer {Config.PATREON_TOKEN}"}
-    params = {
-        "fields[post]": "title,content,published_at,url,is_public,embed_data,embed_url",
-        "sort": "-published_at",
-        "page[count]": 10
-    }
+    Always teasers for patron-only posts, whoever asks: the list is the same for everyone.
+    """
+    from utils.patreon import PatreonError, patreon
 
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=20)
-        if not response.ok:
-            return jsonify({"error": "Patreon API Error", "details": response.text}), response.status_code
-
-        raw_data = response.json()
-        processed_data = [process_post_attributes(p["id"], p["attributes"]) for p in raw_data["data"]]
-
-        result = {"data": processed_data}
-        patreon_cache["list"] = {"data": result, "timestamp": now}
-        return jsonify(result)
-
-    except Exception as e:
+        rows = patreon.posts(limit=20)
+    except PatreonError as exc:
+        logger.warning("Patreon posts failed: %s", exc)
+        return jsonify({"error": "Patreon API Error"}), 502
+    except Exception:
+        logger.exception("Patreon posts failed")
         return jsonify({"error": "Server error"}), 500
+
+    tiers_by_id = _patreon_tiers_by_id()
+    data = [
+        process_post_attributes(p["id"], p, required_tier=_post_required_tier(p, tiers_by_id))
+        for p in rows
+    ]
+    return jsonify({"data": data})
 
 
 @app.route("/api/patreon/posts/<post_id>", methods=["GET"])
 def get_single_post(post_id):
-    """Get a specific Patreon post (cached 15 min)"""
-    now = datetime.now()
+    """One Patreon post. Patron-only posts come back in full only to a signed-in viewer allowed to
+    read them (see ``_viewer_can_read_post``); everyone else gets the teaser."""
+    from utils.patreon import PatreonError, patreon
 
-    if post_id in patreon_cache["posts"]:
-        cached_post = patreon_cache["posts"][post_id]
-        if (now - cached_post["timestamp"]) < timedelta(minutes=15):
-            return jsonify(cached_post["data"])
-
-    url = f"https://www.patreon.com/api/oauth2/v2/posts/{post_id}"
-    headers = {"Authorization": f"Bearer {Config.PATREON_TOKEN}"}
-    params = {"fields[post]": "title,content,published_at,url,is_public,embed_data,embed_url"}
-
+    if not str(post_id).isdigit():
+        return jsonify({"error": "Post not found"}), 404
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=20)
-        if not response.ok:
-            return jsonify({"error": "Post not found or API error", "details": response.text}), response.status_code
-
-        raw_data = response.json()
-        processed_post = process_post_attributes(raw_data["data"]["id"], raw_data["data"]["attributes"])
-
-        result = {"data": processed_post}
-        patreon_cache["posts"][post_id] = {"data": result, "timestamp": now}
-        return jsonify(result)
-
-    except Exception as e:
+        attrs = patreon.post(str(post_id))
+    except PatreonError as exc:
+        if exc.status == 404:
+            return jsonify({"error": "Post not found"}), 404
+        logger.warning("Patreon post %s failed: %s", post_id, exc)
+        return jsonify({"error": "Patreon API Error"}), 502
+    except Exception:
+        logger.exception("Patreon post %s failed", post_id)
         return jsonify({"error": "Server error"}), 500
+
+    if attrs.get("is_public"):
+        return jsonify({"data": process_post_attributes(attrs["id"], attrs)})
+
+    tiers_by_id = _patreon_tiers_by_id()
+    unlocked = _viewer_can_read_post(_current_auth_user(), attrs, tiers_by_id)
+    resp = jsonify({"data": process_post_attributes(
+        attrs["id"], attrs, unlocked=unlocked, required_tier=_post_required_tier(attrs, tiers_by_id),
+    )})
+    # The answer depends on who asks: never let a shared cache keep (or hand out) the full post.
+    resp.headers["Cache-Control"] = "private, no-store"
+    resp.vary.add("Authorization")
+    return resp
 
 
 @app.route("/api/stream/status", methods=["GET"])
