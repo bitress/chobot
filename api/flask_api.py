@@ -4637,6 +4637,99 @@ _BOT_STATUS_PRIVATE_KEYS = ("dodo_code", "dodo", "visitors", "visitor_names", "p
 
 # ── Submit Order ─────────────────────────────────────────────────────────────
 
+# ── Guest orders (no login) ──────────────────────────────────────────────────
+# A signed-out visitor can order with their IGN and island name. Without an account to hold them
+# to the rules, guests get one open order at a time and a few per hour, keyed to a salted hash of
+# their IP (the IP itself is never stored). Each guest order gets a private token, returned once,
+# which is the only way to read its status (and Dodo code) or cancel it.
+
+GUEST_ORDER_MAX_PER_HOUR = 3
+GUEST_OPEN_ORDER_WINDOW_S = 2 * 3600  # an order the bot hasn't touched in 2h no longer blocks a new one
+GUEST_NAME_MAX = 10  # ACNH's own limit for player and island names
+_OPEN_ORDER_STATUSES = ("queued", "preparing", "ready")
+_guest_column_ready = False
+
+
+def _ensure_guest_order_column() -> None:
+    global _guest_column_ready
+    if _guest_column_ready:
+        return
+    db = get_db()
+    try:
+        cols = {row[1] for row in db.execute("PRAGMA table_info(order_bot_queue)").fetchall()}
+        if "guest_token_hash" not in cols:
+            db.execute("ALTER TABLE order_bot_queue ADD COLUMN guest_token_hash TEXT")
+            db.commit()
+        _guest_column_ready = True
+    except Exception as exc:
+        logger.warning("[OrderBot] Could not add guest_token_hash column: %s", exc)
+    finally:
+        db.close()
+
+
+def _guest_key() -> str:
+    salt = str(getattr(Config, "FLASK_SECRET_KEY", "") or "chopaeng-guest")
+    return "guest:" + hashlib.sha256(f"{salt}|{_client_ip()}".encode()).hexdigest()[:24]
+
+
+def _hash_order_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _clean_guest_name(value) -> str | None:
+    """A player or island name as typed, or None when it can't be one (empty, too long, has a |)."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text or "|" in text or len(text) > GUEST_NAME_MAX:
+        return None
+    return text
+
+
+def _guest_order_token_ok(order_id: str) -> bool:
+    """True when the request carries the private token of this guest order."""
+    token = (request.headers.get("X-Order-Token") or request.args.get("token") or "").strip()
+    if not token or not order_id:
+        return False
+    _ensure_guest_order_column()
+    db = get_db()
+    try:
+        row = db.execute("SELECT guest_token_hash FROM order_bot_queue WHERE id = ?", (order_id,)).fetchone()
+    finally:
+        db.close()
+    stored = row["guest_token_hash"] if row else None
+    return bool(stored) and _secrets.compare_digest(stored, _hash_order_token(token))
+
+
+def _guest_order_block(guest_key: str):
+    """A (response, status) refusing this guest's order, or None when they may order."""
+    now = int(time.time())
+    db = get_db()
+    try:
+        open_count = db.execute(
+            f"""SELECT COUNT(*) FROM order_bot_queue
+                WHERE user_id = ? AND status IN ({",".join("?" for _ in _OPEN_ORDER_STATUSES)}) AND updated_at > ?""",
+            (guest_key, *_OPEN_ORDER_STATUSES, now - GUEST_OPEN_ORDER_WINDOW_S),
+        ).fetchone()[0]
+        hour_count = db.execute(
+            "SELECT COUNT(*) FROM order_bot_queue WHERE user_id = ? AND created_at > ?",
+            (guest_key, now - 3600),
+        ).fetchone()[0]
+    finally:
+        db.close()
+    if open_count:
+        return jsonify({
+            "success": False,
+            "error": "You already have an order in the queue. Wait for it to finish, or sign in with Discord.",
+            "code": "GUEST_ORDER_ACTIVE",
+        }), 429
+    if hour_count >= GUEST_ORDER_MAX_PER_HOUR:
+        return jsonify({
+            "success": False,
+            "error": f"Guests can place {GUEST_ORDER_MAX_PER_HOUR} orders an hour. Sign in with Discord to order more.",
+            "code": "GUEST_RATE_LIMITED",
+        }), 429
+    return None
+
+
 @app.route("/api/order/submit", methods=["POST"])
 def submit_order_to_bot():
     """
@@ -4649,11 +4742,11 @@ def submit_order_to_bot():
 
     Returns: success, order_id, queue_position, eta, estimated_seconds, item_count, message.
     Save the returned order_id and poll /api/order/status to get the Dodo code when ready.
+
+    Signed-out visitors may order too, with "guest_ign", "guest_island" and "accepted_rules": true.
+    Their response adds "guest_token": send it as X-Order-Token to /api/order/status and /cancel.
     """
     auth_user = _current_auth_user()
-    if not auth_user:
-        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
-
     data = request.get_json() or {}
 
     order_text = (data.get("order") or data.get("command") or "").strip()
@@ -4665,32 +4758,59 @@ def submit_order_to_bot():
     if not order_text and not items_list and not preset:
         return jsonify({"success": False, "error": "Provide 'order', 'items', or 'preset' in the request body."}), 400
 
-    username = (
-        data.get("username")
-        or auth_user.get("nickname")
-        or auth_user.get("username")
-        or "WebUser"
-    )
-    user_id = str(auth_user.get("user_id") or auth_user.get("id") or "")
-
-    # Check for active moderation suspension
-    try:
-        from api.control_panel import check_user_active_restriction
-        active_rest = check_user_active_restriction(
-            auth_user.get("user_id"),
-            auth_user.get("discord_id") or auth_user.get("id"),
-        )
-        if active_rest:
+    _ensure_guest_order_column()
+    guest_token: str | None = None
+    if not auth_user:
+        guest_ign = _clean_guest_name(data.get("guest_ign"))
+        guest_island = _clean_guest_name(data.get("guest_island"))
+        if not guest_ign or not guest_island or not is_valid_acnh_nickname(f"{guest_ign} | {guest_island}"):
             return jsonify({
                 "success": False,
-                "error": f"Your account is currently suspended ({active_rest['action_type']}). Reason: {active_rest.get('reason') or 'Policy violation'}.",
-                "code": "access_suspended",
+                "error": f"Enter your in-game name and island name (up to {GUEST_NAME_MAX} characters each), or sign in with Discord.",
+                "code": "GUEST_IDENTITY_REQUIRED",
+            }), 400
+        if data.get("accepted_rules") is not True:
+            return jsonify({
+                "success": False,
+                "error": "Review and accept the Order Bot Rules before ordering.",
+                "code": "missing_order_rules_acceptance",
+                "requires_order_rules": True,
             }), 403
-    except Exception as rest_err:
-        logger.warning("[OrderSubmit] Moderation check error: %s", rest_err)
+        guest_key = _guest_key()
+        blocked = _guest_order_block(guest_key)
+        if blocked:
+            return blocked
+        username = f"{guest_ign} | {guest_island}"
+        user_id = guest_key
+        guest_token = _secrets.token_urlsafe(24)
+    else:
+        username = (
+            data.get("username")
+            or auth_user.get("nickname")
+            or auth_user.get("username")
+            or "WebUser"
+        )
+        user_id = str(auth_user.get("user_id") or auth_user.get("id") or "")
+
+    # Check for active moderation suspension (accounts only; guests are held by the limits above)
+    if auth_user:
+        try:
+            from api.control_panel import check_user_active_restriction
+            active_rest = check_user_active_restriction(
+                auth_user.get("user_id"),
+                auth_user.get("discord_id") or auth_user.get("id"),
+            )
+            if active_rest:
+                return jsonify({
+                    "success": False,
+                    "error": f"Your account is currently suspended ({active_rest['action_type']}). Reason: {active_rest.get('reason') or 'Policy violation'}.",
+                    "code": "access_suspended",
+                }), 403
+        except Exception as rest_err:
+            logger.warning("[OrderSubmit] Moderation check error: %s", rest_err)
 
     # Require user to accept order rules and setup their server nickname or register their In-Game Character before ordering
-    if not auth_user.get("is_admin") and user_id not in ("bot_system", ""):
+    if auth_user and not auth_user.get("is_admin") and user_id not in ("bot_system", ""):
         if not _user_has_order_rules(auth_user):
             return jsonify({
                 "success": False,
@@ -4765,8 +4885,8 @@ def submit_order_to_bot():
                     """REPLACE INTO order_bot_queue
                            (id, user_id, username, command, order_type, status,
                             queue_position, estimated_minutes, dodo_code, island_name,
-                            message, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            message, created_at, updated_at, guest_token_hash)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         order_id,
                         user_id or "anonymous",
@@ -4781,9 +4901,12 @@ def submit_order_to_bot():
                         result.get("message") or "Order placed",
                         now_ts,
                         now_ts,
+                        _hash_order_token(guest_token) if guest_token else None,
                     ),
                 )
                 db.commit()
+                if guest_token:
+                    result["guest_token"] = guest_token
             except Exception as exc:
                 logger.warning("[OrderBot] Failed to persist order %s: %s", order_id, exc)
             finally:
@@ -4802,14 +4925,15 @@ def get_order_status():
 
     status values: queued | preparing | ready | completed | cancelled | error
     dodo_code is non-null once status == "ready".
+    Guest orders: send the order's guest_token as X-Order-Token instead of signing in.
     """
-    auth_user = _current_auth_user()
-    if not auth_user:
-        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
-
     order_id = request.args.get("id") or request.args.get("order_id") or ""
     if not order_id:
         return jsonify({"success": False, "error": "order_id is required."}), 400
+
+    auth_user = _current_auth_user()
+    if not auth_user and not _guest_order_token_ok(order_id):
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
     data, code = _sysbot_get("/api/order/status", id=order_id)
 
     # Normalize response fields from SysBot
@@ -4858,18 +4982,19 @@ def cancel_order():
     Proxy POST /api/order/cancel to SysBot.
     Body: { "id": "order_id" }
     Also accepts DELETE /api/order/cancel?id=...
+    Guest orders: send the order's guest_token as X-Order-Token instead of signing in.
     """
-    auth_user = _current_auth_user()
-    if not auth_user:
-        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
-
     if request.method == "DELETE":
         order_id = (request.args.get("id") or request.args.get("order_id") or "").strip()
     else:
-        body = request.get_json() or {}
+        body = request.get_json(silent=True) or {}
         order_id = (body.get("id") or body.get("order_id") or "").strip()
     if not order_id:
         return jsonify({"success": False, "error": "order_id is required."}), 400
+
+    auth_user = _current_auth_user()
+    if not auth_user and not _guest_order_token_ok(order_id):
+        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
 
     result, code = _sysbot_post("/api/order/cancel", {"id": order_id})
 
