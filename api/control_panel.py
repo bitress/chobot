@@ -1893,7 +1893,6 @@ def _search_website_accounts(q: str, limit: int = 10) -> list[dict]:
     queries = [
         ("SELECT user_id, ign FROM user_saved_characters WHERE LOWER(ign) LIKE ? LIMIT 25", True),
         ("SELECT unified_user_id, NULL FROM user_provider_links WHERE provider <> 'discord' AND LOWER(username) LIKE ? LIMIT 25", False),
-        ("SELECT id, NULL FROM chopaeng_users WHERE LOWER(username) LIKE ? LIMIT 25", False),
     ]
     found: dict[str, str | None] = {}
     if q.startswith(("cp_usr_", "u_")):

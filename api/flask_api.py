@@ -1983,7 +1983,7 @@ def auth_me():
         unified = get_unified_account_by_id(user.get("user_id"))
         if unified:
             has_discord = "discord" in (unified.get("connected_providers") or []) or bool(unified.get("discord_id"))
-            keys_to_copy = ["connected_providers", "connected_accounts", "roles", "email", "has_password", "is_subscriber", "sub_tier"]
+            keys_to_copy = ["connected_providers", "connected_accounts", "roles", "email", "is_subscriber", "sub_tier"]
             if not has_discord:
                 keys_to_copy.extend(["provider", "username"])
             if user.get("discord_checked_at"):
@@ -2057,8 +2057,7 @@ def auth_me():
         "connected_providers": connected,
         "connected_accounts": user.get("connected_accounts", {}),
         "email":      user.get("email", ""),
-        "provider":   user.get("provider", "native" if user.get("has_password") else "discord"),
-        "has_password": bool(user.get("has_password", False)),
+        "provider":   user.get("provider", "discord"),
         "is_subscriber": bool(user.get("is_subscriber", False)),
         "sub_rules_accepted": sub_rules_accepted,
         "order_rules_accepted": order_rules_accepted,

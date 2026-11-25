@@ -12,12 +12,8 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-import secrets
 import time
-from typing import Any, Dict, List, Optional, Tuple
-
-import bcrypt
+from typing import Any, Dict, List, Optional
 
 from utils.config import Config
 from utils.database import connect_db
@@ -113,24 +109,7 @@ def expand_roles(roles: List[Any]) -> List[str]:
 
 
 def _ensure_unified_auth_tables(conn) -> None:
-    """Ensure persistent tables exist for unified user accounts, native accounts, and provider links."""
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS chopaeng_users (
-            id VARCHAR(64) PRIMARY KEY,
-            email VARCHAR(255) NOT NULL UNIQUE,
-            password_hash VARCHAR(255) NOT NULL,
-            username VARCHAR(64) NOT NULL,
-            avatar VARCHAR(512) DEFAULT '',
-            is_admin BOOLEAN DEFAULT 0,
-            is_mod BOOLEAN DEFAULT 0,
-            is_verified BOOLEAN DEFAULT 1,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            last_login_at INTEGER
-        )
-        """
-    )
+    """Ensure persistent tables exist for unified user accounts and provider links."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS unified_accounts (
@@ -163,227 +142,10 @@ def _ensure_unified_auth_tables(conn) -> None:
         """
     )
     try:
-        conn.execute("CREATE INDEX IF NOT EXISTS ix_chopaeng_users_email ON chopaeng_users (email)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_upl_unified_uid ON user_provider_links (unified_user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_upl_email ON user_provider_links (email)")
     except Exception:
         pass
-
-
-def hash_password(password: str) -> str:
-    """Hash password using bcrypt with standard work factor."""
-    salt = bcrypt.gensalt(rounds=12)
-    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
-
-
-def verify_password(password: str, hashed: str) -> bool:
-    """Verify password against bcrypt hash."""
-    if not password or not hashed:
-        return False
-    try:
-        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
-        return False
-
-
-def register_native_user(
-    email: str,
-    password: str,
-    username: Optional[str] = None,
-) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """
-    Register a primary native ChoPaeng account with email & password.
-    Returns (user_payload, None) on success, or (None, error_msg) on failure.
-    """
-    if not email or "@" not in email:
-        return None, "A valid email address is required."
-    clean_email = email.strip().lower()
-    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", clean_email):
-        return None, "Please provide a valid email format."
-
-    if not password or len(password) < 6:
-        return None, "Password must be at least 6 characters long."
-
-    clean_username = (username or "").strip()
-    if not clean_username:
-        clean_username = clean_email.split("@")[0]
-
-    now = int(time.time())
-    conn = connect_db()
-    try:
-        _ensure_unified_auth_tables(conn)
-
-        # Check if email already registered with password
-        existing = conn.execute(
-            "SELECT * FROM chopaeng_users WHERE email = ?",
-            (clean_email,),
-        ).fetchone()
-
-        if existing:
-            if existing["password_hash"]:
-                return None, "An account with this email already exists. Please log in."
-            # Account was auto-provisioned via OAuth without password; set credentials now
-            user_id = str(existing["id"])
-            pw_hash = hash_password(password)
-            conn.execute(
-                """
-                UPDATE chopaeng_users
-                SET password_hash = ?, username = ?, updated_at = ?, last_login_at = ?
-                WHERE id = ?
-                """,
-                (pw_hash, clean_username or existing["username"], now, now, user_id),
-            )
-            conn.commit()
-            return get_unified_account_by_id(user_id), None
-
-        # Check if an existing unified_accounts row matches this email from prior OAuth
-        prior_unified = conn.execute(
-            "SELECT unified_user_id FROM user_provider_links WHERE email = ? LIMIT 1",
-            (clean_email,),
-        ).fetchone()
-
-        if prior_unified:
-            user_id = str(prior_unified["unified_user_id"])
-        else:
-            user_id = f"cp_usr_{secrets.token_hex(8)}"
-
-        pw_hash = hash_password(password)
-        conn.execute(
-            """
-            INSERT INTO chopaeng_users
-            (id, email, password_hash, username, avatar, is_admin, is_mod, is_verified, created_at, updated_at, last_login_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (user_id, clean_email, pw_hash, clean_username, "", 0, 0, 1, now, now, now),
-        )
-
-        conn.execute(
-            """
-            INSERT INTO unified_accounts
-            (unified_user_id, primary_username, primary_avatar, primary_email, primary_provider, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(unified_user_id) DO UPDATE SET
-                primary_username = excluded.primary_username,
-                primary_email = excluded.primary_email,
-                updated_at = excluded.updated_at
-            """,
-            (user_id, clean_username, "", clean_email, "native", now, now),
-        )
-
-        # Also add website native provider link
-        conn.execute(
-            """
-            INSERT INTO user_provider_links
-            (provider, provider_user_id, unified_user_id, email, username, avatar, roles_json, sub_tier, raw_profile_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(provider, provider_user_id) DO UPDATE SET
-                email = excluded.email,
-                username = excluded.username,
-                updated_at = excluded.updated_at
-            """,
-            ("website", user_id, user_id, clean_email, clean_username, "", "[]", "", "{}", now, now),
-        )
-        conn.commit()
-
-        return get_unified_account_by_id(user_id), None
-    finally:
-        conn.close()
-
-
-def authenticate_native_user(
-    email: str,
-    password: str,
-) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """
-    Authenticate a native ChoPaeng account with email & password.
-    Returns (user_payload, None) on success, or (None, error_msg) on failure.
-    """
-    if not email or not password:
-        return None, "Email and password are required."
-
-    clean_email = email.strip().lower()
-    conn = connect_db()
-    try:
-        _ensure_unified_auth_tables(conn)
-        user_row = conn.execute(
-            "SELECT * FROM chopaeng_users WHERE email = ?",
-            (clean_email,),
-        ).fetchone()
-
-        if not user_row:
-            return None, "Invalid email or password."
-
-        if not user_row["password_hash"]:
-            return None, "This account was registered via social login. Please sign in with your connected account or set a password in settings."
-
-        if not verify_password(password, user_row["password_hash"]):
-            return None, "Invalid email or password."
-
-        now = int(time.time())
-        conn.execute("UPDATE chopaeng_users SET last_login_at = ? WHERE id = ?", (now, user_row["id"]))
-        conn.commit()
-
-        payload = get_unified_account_by_id(user_row["id"])
-        if payload:
-            if user_row.get("is_admin"):
-                payload["is_admin"] = True
-            if user_row.get("is_mod"):
-                payload["is_mod"] = True
-        return payload, None
-    finally:
-        conn.close()
-
-
-def set_native_password(
-    user_id: str,
-    new_password: str,
-    old_password: Optional[str] = None,
-) -> Tuple[bool, str]:
-    """Set or change password for a user."""
-    if not user_id:
-        return False, "User ID is required."
-    if not new_password or len(new_password) < 6:
-        return False, "Password must be at least 6 characters long."
-
-    conn = connect_db()
-    try:
-        _ensure_unified_auth_tables(conn)
-        row = conn.execute("SELECT * FROM chopaeng_users WHERE id = ?", (user_id,)).fetchone()
-        now = int(time.time())
-        if not row:
-            # Check unified_accounts
-            u_row = conn.execute("SELECT * FROM unified_accounts WHERE unified_user_id = ?", (user_id,)).fetchone()
-            if not u_row:
-                return False, "User account not found."
-            email = u_row["primary_email"] or f"{user_id}@chopaeng.com"
-            uname = u_row["primary_username"] or "ChoResident"
-            pw_hash = hash_password(new_password)
-            conn.execute(
-                """
-                INSERT INTO chopaeng_users
-                (id, email, password_hash, username, avatar, is_admin, is_mod, is_verified, created_at, updated_at, last_login_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (user_id, email, pw_hash, uname, u_row["primary_avatar"] or "", 0, 0, 1, now, now, now),
-            )
-            conn.commit()
-            return True, "Password set successfully."
-
-        if row["password_hash"] and old_password:
-            if not verify_password(old_password, row["password_hash"]):
-                return False, "Current password is incorrect."
-        elif row["password_hash"] and not old_password:
-            return False, "Current password is required to change password."
-
-        pw_hash = hash_password(new_password)
-        conn.execute(
-            "UPDATE chopaeng_users SET password_hash = ?, updated_at = ? WHERE id = ?",
-            (pw_hash, now, user_id),
-        )
-        conn.commit()
-        return True, "Password updated successfully."
-    finally:
-        conn.close()
 
 
 def get_unified_account_by_id(unified_user_id: str) -> Optional[Dict[str, Any]]:
@@ -407,7 +169,7 @@ def get_unified_account_by_id(unified_user_id: str) -> Optional[Dict[str, Any]]:
         if not account_row and not links:
             return None
 
-        return _build_unified_payload(account_row, links, unified_user_id, conn=conn)
+        return _build_unified_payload(account_row, links, unified_user_id)
     finally:
         conn.close()
 
@@ -423,7 +185,7 @@ def find_unified_user_id(
     Resolution order:
       1. Explicit active session (user is linking an account while logged in)
       2. Existing link for (provider, provider_user_id)
-      3. Existing link or native account matching the verified email
+      3. Existing link matching the verified email
     """
     if active_user_id and active_user_id.strip():
         act_id = active_user_id.strip()
@@ -446,13 +208,6 @@ def find_unified_user_id(
             if p_chk:
                 return str(p_chk["unified_user_id"])
 
-            try:
-                cp_chk = conn.execute("SELECT id FROM chopaeng_users WHERE id = ? LIMIT 1", (act_id,)).fetchone()
-                if cp_chk:
-                    return str(cp_chk["id"])
-            except Exception:
-                pass
-
             return act_id
         finally:
             conn.close()
@@ -472,23 +227,6 @@ def find_unified_user_id(
         # 2. Email auto-link check
         if email and email.strip():
             clean_email = email.strip().lower()
-            try:
-                native_row = conn.execute(
-                    "SELECT id FROM chopaeng_users WHERE email = ? LIMIT 1",
-                    (clean_email,),
-                ).fetchone()
-                if native_row:
-                    logger.info(
-                        "Auto-linking provider %s:%s to native Chopaeng account %s by matching email %s",
-                        provider,
-                        provider_user_id,
-                        native_row["id"],
-                        email,
-                    )
-                    return str(native_row["id"])
-            except Exception:
-                pass
-
             email_row = conn.execute(
                 "SELECT unified_user_id FROM user_provider_links WHERE email = ? AND email != '' LIMIT 1",
                 (clean_email,),
@@ -569,14 +307,6 @@ def provision_or_link_unified_account(
                 (unified_uid,),
             ).fetchone()
 
-            is_native = False
-            try:
-                cp_chk = conn.execute("SELECT 1 FROM chopaeng_users WHERE id = ?", (unified_uid,)).fetchone()
-                if cp_chk:
-                    is_native = True
-            except Exception:
-                pass
-
             # Check if Discord is already linked to this unified account
             has_discord = conn.execute(
                 "SELECT username, avatar, email FROM user_provider_links WHERE unified_user_id = ? AND provider = 'discord'",
@@ -584,7 +314,7 @@ def provision_or_link_unified_account(
             ).fetchone()
 
             if not account_row_chk:
-                p_prov = "native" if is_native else ("discord" if (has_discord or provider == "discord") else provider)
+                p_prov = "discord" if (has_discord or provider == "discord") else provider
                 p_user = (has_discord["username"] if has_discord else username)
                 p_av = (has_discord["avatar"] if has_discord else avatar)
                 p_em = (has_discord["email"] if has_discord else clean_email)
@@ -595,17 +325,6 @@ def provision_or_link_unified_account(
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (unified_uid, p_user, p_av, p_em, p_prov, now, now),
-                )
-            elif is_native:
-                conn.execute(
-                    """
-                    UPDATE unified_accounts
-                    SET updated_at = ?,
-                        primary_provider = 'native',
-                        primary_avatar = CASE WHEN (primary_avatar IS NULL OR primary_avatar = '') THEN ? ELSE primary_avatar END
-                    WHERE unified_user_id = ?
-                    """,
-                    (now, avatar, unified_uid),
                 )
             elif has_discord or provider == "discord":
                 # Discord is main! Ensure primary_provider remains 'discord' and Discord username/avatar take priority
@@ -681,7 +400,7 @@ def provision_or_link_unified_account(
             (unified_uid,),
         ).fetchall()
 
-        return _build_unified_payload(account_row, links, unified_uid, conn=conn)
+        return _build_unified_payload(account_row, links, unified_uid)
     finally:
         conn.close()
 
@@ -717,12 +436,12 @@ def unlink_provider_from_unified_account(unified_user_id: str, provider: str) ->
         if not account_row and not links:
             return None
 
-        return _build_unified_payload(account_row, links, unified_user_id, conn=conn)
+        return _build_unified_payload(account_row, links, unified_user_id)
     finally:
         conn.close()
 
 
-def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str, conn: Any = None) -> Dict[str, Any]:
+def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str) -> Dict[str, Any]:
     """Helper to aggregate all roles, connected providers, and metadata into a unified user dict."""
     aggregated_roles: List[str] = []
     connected_accounts: Dict[str, Any] = {}
@@ -732,42 +451,8 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
     primary_avatar = account_row["primary_avatar"] if account_row else ""
     primary_provider = account_row["primary_provider"] if account_row else "unified"
     primary_email = (account_row["primary_email"] if account_row else "") or ""
-
-    has_password = False
     is_admin = False
     is_mod = False
-
-    close_conn = False
-    db_conn = conn
-    if db_conn is None:
-        try:
-            db_conn = connect_db()
-            close_conn = True
-        except Exception:
-            db_conn = None
-
-    if db_conn:
-        try:
-            cp_row = db_conn.execute(
-                "SELECT email, password_hash, is_admin, is_mod, username, avatar FROM chopaeng_users WHERE id = ?",
-                (unified_uid,),
-            ).fetchone()
-            if cp_row:
-                has_password = bool(cp_row["password_hash"])
-                is_admin = bool(cp_row["is_admin"])
-                is_mod = bool(cp_row["is_mod"])
-                primary_provider = "native"
-                if cp_row["email"]:
-                    primary_email = cp_row["email"]
-                if cp_row["username"]:
-                    primary_name = cp_row["username"]
-                if cp_row["avatar"]:
-                    primary_avatar = cp_row["avatar"]
-        except Exception:
-            pass
-        finally:
-            if close_conn:
-                db_conn.close()
 
     for link_item in links:
         link = dict(link_item) if not isinstance(link_item, dict) else link_item
@@ -804,12 +489,11 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
     # Discord is the main provider! If Discord is connected, it takes priority over secondary platforms
     discord_acc = connected_accounts.get("discord")
     if discord_acc:
-        if primary_provider != "native":
-            primary_provider = "discord"
-            if discord_acc.get("username"):
-                primary_name = discord_acc["username"]
-            if discord_acc.get("avatar"):
-                primary_avatar = discord_acc["avatar"]
+        primary_provider = "discord"
+        if discord_acc.get("username"):
+            primary_name = discord_acc["username"]
+        if discord_acc.get("avatar"):
+            primary_avatar = discord_acc["avatar"]
 
     # De-duplicate and expand roles
     subscription = resolve_subscription(aggregated_roles)
@@ -851,7 +535,6 @@ def _build_unified_payload(account_row: Any, links: List[Any], unified_uid: str,
         "email": primary_email,
         "avatar": primary_avatar,
         "provider": primary_provider,
-        "has_password": has_password,
         "roles": unique_roles,
         "sub_tier": highest_tier,
         "is_subscriber": subscription["is_subscriber"],
@@ -908,7 +591,7 @@ def resolve_all_user_ids(user_or_id: Any) -> List[str]:
     elif user_or_id:
         cands.append(str(user_or_id).strip())
 
-    # Unified accounts: native (cp_usr_…) and YouTube/Twitch/Patreon logins (u_<provider>_<id>)
+    # Unified accounts: legacy native (cp_usr_…) and YouTube/Twitch/Patreon logins (u_<provider>_<id>)
     cp_uids = [c for c in cands if c.startswith(("cp_usr_", "u_"))]
     if cp_uids:
         try:

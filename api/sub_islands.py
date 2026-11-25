@@ -32,9 +32,6 @@ from utils.unified_auth import (
     provision_or_link_unified_account,
     unlink_provider_from_unified_account,
     get_unified_account_by_id,
-    register_native_user,
-    authenticate_native_user,
-    set_native_password,
 )
 
 logger = logging.getLogger("SubIslands")
