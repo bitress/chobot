@@ -45,6 +45,7 @@ from bots.nickname_panel import (
 )
 from bots.cogs.control_panel_cog import ControlPanelCog
 from bots.cogs.revive_cog import revive_island, revive_outcome
+from bots.cogs.ports_cog import PortsCog
 from bots.dodo_reveal_panel import (
     can_use_panel as can_use_reveal_panel,
     setup_reveal_panel,
@@ -6390,6 +6391,9 @@ class DiscordCommandBot(commands.Bot):
         # Register ControlPanel persistent panels and slash-command group
         control_panel_cog = ControlPanelCog(self)
         await self.add_cog(control_panel_cog)
+
+        # /ports — list the open ports on this PC (admins only)
+        await self.add_cog(PortsCog(self))
 
         # Add global interaction check for slash commands in FIND_BOT_CHANNEL
         async def check_find_channel_restriction(interaction: discord.Interaction) -> bool:
