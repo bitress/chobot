@@ -5057,10 +5057,12 @@ def get_order_queue():
     Proxy GET /api/queue from SysBot.
     Returns the full list of pending orders with queue position, ETA, and username.
     Normalizes the response so the frontend gets consistent field names.
+
+    Public: guests ordering from the website need to see the line too. Signed-out callers get only
+    the fields the queue list shows (no account ids, islands or item lists); an order id alone
+    unlocks nothing, since /api/order/status still needs a sign-in or that order's guest token.
     """
     auth_user = _current_auth_user()
-    if not auth_user:
-        return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
 
     data, code = _sysbot_get("/api/queue")
 
@@ -5079,10 +5081,31 @@ def get_order_queue():
                 if parsed is not None:
                     entry["estimated_minutes"] = parsed
 
+        if not auth_user:
+            data = {
+                "success": data.get("success", True),
+                "orders": [
+                    {k: e[k] for k in _PUBLIC_QUEUE_FIELDS if k in e}
+                    for e in data["orders"]
+                    if isinstance(e, dict)
+                ],
+                **{k: data[k] for k in ("total", "count", "island_name", "current_active_user") if k in data},
+            }
+
         # Also populate the legacy "queue" key for backward compat with frontend
         data["queue"] = data["orders"]
+    elif not auth_user and isinstance(data, dict):
+        # Unexpected shape from the bot: tell a guest nothing rather than pass it through.
+        data = {"success": False, "error": data.get("error") or "Queue unavailable."}
 
     return jsonify(data), code
+
+
+# What a signed-out visitor may see of each queue entry (matches the website's queue list).
+_PUBLIC_QUEUE_FIELDS = (
+    "order_id", "username", "position", "queue_position", "status",
+    "eta", "estimated_minutes", "item_count", "villager", "created_at",
+)
 
 
 # ── Dodo Code ────────────────────────────────────────────────────────────────
