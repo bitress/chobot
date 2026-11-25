@@ -522,7 +522,7 @@ class SysBotClient:
 
         # Persist order to database if successful
         if isinstance(result, dict) and (result.get("success") or code in (200, 201)):
-            assigned_id = str(result.get("order_id") or result.get("id") or order_id or f"ord_{int(time.time())}")
+            assigned_id = str(result.get("order_id") or result.get("id") or order_id or f"ord_{int(time.time())}_{os.urandom(3).hex()}")
             result["order_id"] = assigned_id
             now_ts = int(time.time())
             cmd_str = final_order or (", ".join(items) if items else (f"villager:{final_villager}" if final_villager else "Order"))

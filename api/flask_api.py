@@ -4672,6 +4672,30 @@ def _guest_order_token_ok(order_id: str) -> bool:
     return bool(stored) and _secrets.compare_digest(stored, _hash_order_token(token))
 
 
+def _order_access_ok(order_id: str, auth_user: dict | None) -> bool:
+    """
+    May this caller see or cancel this order? Yes for the guest holding its token, for admins, and
+    for the signed-in account that placed it (any linked id). Being signed in is not enough: order
+    ids are visible in the public queue, so without this anyone could read another player's Dodo
+    code or cancel their order.
+    """
+    if _guest_order_token_ok(order_id):
+        return True
+    if not auth_user:
+        return False
+    if auth_user.get("is_admin"):
+        return True
+    db = get_db()
+    try:
+        row = db.execute("SELECT user_id FROM order_bot_queue WHERE id = ?", (order_id,)).fetchone()
+    finally:
+        db.close()
+    if not row or not row["user_id"]:
+        return False
+    from utils.unified_auth import resolve_all_user_ids
+    return str(row["user_id"]) in set(resolve_all_user_ids(auth_user))
+
+
 def _guest_order_block(guest_key: str):
     """A (response, status) refusing this guest's order, or None when they may order."""
     now = int(time.time())
@@ -4907,6 +4931,8 @@ def get_order_status():
     auth_user = _current_auth_user()
     if not auth_user and not _guest_order_token_ok(order_id):
         return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+    if not _order_access_ok(order_id, auth_user):
+        return jsonify({"success": False, "error": "Order not found."}), 404
     data, code = _sysbot_get("/api/order/status", id=order_id)
 
     # Normalize response fields from SysBot
@@ -4968,6 +4994,8 @@ def cancel_order():
     auth_user = _current_auth_user()
     if not auth_user and not _guest_order_token_ok(order_id):
         return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+    if not _order_access_ok(order_id, auth_user):
+        return jsonify({"success": False, "error": "Order not found."}), 404
 
     result, code = _sysbot_post("/api/order/cancel", {"id": order_id})
 
@@ -5122,6 +5150,9 @@ def get_order_dodo():
         return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
 
     order_id = request.args.get("order_id") or request.args.get("id")
+    # Order mode hands out a private code, so only to whoever placed that order.
+    if order_id and not _order_access_ok(str(order_id), auth_user):
+        return jsonify({"success": False, "error": "Order not found."}), 404
     user_id = request.args.get("user_id") or str(auth_user.get("user_id") or auth_user.get("id") or "")
     if not auth_user.get("is_admin") and user_id not in ("bot_system", ""):
         if not _user_has_order_rules(auth_user):
