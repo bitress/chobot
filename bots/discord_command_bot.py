@@ -8,7 +8,6 @@ import asyncio
 import contextlib
 import os
 import shutil
-import subprocess
 import time
 import re
 import random
@@ -45,6 +44,7 @@ from bots.nickname_panel import (
     register_nickname_commands,
 )
 from bots.cogs.control_panel_cog import ControlPanelCog
+from bots.cogs.revive_cog import revive_island, revive_outcome
 from bots.dodo_reveal_panel import (
     can_use_panel as can_use_reveal_panel,
     setup_reveal_panel,
@@ -111,10 +111,6 @@ FREE_DODO_BOARD_INTERVAL_SECONDS = 60
 FREE_DODO_BOARD_EMBEDS_PER_MESSAGE = 10
 FREE_DODO_BOARD_MARKER = "Chopaeng Camp™"
 
-ISLAND_REVIVE_BATCH_PATH = os.getenv(
-    "ISLAND_RESTART_BAT_PATH",
-    r"C:\Users\ChoPaeng\Desktop\Relaunch_Island.bat",
-)
 DODO_SENT_TIPS = [
     "**DO NOT** share your order code with anyone else. Only the person who placed the order may visit that island. Sharing a code may result in a permanent bot ban.",
     "Free up your home storage before visiting so you can unload full pockets quickly and fly back for another run.",
@@ -5288,6 +5284,7 @@ class DiscordCommandCog(commands.Cog):
                 await confirm_view.interaction.response.edit_message(view=None)
 
             success = []
+            skipped = []
             failed = []
 
             for idx, isl in enumerate(offline_islands, 1):
@@ -5296,46 +5293,45 @@ class DiscordCommandCog(commands.Cog):
                         title="Bulk Reboot in Progress",
                         description=(
                             f"Rebooting **{isl.upper()}** ({idx}/{len(offline_islands)})…\n\n"
-                            f"Done: {len(success)}  |  {Config.EMOJI_FAIL} Failed: {len(failed)}"
+                            f"Done: {len(success)}  |  Already running: {len(skipped)}  |  "
+                            f"{Config.EMOJI_FAIL} Failed: {len(failed)}"
                         ),
                         color=discord.Color.blurple(),
                     )
                 )
+                # Same code as the control panel's Revive button (checks for a running bot first).
                 async with self._revive_lock:
                     try:
-                        result = await asyncio.to_thread(
-                            subprocess.run,
-                            [ISLAND_REVIVE_BATCH_PATH, str(fleet), isl],
-                            capture_output=True,
-                            text=True,
-                            timeout=60,
-                            shell=True,
-                        )
-                        if result.returncode == 0:
-                            success.append(isl)
-                        else:
-                            failed.append(isl)
-                    except subprocess.TimeoutExpired:
-                        failed.append(isl)
+                        outcome = revive_outcome(await revive_island(isl, None, ctx.author))
+                    except Exception:
+                        logger.exception("[DISCORD] Bulk revive failed for %s", isl)
+                        outcome = "failed"
+                {"revived": success, "skipped": skipped}.get(outcome, failed).append(isl)
 
             embed = discord.Embed(
                 title="Bulk Reboot Complete" if not failed else f"{Config.EMOJI_FAIL} Bulk Reboot Complete (with errors)",
                 color=discord.Color.green() if not failed else discord.Color.orange(),
             )
             embed.add_field(
-                name=f"Successful ({len(success)})",
+                name=f"Revived ({len(success)})",
                 value=_truncate_list(success) if success else "None",
                 inline=False,
             )
+            if skipped:
+                embed.add_field(
+                    name=f"Already running, left alone ({len(skipped)})",
+                    value=_truncate_list(skipped),
+                    inline=False,
+                )
             if failed:
                 embed.add_field(
-                    name=f"{Config.EMOJI_FAIL} Failed / Timed Out ({len(failed)})",
-                    value=_truncate_list(failed),
+                    name=f"{Config.EMOJI_FAIL} Failed ({len(failed)})",
+                    value=_truncate_list(failed) + "\nUse `/revive` on one island to see why.",
                     inline=False,
                 )
             logger.info(
-                "[DISCORD] Bulk revive by %s — fleet=%s, success=%s, failed=%s",
-                ctx.author, fleet_label, success, failed,
+                "[DISCORD] Bulk revive by %s — fleet=%s, revived=%s, skipped=%s, failed=%s",
+                ctx.author, fleet_label, success, skipped, failed,
             )
             await status_msg.edit(embed=embed)
             return
@@ -5435,74 +5431,33 @@ class DiscordCommandCog(commands.Cog):
                     color=discord.Color.blurple(),
                     cleaned=cleaned,
                     fleet_label=fleet_label,
-                    description="Sending restart request. This can take up to a minute.",
+                    description="Checking whether the bot is already running, then restarting it.",
                     requester=ctx.author,
                 )
             )
-
+            # Same code as the control panel's Revive button (checks for a running bot first).
             try:
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    [ISLAND_REVIVE_BATCH_PATH, str(fleet), cleaned],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    shell=True,
+                embed = await revive_island(cleaned, None, ctx.author)
+            except Exception:
+                logger.exception("[DISCORD] Revive failed for %s", cleaned)
+                embed = self._build_revive_embed(
+                    title="❌ Reboot Failed",
+                    color=discord.Color.red(),
+                    cleaned=cleaned,
+                    fleet_label=fleet_label,
+                    description="Something went wrong while reviving. Nothing may have been launched; ask an owner to check.",
+                    requester=ctx.author,
                 )
-            except subprocess.TimeoutExpired:
-                elapsed = time.monotonic() - start
-                await status_msg.edit(
-                    embed=self._build_revive_embed(
-                        title="⏱ Reboot Timed Out",
-                        color=discord.Color.orange(),
-                        cleaned=cleaned,
-                        fleet_label=fleet_label,
-                        description="The restart script didn't finish within 60 seconds. It may still be running in the background — check the island channel before retrying.",
-                        elapsed=elapsed,
-                        requester=ctx.author,
-                    )
-                )
-                logger.warning(
-                    "[DISCORD] Island reboot timed out: %s (%s) requested by %s",
-                    cleaned, fleet_label, ctx.author,
-                )
-                return
 
         elapsed = time.monotonic() - start
-        output = (result.stdout or "").strip()
-        errout = (result.stderr or "").strip()
-
-        if result.returncode == 0:
-            embed = self._build_revive_embed(
-                title="Island Rebooted",
-                color=discord.Color.green(),
-                cleaned=cleaned,
-                fleet_label=fleet_label,
-                output=output or None,
-                elapsed=elapsed,
-                requester=ctx.author,
-            )
-        else:
-            embed = self._build_revive_embed(
-                title="❌ Reboot Failed",
-                color=discord.Color.red(),
-                cleaned=cleaned,
-                fleet_label=fleet_label,
-                description=f"Script exited with code `{result.returncode}`.",
-                output=output or None,
-                errout=errout or None,
-                elapsed=elapsed,
-                requester=ctx.author,
-            )
-
         await status_msg.edit(embed=embed)
 
         logger.info(
-            "[DISCORD] Island revive command invoked by %s for %s (%s), rc=%s, elapsed=%.1fs",
+            "[DISCORD] Island revive command invoked by %s for %s (%s): %s, elapsed=%.1fs",
             ctx.author,
             cleaned,
             fleet_label,
-            result.returncode,
+            revive_outcome(embed),
             elapsed,
         )
 

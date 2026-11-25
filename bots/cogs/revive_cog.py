@@ -71,6 +71,16 @@ def _launch(folder: str, title: str, window: str) -> tuple[bool, str]:
 _REVIVE_LOCK = asyncio.Lock()
 
 
+def revive_outcome(embed: discord.Embed) -> str:
+    """'revived' (launched or restarting), 'skipped' (already running / booting) or 'failed'."""
+    color = embed.color.value if embed.color else None
+    if color == COLOR_OK:
+        return "revived"
+    if color == COLOR_WARN:
+        return "skipped"
+    return "failed"
+
+
 def _resolve_folder(name: str, fleet: str | None) -> tuple[str, str, str] | discord.Embed:
     """(folder, fleet label, wt window) for an island, or an error embed.
 
@@ -101,7 +111,7 @@ def _resolve_folder(name: str, fleet: str | None) -> tuple[str, str, str] | disc
             "Ask an owner to check the island's folder.", "❌ Island not found")
     return _err_embed(
         f"**{name}** has a folder in both fleets, so I can't tell which one to start. "
-        "Use `/revive` and pick the fleet instead.", "❌ Which fleet?")
+        "Ask an owner to remove the extra folder.", "❌ Which fleet?")
 
 
 # ─── Duplicate check ──────────────────────────────────────────────────────────
@@ -173,7 +183,8 @@ async def revive_island(island: str, fleet: str | None, user: discord.abc.User) 
     Checks for a copy that's already running first, so a revive never puts two bots on
     one island. fleet=None auto-detects it. Used by the control panel's Revive button."""
     # Strip accidental spaces (same as the bat), then allow only plain folder names.
-    name = island.replace(" ", "")
+    # Known islands get their proper name (handles "hiraya", "Sub Island Hiraya", …).
+    name = Config.resolve_known_island(island) or island.replace(" ", "")
     if not _SAFE_NAME.fullmatch(name):
         return _err_embed(
             f"**{island[:40]}** isn't a valid island name. Use only letters, numbers, `-` and `_` "
