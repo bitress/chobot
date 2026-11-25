@@ -172,7 +172,6 @@ def _result(title: str, description: str, color: int, name: str, label: str,
     embed.add_field(name="🏝️ Island", value=name, inline=True)
     embed.add_field(name="🚢 Fleet", value=label, inline=True)
     embed.add_field(name="👤 Requested by", value=user.mention, inline=True)
-    embed.add_field(name="📁 Folder", value=f"`{folder}`", inline=False)
     embed.timestamp = discord.utils.utcnow()
     return embed
 
