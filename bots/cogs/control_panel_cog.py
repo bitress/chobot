@@ -132,6 +132,11 @@ ACTIONS: dict[str, ActionSpec] = {
                    "Shows this help.", local=True),
         ActionSpec("switch", "All Islands", "🌐", _S.secondary, 3, "Browse all islands", "Browse Islands",
                    "Switch the control panel to any of the 48 Sub and Free islands across the cluster.", local=True),
+        ActionSpec("revive", "Revive", "🚑", _S.danger, 1, "Revive island", "Revive Island",
+                   "Relaunches a crashed SysBot program for this island. Only use it when the bot has closed.",
+                   confirm="Relaunches the SysBot program for this island. Only do this if the bot has crashed or "
+                           "closed; if it's still running you'll end up with two bots on the same island.",
+                   local=True),
     )
 }
 
@@ -1153,7 +1158,7 @@ async def _update_panel_message(
         return
     status = await fetch_island_status(island)
     embed = build_control_panel_embed(island, status)
-    await message.edit(embed=embed, view=IslandControlPanelView(island))
+    await message.edit(embed=embed, view=IslandControlPanelView(island, status))
     cog: Any = bot.get_cog("ControlPanelCog")
     channel_id = getattr(message, "channel", None) and message.channel.id
     if cog and channel_id:
@@ -1189,7 +1194,7 @@ async def switch_panel(
             status = await fetch_island_status(new_island)
             embed = build_control_panel_embed(new_island, status)
             if message:
-                await message.edit(embed=embed, view=IslandControlPanelView(new_island))
+                await message.edit(embed=embed, view=IslandControlPanelView(new_island, status))
             if cog:
                 cog._sigs[str(channel_id)] = (_embed_signature(embed), time.monotonic())
             ok = True
@@ -1301,6 +1306,38 @@ async def run_action(
         logger.debug("[ControlPanel] Could not update panel after %s: %s", spec.key, exc)
 
 
+REVIVE_COOLDOWN = 30.0   # one launch per island per 30s, so a double click can't start two bots
+
+
+async def run_revive(interaction: discord.Interaction, island: str, panel_message: discord.Message | None) -> None:
+    """Relaunch the island's SysBot program (see revive_cog) and report in the ephemeral response."""
+    from bots.cogs.revive_cog import revive_island   # lazy: revive_cog imports this module
+
+    lock = _island_lock(island)
+    if lock.locked():
+        await interaction.edit_original_response(
+            content=None, view=None,
+            embed=_embed("⏳ Busy", f"Another action is already running on **{island}**. Try again in a moment.", PANEL_COLOR_WARN),
+        )
+        return
+    async with lock:
+        wait = _cooldown_left(island, "revive", REVIVE_COOLDOWN)
+        if wait:
+            await interaction.edit_original_response(
+                content=None, view=None,
+                embed=_embed("⏳ Already revived", f"**{island}** was just revived. Try again in {math.ceil(wait)}s if it's still down.", PANEL_COLOR_WARN),
+            )
+            return
+        embed = await revive_island(island, None, interaction.user)
+        if embed.color and embed.color.value == PANEL_COLOR_OFFLINE:
+            _COOLDOWNS.pop((island.lower(), "revive"), None)   # failed: allow a retry right away
+    await interaction.edit_original_response(content=None, embed=embed, view=None)
+
+    with contextlib.suppress(Exception):
+        await asyncio.sleep(SETTLE_DELAY)
+        await _update_panel_message(panel_message, island, interaction.client)
+
+
 class ConfirmActionView(discord.ui.View):
     """Ephemeral confirm step for risky actions. Only the person who clicked can answer."""
 
@@ -1338,6 +1375,9 @@ class ConfirmActionView(discord.ui.View):
             embed=_embed(f"⏳ Sending — {self.spec.title}", f"Working on **{self.island}**…", PANEL_COLOR_WARN),
             view=None,
         )
+        if self.spec.key == "revive":
+            await run_revive(interaction, self.island, self.panel_message)
+            return
         await run_action(interaction, self.island, self.spec, self.panel_message)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -1881,10 +1921,20 @@ class ControlPanelActionButton(
                 return   # ignore rapid re-clicks
             status = await fetch_island_status(island)
             embed = build_control_panel_embed(island, status)
-            await interaction.edit_original_response(embed=embed, view=IslandControlPanelView(island))
+            await interaction.edit_original_response(embed=embed, view=IslandControlPanelView(island, status))
             cog: Any = interaction.client.get_cog("ControlPanelCog")
             if cog and interaction.channel_id:
                 cog._sigs[str(interaction.channel_id)] = (_embed_signature(embed), time.monotonic())
+            return
+
+        if spec.key == "revive":
+            view = ConfirmActionView(interaction.user.id, island, spec, interaction.message)
+            await interaction.response.send_message(
+                embed=_embed(f"⚠️ Confirm: {spec.title}", f"{spec.confirm}\n\nIsland: **{island}**", PANEL_COLOR_WARN),
+                view=view,
+                ephemeral=True,
+            )
+            view.interaction = interaction
             return
 
         if spec.local:
@@ -1908,15 +1958,26 @@ class ControlPanelActionButton(
         await run_action(interaction, island, spec, interaction.message)
 
 
+def _hidden_actions(status: dict | None) -> set[str]:
+    """Start/Stop and Pause/Resume share a slot: hide the one that doesn't apply right now."""
+    st = status or {}
+    reachable = not (st.get("success") is False or st.get("unreachable"))
+    running = reachable and bool(st.get("is_running"))
+    accepting = bool(st.get("accepting_commands", running))
+    return {"start" if running else "stop", "pause" if not accepting else "resume"}
+
+
 class IslandControlPanelView(discord.ui.View):
     """Row 0: island select · Rows 1-3: action buttons (laid out by the ACTIONS registry)."""
 
-    def __init__(self, island_name: str):
+    def __init__(self, island_name: str, status: dict | None = None):
         super().__init__(timeout=None)
         self.island_name = island_name
         self.add_item(ControlPanelIslandSelect(island_name))
+        hidden = _hidden_actions(status)
         for spec in ACTIONS.values():
-            self.add_item(ControlPanelActionButton(spec.key, island_name))
+            if spec.key not in hidden:
+                self.add_item(ControlPanelActionButton(spec.key, island_name))
 
 
 # ─── Cog ───────────────────────────────────────────────────────────────────────
@@ -2010,9 +2071,8 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
             now = time.monotonic()
             prev = self._sigs.get(cid)
             # Attach the view on the first edit after startup so older panels pick up new buttons.
-            edit_kwargs: dict[str, Any] = {"embed": embed}
-            if prev is None:
-                edit_kwargs["view"] = IslandControlPanelView(island)
+            # The view is re-sent too: Start/Stop and Pause/Resume follow the bot's state.
+            edit_kwargs: dict[str, Any] = {"embed": embed, "view": IslandControlPanelView(island, status)}
 
             # 1. Known message id
             if message_id:
@@ -2036,7 +2096,7 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
                     async for candidate in channel.history(limit=25):
                         if candidate.author.id == bot_id and candidate.embeds and \
                                 "Island Remote Control Panel" in (candidate.embeds[0].title or ""):
-                            await candidate.edit(embed=embed, view=IslandControlPanelView(island))
+                            await candidate.edit(embed=embed, view=IslandControlPanelView(island, status))
                             self._sigs[cid] = (sig, now)
                             await asyncio.to_thread(_upsert_control_panel, channel_id, island, candidate.id)
                             return candidate
@@ -2045,7 +2105,7 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
 
             # 3. Post a new one
             try:
-                msg = await channel.send(embed=embed, view=IslandControlPanelView(island))
+                msg = await channel.send(embed=embed, view=IslandControlPanelView(island, status))
                 self._sigs[cid] = (sig, now)
                 await asyncio.to_thread(_upsert_control_panel, channel_id, island, msg.id)
                 logger.info("[ControlPanelCog] Created control panel in channel %s for %s", channel_id, island)
@@ -2123,7 +2183,7 @@ class ControlPanelCog(commands.Cog, name="ControlPanelCog"):
         old = await asyncio.to_thread(_get_control_panel, channel.id)
         status = await fetch_island_status(target)
         embed = build_control_panel_embed(target, status)
-        msg = await channel.send(embed=embed, view=IslandControlPanelView(target))
+        msg = await channel.send(embed=embed, view=IslandControlPanelView(target, status))
 
         if old and old.get("message_id") and str(old["message_id"]) != str(msg.id):
             with contextlib.suppress(discord.HTTPException):
