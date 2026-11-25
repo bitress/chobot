@@ -1,13 +1,11 @@
 """
-Revive Cog — /revive restarts a crashed SysBot.ACNHOrders instance from Discord.
+Revive — relaunches a crashed SysBot.ACNHOrders instance (used by the control panel's
+Revive button; the /revive slash command lives in discord_command_bot.py).
 
-Port of the "Single Island Rescue" .bat: pick the fleet and island, check the island's
-folder exists, then open a new Windows Terminal tab in that fleet's window running the
-bot in a restart loop. Chobot must run on the same PC (and user session) as the bots.
-
-  • /revive fleet:<General|VIP> island:<name>
-  • "Sinta" always routes to the Order Bot folder in the General window.
-  • Access: CONTROL_PANEL_ROLE_ID holders or Administrators (same as the control panel).
+Port of the "Single Island Rescue" .bat: find the island's folder in the General or VIP
+fleet, then open a new Windows Terminal tab in that fleet's window running the bot in a
+restart loop. Chobot must run on the same PC (and user session) as the bots.
+"Sinta" always routes to the Order Bot folder in the General window.
 """
 
 from __future__ import annotations
@@ -19,14 +17,10 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Literal
 
 import discord
-from discord import app_commands
-from discord.ext import commands
 
-from bots.cogs.control_panel_cog import _err_embed, _embed, _log_audit, panel_access
-from utils.config import Config
+from bots.cogs.control_panel_cog import _err_embed, _embed, _log_audit
 
 logger = logging.getLogger("ReviveCog")
 
@@ -102,7 +96,7 @@ def _resolve_folder(name: str, fleet: str | None) -> tuple[str, str, str] | disc
             "Ask an owner to check the island's folder.", "❌ Island not found")
     return _err_embed(
         f"**{name}** has a folder in both fleets, so I can't tell which one to start. "
-        f"Use `/revive fleet:<General|VIP> island:{name}` instead.", "❌ Which fleet?")
+        "Use `/revive` and pick the fleet instead.", "❌ Which fleet?")
 
 
 async def revive_island(island: str, fleet: str | None, user: discord.abc.User) -> discord.Embed:
@@ -159,23 +153,3 @@ async def revive_island(island: str, fleet: str | None, user: discord.abc.User) 
         )
     embed.timestamp = discord.utils.utcnow()
     return embed
-
-
-class ReviveCog(commands.Cog, name="ReviveCog"):
-    """Re-deploys a crashed SysBot island into its fleet's Windows Terminal window."""
-
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-
-    async def island_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-        cur = (current or "").strip().lower()
-        return [app_commands.Choice(name=i, value=i) for i in Config.ALL_ISLAND_PORT_ORDER if cur in i.lower()][:25]
-
-    @app_commands.command(name="revive", description="Restart a crashed SysBot island in its fleet window")
-    @app_commands.describe(fleet="Which fleet the Dodo crashed in", island="Exact island name to revive")
-    @app_commands.guild_only()
-    @panel_access()
-    @app_commands.autocomplete(island=island_autocomplete)
-    async def revive(self, interaction: discord.Interaction, fleet: Literal["General", "VIP"], island: str) -> None:
-        await interaction.response.defer(thinking=True)
-        await interaction.followup.send(embed=await revive_island(island, fleet, interaction.user))
