@@ -3944,6 +3944,93 @@ def _discord_member_count(guild_id: str) -> tuple[int, str] | None:
     return None
 
 
+_TIER_ICONS_CACHE: dict[str, Any] = {"payload": None, "ts": 0.0, "failed_ts": 0.0}
+_TIER_ICONS_TTL = 3600       # role icons rarely change
+_TIER_ICONS_FAIL_TTL = 60
+
+
+def _tier_base_name(name: str) -> str:
+    """'y ChoSoup' -> 'chosoup', 'ChoTato Club' / 'y ChoTato' -> 'chotato': the tier without its platform marks."""
+    n = re.sub(r"^\s*(yt?|tw|p)\s+", "", str(name or ""), flags=re.I).lower()
+    n = re.sub(r"\s+club\s*$", "", n)
+    return re.sub(r"[^a-z0-9]", "", n)
+
+
+def _role_icon(role: dict) -> dict | None:
+    if role.get("icon"):
+        return {"url": f"https://cdn.discordapp.com/role-icons/{role['id']}/{role['icon']}.png?size=64"}
+    if role.get("unicode_emoji"):
+        return {"emoji": role["unicode_emoji"]}
+    return None
+
+
+def build_tier_role_icons(roles: list[dict], tier_roles: dict[str, str]) -> dict:
+    """Icon per subscription tier role. A tier role without its own icon uses the icon of the
+    role with the same tier name (YouTube 'y ChoSoup' -> 'ChoSoup'), preferring other tier roles."""
+    by_id = {str(r.get("id")): r for r in roles if isinstance(r, dict) and r.get("id")}
+    tier_ids = set(tier_roles)
+    by_base: dict[str, tuple[dict, str]] = {}
+    # Tier roles first, so their icons win over unrelated roles with the same name
+    for r in sorted(by_id.values(), key=lambda r: str(r.get("id")) not in tier_ids):
+        icon = _role_icon(r)
+        base = _tier_base_name(r.get("name") or "")
+        if icon and base and base not in by_base:
+            by_base[base] = (icon, str(r.get("name") or ""))
+
+    icons: dict[str, dict] = {}
+    for role_id, tier_name in tier_roles.items():
+        role = by_id.get(role_id)
+        name = str((role or {}).get("name") or tier_name)
+        icon = _role_icon(role) if role else None
+        source = name
+        if not icon:
+            match = by_base.get(_tier_base_name(name)) or by_base.get(_tier_base_name(tier_name))
+            if match:
+                icon, source = match
+        if icon:
+            icons[role_id] = {**icon, "name": tier_name, "from": source}
+    return icons
+
+
+@app.route("/api/v1/guild/tier-icons")
+def guild_tier_icons():
+    """Public: the Discord role icon for each subscription tier, keyed by role id and tier name.
+
+    {success, by_id: {role_id: {url|emoji, name, from}}, by_name: {lowercase tier name: same}}
+    """
+    now = time.time()
+    cached = _TIER_ICONS_CACHE["payload"]
+    if cached and now - _TIER_ICONS_CACHE["ts"] < _TIER_ICONS_TTL:
+        return jsonify(cached)
+    if now - _TIER_ICONS_CACHE["failed_ts"] < _TIER_ICONS_FAIL_TTL:
+        return (jsonify(cached), 200) if cached else (jsonify({"success": False, "by_id": {}, "by_name": {}}), 503)
+
+    guild_id = str(Config.GUILD_ID or "").strip()
+    token = str(Config.DISCORD_TOKEN or "").strip()
+    if not guild_id or not token:
+        return jsonify({"success": False, "by_id": {}, "by_name": {}}), 503
+    auth = token if token.lower().startswith("bot ") else f"Bot {token}"
+    try:
+        resp = requests.get(f"{_DISCORD_API}/guilds/{guild_id}/roles", headers={"Authorization": auth}, timeout=8)
+        roles = resp.json() if resp.ok else None
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("tier icons: role fetch failed: %s", exc)
+        roles = None
+    if not isinstance(roles, list):
+        _TIER_ICONS_CACHE["failed_ts"] = now
+        return (jsonify(cached), 200) if cached else (jsonify({"success": False, "by_id": {}, "by_name": {}}), 503)
+
+    from utils.island_access import ROLE_ID_TO_TIER_NAME
+    by_id = build_tier_role_icons(roles, dict(ROLE_ID_TO_TIER_NAME))
+    payload = {
+        "success": True,
+        "by_id": by_id,
+        "by_name": {v["name"].lower(): v for v in by_id.values()},
+    }
+    _TIER_ICONS_CACHE.update(payload=payload, ts=now, failed_ts=0.0)
+    return jsonify(payload)
+
+
 @app.route("/api/v1/guild/human-members")
 @app.route("/api/stats")
 def guild_human_members():
