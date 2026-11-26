@@ -4009,6 +4009,22 @@ def build_staff_role_icons(roles: list[dict], staff_ids: list[str]) -> list[dict
     return sorted(out, key=lambda x: -x["position"])
 
 
+# Highest tier first: the role whose icon a member's crown shows
+_TIER_ROLE_ORDER = ("ChoSoup", "y ChoSoup", "ChoColate", "y ChoColate", "ChoTato Club", "y ChoTato", "ChoFries")
+
+
+def _presence_role_ids(user: dict | None) -> tuple[str, str]:
+    """(tier role id, staff role id) of a signed-in user, for role icons in the online list."""
+    if not user:
+        return "", ""
+    from api.sub_islands import _normalize_user_roles
+    from utils.island_access import TIER_NAME_TO_ROLE_ID
+    roles = _normalize_user_roles(user.get("roles") or [])
+    tier = next((TIER_NAME_TO_ROLE_ID.get(n, "") for n in _TIER_ROLE_ORDER if n in roles), "")
+    staff = next((i for i in _staff_role_ids() if i in roles), "")
+    return tier, staff
+
+
 @app.route("/api/v1/guild/tier-icons")
 def guild_tier_icons():
     """Public: the Discord role icon for each subscription tier, keyed by role id and tier name.
@@ -6941,6 +6957,9 @@ def _ensure_presence_table(conn):
             ("is_subscriber", "INTEGER DEFAULT 0"),
             ("sub_tier", "INTEGER DEFAULT 0"),
             ("is_booster", "INTEGER DEFAULT 0"),
+            # Which tier / staff role to draw the Discord role icon for (see /api/v1/guild/tier-icons)
+            ("tier_role_id", "VARCHAR(32)"),
+            ("staff_role_id", "VARCHAR(32)"),
         ):
             try:
                 conn.execute(f"ALTER TABLE user_online_presence ADD COLUMN {column} {ddl}")
@@ -7333,6 +7352,7 @@ def api_presence_heartbeat():
         _prune_presence(conn, now)
 
         # 2. Extract identity
+        tier_role_id, staff_role_id = _presence_role_ids(auth_user)
         if auth_user:
             user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or auth_user.get("id") or "")
             username = str(auth_user.get("username") or auth_user.get("discord_name") or "")
@@ -7442,8 +7462,9 @@ def api_presence_heartbeat():
                 session_id, user_id, username, display_name, avatar_url, role, status,
                 current_activity, `current_path`, current_island, ign, island_name,
                 native_fruit, has_public_passport, is_guest, ip_hash, ip_address,
-                viewing_item, ordering_items, is_subscriber, sub_tier, is_booster, last_heartbeat, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                viewing_item, ordering_items, is_subscriber, sub_tier, is_booster, tier_role_id, staff_role_id,
+                last_heartbeat, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 username = excluded.username,
@@ -7465,6 +7486,8 @@ def api_presence_heartbeat():
                 is_subscriber = excluded.is_subscriber,
                 sub_tier = excluded.sub_tier,
                 is_booster = excluded.is_booster,
+                tier_role_id = excluded.tier_role_id,
+                staff_role_id = excluded.staff_role_id,
                 -- Restart the clock on going idle or coming back, so "since" means this stretch.
                 created_at = CASE
                     WHEN (user_online_presence.status = 'idle') != (excluded.status = 'idle')
@@ -7479,6 +7502,7 @@ def api_presence_heartbeat():
             hashlib.sha256((_visitor_ip() or "127.0.0.1").encode()).hexdigest()[:16],
             _visitor_ip()[:64],
             viewing_item, ordering_json, is_subscriber, sub_tier, is_booster,
+            tier_role_id or None, staff_role_id or None,
             now, now
         ))
         conn.commit()
@@ -7673,6 +7697,8 @@ def api_presence_online():
                 "isSubscriber": int(r.get("sub_tier") or 0) > 0,
                 "subTier": int(r.get("sub_tier") or 0),
                 "isBooster": bool(r.get("is_booster")) and not int(r.get("sub_tier") or 0),
+                "tierRoleId": r.get("tier_role_id") or None,
+                "staffRoleId": r.get("staff_role_id") or None,
                 "joinedMinutesAgo": minutes_ago,
                 "lastHeartbeat": r["last_heartbeat"],
             }
