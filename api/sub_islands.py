@@ -258,9 +258,14 @@ def get_sub_island_drop_status(name: str):
 
 @sub_islands_bp.route("/api/order/drop-sub", methods=["POST"])
 def drop_sub_island():
-    auth_user = _get_auth_from_request()
+    # Roles are re-read from Discord on every drop, so a removed Island Access role counts at once
+    from api.flask_api import _current_auth_user, _roles_unverified
+    auth_user = _current_auth_user(force_refresh=True)
     if not auth_user:
         return jsonify({"success": False, "error": "Authentication required"}), 401
+    unverified = _roles_unverified(auth_user)
+    if unverified:
+        return unverified
 
     data = request.get_json() or {}
     island_name = data.get("island_name") or data.get("island_id") or ""

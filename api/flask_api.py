@@ -569,6 +569,24 @@ _GUILD_CHANNELS_CACHE_TTL = 300
 DODO_REVEAL_ROLE_MAX_AGE_SECONDS = 120
 
 
+def _roles_unverified(user: dict | None):
+    """A 503 response when the user's Discord roles weren't confirmed in the last two minutes.
+
+    Use after _current_auth_user(force_refresh=True) on actions gated by roles (Dodo reveals,
+    drops): when Discord can't be reached the refresh falls back to the cached session, whose
+    roles may still include one a mod removed (e.g. Island Access). None when roles are fresh.
+    """
+    if not user or not getattr(Config, "DISCORD_LOGIN_ENABLED", True) or _secrets_bot_user(user):
+        return None
+    if time.time() - int(user.get("discord_checked_at") or 0) <= DODO_REVEAL_ROLE_MAX_AGE_SECONDS:
+        return None
+    return jsonify({
+        "success": False,
+        "error": "We couldn't confirm your Discord roles right now. Please try again in a moment.",
+        "code": "roles_unverified",
+    }), 503
+
+
 def _secrets_bot_user(user: dict) -> bool:
     """True for the internal bot/dashboard-secret caller built in _current_auth_user."""
     return bool(user.get("_internal_secret_auth"))
@@ -3433,9 +3451,13 @@ def api_island_drop(name):
     Drop items on the ground on a specific island via SysBot HTTP API.
     Body: { "items": "Nook Miles Ticket 9" | [...], "type": "items"|"diy", "username": "..." }
     """
-    user = _current_auth_user()
+    # Roles are re-read from Discord on every drop, so a removed Island Access role counts at once
+    user = _current_auth_user(force_refresh=True)
     if not user:
         return jsonify({"success": False, "error": "Authentication required. Please log in first."}), 401
+    unverified = _roles_unverified(user)
+    if unverified:
+        return unverified
 
     # Check for active moderation suspension
     try:
@@ -5297,9 +5319,16 @@ def order_drop():
     Proxy POST /api/drop to SysBot.
     Body: { "items": "Gold nugget 30", "type": "items"|"diy", "username": "...", "island": "..." }
     """
-    auth_user = _current_auth_user()
+    body_peek = request.get_json(silent=True) or {}
+    targets_island = bool(body_peek.get("island") or body_peek.get("island_name"))
+    # Island drops need Island Access: re-read roles from Discord so a removed role counts at once
+    auth_user = _current_auth_user(force_refresh=targets_island)
     if not auth_user:
         return jsonify({"success": False, "error": "Authentication required. Please log in with Discord."}), 401
+    if targets_island:
+        unverified = _roles_unverified(auth_user)
+        if unverified:
+            return unverified
 
     if not auth_user.get("is_admin"):
         if not _user_has_order_rules(auth_user):
