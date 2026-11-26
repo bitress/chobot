@@ -59,7 +59,7 @@ PERSISTENT_CONTROL_CHANNEL_ID = int(getattr(Config, "CONTROL_PANEL_CHANNEL_ID", 
 # False: anyone who can see the channel can (the previous behaviour). Set Config.CONTROL_PANEL_REQUIRE_ROLE.
 REQUIRE_ROLE = bool(getattr(Config, "CONTROL_PANEL_REQUIRE_ROLE", True))
 # The Dodo is a secret; set Config.CONTROL_PANEL_SHOW_DODO = False to hide it on the panel.
-SHOW_DODO_ON_PANEL = bool(getattr(Config, "CONTROL_PANEL_SHOW_DODO", False))
+SHOW_DODO_ON_PANEL = bool(getattr(Config, "CONTROL_PANEL_SHOW_DODO", True))
 
 WEBSITE_BASE = "https://www.chopaeng.com"
 DEFAULT_CONTROL_ISLAND = Config.SUB_ISLANDS[0] if Config.SUB_ISLANDS else "Sinta"
