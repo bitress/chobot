@@ -989,8 +989,13 @@ def get_pocket_bundles(max_slots: int = 9, connect_db_func=None) -> list[tuple[s
             from utils.database import connect_db
             connect_db_func = connect_db
         with connect_db_func() as conn:
+            # Exclude the website's order-only packs (ids "catalogue-..." / "pack-...") in SQL, not after
+            # fetching: there are enough of them (100+) to fill the LIMIT and hide every community drop
+            # bundle otherwise. See the id-prefix note below.
             rows = conn.execute(
-                "SELECT * FROM pocket_bundles ORDER BY is_official DESC, created_at DESC LIMIT 100"
+                "SELECT * FROM pocket_bundles "
+                "WHERE id NOT LIKE 'catalogue-%' AND id NOT LIKE 'pack-%' "
+                "ORDER BY is_official DESC, created_at DESC LIMIT 100"
             ).fetchall()
     except Exception as exc:
         logger.warning("[DataManager] Could not fetch pocket bundles: %s", exc)
@@ -1000,6 +1005,11 @@ def get_pocket_bundles(max_slots: int = 9, connect_db_func=None) -> list[tuple[s
         row = dict(r)
         name = str(row.get("name") or "").strip()
         if not name:
+            continue
+        # Website order packs (chopaeng/scripts/catalogue-packs.sql and ti-packs.sql) are order-bot
+        # packs of up to 40 items. Cut to a drop pocket they'd be partial sets, and there are enough
+        # of them to push every community bundle out of Discord's 25-option menu.
+        if str(row.get("id") or "").startswith(("catalogue-", "pack-")):
             continue
         official = bool(row.get("is_official"))
         tokens = []

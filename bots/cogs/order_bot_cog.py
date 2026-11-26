@@ -1328,7 +1328,8 @@ class PocketView(_OwnedView):
         if not bundles:
             await self.render(interaction, "No bundles are available right now.")
             return
-        await _swap(interaction, self, _bundles_embed(bundles), BundleView(self, bundles))
+        view = BundleView(self, bundles)
+        await _swap(interaction, self, view.embed(), view)
 
     @discord.ui.button(label="Place order", emoji="✈️", style=discord.ButtonStyle.success, row=0)
     async def place_order(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -2078,36 +2079,73 @@ def _bundle_items(bundle: dict) -> list[Any]:
     return bundle.get("orderItems") or bundle.get("items") or []
 
 
-def _bundles_embed(bundles: list[dict]) -> discord.Embed:
+BUNDLES_PER_PAGE = 25  # Discord's hard limit on select options
+
+
+def _bundles_embed(bundles: list[dict], page: int = 0, pages: int = 1) -> discord.Embed:
+    shown = bundles[page * BUNDLES_PER_PAGE:(page + 1) * BUNDLES_PER_PAGE]
     rows = []
-    for bundle in bundles[:25]:
+    for bundle in shown:
         name = bundle.get("title") or bundle.get("name") or "Bundle"
         desc = str(bundle.get("description") or "")[:90]
         rows.append(f"🎁 **{name}** ({len(_bundle_items(bundle))} items)" + (f"\n-# {desc}" if desc else ""))
-    return _embed("🎁 Official bundles", "\n".join(rows)[:4000] or "No bundles.")
+    title = "🎁 Official bundles" + (f" (page {page + 1}/{pages})" if pages > 1 else "")
+    return _embed(title, "\n".join(rows)[:4000] or "No bundles.")
 
 
 class BundleView(_SubView):
-    def __init__(self, parent: PocketView, bundles: list[dict]):
+    def __init__(self, parent: PocketView, bundles: list[dict], page: int = 0):
         super().__init__(parent)
-        self.bundles = bundles[:25]
+        self.bundles = bundles
+        self.pages = max(1, (len(bundles) + BUNDLES_PER_PAGE - 1) // BUNDLES_PER_PAGE)
+        self.page = max(0, min(page, self.pages - 1))
+        self._render()
+
+    def embed(self) -> discord.Embed:
+        return _bundles_embed(self.bundles, self.page, self.pages)
+
+    def _render(self) -> None:
+        self.clear_items()
+        start = self.page * BUNDLES_PER_PAGE
+        page_bundles = self.bundles[start:start + BUNDLES_PER_PAGE]
         options = [
             discord.SelectOption(
-                label=str(b.get("title") or b.get("name") or f"Bundle {i + 1}")[:100],
-                value=str(i),
+                label=str(b.get("title") or b.get("name") or f"Bundle {start + i + 1}")[:100],
+                value=str(start + i),  # global index, so a pick works on any page
                 description=str(b.get("category") or "")[:100] or None,
                 emoji="🎁",
             )
-            for i, b in enumerate(self.bundles)
+            for i, b in enumerate(page_bundles)
         ]
-        select = discord.ui.Select(placeholder="Add a bundle to your pocket…", options=options, row=0)
-        select.callback = self._picked   # type: ignore[method-assign]
-        self.add_item(select)
+        if options:
+            select = discord.ui.Select(placeholder="Add a bundle to your pocket…", options=options, row=0)
+            select.callback = self._picked   # type: ignore[method-assign]
+            self.add_item(select)
+        if self.pages > 1:
+            self.add_item(_BundlePageButton(self, -1, "◀ Prev", disabled=self.page == 0))
+            self.add_item(_BundlePageButton(self, 1, "Next ▶", disabled=self.page >= self.pages - 1))
+        # _SubView.back is a decorated button, so re-add it after clear_items().
+        self.add_item(self.back)
+
+    async def _show_page(self, interaction: discord.Interaction, page: int) -> None:
+        self.page = max(0, min(page, self.pages - 1))
+        self._render()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
 
     async def _picked(self, interaction: discord.Interaction) -> None:
         bundle = self.bundles[int((interaction.data or {}).get("values", ["0"])[0])]
         notice = await self.cog.add_bundle(self.user_id, bundle)
         await self.back_to_pocket(interaction, notice)
+
+
+class _BundlePageButton(discord.ui.Button):
+    def __init__(self, view: "BundleView", delta: int, label: str, *, disabled: bool):
+        super().__init__(label=label, style=discord.ButtonStyle.secondary, row=1, disabled=disabled)
+        self._view = view
+        self._delta = delta
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self._view._show_page(interaction, self._view.page + self._delta)
 
 
 def _loadouts_embed(loadouts: list[tuple[str, OrderCart]]) -> discord.Embed:
@@ -2511,7 +2549,11 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
         except Exception as exc:
             logger.warning("[OrderBot] Could not load bundles: %s", exc)
             return []
-        return [b for b in data if isinstance(b, dict) and _bundle_items(b)]
+        # Official bundles only — community loadouts are reached by name, not listed here.
+        return [
+            b for b in data
+            if isinstance(b, dict) and _bundle_items(b) and (b.get("isOfficial") or b.get("is_official"))
+        ]
 
     # ── Panel flows ───────────────────────────────────────────────────────────
 
@@ -3140,7 +3182,7 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
         parent = PocketView(self, interaction.user.id, username)
         parent.stop()
         view = BundleView(parent, bundles)
-        await interaction.followup.send(embed=_bundles_embed(bundles), view=_adopt(view, interaction), ephemeral=True)
+        await interaction.followup.send(embed=view.embed(), view=_adopt(view, interaction), ephemeral=True)
 
     @app_commands.command(name="orderpanel", description="Post the Order Bot panel in this channel")
     @app_commands.describe(remove="Remove the panel from this channel instead of posting it")
