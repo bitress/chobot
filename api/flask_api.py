@@ -3992,11 +3992,29 @@ def build_tier_role_icons(roles: list[dict], tier_roles: dict[str, str]) -> dict
     return icons
 
 
+def _staff_role_ids() -> list[str]:
+    """Islander (admin), Baby Islander, Senior Mod and Baby Mods role ids, from config."""
+    ids = (Config.ADMIN_ROLE_ID, getattr(Config, "BABY_ISLANDER_ROLE_ID", None), Config.SENIOR_MOD_ROLE_ID, Config.BABY_MOD_ROLE_ID)
+    return [str(i) for i in ids if str(i or "").isdigit() and str(i) != "0"]
+
+
+def build_staff_role_icons(roles: list[dict], staff_ids: list[str]) -> list[dict]:
+    """Staff roles with their icon and a clean label ('✨ Senior Mod ✨' -> 'Senior Mod'), highest first."""
+    out = []
+    for r in roles:
+        if not isinstance(r, dict) or str(r.get("id")) not in staff_ids:
+            continue
+        label = re.sub(r"^[^\w]+|[^\w]+$", "", str(r.get("name") or "")).strip() or str(r.get("name") or "")
+        out.append({"id": str(r["id"]), "name": label, "position": int(r.get("position") or 0), **(_role_icon(r) or {})})
+    return sorted(out, key=lambda x: -x["position"])
+
+
 @app.route("/api/v1/guild/tier-icons")
 def guild_tier_icons():
     """Public: the Discord role icon for each subscription tier, keyed by role id and tier name.
 
-    {success, by_id: {role_id: {url|emoji, name, from}}, by_name: {lowercase tier name: same}}
+    {success, by_id: {role_id: {url|emoji, name, from}}, by_name: {lowercase tier name: same},
+     staff: [{id, name, position, url|emoji}] (Islander, Baby Islander, Senior Mod, Baby Mods; highest first)}
     """
     now = time.time()
     cached = _TIER_ICONS_CACHE["payload"]
@@ -4026,6 +4044,7 @@ def guild_tier_icons():
         "success": True,
         "by_id": by_id,
         "by_name": {v["name"].lower(): v for v in by_id.values()},
+        "staff": build_staff_role_icons(roles, _staff_role_ids()),
     }
     _TIER_ICONS_CACHE.update(payload=payload, ts=now, failed_ts=0.0)
     return jsonify(payload)

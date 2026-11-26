@@ -354,6 +354,7 @@ class Config:
     # Mod roles — members with these bypass all island access restrictions.
     SENIOR_MOD_ROLE_ID = _get_int("SENIOR_MOD_ROLE_ID")
     BABY_MOD_ROLE_ID   = _get_int("BABY_MOD_ROLE_ID")
+    BABY_ISLANDER_ROLE_ID = _get_int("BABY_ISLANDER_ROLE_ID", 782911959422468117)
 
     # Subscription Tier Role IDs (Patreon, Twitch, YouTube, Server Booster)
     ROLE_CHOSOUP        = _get_int("ROLE_CHOSOUP", 1031974843656192080)
