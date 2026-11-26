@@ -1586,8 +1586,19 @@ def _merge_island(db_row: dict, fs: dict | None) -> dict:
 # Domain restriction — dashboard is served from the API_BASE_URL host,
 # and localhost for local development.
 # ---------------------------------------------------------------------------
+# API_BASE_URL can be an internal address in production, so the public console host is
+# always allowed too (DASHBOARD_HOSTS adds more). Without it every /dashboard/api/*
+# request from console.chopaeng.com returned 404 (Islands and Analytics pages).
 _ALLOWED_DASHBOARD_HOSTS = {
-    host for host in (urllib.parse.urlparse(Config.API_BASE_URL).hostname, "localhost", "127.0.0.1") if host
+    host
+    for host in (
+        urllib.parse.urlparse(Config.API_BASE_URL).hostname,
+        "console.chopaeng.com",
+        "localhost",
+        "127.0.0.1",
+        *(h.strip().lower() for h in os.getenv("DASHBOARD_HOSTS", "").split(",")),
+    )
+    if host
 }
 
 
