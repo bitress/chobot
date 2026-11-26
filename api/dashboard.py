@@ -591,6 +591,16 @@ def init_dashboard_db():
             conn.execute("CREATE INDEX IF NOT EXISTS ix_pocket_bundles_cat ON pocket_bundles (category, is_official)")
         except Exception:
             pass
+        # Seasonal bundles: optional show window (unix seconds), optionally every year (utils/bundle_schedule.py)
+        for col_sql in (
+            "ALTER TABLE pocket_bundles ADD COLUMN starts_at BIGINT DEFAULT NULL",
+            "ALTER TABLE pocket_bundles ADD COLUMN ends_at BIGINT DEFAULT NULL",
+            "ALTER TABLE pocket_bundles ADD COLUMN repeat_yearly INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                conn.execute(col_sql)
+            except Exception:
+                pass  # column already exists
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_order_bot_queue_user_status ON order_bot_queue (user_id, status, created_at)")
         except Exception:

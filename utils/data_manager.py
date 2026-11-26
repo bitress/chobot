@@ -1011,6 +1011,10 @@ def get_pocket_bundles(max_slots: int = 9, connect_db_func=None) -> list[tuple[s
         # of them to push every community bundle out of Discord's 25-option menu.
         if str(row.get("id") or "").startswith(("catalogue-", "pack-")):
             continue
+        # Seasonal bundles only show inside their window (utils/bundle_schedule.py)
+        from utils.bundle_schedule import is_bundle_live
+        if not is_bundle_live(row):
+            continue
         official = bool(row.get("is_official"))
         tokens = []
         for it in _bundle_items(row)[:max_slots]:

@@ -4147,9 +4147,56 @@ def _owns_pocket_bundle(auth_user: dict | None, created_by: Any) -> bool:
     return owner in mine
 
 
+def _bundle_schedule_from(data: dict, existing: Any = None) -> tuple[int | None, int | None, int]:
+    """(starts_at, ends_at, repeat_yearly) from a create/update body; keeps existing values for
+    keys the body leaves out. Raises ValueError for an end before the start."""
+    old = dict(existing) if existing is not None else {}
+
+    def ts(key: str, col: str) -> int | None:
+        if key not in data:
+            return old.get(col) or None
+        v = data.get(key)
+        if v in (None, "", 0):
+            return None
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be a unix timestamp")
+
+    starts, ends = ts("startsAt", "starts_at"), ts("endsAt", "ends_at")
+    repeat = int(bool(data["repeatYearly"])) if "repeatYearly" in data else int(old.get("repeat_yearly") or 0)
+    if starts and ends and ends <= starts:
+        raise ValueError("The schedule must end after it starts.")
+    if repeat and not (starts and ends):
+        repeat = 0  # a yearly window needs both dates
+    return starts, ends, repeat
+
+
+def _bundle_schedule_json(row: Any) -> dict:
+    from utils.bundle_schedule import bundle_window
+    r = dict(row)
+    w = bundle_window(r.get("starts_at"), r.get("ends_at"), r.get("repeat_yearly"))
+    return {
+        "startsAt": r.get("starts_at") or None,
+        "endsAt": r.get("ends_at") or None,
+        "repeatYearly": bool(r.get("repeat_yearly")),
+        # Current (or next) occurrence and whether it is showing now
+        "schedule": {"status": w["status"], "start": w["start"], "end": w["end"]},
+    }
+
+
 @app.route("/api/bundles", methods=["GET"])
 def get_pocket_bundles():
-    """Every pocket bundle, official first, then community bundles newest first. Public."""
+    """Pocket bundles, official first, then community bundles newest first. Public.
+
+    Seasonal bundles outside their window are left out; admins get every bundle with ?all=1
+    (the dashboard), each with its schedule status.
+    """
+    from utils.bundle_schedule import is_bundle_live
+    show_all = request.args.get("all") in ("1", "true")
+    if show_all:
+        viewer = _current_auth_user()
+        show_all = bool(viewer and viewer.get("is_admin"))
     conn = get_db()
     try:
         rows = conn.execute(
@@ -4159,7 +4206,10 @@ def get_pocket_bundles():
 
         bundles = []
         for r in rows:
+            if not show_all and not is_bundle_live(dict(r)):
+                continue
             bundles.append({
+                **_bundle_schedule_json(r),
                 "id": r["id"],
                 "name": r["name"],
                 "description": r["description"] or "",
@@ -4202,21 +4252,28 @@ def create_pocket_bundle():
     is_admin = bool(auth_user.get("is_admin")) if auth_user else False
     is_official = 1 if (is_official_req and is_admin) else 0
     created_by = auth_user.get("username") or auth_user.get("user_id") or "Community"
+    try:
+        starts_at, ends_at, repeat_yearly = _bundle_schedule_from(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     now_iso = datetime.utcnow().isoformat()
     conn = get_db()
     try:
         conn.execute("""
             INSERT INTO pocket_bundles
-            (id, name, description, category, icon, is_official, created_by, order_items, drop_items, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, name, description, category, icon, is_official, created_by, order_items, drop_items,
+             starts_at, ends_at, repeat_yearly, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            bundle_id, name, description, category, icon, is_official, created_by, order_items, drop_items, now_iso, now_iso
+            bundle_id, name, description, category, icon, is_official, created_by, order_items, drop_items,
+            starts_at, ends_at, repeat_yearly, now_iso, now_iso
         ))
         conn.commit()
         return jsonify({
             "success": True,
             "bundle": {
+                **_bundle_schedule_json({"starts_at": starts_at, "ends_at": ends_at, "repeat_yearly": repeat_yearly}),
                 "id": bundle_id,
                 "name": name,
                 "description": description,
@@ -4261,18 +4318,25 @@ def update_pocket_bundle(bundle_id):
         is_official = 1 if (data.get("isOfficial") and is_admin) else (existing["is_official"] if not is_admin else 0)
         order_items = json.dumps(data["orderItems"]) if "orderItems" in data else existing["order_items"]
         drop_items = json.dumps(data["dropItems"]) if "dropItems" in data else existing["drop_items"]
+        try:
+            starts_at, ends_at, repeat_yearly = _bundle_schedule_from(data, existing)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         now_iso = datetime.utcnow().isoformat()
 
         conn.execute("""
             UPDATE pocket_bundles
-            SET name = ?, description = ?, category = ?, icon = ?, is_official = ?, order_items = ?, drop_items = ?, updated_at = ?
+            SET name = ?, description = ?, category = ?, icon = ?, is_official = ?, order_items = ?, drop_items = ?,
+                starts_at = ?, ends_at = ?, repeat_yearly = ?, updated_at = ?
             WHERE id = ?
-        """, (name, description, category, icon, is_official, order_items, drop_items, now_iso, bundle_id))
+        """, (name, description, category, icon, is_official, order_items, drop_items,
+              starts_at, ends_at, repeat_yearly, now_iso, bundle_id))
         conn.commit()
 
         return jsonify({
             "success": True,
             "bundle": {
+                **_bundle_schedule_json({"starts_at": starts_at, "ends_at": ends_at, "repeat_yearly": repeat_yearly}),
                 "id": bundle_id,
                 "name": name,
                 "description": description,
