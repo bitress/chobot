@@ -127,6 +127,19 @@ def summarize_recent_identity_events(events: list[dict], max_events: int = 5) ->
     return _trim_discord_value("\n".join(lines)), reasons
 
 
+def identity_events_for_detail(events: list[dict] | None, max_events: int = 5) -> list[dict]:
+    """Compact identity events for island_visits.logger_detail (shown on the web radar)."""
+    return [
+        {
+            "type": event.get("event_type"),
+            "old": event.get("old_display_name"),
+            "new": event.get("new_display_name"),
+            "at": int(event.get("created_at") or 0),
+        }
+        for event in (events or [])[:max_events]
+    ]
+
+
 def filter_recent_identity_events(
     events: list[dict],
     now_ts: int,
@@ -340,6 +353,9 @@ async def init_db():
             # The #flight-logs alert for this visit, so web resolutions can update it
             "ALTER TABLE island_visits ADD COLUMN alert_channel_id VARCHAR(32) DEFAULT NULL",
             "ALTER TABLE island_visits ADD COLUMN alert_message_id VARCHAR(32) DEFAULT NULL",
+            # Who pressed Investigate (Discord) or claimed the flight on the web, and when
+            "ALTER TABLE island_visits ADD COLUMN investigating_by VARCHAR(64) DEFAULT NULL",
+            "ALTER TABLE island_visits ADD COLUMN investigating_at INTEGER DEFAULT NULL",
         ):
             try:
                 await db.execute(col_sql)
@@ -1167,6 +1183,14 @@ class TravelerActionView(discord.ui.View):
             button.disabled = True
 
             await message_to_edit.edit(embed=embed, view=self)
+            # Mirror the claim so the web radar shows who is looking into this
+            visit_id = self.visit_id or self._get_visit_id_from_embed(embed)
+            cog = self.bot.get_cog("FlightLoggerCog") if self.bot else None
+            if cog and visit_id:
+                try:
+                    await cog.set_visit_investigating(visit_id, f"{mod.display_name} (Discord)")
+                except Exception as exc:
+                    logger.warning(f"[FLIGHT] Could not record investigation for visit #{visit_id}: {exc}")
             await interaction.followup.send("<:Cho_Investigate:1474310726381338666> Marked as under investigation.", ephemeral=True)
         except Exception as e:
             logger.error(f"Error marking as under investigation: {e}", exc_info=True)
@@ -2213,6 +2237,47 @@ class FlightLoggerCog(commands.Cog):
         async with connect_async_db() as db:
             await db.execute(f"UPDATE island_visits SET {', '.join(sets)} WHERE id = ?", (*params, visit_id))
 
+    async def merge_visit_detail(self, visit_id: int | None, **extra) -> None:
+        """Add keys to a visit's stored logger_detail without touching its verdict."""
+        if not visit_id or not extra:
+            return
+        try:
+            async with connect_async_db() as db:
+                cur = await db.execute("SELECT logger_detail FROM island_visits WHERE id = ?", (visit_id,))
+                row = await cur.fetchone()
+                if not row:
+                    return
+                try:
+                    detail = json.loads(row[0]) if row[0] else {}
+                except (TypeError, ValueError):
+                    detail = {}
+                detail.update(extra)
+                await db.execute("UPDATE island_visits SET logger_detail = ? WHERE id = ?", (json.dumps(detail), visit_id))
+        except Exception as exc:
+            logger.warning(f"[FLIGHT] Could not update detail for visit #{visit_id}: {exc}")
+
+    async def note_dodo_request(self, visit_id: int | None, dodo_req: dict | None) -> None:
+        """Remember which channel the traveler requested a Dodo code in (web radar 'Dodo Requested')."""
+        channel = (dodo_req or {}).get("channel")
+        if channel is None:
+            return
+        reply = dodo_req.get("reply_msg")
+        await self.merge_visit_detail(visit_id, dodo_channel={
+            "id": str(channel.id),
+            "name": getattr(channel, "name", None),
+            "url": getattr(reply, "jump_url", None),
+        })
+
+    async def set_visit_investigating(self, visit_id: int | None, mod_name: str | None) -> None:
+        """Claim (or with None, release) a visit's alert as under investigation."""
+        if not visit_id:
+            return
+        async with connect_async_db() as db:
+            await db.execute(
+                "UPDATE island_visits SET investigating_by = ?, investigating_at = ? WHERE id = ?",
+                (mod_name, int(time.time()) if mod_name else None, visit_id),
+            )
+
     async def mark_visit_reviewed(self, visit_id: int, review_status: str, mod) -> None:
         """Record a Discord alert resolution, including re-joins merged into that alert."""
         mod_name = getattr(mod, "display_name", None) or str(mod)
@@ -2224,7 +2289,8 @@ class FlightLoggerCog(commands.Cog):
                 return
             ign, destination, ts = row[0], row[1], row[2]
             await db.execute(
-                "UPDATE island_visits SET review_status = ?, handled_by = ?, handled_at = ? "
+                "UPDATE island_visits SET review_status = ?, handled_by = ?, handled_at = ?, "
+                "investigating_by = NULL, investigating_at = NULL "
                 "WHERE id = ? OR (review_status = 'pending' AND LOWER(ign) = LOWER(?) "
                 "AND LOWER(destination) = LOWER(?) AND timestamp BETWEEN ? AND ?)",
                 (review_status, f"{mod_name} (Discord)", now, visit_id, ign, destination,
@@ -2421,6 +2487,7 @@ class FlightLoggerCog(commands.Cog):
                 "allowed": allowed_identities,
                 "subs": [r.name for r in member_sub_roles],
                 "identity_reasons": identity_reasons,
+                "identity_events": identity_events_for_detail(recent_identity_events),
             },
             review_status="pending",
         )
@@ -2456,6 +2523,7 @@ class FlightLoggerCog(commands.Cog):
             dodo_req = self.pop_pending_dodo_request(member.id)
             if dodo_req is not None:
                 alert_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+                await self.note_dodo_request(visit_id, dodo_req)
 
             alert_msg = await output_channel.send(embed=alert_embed, view=action_view)
             await self.set_visit_alert(visit_id, alert_msg)
@@ -2542,6 +2610,7 @@ class FlightLoggerCog(commands.Cog):
                 "reason": f"Recent nickname/join activity: {reason_text}",
                 "member": {"id": str(member.id), "name": member.display_name},
                 "identity_reasons": identity_reasons,
+                "identity_events": identity_events_for_detail(recent_identity_events),
             },
             review_status="pending",
         )
@@ -2572,6 +2641,7 @@ class FlightLoggerCog(commands.Cog):
             dodo_req = self.pop_pending_dodo_request(member.id)
             if dodo_req is not None:
                 alert_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+                await self.note_dodo_request(visit_id, dodo_req)
             alert_embed.set_image(url=Config.FOOTER_LINE)
             alert_embed.set_footer(text="Chopaeng Camp - Flight Logger", icon_url=guild_icon)
 
@@ -2679,6 +2749,7 @@ class FlightLoggerCog(commands.Cog):
             dodo_req = self.pop_pending_dodo_request(member.id)
             if dodo_req is not None:
                 alert_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+                await self.note_dodo_request(visit_id, dodo_req)
             alert_embed.set_image(url=Config.FOOTER_LINE)
             alert_embed.set_footer(text="Chopaeng Camp - Flight Logger", icon_url=guild_icon)
 
@@ -2760,6 +2831,7 @@ class FlightLoggerCog(commands.Cog):
                 "subs": [r.name for r in member_sub_roles],
                 "required_roles": [r.name for r in required_roles],
                 "identity_reasons": identity_reasons,
+                "identity_events": identity_events_for_detail(recent_identity_events),
             },
             review_status="pending",
         )
@@ -2790,6 +2862,7 @@ class FlightLoggerCog(commands.Cog):
             dodo_req = self.pop_pending_dodo_request(member.id)
             if dodo_req is not None:
                 alert_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+                await self.note_dodo_request(visit_id, dodo_req)
             alert_embed.set_image(url=Config.FOOTER_LINE)
             alert_embed.set_footer(text="Chopaeng Camp - Flight Logger", icon_url=guild_icon)
 
@@ -3563,6 +3636,7 @@ class FlightLoggerCog(commands.Cog):
                     ),
                     "member": {"id": str(matched.id), "name": matched.display_name},
                     "found_via": "recent_authorization" if resolved_authorized_target is not None else match_source,
+                    "matched_from": resolved_authorized_target["id"] if resolved_authorized_target is not None else None,
                 },
             )
 
@@ -3762,6 +3836,7 @@ class FlightLoggerCog(commands.Cog):
             dodo_req = self.pop_pending_dodo_request(found_members[0].id)
             if dodo_req is not None:
                 embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+                await self.note_dodo_request(visit_id, dodo_req)
 
             embed.set_image(url=Config.FOOTER_LINE)
             embed.set_footer(text="Chopaeng Camp™ • Match Log", icon_url=guild_icon)
@@ -3862,6 +3937,7 @@ class FlightLoggerCog(commands.Cog):
                         dodo_req = self.pop_pending_dodo_request(user_id)
                         if dodo_req is not None and dodo_req.get('reply_msg'):
                             xlog_embed.add_field(name="Dodo Requested", value=dodo_req['channel'].mention, inline=True)
+                            await self.note_dodo_request(visit_id, dodo_req)
                             xlog_view.add_item(discord.ui.Button(label="View Dodo Request", url=dodo_req['reply_msg'].jump_url, style=discord.ButtonStyle.link))
                         await xlog_channel.send(embed=xlog_embed, view=xlog_view)
 

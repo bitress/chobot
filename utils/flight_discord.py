@@ -468,6 +468,72 @@ def close_flight_alert(
         return False
 
 
+def mark_flight_alert_investigating(channel_id: Any, message_id: Any, mod_name: str | None) -> bool:
+    """Show (or with mod_name=None, clear) "UNDER INVESTIGATION" on a #flight-logs alert.
+
+    Same look as the logger's Investigate button; the action buttons stay.
+    """
+    headers = _headers()
+    if not headers or not channel_id or not message_id:
+        return False
+    url = f"{API}/channels/{channel_id}/messages/{message_id}"
+    try:
+        message = json_request(url, headers=headers, timeout=10)
+        embeds = message.get("embeds") if isinstance(message, dict) else None
+        if not embeds:
+            return False
+        embed = _clean_embed(embeds[0])
+        if "CASE CLOSED" in str((embed.get("author") or {}).get("name") or ""):
+            return False  # already resolved: never reopen it by claiming
+        fields = [f for f in embed.get("fields", []) if "Investigating" not in f["name"]]
+        status_field = next((f for f in fields if f["name"] == "Status"), None)
+        if mod_name:
+            embed["author"] = {"name": "UNDER INVESTIGATION"}
+            embed["color"] = COLOR_INVESTIGATION
+            if status_field:
+                status_field["value"] = f"{EMOJI_INVESTIGATE} **INVESTIGATING**"
+            fields.append({
+                "name": f"{EMOJI_INVESTIGATE} Investigating",
+                "value": f"**{mod_name} (Website)** is looking into this. Started <t:{int(time.time())}:R>",
+                "inline": False,
+            })
+        else:
+            embed.pop("author", None)
+            if status_field:
+                status_field["value"] = f"{EMOJI_INVESTIGATE} **PENDING REVIEW**"
+        embed["fields"] = fields
+        json_request(url, method="PATCH", headers=headers, payload={"embeds": [embed]}, timeout=10)
+        return True
+    except Exception as exc:
+        logger.warning("[FlightDiscord] Could not mark alert %s/%s investigating: %s", channel_id, message_id, exc)
+        return False
+
+
+def kick_member(discord_id: Any, audit_reason: str) -> tuple[bool, str | None]:
+    """Kick a member from the guild. Returns (ok, error message)."""
+    headers = _headers()
+    uid = str(discord_id or "").strip()
+    if not headers or not uid.isdigit() or not Config.GUILD_ID:
+        return False, "Discord is not configured or the member has no Discord ID"
+    from urllib.parse import quote
+    try:
+        json_request(
+            f"{API}/guilds/{Config.GUILD_ID}/members/{uid}",
+            method="DELETE",
+            headers={**headers, "X-Audit-Log-Reason": quote(audit_reason[:500])},
+            timeout=10,
+        )
+        return True, None
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if code == 404:
+            return False, "Member is not in the server"
+        if code == 403:
+            return False, "The bot is not allowed to kick this member"
+        logger.warning("[FlightDiscord] Kick of %s failed: %s", uid, exc)
+        return False, "Discord rejected the kick"
+
+
 def run_async(fn, *args, **kwargs) -> None:
     """Fire-and-forget so HTTP handlers are never blocked by Discord."""
     threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()

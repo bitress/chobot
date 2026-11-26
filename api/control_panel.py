@@ -94,6 +94,9 @@ def _apply_control_panel_migrations() -> None:
                 # The #flight-logs alert for the visit, edited when the web resolves it
                 ("alert_channel_id", "VARCHAR(32) DEFAULT NULL"),
                 ("alert_message_id", "VARCHAR(32) DEFAULT NULL"),
+                # Who is investigating the alert (Discord Investigate button or the web claim)
+                ("investigating_by", "VARCHAR(64) DEFAULT NULL"),
+                ("investigating_at", "BIGINT DEFAULT NULL"),
             ]
             for col_name, col_def in new_cols:
                 if col_name.lower() not in existing_cols:
@@ -1498,7 +1501,8 @@ def get_live_feed():
             SELECT v.id, v.ign, v.origin_island, v.destination, v.user_id, v.guild_id,
                    v.authorized, v.timestamp, v.island_type, v.review_status,
                    v.handled_by, v.handled_at, v.match_score, v.correlated_reveal_id,
-                   v.logger_verdict, v.logger_detail
+                   v.logger_verdict, v.logger_detail,
+                   v.alert_channel_id, v.alert_message_id, v.investigating_by, v.investigating_at
             FROM island_visits v
             WHERE {where_sql}
             ORDER BY v.id DESC
@@ -1513,6 +1517,7 @@ def get_live_feed():
                 "flights": [],
                 "count": 0,
                 "has_more": False,
+                "max_id": int(since_id) if since_id and since_id.isdigit() else 0,
                 "sub_islands": sorted(get_sub_island_names()),
                 "server_time": int(time.time()),
             })
@@ -1552,6 +1557,7 @@ def get_live_feed():
                 "logger_verdict": row[14],
                 "logger_detail": row[15],
             }
+            alert_channel_id, alert_message_id, investigating_by, investigating_at = row[16], row[17], row[18], row[19]
 
             dest_key = clean_text(flight["destination"]).lower()
 
@@ -1574,6 +1580,11 @@ def get_live_feed():
                     newer["attempts"] += 1
                     newer["merged_ids"].append(flight["id"])
                     newer["first_seen"] = flight["timestamp"]
+                    # The alert (and any Investigate claim) lives on the first attempt: re-joins don't post a new one
+                    if not newer["alert_url"] and alert_channel_id and alert_message_id and Config.GUILD_ID:
+                        newer["alert_url"] = f"https://discord.com/channels/{Config.GUILD_ID}/{alert_channel_id}/{alert_message_id}"
+                    if not newer["investigating"] and investigating_by:
+                        newer["investigating"] = {"by": investigating_by, "at": investigating_at}
                     continue
 
             alert_kind, detail = classify_logger_verdict(flight)
@@ -1607,6 +1618,15 @@ def get_live_feed():
                 "attempts": 1,
                 "merged_ids": [],
                 "first_seen": flight["timestamp"],
+                # The #flight-logs alert, so mods can jump to it from the radar
+                "alert_url": (
+                    f"https://discord.com/channels/{Config.GUILD_ID}/{alert_channel_id}/{alert_message_id}"
+                    if alert_channel_id and alert_message_id and Config.GUILD_ID else None
+                ),
+                "investigating": (
+                    {"by": investigating_by, "at": investigating_at}
+                    if investigating_by and flight["review_status"] in ("pending", "unchecked") else None
+                ),
             }
 
             # Optional search filtering
@@ -1644,6 +1664,8 @@ def get_live_feed():
             "flights": feed_items,
             "count": len(feed_items),
             "has_more": len(flight_rows) == limit,
+            # Newest sub-island row id in this response: the client's next since_id
+            "max_id": max(int(r[0]) for r in flight_rows),
             "sub_islands": sorted(get_sub_island_names()),
             "server_time": int(time.time()),
         })
@@ -1961,6 +1983,64 @@ def investigate_flight(visit_id: int):
         conn.close()
 
 
+@control_panel_bp.route("/flight/<int:visit_id>/claim", methods=["POST", "DELETE"])
+@require_mod_auth
+def claim_flight(visit_id: int):
+    """Mark a pending flight as under investigation (POST) or release it (DELETE).
+
+    Mirrors the Discord logger's Investigate button: the #flight-logs alert shows
+    "UNDER INVESTIGATION" so two mods don't work the same traveler.
+    """
+    init_control_panel_db()
+    user = _get_current_user() or {}
+    mod_name = str(user.get("username") or user.get("user_id") or "Moderator")[:48]
+    releasing = request.method == "DELETE"
+    data = request.get_json(silent=True) or {}
+    merged_ids = [int(i) for i in (data.get("merged_ids") or []) if str(i).isdigit()]
+    now = int(time.time())
+    conn = connect_db()
+    try:
+        row = conn.execute(
+            "SELECT review_status, investigating_by, alert_channel_id, alert_message_id FROM island_visits WHERE id = ?",
+            (visit_id,),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Flight record not found"}), 404
+        status, current, alert_channel, alert_message = row
+        if (status or "pending") not in ("pending", "unchecked"):
+            return jsonify({"error": "This flight was already handled.", "code": "already_handled"}), 409
+        if releasing:
+            conn.execute(
+                "UPDATE island_visits SET investigating_by = NULL, investigating_at = NULL WHERE id = ?",
+                (visit_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE island_visits SET investigating_by = ?, investigating_at = ? WHERE id = ?",
+                (f"{mod_name} (Web)", now, visit_id),
+            )
+        conn.commit()
+        if not alert_message and merged_ids:
+            ph = ",".join("?" for _ in merged_ids)
+            alt = conn.execute(
+                f"SELECT alert_channel_id, alert_message_id FROM island_visits "
+                f"WHERE id IN ({ph}) AND alert_message_id IS NOT NULL LIMIT 1",
+                merged_ids,
+            ).fetchone()
+            if alt:
+                alert_channel, alert_message = alt
+    finally:
+        conn.close()
+
+    # Re-claiming your own flight doesn't edit the Discord alert again
+    if alert_channel and alert_message and (releasing or current != f"{mod_name} (Web)"):
+        from utils.flight_discord import mark_flight_alert_investigating, run_async
+        run_async(mark_flight_alert_investigating, alert_channel, alert_message, None if releasing else mod_name)
+
+    investigating = None if releasing else {"by": f"{mod_name} (Web)", "at": now}
+    return jsonify({"success": True, "visit_id": visit_id, "investigating": investigating, "previous": current})
+
+
 @control_panel_bp.route("/stats", methods=["GET"])
 @require_mod_auth
 def get_stats():
@@ -2055,7 +2135,7 @@ def execute_action():
         if not action or not visit_id:
             return jsonify({"error": "Missing required fields: action, visit_id"}), 400
 
-        valid_actions = {"authorise", "dismiss", "warn", "timeout", "ban", "note"}
+        valid_actions = {"authorise", "dismiss", "warn", "timeout", "kick", "ban", "note"}
         if action not in valid_actions:
             return jsonify({"error": f"Invalid action: {action}. Must be one of {valid_actions}"}), 400
         merged_ids = [int(i) for i in (data.get("merged_ids") or []) if str(i).isdigit()]
@@ -2064,6 +2144,12 @@ def execute_action():
         web_user_id = next((v for v in (user_id, discord_id) if v and not v.isdigit()), "")
         if not discord_id.isdigit():
             discord_id = ""
+        if action == "kick" and not (discord_id or user_id.isdigit()):
+            # Same answer as the Discord logger's Kick button for website accounts
+            return jsonify({
+                "error": "Kick needs a Discord member. Website accounts are not in the server: use Warn, Timeout or Ban instead.",
+                "code": "kick_needs_discord_member",
+            }), 400
 
         user = _get_current_user() or {}
         mod_name = user.get("username") or user.get("user_id") or "Moderator"
@@ -2118,7 +2204,7 @@ def execute_action():
         # Claim the flight atomically: only one request (double click, or two mods at once)
         # can move it from the state we just read. The loser gets "already handled".
         claim = conn.execute(
-            "UPDATE island_visits SET handled_by = ?, handled_at = ? "
+            "UPDATE island_visits SET handled_by = ?, handled_at = ?, investigating_by = NULL, investigating_at = NULL "
             "WHERE id = ? AND review_status = ? AND COALESCE(handled_at, 0) = ?",
             (mod_name, now, visit_id, current_status, prev_handled_at or 0),
         )
@@ -2176,6 +2262,13 @@ def execute_action():
                 """,
                 (user_id or discord_id or flight_ign, discord_id or None, reason, mod_id, mod_name, now, expires_at),
             )
+        elif action == "kick":
+            status_to_set = "actioned"
+            conn.execute(
+                "UPDATE island_visits SET review_status = 'actioned', handled_by = ?, handled_at = ? WHERE id = ?",
+                (mod_name, now, visit_id),
+            )
+            add_warning_row('KICK')
         elif action == "ban":
             # Moderators and admins can ban (require_mod_auth already checked the role)
             status_to_set = "actioned"
@@ -2208,6 +2301,9 @@ def execute_action():
 
         revoked_access = None
         case_id = None
+        if action == "kick":
+            from utils.flight_discord import make_case_id
+            case_id = make_case_id()
         if action in ("warn", "timeout", "ban"):
             from utils.flight_discord import make_case_id
             case_id = make_case_id()
@@ -2265,6 +2361,28 @@ def execute_action():
             if row:
                 alert_channel, alert_message = row[0], row[1]
 
+        # Kick, like the logger: DM first (they can't be reached after leaving), then remove.
+        # Done before commit so a failed kick leaves the flight pending.
+        kick_dm_status = None
+        if action == "kick":
+            from utils import flight_discord
+            from utils.discord_membership import DiscordNotGuildMember, fetch_guild_member_snapshot
+            kick_target = discord_id or user_id
+            try:
+                fetch_guild_member_snapshot(kick_target)
+            except DiscordNotGuildMember:
+                conn.rollback()
+                return jsonify({"error": "That member is not in the Discord server, so there is no one to kick.",
+                                "code": "kick_not_in_server"}), 409
+            except Exception:
+                pass  # Discord lookup unavailable: let the kick itself report the problem
+            kick_dm_status = flight_discord.send_member_dm(kick_target, "kick", reason, case_id)
+            kicked, kick_error = flight_discord.kick_member(kick_target, f"FlightLog [{case_id}]: {reason} (by {mod_name}, website)")
+            if not kicked:
+                conn.rollback()
+                return jsonify({"error": f"Kick failed: {kick_error}. The flight is still pending.",
+                                "code": "kick_failed", "dm": kick_dm_status}), 502
+
         conn.commit()
 
         # Resolve the member's Discord ID (web accounts may be linked through a unified ID)
@@ -2320,6 +2438,7 @@ def execute_action():
                 "warn_count": _warn_count(conn, target_discord_id, web_user_id=web_user_id) if case_id else 0,
                 "web_user_id": web_user_id if web_account else None,
                 "web_name": account_label(web_account) if web_account else None,
+                "dm_status": kick_dm_status,
             },
             daemon=True,
         ).start()
@@ -2384,6 +2503,7 @@ def _sync_action_to_discord(
     warn_count: int,
     web_user_id: str | None = None,
     web_name: str | None = None,
+    dm_status: str | None = None,
 ) -> None:
     """Send the flight logger's Discord messages for a web action (runs in a thread).
 
@@ -2405,9 +2525,11 @@ def _sync_action_to_discord(
             pass
 
     mod_log_url = None
-    dm_status = case_log_status = None
+    case_log_status = None
     if case_id:
-        dm_status = flight_discord.send_member_dm(discord_id, action, reason, case_id) if discord_id.isdigit() else "skipped"
+        # A kick's DM was already sent before the member was removed
+        if dm_status is None:
+            dm_status = flight_discord.send_member_dm(discord_id, action, reason, case_id) if discord_id.isdigit() else "skipped"
         mod_log_url = flight_discord.post_case_log(
             discord_id, member_name, mod_name, action, reason, case_id,
             warn_count=warn_count, expires_at=expires_at,
@@ -2510,6 +2632,10 @@ def undo_action():
 
         # The web punishment being reversed, if any (its audit record holds what was revoked)
         punishment = None
+        was_kick = bool(prev_status == "actioned" and prev_handled_at and conn.execute(
+            "SELECT 1 FROM dashboard_audit_events WHERE target = ? AND created_at = ? AND action = 'CONTROL_PANEL_KICK' LIMIT 1",
+            (f"visit:{visit_id}", prev_handled_at),
+        ).fetchone())
         if prev_status == "actioned" and prev_handled_at:
             prow = conn.execute(
                 """
@@ -2571,7 +2697,7 @@ def undo_action():
             # Remove the strike and lift the restriction this action created
             # (execute_action stamps them with the same time as handled_at).
             conn.execute(
-                "DELETE FROM warnings WHERE visit_id = ? AND timestamp = ? AND action_type IN ('WARN', 'TIMEOUT', 'BAN')",
+                "DELETE FROM warnings WHERE visit_id = ? AND timestamp = ? AND action_type IN ('WARN', 'TIMEOUT', 'KICK', 'BAN')",
                 (visit_id, prev_handled_at),
             )
             conn.execute(
@@ -2613,6 +2739,8 @@ def undo_action():
             logger.warning("[ControlPanel] Failed to dispatch flight alert reopen: %s", exc)
 
     message = "Action reversed. Flight is pending again."
+    if was_kick:
+        message = "Flight is pending again. A kick can't be undone: the member has to rejoin the server."
     if punishment:
         threading.Thread(
             target=_reverse_punishment_effects,
