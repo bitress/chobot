@@ -2609,6 +2609,16 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
         if cart.is_empty:
             await fail("Your pocket is empty.")
             return
+        # Re-check the name at send time: the pocket stays open for minutes, and the nickname
+        # (or saved character) may have been removed since the gate ran when it opened.
+        username = await _order_username(user)
+        if not username and not _is_staff(user):
+            await fail(
+                "Set your server nickname to `Character Name | Island Name` "
+                "(or register your character on the website) before ordering. Your pocket is saved."
+            )
+            return
+        username = username or view.username
         wait = _cooldown_left(user.id, "orderbot", "submit", SUBMIT_COOLDOWN)
         if wait > 0:
             await fail(f"Please wait {wait:.0f}s before placing another order.")
@@ -2636,7 +2646,7 @@ class OrderBotCog(commands.Cog, name="OrderBot"):
             return
 
         result = await client.submit_order(
-            username=view.username,
+            username=username,
             order_text=order_text,
             villager=cart.villager[1] if cart.villager else None,
             user_id=str(user.id),

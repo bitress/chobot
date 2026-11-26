@@ -42,7 +42,7 @@ from utils.database import connect_db
 from utils.discord_http import request as discord_request
 from utils.helpers import format_locations_text, parse_locations_json, normalize_text, clean_text
 from utils.presence_hub import hub as presence_hub, format_sse, redact_radar
-from utils.nickname_format import nickname_warning_for, is_valid_acnh_nickname
+from utils.nickname_format import build_nickname, nickname_warning_for, is_valid_acnh_nickname
 from utils.dodo_log_embed import build_dodo_log_embed, count_recent_reveals
 from utils.auth_tokens import get_auth_user, make_auth_token, revoke_auth_token, update_auth_user
 from utils.discord_membership import (
@@ -6127,14 +6127,14 @@ def api_user_characters():
 
         conn.commit()
 
-        # Attempt to auto-sync Discord nickname for regular members
+        # Auto-sync the Discord nickname from every saved character, not just the default one,
+        # so adding a second character or island shows up on Discord too.
+        nickname_sync = "skipped"
         discord_id = str(auth_user.get("discord_id") or auth_user.get("user_id") or "").strip() if auth_user else ""
         if discord_id and discord_id.isdigit():
-            active_char = next((c for c in char_list if c.get("isDefault") or c.get("is_default")), char_list[0] if char_list else None)
-            if active_char and active_char.get("ign"):
-                _sync_user_discord_nickname(discord_id, active_char.get("ign"), active_char.get("islandName") or active_char.get("island_name") or "")
+            _ok, nickname_sync = _sync_user_discord_nickname_from_characters(discord_id, char_list[:3])
 
-        return jsonify({"ok": True, "success": True, "count": min(len(char_list), 3)})
+        return jsonify({"ok": True, "success": True, "count": min(len(char_list), 3), "nickname_sync": nickname_sync})
     except Exception as exc:
         logger.warning("Error in user_characters API: %s", exc)
         return jsonify({"ok": False, "error": _safe_error(exc)}), 500
@@ -6142,15 +6142,39 @@ def api_user_characters():
         conn.close()
 
 
-def _sync_user_discord_nickname(discord_id: str, ign: str, island: str) -> tuple[bool, str]:
-    """Attempt to update user's Discord nickname to 'IGN | Island'.
+def _sync_user_discord_nickname_from_characters(discord_id: str, char_list: list) -> tuple[bool, str]:
+    """Set the Discord nickname from all saved characters, default first.
+
+    "Bit | A" + "Bit | B" -> "Bit | A/B"; two characters -> "C1 | I1 | C2 | I2". Characters
+    without an island are left out. If everything together is over 32 characters, only the
+    default character is used.
+    """
+    chars = [c for c in char_list if isinstance(c, dict) and str(c.get("ign") or "").strip()]
+    chars.sort(key=lambda c: not (c.get("isDefault") or c.get("is_default")))
+    pairs = [
+        (str(c.get("ign") or "").strip()[:10], str(c.get("islandName") or c.get("island_name") or "").strip()[:10])
+        for c in chars
+    ]
+    full = [(ign, isl) for ign, isl in pairs if isl]
+    if not full:
+        return False, "no_island"
+    nick, errors = build_nickname(full)
+    if not nick:
+        nick, errors = build_nickname(full[:1])
+    if not nick:
+        logger.warning("Discord nickname sync for user_id=%s: could not build a nickname: %s", discord_id, errors)
+        return False, "invalid_nickname"
+    return _set_discord_nickname(discord_id, nick)
+
+
+def _set_discord_nickname(discord_id: str, nick: str) -> tuple[bool, str]:
+    """Set the member's Discord server nickname.
 
     Returns (success, reason). Skips gracefully if user is Owner/Admin (HTTP 403).
     """
-    if not discord_id or not ign:
+    if not discord_id or not nick:
         return False, "missing_params"
-    raw_nick = f"{ign} | {island}".strip() if island else ign.strip()
-    nick = raw_nick[:32]
+    nick = nick[:32]
     bot_auth = _discord_bot_auth_value()
     guild_id = str(Config.GUILD_ID or "").strip()
     if not bot_auth or not guild_id:
@@ -6175,10 +6199,10 @@ def _sync_user_discord_nickname(discord_id: str, ign: str, island: str) -> tuple
         if exc.code == 403:
             logger.info("Discord nickname sync skipped for user_id=%s (HTTP 403: user is Owner/Admin or higher role)", discord_id)
             return False, "forbidden_hierarchy"
-        logger.debug("Discord nickname sync failed for user_id=%s: HTTP %s", discord_id, exc.code)
+        logger.warning("Discord nickname sync failed for user_id=%s: HTTP %s", discord_id, exc.code)
         return False, f"http_{exc.code}"
     except Exception as exc:
-        logger.debug("Discord nickname sync error for user_id=%s: %s", discord_id, exc)
+        logger.warning("Discord nickname sync error for user_id=%s: %s", discord_id, exc)
         return False, "error"
 
 
