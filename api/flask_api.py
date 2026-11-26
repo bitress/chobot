@@ -4172,10 +4172,17 @@ def _bundle_schedule_from(data: dict, existing: Any = None) -> tuple[int | None,
     return starts, ends, repeat
 
 
+def _viewer_utc_offset() -> int:
+    """The website viewer's UTC offset in minutes (?tz=), for seasonal bundle windows."""
+    from utils.bundle_schedule import parse_utc_offset
+    return parse_utc_offset(request.args.get("tz"))
+
+
 def _bundle_schedule_json(row: Any) -> dict:
     from utils.bundle_schedule import bundle_window
     r = dict(row)
-    w = bundle_window(r.get("starts_at"), r.get("ends_at"), r.get("repeat_yearly"))
+    w = bundle_window(r.get("starts_at"), r.get("ends_at"), r.get("repeat_yearly"),
+                      utc_offset_minutes=_viewer_utc_offset())
     return {
         "startsAt": r.get("starts_at") or None,
         "endsAt": r.get("ends_at") or None,
@@ -4190,7 +4197,8 @@ def get_pocket_bundles():
     """Pocket bundles, official first, then community bundles newest first. Public.
 
     Seasonal bundles outside their window are left out; admins get every bundle with ?all=1
-    (the dashboard), each with its schedule status.
+    (the dashboard), each with its schedule status. Windows are local dates: ?tz=<minutes east
+    of UTC> is the viewer's offset (Philippine time when missing).
     """
     from utils.bundle_schedule import is_bundle_live
     show_all = request.args.get("all") in ("1", "true")
@@ -4206,7 +4214,7 @@ def get_pocket_bundles():
 
         bundles = []
         for r in rows:
-            if not show_all and not is_bundle_live(dict(r)):
+            if not show_all and not is_bundle_live(dict(r), utc_offset_minutes=_viewer_utc_offset()):
                 continue
             bundles.append({
                 **_bundle_schedule_json(r),
