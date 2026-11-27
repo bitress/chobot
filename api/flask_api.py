@@ -8239,6 +8239,85 @@ def _resolve_target_island_and_client(island_param: Optional[str] = None):
     return resolved_island, target_url, client
 
 
+# ── Distinct items on each island's ground (the "Items N" on island cards) ─────────────────
+# Counted from the same SysBot map data the items modal reads, by the same rules, so the
+# card and the modal agree. Filled in the background: one page view never waits on 48 maps.
+ITEM_COUNT_TTL = 600.0
+ITEM_COUNT_PAUSE = 0.3
+_UNKNOWN_ITEM_PREFIXES = ("item #65533", "item #65534", "item #65535")
+_item_counts: dict[str, tuple[float, int]] = {}
+_item_counts_lock = threading.Lock()
+_item_counts_refreshing = False
+
+
+def _distinct_map_item_count(data: Any) -> Optional[int]:
+    """Distinct item names in SysBot compact map data (dots + names), or None if it isn't map data."""
+    if not isinstance(data, dict) or data.get("dots") is None:
+        return None
+    names = data.get("names") or []
+    seen: set[str] = set()
+    for dot in data.get("dots") or []:
+        if not isinstance(dot, (list, tuple)) or len(dot) < 2:
+            continue
+        idx = dot[2] if len(dot) > 2 else None
+        hex_id = dot[5] if len(dot) > 5 else None
+        name = names[idx] if isinstance(idx, int) and 0 <= idx < len(names) and names[idx] else (
+            f"Item #{hex_id}" if hex_id else "Unknown Item"
+        )
+        key = str(name).lower()
+        if key.startswith(_UNKNOWN_ITEM_PREFIXES):
+            continue
+        seen.add(key)
+    return len(seen)
+
+
+def _remember_item_count(island: Optional[str], data: Any) -> None:
+    count = _distinct_map_item_count(data)
+    if island and count is not None:
+        with _item_counts_lock:
+            _item_counts[island.strip().lower()] = (time.time(), count)
+
+
+def _refresh_item_counts(names: list[str]) -> None:
+    global _item_counts_refreshing
+    from utils.sysbot_api import get_island_sysbot_client
+    try:
+        for name in names:
+            try:
+                client = get_island_sysbot_client(name, timeout=4)
+                if client and client.base_url:
+                    _remember_item_count(name, client.get_island_map_data_sync())
+            except Exception as exc:
+                logging.getLogger("flask_api").debug("item count for %s unavailable: %s", name, exc)
+            time.sleep(ITEM_COUNT_PAUSE)
+    finally:
+        with _item_counts_lock:
+            _item_counts_refreshing = False
+
+
+@app.route("/api/islands/item-counts", methods=["GET"])
+def api_island_item_counts():
+    """Distinct items lying on each island ({island_lower: count}).
+
+    Returns what is known now and refreshes stale islands in the background, so an island
+    that is offline keeps its last count and a first call may come back partly empty.
+    """
+    global _item_counts_refreshing
+    now = time.time()
+    names = [n for n in getattr(Config, "ALL_ISLAND_PORT_ORDER", []) if n]
+    with _item_counts_lock:
+        stale = [n for n in names if now - _item_counts.get(n.lower(), (0.0, 0))[0] > ITEM_COUNT_TTL]
+        start = bool(stale) and not _item_counts_refreshing
+        if start:
+            _item_counts_refreshing = True
+        counts = {k: v[1] for k, v in _item_counts.items()}
+    if start:
+        threading.Thread(target=_refresh_item_counts, args=(stale,), daemon=True, name="item-counts").start()
+    resp = jsonify({"ok": True, "counts": counts, "refreshing": bool(stale)})
+    resp.headers["Cache-Control"] = "public, max-age=60"
+    return resp
+
+
 @app.route("/api/islands/<island_name>/map", methods=["GET"])
 def api_get_island_map(island_name: str):
     """
@@ -8268,6 +8347,7 @@ def api_get_island_map(island_name: str):
         if client and client.base_url:
             data = client.get_island_map_data_sync()
             if isinstance(data, dict) and data.get("dots") is not None and data.get("names") is not None:
+                _remember_item_count(resolved_island, data)
                 converted = _convert_sysbot_map_data_to_website(data, resolved_island)
                 map_cache.set(cache_key, converted, ttl=30.0)
                 return jsonify(converted)
@@ -8372,6 +8452,7 @@ def api_get_island_map_data_live(island_name: Optional[str] = None):
         if client and client.base_url:
             data = client.get_island_map_data_sync()
             if isinstance(data, dict) and data.get("dots") is not None and data.get("names") is not None:
+                _remember_item_count(resolved_island, data)
                 if fmt in ("website", "unified", "modal"):
                     data = _convert_sysbot_map_data_to_website(data, resolved_island)
                 data = _public_map_data(data)

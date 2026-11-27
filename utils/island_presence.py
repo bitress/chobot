@@ -305,6 +305,23 @@ def match_ign_to_visitors(
     return None
 
 
+def is_staff_user(user: Any) -> bool:
+    """Admins and mods: a website user dict (is_admin / is_mod / roles) or a Discord member
+    (Administrator permission, or one of the configured admin / mod roles)."""
+    if user is None:
+        return False
+    from utils.island_access import is_mod
+    if isinstance(user, dict):
+        return bool(user.get("is_admin") or user.get("is_mod")) or is_mod(
+            [str(r) for r in (user.get("roles") or [])], user
+        )
+    perms = getattr(user, "guild_permissions", None)
+    if perms is not None and getattr(perms, "administrator", False):
+        return True
+    role_ids = [str(getattr(r, "id", r)) for r in (getattr(user, "roles", None) or [])]
+    return bool(role_ids) and is_mod(role_ids)
+
+
 def verify_user_on_island(
     island_name: str,
     user: Any = None,
@@ -317,19 +334,9 @@ def verify_user_on_island(
     """
     data = request_data if isinstance(request_data, dict) else {}
 
-    # Check for explicit Admin / Mod bypass flag
-    is_admin_or_mod = False
-    if isinstance(user, dict):
-        is_admin_or_mod = bool(user.get("is_admin") or user.get("is_mod"))
-    elif user is not None:
-        is_admin_or_mod = bool(
-            getattr(user, "guild_permissions", None) and getattr(user.guild_permissions, "administrator", False)
-        )
-
-    if allow_admin_bypass and is_admin_or_mod:
-        if bool(data.get("admin_bypass") or data.get("bypass_presence")):
-            visitors = get_island_current_visitors_sync(island_name)
-            return True, "Admin Bypass", visitors
+    # Staff skip the presence check (no client ever sent the old opt-in flag)
+    if allow_admin_bypass and is_staff_user(user):
+        return True, "Staff Bypass", get_island_current_visitors_sync(island_name)
 
     visitors = get_island_current_visitors_sync(island_name)
     if not visitors:
@@ -355,18 +362,8 @@ async def verify_user_on_island_async(
     """
     data = request_data if isinstance(request_data, dict) else {}
 
-    is_admin_or_mod = False
-    if isinstance(user, dict):
-        is_admin_or_mod = bool(user.get("is_admin") or user.get("is_mod"))
-    elif user is not None:
-        is_admin_or_mod = bool(
-            getattr(user, "guild_permissions", None) and getattr(user.guild_permissions, "administrator", False)
-        )
-
-    if allow_admin_bypass and is_admin_or_mod:
-        if bool(data.get("admin_bypass") or data.get("bypass_presence")):
-            visitors = await get_island_current_visitors_async(island_name)
-            return True, "Admin Bypass", visitors
+    if allow_admin_bypass and is_staff_user(user):
+        return True, "Staff Bypass", await get_island_current_visitors_async(island_name)
 
     visitors = await get_island_current_visitors_async(island_name)
     if not visitors:

@@ -486,8 +486,11 @@ async def _presence_line(user: discord.abc.User | None, island: str) -> str:
         return cached[1]
     from utils.island_presence import verify_user_on_island_async
     try:
-        ok, _, _ = await verify_user_on_island_async(island, user=user, allow_admin_bypass=True)
-        line = "✅ You're on the island." if ok else "✈️ Not detected yet. Fly in and step outside the airport first."
+        ok, matched, _ = await verify_user_on_island_async(island, user=user, allow_admin_bypass=True)
+        if ok and matched == "Staff Bypass":
+            line = "🛡️ Staff: the on-island check is skipped for you."
+        else:
+            line = "✅ You're on the island." if ok else "✈️ Not detected yet. Fly in and step outside the airport first."
     except Exception:
         line = ""
     _PRESENCE_LINE_CACHE[key] = (now + 15.0, line)
