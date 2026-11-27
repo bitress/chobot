@@ -4206,16 +4206,70 @@ def _bundle_weekly_views(conn) -> dict:
         return {}
 
 
+POPULAR_BUNDLE_MIN_ORDERS = 2
+MAX_BUNDLES_PER_ORDER = 10
+
+
+def _bundle_weekly_orders(conn) -> dict:
+    """Distinct orderer-days per pocket bundle over the last 7 UTC days."""
+    since = (datetime.utcnow() - timedelta(days=6)).strftime("%Y-%m-%d")
+    try:
+        rows = conn.execute(
+            "SELECT bundle_id, COUNT(*) AS cnt FROM pocket_bundle_orders WHERE day >= ? GROUP BY bundle_id",
+            (since,),
+        ).fetchall()
+        return {r["bundle_id"]: int(r["cnt"] or 0) for r in rows}
+    except Exception as exc:
+        logger.debug("[Bundles] weekly orders unavailable: %s", exc)
+        return {}
+
+
+def _record_bundle_orders(bundle_ids, orderer: str) -> None:
+    """Counts the packs that were in an order the bot accepted: once per person per pack per day.
+    Recorded on submit (not by a separate call) so the count can't be inflated without ordering."""
+    if not isinstance(bundle_ids, list) or not orderer:
+        return
+    ids = list(dict.fromkeys(str(b).strip()[:64] for b in bundle_ids if str(b or "").strip()))[:MAX_BUNDLES_PER_ORDER]
+    if not ids:
+        return
+    orderer = orderer[:64]
+    day = datetime.utcnow().strftime("%Y-%m-%d")
+    conn = get_db()
+    try:
+        for bundle_id in ids:
+            if not conn.execute("SELECT 1 FROM pocket_bundles WHERE id = ?", (bundle_id,)).fetchone():
+                continue
+            if conn.execute(
+                "SELECT 1 FROM pocket_bundle_orders WHERE bundle_id = ? AND orderer = ? AND day = ?",
+                (bundle_id, orderer, day),
+            ).fetchone():
+                continue
+            conn.execute(
+                "REPLACE INTO pocket_bundle_orders (bundle_id, orderer, day) VALUES (?, ?, ?)",
+                (bundle_id, orderer, day),
+            )
+            conn.execute("UPDATE pocket_bundles SET orders = orders + 1 WHERE id = ?", (bundle_id,))
+        conn.commit()
+    except Exception as exc:  # stats must never fail an order
+        logger.warning("[Bundles] Could not record pack orders %s: %s", ids, exc)
+    finally:
+        conn.close()
+
+
 def _mark_popular_bundles(bundles: list) -> None:
-    """Sets isPopular on the top few bundles by views this week, ranked separately for order
-    and drop bundles (they show in different places), among the bundles in this response."""
+    """Sets isPopular on the top few bundles this week, ranked separately for order and drop
+    bundles (they show in different places), among the bundles in this response. Orders count
+    first (people actually ordered it), then views; a pack needs a few of either to qualify."""
     def is_drop(b: dict) -> bool:
         return bool(b["dropItems"]) and not b["orderItems"]
 
+    def qualifies(b: dict) -> bool:
+        return b["weeklyOrders"] >= POPULAR_BUNDLE_MIN_ORDERS or b["weeklyViews"] >= POPULAR_BUNDLE_MIN_VIEWS
+
     for drop in (False, True):
         ranked = sorted(
-            (b for b in bundles if is_drop(b) == drop and b["weeklyViews"] >= POPULAR_BUNDLE_MIN_VIEWS),
-            key=lambda b: b["weeklyViews"],
+            (b for b in bundles if is_drop(b) == drop and qualifies(b)),
+            key=lambda b: (b["weeklyOrders"], b["weeklyViews"]),
             reverse=True,
         )
         popular = {b["id"] for b in ranked[:POPULAR_BUNDLE_COUNT]}
@@ -4277,6 +4331,7 @@ def get_pocket_bundles():
         ).fetchall()
 
         weekly_views = _bundle_weekly_views(conn)
+        weekly_orders = _bundle_weekly_orders(conn)
 
         bundles = []
         for r in rows:
@@ -4296,6 +4351,8 @@ def get_pocket_bundles():
                 "dropItems": json.loads(r["drop_items"] or "[]"),
                 "views": int(row.get("views") or 0),
                 "weeklyViews": weekly_views.get(r["id"], 0),
+                "orders": int(row.get("orders") or 0),
+                "weeklyOrders": weekly_orders.get(r["id"], 0),
                 "createdAt": r["created_at"],
                 "updatedAt": r["updated_at"]
             })
@@ -4453,6 +4510,7 @@ def delete_pocket_bundle(bundle_id):
 
         conn.execute("DELETE FROM pocket_bundles WHERE id = ?", (bundle_id,))
         conn.execute("DELETE FROM pocket_bundle_views WHERE bundle_id = ?", (bundle_id,))
+        conn.execute("DELETE FROM pocket_bundle_orders WHERE bundle_id = ?", (bundle_id,))
         conn.commit()
         return jsonify({"success": True})
     except Exception as exc:
@@ -5203,6 +5261,8 @@ def submit_order_to_bot():
                 logger.warning("[OrderBot] Failed to persist order %s: %s", order_id, exc)
             finally:
                 db.close()
+        # "Ordered N times this week" on order packs: the packs this order was built from
+        _record_bundle_orders(data.get("bundle_ids"), user_id)
 
     return jsonify(result), code
 

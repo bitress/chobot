@@ -497,6 +497,16 @@ def init_dashboard_db():
             )
         """)
 
+        # Pocket bundle orders: a pack that was in an order the bot accepted, once per person per day
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pocket_bundle_orders (
+                bundle_id   VARCHAR(64) NOT NULL,
+                orderer     VARCHAR(64) NOT NULL,
+                day         VARCHAR(10) NOT NULL,
+                PRIMARY KEY (bundle_id, orderer, day)
+            )
+        """)
+
         # User Favorite Islands table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_favorite_islands (
@@ -613,6 +623,8 @@ def init_dashboard_db():
             "ALTER TABLE pocket_bundles ADD COLUMN repeat_yearly INTEGER NOT NULL DEFAULT 0",
             # All-time distinct viewer-days, for the "N views" line on order pack cards
             "ALTER TABLE pocket_bundles ADD COLUMN views INTEGER NOT NULL DEFAULT 0",
+            # All-time distinct orderer-days: how many orders included the pack
+            "ALTER TABLE pocket_bundles ADD COLUMN orders INTEGER NOT NULL DEFAULT 0",
         ):
             try:
                 conn.execute(col_sql)
@@ -636,6 +648,10 @@ def init_dashboard_db():
             pass
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS ix_bundle_views_day ON pocket_bundle_views (day)")
+        except Exception:
+            pass
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_bundle_orders_day ON pocket_bundle_orders (day)")
         except Exception:
             pass
         try:
