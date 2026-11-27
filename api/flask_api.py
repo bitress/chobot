@@ -4188,6 +4188,74 @@ def _bundle_schedule_json(row: Any) -> dict:
     }
 
 
+POPULAR_BUNDLE_COUNT = 3
+POPULAR_BUNDLE_MIN_VIEWS = 3
+
+
+def _bundle_weekly_views(conn) -> dict:
+    """Distinct viewer-days per pocket bundle over the last 7 UTC days."""
+    since = (datetime.utcnow() - timedelta(days=6)).strftime("%Y-%m-%d")
+    try:
+        rows = conn.execute(
+            "SELECT bundle_id, COUNT(*) AS cnt FROM pocket_bundle_views WHERE day >= ? GROUP BY bundle_id",
+            (since,),
+        ).fetchall()
+        return {r["bundle_id"]: int(r["cnt"] or 0) for r in rows}
+    except Exception as exc:
+        logger.debug("[Bundles] weekly views unavailable: %s", exc)
+        return {}
+
+
+def _mark_popular_bundles(bundles: list) -> None:
+    """Sets isPopular on the top few bundles by views this week, ranked separately for order
+    and drop bundles (they show in different places), among the bundles in this response."""
+    def is_drop(b: dict) -> bool:
+        return bool(b["dropItems"]) and not b["orderItems"]
+
+    for drop in (False, True):
+        ranked = sorted(
+            (b for b in bundles if is_drop(b) == drop and b["weeklyViews"] >= POPULAR_BUNDLE_MIN_VIEWS),
+            key=lambda b: b["weeklyViews"],
+            reverse=True,
+        )
+        popular = {b["id"] for b in ranked[:POPULAR_BUNDLE_COUNT]}
+        for b in bundles:
+            if is_drop(b) == drop:
+                b["isPopular"] = b["id"] in popular
+
+
+@app.route("/api/bundles/<bundle_id>/view", methods=["POST"])
+def view_pocket_bundle(bundle_id: str):
+    """Count an order pack view (opened or added): at most once per viewer per UTC day."""
+    target_id = bundle_id.strip()[:64]
+    if not target_id:
+        return jsonify({"success": False}), 400
+    viewer = _loadout_viewer_id(_current_auth_user())
+    day = datetime.utcnow().strftime("%Y-%m-%d")
+    conn = get_db()
+    try:
+        exists = conn.execute("SELECT 1 FROM pocket_bundles WHERE id = ?", (target_id,)).fetchone()
+        if not exists:
+            return jsonify({"success": False, "error": "Bundle not found"}), 404
+        seen = conn.execute(
+            "SELECT 1 FROM pocket_bundle_views WHERE bundle_id = ? AND viewer = ? AND day = ?",
+            (target_id, viewer, day),
+        ).fetchone()
+        if not seen:
+            conn.execute(
+                "REPLACE INTO pocket_bundle_views (bundle_id, viewer, day) VALUES (?, ?, ?)",
+                (target_id, viewer, day),
+            )
+            conn.execute("UPDATE pocket_bundles SET views = views + 1 WHERE id = ?", (target_id,))
+            conn.commit()
+        return jsonify({"success": True, "counted": not seen})
+    except Exception as exc:
+        logger.warning("Error counting view for bundle %s: %s", bundle_id, exc)
+        return jsonify({"success": False}), 500
+    finally:
+        conn.close()
+
+
 @app.route("/api/bundles", methods=["GET"])
 def get_pocket_bundles():
     """Pocket bundles, official first, then community bundles newest first. Public.
@@ -4208,10 +4276,13 @@ def get_pocket_bundles():
             (_POCKET_BUNDLES_LIST_LIMIT,),
         ).fetchall()
 
+        weekly_views = _bundle_weekly_views(conn)
+
         bundles = []
         for r in rows:
             if not show_all and not is_bundle_live(dict(r), utc_offset_minutes=_viewer_utc_offset()):
                 continue
+            row = dict(r)
             bundles.append({
                 **_bundle_schedule_json(r),
                 "id": r["id"],
@@ -4223,9 +4294,12 @@ def get_pocket_bundles():
                 "createdBy": r["created_by"] or "Community",
                 "orderItems": json.loads(r["order_items"] or "[]"),
                 "dropItems": json.loads(r["drop_items"] or "[]"),
+                "views": int(row.get("views") or 0),
+                "weeklyViews": weekly_views.get(r["id"], 0),
                 "createdAt": r["created_at"],
                 "updatedAt": r["updated_at"]
             })
+        _mark_popular_bundles(bundles)
         return jsonify(bundles)
     except Exception as exc:
         logger.warning("Error fetching pocket bundles: %s", exc)
@@ -4378,6 +4452,7 @@ def delete_pocket_bundle(bundle_id):
             return jsonify({"error": "You can only delete bundles you created"}), 403
 
         conn.execute("DELETE FROM pocket_bundles WHERE id = ?", (bundle_id,))
+        conn.execute("DELETE FROM pocket_bundle_views WHERE bundle_id = ?", (bundle_id,))
         conn.commit()
         return jsonify({"success": True})
     except Exception as exc:
