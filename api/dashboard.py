@@ -4552,6 +4552,118 @@ def api_sync_maps():
     return jsonify({"synced": synced, "skipped": skipped, "errors": errors})
 
 
+HEATMAP_DAYS = 30
+TREND_MAX_DAYS = 366
+_GMT8 = timezone(timedelta(hours=8))
+
+
+def _parse_gmt8_day(value: str):
+    try:
+        return datetime.strptime((value or "").strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+@dashboard.route("/api/analytics/trend", methods=["GET"])
+@api_auth_required
+def api_analytics_trend():
+    """Daily flight counts (GMT+8 calendar days) for a range, with empty days filled in.
+
+    Either ``days`` (7, 30 or 90, ending today) or ``from`` / ``to`` as YYYY-MM-DD
+    (inclusive, at most TREND_MAX_DAYS). ``island_type`` is free / sub as in /api/analytics.
+    """
+    from api.control_panel import sub_destination_filter
+
+    island_type = request.args.get("island_type", "").lower()
+    today = datetime.now(_GMT8).date()
+    if request.args.get("from") or request.args.get("to"):
+        start = _parse_gmt8_day(request.args.get("from", ""))
+        end = _parse_gmt8_day(request.args.get("to", "")) or today
+        if not start:
+            return jsonify({"ok": False, "error": "from must be a date (YYYY-MM-DD)"}), 400
+        if end < start:
+            start, end = end, start
+        if (end - start).days + 1 > TREND_MAX_DAYS:
+            return jsonify({"ok": False, "error": f"Pick a range of at most {TREND_MAX_DAYS} days"}), 400
+    else:
+        try:
+            days = int(request.args.get("days", 7))
+        except ValueError:
+            days = 7
+        days = days if days in (7, 30, 90) else 7
+        end = today
+        start = today - timedelta(days=days - 1)
+
+    lo = int(datetime(start.year, start.month, start.day, tzinfo=_GMT8).timestamp())
+    hi = int(datetime(end.year, end.month, end.day, tzinfo=_GMT8).timestamp()) + 86400
+
+    type_sql, type_params = "", []
+    if island_type in ("free", "sub"):
+        sub_sql, sub_params = sub_destination_filter("destination")
+        type_sql = f" AND {sub_sql}" if island_type == "sub" else f" AND NOT {sub_sql}"
+        type_params = list(sub_params)
+
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT DATE(timestamp, 'unixepoch', '+8 hours') AS day, COUNT(*) AS count "
+            f"FROM island_visits WHERE timestamp >= ? AND timestamp < ?{type_sql} "
+            "GROUP BY day ORDER BY day",
+            [lo, hi, *type_params],
+        ).fetchall()
+    except Exception as exc:
+        logger.exception("Failed to build analytics trend")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        db.close()
+
+    # str() covers a driver that still hands back a date object
+    counts = {str(r["day"])[:10]: int(r["count"] or 0) for r in rows}
+    span = (end - start).days + 1
+    series = []
+    for i in range(span):
+        key = (start + timedelta(days=i)).isoformat()
+        series.append({"day": key, "count": counts.get(key, 0)})
+    return jsonify({
+        "ok": True,
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "days": series,
+        "total": sum(d["count"] for d in series),
+    })
+
+
+@dashboard.route("/api/bundles/stats", methods=["GET"])
+@api_auth_required
+def api_bundle_stats():
+    """Per pocket bundle: distinct viewer-days and orderer-days over the last N UTC days."""
+    try:
+        days = int(request.args.get("days", 7))
+    except ValueError:
+        days = 7
+    days = days if days in (7, 30, 90) else 7
+    since = (datetime.now(timezone.utc) - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+
+    db = get_db()
+    try:
+        stats: dict[str, dict] = {}
+        for table, key in (("pocket_bundle_views", "views"), ("pocket_bundle_orders", "orders")):
+            try:
+                rows = db.execute(
+                    f"SELECT bundle_id, COUNT(*) AS cnt FROM {table} WHERE day >= ? GROUP BY bundle_id",
+                    (since,),
+                ).fetchall()
+            except Exception as exc:
+                logger.debug("[Bundles] %s unavailable: %s", table, exc)
+                rows = []
+            for r in rows:
+                entry = stats.setdefault(str(r["bundle_id"]), {"views": 0, "orders": 0})
+                entry[key] = int(r["cnt"] or 0)
+    finally:
+        db.close()
+    return jsonify({"ok": True, "days": days, "since": since, "bundles": stats})
+
+
 @dashboard.route("/api/analytics", methods=["GET"])
 @api_auth_required
 def api_analytics():
@@ -4626,6 +4738,15 @@ def api_analytics():
                 it_params,
             ).fetchall()
         ]
+        # Weekday x hour (GMT+8) over the last 30 days, for staffing the busy windows
+        heatmap_raw = db.execute(
+            "SELECT CAST(strftime('%w', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS dow, "
+            "CAST(strftime('%H', timestamp, 'unixepoch', '+8 hours') AS INTEGER) AS hour, "
+            "COUNT(*) AS count "
+            f"FROM island_visits WHERE timestamp > ?{it_clause} "
+            "GROUP BY dow, hour",
+            [int(time.time()) - HEATMAP_DAYS * 86400, *it_params],
+        ).fetchall()
         auth_raw = db.execute(
             "SELECT CASE "
             f"  WHEN {unchecked_sql('')} THEN 'unchecked' "
@@ -4802,6 +4923,12 @@ def api_analytics():
     cat_stats  = {"public": cat_map.get("public", 0), "member": cat_map.get("member", 0)}
     visits_by_hour_full = [{"hour": h, "count": hour_map.get(h, 0)} for h in range(24)]
     visits_by_dow = [{"dow": d, "label": _DOW_LABELS[d], "count": dow_map.get(d, 0)} for d in range(7)]
+    # 7 rows (0 = Sunday) of 24 hourly counts
+    heatmap = [[0] * 24 for _ in range(7)]
+    for r in heatmap_raw:
+        d, h = int(r["dow"] or 0), int(r["hour"] or 0)
+        if 0 <= d < 7 and 0 <= h < 24:
+            heatmap[d][h] = int(r["count"] or 0)
 
     # Of the sub flights that were actually checked, how many were authorised
     checked_visits = auth_stats["authorized"] + auth_stats["unauthorized"] + auth_stats["dismissed"]
@@ -4823,6 +4950,8 @@ def api_analytics():
         "visits_by_day_30":    visits_by_day_30,
         "visits_by_hour":      visits_by_hour_full,
         "visits_by_dow":       visits_by_dow,
+        "visits_heatmap":      heatmap,
+        "heatmap_days":        HEATMAP_DAYS,
         "auth_stats":          auth_stats,
         "cat_stats":           cat_stats,
         "top_warned":          top_warned,

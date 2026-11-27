@@ -19,7 +19,7 @@ import urllib.parse
 from functools import wraps
 from typing import Any, Dict, List, Optional, Tuple
 
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, Response, jsonify, request, session
 from thefuzz import fuzz
 
 from utils.auth_tokens import get_auth_user
@@ -779,7 +779,7 @@ def evaluate_flight_against_user_characters(
                 "flag_reason": "inactive_character",
                 "flag_message": f"Flagged: Inactive character slot '{matched_c['ign']}' used. Active character is '{active_char['ign']}'.",
                 "match_status": "partial",
-                "score": min(raw_score, 75),  # Capped strictly < 90 so bulk-authorise will NOT approve
+                "score": min(raw_score, 75),  # Capped strictly < 90: never reads as a verified match
                 "matched_character": matched_c,
                 "active_character": active_char,
             }
@@ -2059,10 +2059,8 @@ def claim_flight(visit_id: int):
     return jsonify({"success": True, "visit_id": visit_id, "investigating": investigating, "previous": current})
 
 
-@control_panel_bp.route("/stats", methods=["GET"])
-@require_mod_auth
-def get_stats():
-    """Return live KPI stats for the Control Panel top bar."""
+def _compute_stats() -> dict:
+    """Live KPI counts for the Control Panel top bar."""
     now = int(time.time())
     one_day_ago = now - 86400
 
@@ -2111,7 +2109,7 @@ def get_stats():
         )
         active_restrictions = cur.fetchone()[0]
 
-        return jsonify({
+        return {
             "flights_today": flights_today,
             "pending_total": pending_total,
             "authorised_today": authorised_today,
@@ -2119,9 +2117,105 @@ def get_stats():
             "active_restrictions": active_restrictions,
             "unchecked_today": unchecked_today,
             "server_time": now,
-        })
+        }
     finally:
         conn.close()
+
+
+# Every open stats stream reads through this cache, so N mods cost one count every few seconds.
+STATS_CACHE_SECONDS = 3.0
+STATS_STREAM_MAX_SECONDS = 600
+STATS_STREAM_KEEPALIVE = 15.0
+STATS_STREAM_LIMIT = 40
+_stats_cache: Dict[str, Any] = {"at": 0.0, "data": None}
+_stats_lock = threading.Lock()
+_stats_streams = 0
+
+
+def _cached_stats() -> dict:
+    with _stats_lock:
+        if _stats_cache["data"] is not None and time.time() - _stats_cache["at"] < STATS_CACHE_SECONDS:
+            return _stats_cache["data"]
+    data = _compute_stats()
+    with _stats_lock:
+        _stats_cache.update(at=time.time(), data=data)
+    return data
+
+
+@control_panel_bp.route("/stats", methods=["GET"])
+@require_mod_auth
+def get_stats():
+    """Return live KPI stats for the Control Panel top bar."""
+    return jsonify(_compute_stats())
+
+
+@control_panel_bp.route("/stats/stream", methods=["GET"])
+@require_mod_auth
+def stream_stats():
+    """Server-Sent Events: pushes the top-bar stats whenever they change.
+
+    Read with fetch() so the bearer token stays out of the URL. The stream ends after
+    STATS_STREAM_MAX_SECONDS with a ``reconnect`` event; clients reopen it at once.
+    The counts are re-read on the server (not published by writers), so flights the
+    Discord bot logs from another process show up too.
+    """
+    global _stats_streams
+    with _stats_lock:
+        if _stats_streams >= STATS_STREAM_LIMIT:
+            return jsonify({"error": "Too many open streams", "code": "stream_limit"}), 503
+        _stats_streams += 1
+    try:
+        first = _cached_stats()
+    except Exception:
+        with _stats_lock:
+            _stats_streams -= 1
+        logger.exception("Failed to open stats stream")
+        return jsonify({"error": "Stats unavailable"}), 500
+
+    def _key(d: dict) -> str:
+        return json.dumps({k: v for k, v in d.items() if k != "server_time"}, sort_keys=True)
+
+    def generate():
+        deadline = time.time() + STATS_STREAM_MAX_SECONDS
+        last = _key(first)
+        quiet_since = time.time()
+        try:
+            yield "retry: 5000\n\n"
+            yield f"event: hello\ndata: {json.dumps(first)}\n\n"
+            while time.time() < deadline:
+                time.sleep(STATS_CACHE_SECONDS)
+                try:
+                    data = _cached_stats()
+                except Exception:
+                    continue
+                key = _key(data)
+                if key != last:
+                    last = key
+                    quiet_since = time.time()
+                    yield f"event: stats\ndata: {json.dumps(data)}\n\n"
+                elif time.time() - quiet_since >= STATS_STREAM_KEEPALIVE:
+                    quiet_since = time.time()
+                    yield ": keepalive\n\n"
+            yield "event: reconnect\ndata: {}\n\n"
+        except GeneratorExit:
+            return
+
+    released = threading.Event()
+
+    def release():
+        # Runs on close even when the client left before the first frame was sent
+        global _stats_streams
+        if released.is_set():
+            return
+        released.set()
+        with _stats_lock:
+            _stats_streams -= 1
+
+    resp = Response(generate(), mimetype="text/event-stream")
+    resp.call_on_close(release)
+    resp.headers["Cache-Control"] = "no-cache, no-transform"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
 
 
 @control_panel_bp.route("/action", methods=["POST"])
@@ -2821,37 +2915,6 @@ def _reverse_punishment_effects(punishment: dict, mod_name: str, visit_id, ign, 
             _record_discord_sync(visit_id, "undo", case_id, dm_status, None, None, None)
         except Exception as exc:
             logger.warning("[ControlPanel] Failed to DM undo to %s: %s", discord_id, exc)
-
-
-@control_panel_bp.route("/bulk-authorise", methods=["POST"])
-@require_mod_auth
-def bulk_authorise():
-    """Batch approve all currently pending sub-island flights with match score >= 90."""
-    user = _get_current_user() or {}
-    mod_name = user.get("username") or "Moderator"
-    now = int(time.time())
-    sub_sql, sub_params = sub_destination_filter("destination")
-
-    conn = connect_db()
-    try:
-        cur = conn.execute(
-            f"""
-            UPDATE island_visits
-            SET review_status = 'authorised', authorized = 1, handled_by = ?, handled_at = ?
-            WHERE review_status = 'pending' AND match_score >= 90 AND {sub_sql}
-            """,
-            (f"{mod_name} (Bulk)", now, *sub_params),
-        )
-        affected = cur.rowcount
-        conn.commit()
-
-        return jsonify({
-            "success": True,
-            "authorised_count": affected,
-            "message": f"Successfully batch-authorised {affected} verified flights.",
-        })
-    finally:
-        conn.close()
 
 
 @control_panel_bp.route("/history", methods=["GET"])

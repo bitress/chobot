@@ -502,7 +502,9 @@ def _adapt_mysql_datetime_functions(sql: str) -> str:
     )
     sql = re.sub(
         r"DATE\(timestamp,\s*'unixepoch',\s*'\+8 hours'\)",
-        "DATE(FROM_UNIXTIME(timestamp) + INTERVAL 8 HOUR)",
+        # A string like SQLite's: a MySQL DATE comes back as datetime.date, which
+        # jsonify renders as "Thu, 26 Nov 2026 00:00:00 GMT" (an invalid date to JS).
+        "DATE_FORMAT(FROM_UNIXTIME(timestamp) + INTERVAL 8 HOUR, '%Y-%m-%d')",
         sql,
         flags=re.I,
     )
