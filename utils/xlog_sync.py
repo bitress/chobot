@@ -26,6 +26,7 @@ _ACTION_STYLE = {
     "NOTE": ("\U0001f4dd Staff note", 0x5865F2),
     "PARDON": ("\U0001f54a\ufe0f Sanction pardoned", 0x2ECC71),
     "UNDO": ("\u21a9\ufe0f Action reversed", 0x2ECC71),
+    "REVOKE": ("\u21a9\ufe0f Warning revoked", 0x2ECC71),
 }
 
 

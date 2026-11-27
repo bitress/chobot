@@ -53,7 +53,7 @@ from utils.discord_membership import (
     should_refresh,
 )
 from utils.nookipedia import NookipediaClient
-from utils.ops_status import build_health_payload, get_ad_config, get_maintenance_settings, record_service_status, set_active_data_manager
+from utils.ops_status import build_health_payload, get_ad_config, get_maintenance_settings, island_notice, record_service_status, set_active_data_manager
 from api.dashboard import (
     dashboard,
     init_dashboard_db,
@@ -3077,6 +3077,11 @@ def get_islands():
                 "port_index": 999,
             }
 
+    try:
+        notice_map = get_maintenance_settings().get("islands") or {}
+    except Exception:
+        notice_map = {}
+
     results = []
     for name, info in all_islands.items():
         db_meta = db_map.get(name, {})
@@ -3103,6 +3108,8 @@ def get_islands():
             viewer_is_mod=viewer_is_mod,
             entry_path=info["path"],
         )
+        # Member-facing "offline for updates" notice set from the mod dashboard
+        resp["notice"] = island_notice(notice_map.get(clean_text(name)))
         results.append(resp)
 
     # Sort stably: port order first (if in 48 configured ports), then alphabetically
@@ -3172,6 +3179,7 @@ def api_browser_islands():
             "source": "sysbot_api",
             "console_stage": island.get("console_stage"),
             "updated_at": island.get("updated_at"),
+            "notice": island.get("notice"),
             "game_time": island.get("game_time"),
             "is_nooks_open": island.get("is_nooks_open"),
             "nooks_status": island.get("nooks_status"),
@@ -6441,18 +6449,25 @@ def api_user_sub_rules():
     cand_ids = resolve_all_user_ids(auth_user)
 
     if request.method == "POST":
-        # A warn only removes access until the rules are re-accepted; an active
-        # timeout or ban must not be undone by accepting them again.
-        from api.control_panel import check_user_active_restriction
-        active_rest = check_user_active_restriction(
-            auth_user.get("user_id"),
+        # A warn only removes access until the rules are re-accepted; an active timeout or ban
+        # must not be undone by accepting them again. That includes Discord's own Timeout,
+        # which mods apply from the member's profile and chobot never records.
+        from utils.island_access_block import island_access_block
+        conn_accs = auth_user.get("connected_accounts") or {}
+        linked_discord = conn_accs.get("discord", {}).get("id") if isinstance(conn_accs, dict) and isinstance(conn_accs.get("discord"), dict) else None
+        discord_ids = [
             auth_user.get("discord_id") or auth_user.get("id"),
-        )
+            auth_user.get("user_id"),
+            linked_discord,
+            *[uid for uid in cand_ids if str(uid).isdigit()],
+        ]
+        active_rest = island_access_block(auth_user.get("user_id"), discord_ids)
         if active_rest:
             return jsonify({
                 "ok": False,
                 "error": (
-                    f"Your island access is suspended ({active_rest['action_type']}). "
+                    f"Your island access is suspended ({active_rest['action_type']}"
+                    f"{', set in Discord' if active_rest.get('source') == 'discord' else ''}). "
                     "You can accept the rules again once it ends."
                 ),
                 "active_restriction": active_rest,

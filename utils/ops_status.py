@@ -201,6 +201,76 @@ def update_maintenance_settings(payload: dict[str, Any]) -> dict[str, Any]:
     return get_maintenance_settings()
 
 
+ISLAND_NOTICE_STATUSES = {
+    "updating": "Offline for updates",
+    "offline": "Temporarily offline",
+}
+_NOTICE_FIELDS = ("status", "message", "ends_at", "set_by", "set_at")
+# Switches a notice turns on. Their earlier values are kept in "_before_notice" and restored on clear,
+# so bringing an island online doesn't undo a reveal pause someone set separately.
+_NOTICE_SWITCHES = ("disable_dodo_reveals", "queue_paused")
+
+
+def island_notice(entry: Any) -> dict[str, Any] | None:
+    """The member-facing part of a maintenance_islands entry, or None if no notice is set."""
+    if not isinstance(entry, dict) or entry.get("status") not in ISLAND_NOTICE_STATUSES:
+        return None
+    return {
+        "status": entry["status"],
+        "label": ISLAND_NOTICE_STATUSES[entry["status"]],
+        "message": str(entry.get("message") or ""),
+        "ends_at": entry.get("ends_at"),
+    }
+
+
+def set_island_notices(keys: list[str], notice: dict[str, Any] | None) -> dict[str, Any]:
+    """Set (or clear, with notice=None) the notice on each island key in maintenance_islands.
+
+    Keys are clean_text() island names, the same keys the Dodo reveal and queue checks read.
+    A notice also pauses Dodo reveals and the queue for that island; clearing removes only the
+    notice fields, so other per-island switches stay as they were.
+    """
+    db = connect_db()
+    try:
+        _ensure_settings_table(db)
+        row = db.execute("SELECT value FROM settings WHERE key = ?", ("maintenance_islands",)).fetchone()
+        try:
+            islands = json.loads((row["value"] if row else None) or "{}")
+        except Exception:
+            islands = {}
+        if not isinstance(islands, dict):
+            islands = {}
+        for key in keys:
+            if not key:
+                continue
+            entry = dict(islands.get(key)) if isinstance(islands.get(key), dict) else {}
+            if notice is None:
+                if "status" not in entry:
+                    continue   # no notice here: leave other switches alone
+                before = entry.pop("_before_notice", {}) if isinstance(entry.get("_before_notice"), dict) else {}
+                entry = {k: v for k, v in entry.items() if k not in _NOTICE_FIELDS and k not in _NOTICE_SWITCHES}
+                entry.update({k: v for k, v in before.items() if k in _NOTICE_SWITCHES})
+            else:
+                if "status" not in entry:
+                    entry["_before_notice"] = {k: entry[k] for k in _NOTICE_SWITCHES if k in entry}
+                entry = {**entry, **notice, **{k: True for k in _NOTICE_SWITCHES}}
+            if entry:
+                islands[key] = entry
+            else:
+                islands.pop(key, None)
+        db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("maintenance_islands", json.dumps(islands)),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return islands
+
+
 def database_health() -> dict[str, Any]:
     started = time.time()
     try:

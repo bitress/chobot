@@ -276,82 +276,8 @@ def _apply_control_panel_migrations() -> None:
 # Active Restriction Checker & Moderation Notices
 # -----------------------------------------------------------------------------
 
-def check_user_active_restriction(user_id: str | None, discord_id: str | None = None) -> dict | None:
-    """Check if user has an active ban or unexpired timeout across all candidate IDs.
-    Returns restriction dict or None.
-    """
-    from utils.unified_auth import resolve_all_user_ids
-
-    cand_ids = []
-    if user_id:
-        cand_ids.extend(resolve_all_user_ids(user_id))
-    if discord_id and str(discord_id) not in cand_ids:
-        cand_ids.extend(resolve_all_user_ids(discord_id))
-    cand_ids = list(dict.fromkeys([str(c).strip() for c in cand_ids if c]))
-
-    if not cand_ids:
-        return None
-
-    now = int(time.time())
-    try:
-        conn = connect_db()
-        try:
-            placeholders = ",".join("?" for _ in cand_ids)
-            try:
-                cur = conn.execute(
-                    f"""
-                    SELECT id, user_id, discord_id, action_type, reason, created_at, expires_at, mod_name
-                    FROM user_moderation_status
-                    WHERE is_active = 1
-                      AND (user_id IN ({placeholders}) OR (discord_id IS NOT NULL AND discord_id IN ({placeholders})))
-                      AND (expires_at IS NULL OR expires_at > ?)
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    cand_ids + cand_ids + [now],
-                )
-                row = cur.fetchone()
-                if row:
-                    return {
-                        "id": row[0],
-                        "user_id": row[1],
-                        "discord_id": row[2],
-                        "action_type": row[3],
-                        "reason": row[4],
-                        "created_at": row[5],
-                        "expires_at": row[6],
-                        "mod_name": row[7] or "Moderator",
-                    }
-            except Exception:
-                cur = conn.execute(
-                    f"""
-                    SELECT id, user_id, discord_id, action_type, reason, created_at, expires_at
-                    FROM user_moderation_status
-                    WHERE is_active = 1
-                      AND (user_id IN ({placeholders}) OR (discord_id IS NOT NULL AND discord_id IN ({placeholders})))
-                      AND (expires_at IS NULL OR expires_at > ?)
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    cand_ids + cand_ids + [now],
-                )
-                row = cur.fetchone()
-                if row:
-                    return {
-                        "id": row[0],
-                        "user_id": row[1],
-                        "discord_id": row[2],
-                        "action_type": row[3],
-                        "reason": row[4],
-                        "created_at": row[5],
-                        "expires_at": row[6],
-                        "mod_name": "Moderator",
-                    }
-        finally:
-            conn.close()
-    except Exception as exc:
-        logger.warning("[ControlPanel] Restriction check failed: %s", exc)
-    return None
+# Moved to utils so the Discord bot can use it without Flask; re-exported for existing callers.
+from utils.island_access_block import check_user_active_restriction  # noqa: E402,F401
 
 
 def get_user_moderation_notices(user_or_id: Any) -> dict:
@@ -1677,21 +1603,25 @@ def _website_check(conn, flight: dict) -> dict:
     """The website's own Dodo-reveal / saved-character match for one flight."""
     ts = int(flight["timestamp"] or 0)
     dest_key = clean_text(flight["destination"] or "").lower()
-    reveals = [
-        {
-            "id": r[0], "user_id": r[1], "island_clean": r[2], "channel_id": r[3],
-            "message_url": r[4], "username": r[5], "nickname": r[6], "created_at": r[7],
-        }
-        for r in conn.execute(
-            """
-            SELECT id, user_id, island_clean, channel_id, message_url, username, nickname, created_at
-            FROM dodo_reveal_messages WHERE created_at BETWEEN ? AND ? ORDER BY created_at DESC
-            """,
-            (ts - 2400, ts + 300),  # 40 min before arrival to 5 min after
-        ).fetchall()
-        if clean_text(r[2] or "").lower() == dest_key
-    ]
+    # 40 min before arrival to 5 min after
+    reveals = _load_dodo_reveals(conn, ts - 2400, ts + 300, dest_key)
 
+    ctx = _member_context(conn)
+    all_saved_chars = ctx["all_saved_chars"]
+    saved_chars_by_user = ctx["saved_chars_by_user"]
+    strikes_map = ctx["strikes_map"]
+    active_restr_by_user = ctx["active_restr_by_user"]
+    user_alias_map = ctx["user_alias_map"]
+
+    correlation = correlate_single_flight(
+        flight, reveals, saved_chars_by_user, all_saved_chars, user_alias_map, strikes_map, active_restr_by_user
+    )
+    return _website_check_result(correlation, reveals, ctx, flight, ts)
+
+
+def _member_context(conn) -> dict:
+    """Lookup maps shared by the website check and the reveal log: saved characters per account,
+    linked account ids, strike counts and active restrictions."""
     all_saved_chars: list[dict] = []
     saved_chars_by_user: dict[str, list[dict]] = {}
     for c in conn.execute("SELECT user_id, id, ign, island_name, icon, is_default FROM user_saved_characters").fetchall():
@@ -1732,9 +1662,20 @@ def _website_check(conn, flight: dict) -> dict:
     except Exception:
         pass
 
-    correlation = correlate_single_flight(
-        flight, reveals, saved_chars_by_user, all_saved_chars, user_alias_map, strikes_map, active_restr_by_user
-    )
+    return {
+        "all_saved_chars": all_saved_chars,
+        "saved_chars_by_user": saved_chars_by_user,
+        "strikes_map": strikes_map,
+        "active_restr_by_user": active_restr_by_user,
+        "user_alias_map": user_alias_map,
+    }
+
+
+def _website_check_result(correlation: dict, reveals: list[dict], ctx: dict, flight: dict, ts: int) -> dict:
+    saved_chars_by_user = ctx["saved_chars_by_user"]
+    user_alias_map = ctx["user_alias_map"]
+    strikes_map = ctx["strikes_map"]
+    active_restr_by_user = ctx["active_restr_by_user"]
     return {
         "match_status": correlation["match_status"],
         "match_score": correlation["match_score"],
@@ -1742,6 +1683,83 @@ def _website_check(conn, flight: dict) -> dict:
         "flag_message": correlation["flag_message"],
         "primary_candidate": correlation["primary_candidate"],
         "runner_ups": correlation["runner_ups"],
+        # Everyone who revealed this island's Dodo around the arrival, newest first
+        "reveals": [
+            _reveal_for_ui(r, saved_chars_by_user, user_alias_map, strikes_map, active_restr_by_user,
+                           ign=flight.get("ign") or "", arrival=ts)
+            for r in reveals
+        ],
+    }
+
+
+def _load_dodo_reveals(conn, start: int, end: int, island_key: str | None = None, limit: int = 500) -> list[dict]:
+    """Rows from dodo_reveal_messages in [start, end], newest first, optionally for one clean_text() island."""
+    cols = "id, user_id, island_clean, channel_id, message_url, username, nickname, created_at"
+    try:
+        rows = conn.execute(
+            f"SELECT {cols}, source FROM dodo_reveal_messages WHERE created_at BETWEEN ? AND ? "
+            f"ORDER BY created_at DESC LIMIT ?",
+            (start, end, limit),
+        ).fetchall()
+        has_source = True
+    except Exception:
+        # Databases from before the `source` column was added
+        rows = conn.execute(
+            f"SELECT {cols} FROM dodo_reveal_messages WHERE created_at BETWEEN ? AND ? ORDER BY created_at DESC LIMIT ?",
+            (start, end, limit),
+        ).fetchall()
+        has_source = False
+    out = []
+    for r in rows:
+        if island_key and clean_text(r[2] or "").lower() != island_key:
+            continue
+        out.append({
+            "id": r[0], "user_id": r[1], "island_clean": r[2], "channel_id": r[3],
+            "message_url": r[4], "username": r[5], "nickname": r[6], "created_at": r[7],
+            "source": (r[8] if has_source else None),
+        })
+    return out
+
+
+def _reveal_for_ui(reveal: dict, saved_chars_by_user: dict, user_alias_map: dict, strikes_map: dict,
+                   active_restr_by_user: dict, *, ign: str = "", arrival: int | None = None) -> dict:
+    """One Dodo reveal as the radar shows it: who, when, from where, their saved characters, standing."""
+    from utils.flight_matching import ign_matches_dodo_reveal
+
+    uid = str(reveal.get("user_id") or "")
+    ids = {uid, *user_alias_map.get(uid, set())} - {""}
+    chars = []
+    for alias in ids:
+        chars.extend(saved_chars_by_user.get(alias, []))
+    seen, char_out = set(), []
+    for c in sorted(chars, key=lambda c: not c.get("is_default")):
+        key = (str(c.get("ign") or "").lower(), str(c.get("island_name") or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        char_out.append({
+            "ign": c.get("ign"),
+            "island_name": c.get("island_name"),
+            "is_default": bool(c.get("is_default")),
+            "matches": bool(ign) and clean_text(c.get("ign") or "") == clean_text(ign),
+        })
+    restriction = next((active_restr_by_user[i] for i in ids if i in active_restr_by_user), None)
+    created = int(reveal.get("created_at") or 0)
+    return {
+        "id": reveal.get("id"),
+        "user_id": uid,
+        "name": reveal.get("nickname") or reveal.get("username") or uid,
+        "username": reveal.get("username"),
+        "island": reveal.get("island_clean"),
+        "source": reveal.get("source"),
+        "message_url": reveal.get("message_url"),
+        "created_at": created,
+        "seconds_before_arrival": (arrival - created) if arrival else None,
+        "name_matches": bool(ign) and ign_matches_dodo_reveal(ign, reveal.get("username"), reveal.get("nickname")),
+        "characters": char_out[:6],
+        "strikes": int(sum(int(strikes_map.get(i, 0) or 0) for i in ids)),
+        "restriction": ({"action_type": restriction["action_type"], "expires_at": restriction["expires_at"]}
+                        if restriction else None),
     }
 
 
@@ -3185,3 +3203,320 @@ def xlog_feed():
         return jsonify({"entries": entries, "total": total, "limit": limit, "offset": offset})
     finally:
         conn.close()
+
+
+# -----------------------------------------------------------------------------
+# Dodo reveal log, character lookup, members directory, warning revoke
+# -----------------------------------------------------------------------------
+
+def _account_names(conn) -> dict[str, dict]:
+    """{any linked id: {name, avatar}} from user_provider_links, preferring the Discord profile."""
+    names: dict[str, dict] = {}
+    try:
+        rows = conn.execute(
+            "SELECT provider, provider_user_id, unified_user_id, username, avatar FROM user_provider_links"
+        ).fetchall()
+    except Exception:
+        return names
+    for provider, p_uid, u_uid, username, avatar in rows:
+        if not username:
+            continue
+        info = {"name": username, "avatar": avatar or None}
+        for key in (str(p_uid or "").strip(), str(u_uid or "").strip()):
+            if key and (key not in names or provider == "discord"):
+                names[key] = info
+    return names
+
+
+def _arrivals_by_island(conn, start: int, end: int) -> dict[str, list[tuple]]:
+    """{clean destination: [(visit_id, ign, origin, timestamp), ...]} for flights in [start, end]."""
+    out: dict[str, list[tuple]] = {}
+    for vid, ign, origin, dest, ts in conn.execute(
+        "SELECT id, ign, origin_island, destination, timestamp FROM island_visits WHERE timestamp BETWEEN ? AND ?",
+        (start, end),
+    ).fetchall():
+        out.setdefault(clean_text(dest or "").lower(), []).append((vid, ign, origin, int(ts or 0)))
+    return out
+
+
+@control_panel_bp.route("/reveals", methods=["GET"])
+@require_mod_auth
+def dodo_reveal_log():
+    """Who revealed which island's Dodo code (website and Discord), newest first.
+
+    Each reveal says whether one of the revealer's characters (or their Discord name) flew
+    into that island within 40 minutes afterwards, so mods can spot code sharing.
+    """
+    hours = max(1, min(int(request.args.get("hours", 6) or 6), 72))
+    limit = max(1, min(int(request.args.get("limit", 150) or 150), 500))
+    island = (request.args.get("island") or "").strip()
+    island_key = clean_text(island).lower() if island else None
+    q = (request.args.get("q") or "").strip().lower()
+    now = int(time.time())
+    start = now - hours * 3600
+
+    from utils.flight_matching import ign_matches_dodo_reveal
+
+    conn = connect_db()
+    try:
+        all_rows = _load_dodo_reveals(conn, start, now, None, limit=5000)
+        ctx = _member_context(conn)
+        arrivals = _arrivals_by_island(conn, start, now + 2400)
+    finally:
+        conn.close()
+
+    island_counts: dict[str, int] = {}
+    for r in all_rows:
+        isl = clean_text(r.get("island_clean") or "").lower()
+        if isl:
+            island_counts[isl] = island_counts.get(isl, 0) + 1
+
+    items = []
+    for r in all_rows:
+        isl = clean_text(r.get("island_clean") or "").lower()
+        if island_key and isl != island_key:
+            continue
+        item = _reveal_for_ui(r, ctx["saved_chars_by_user"], ctx["user_alias_map"], ctx["strikes_map"],
+                              ctx["active_restr_by_user"])
+        created = item["created_at"]
+        igns = {clean_text(c.get("ign") or "") for c in item["characters"]} - {""}
+        flew = None
+        window = [a for a in arrivals.get(isl, []) if created - 60 <= a[3] <= created + 2400]
+        for vid, ign, origin, ts in sorted(window, key=lambda a: a[3]):
+            if clean_text(ign or "") in igns or ign_matches_dodo_reveal(ign or "", r.get("username"), r.get("nickname")):
+                flew = {"visit_id": vid, "ign": ign, "origin": origin, "timestamp": ts}
+                break
+        item["arrival"] = flew
+        item["arrivals_after"] = len(window)
+        if q:
+            hay = " ".join([
+                item["name"] or "", item["username"] or "", item["user_id"], item["island"] or "",
+                *[f"{c.get('ign') or ''} {c.get('island_name') or ''}" for c in item["characters"]],
+            ]).lower()
+            if q not in hay:
+                continue
+        items.append(item)
+        if len(items) >= limit:
+            break
+
+    return jsonify({
+        "reveals": items,
+        "hours": hours,
+        "islands": sorted(({"island": k, "count": v} for k, v in island_counts.items()), key=lambda x: -x["count"]),
+        "server_time": now,
+    })
+
+
+@control_panel_bp.route("/characters/search", methods=["GET"])
+@require_mod_auth
+def search_characters():
+    """Typeahead over saved characters: up to 8 matches with owner, standing and strike count."""
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 2:
+        return jsonify({"results": []})
+    like = f"%{q.lower()}%"
+    now = int(time.time())
+    conn = connect_db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT user_id, ign, island_name, is_default FROM user_saved_characters
+            WHERE LOWER(ign) LIKE ? OR LOWER(island_name) LIKE ?
+            ORDER BY is_default DESC LIMIT 60
+            """,
+            (like, like),
+        ).fetchall()
+        names = _account_names(conn)
+        strikes = {
+            str(r[0]): r[1]
+            for r in conn.execute(
+                "SELECT user_id, COUNT(*) FROM warnings WHERE action_type IN ('WARN', 'TIMEOUT', 'BAN') GROUP BY user_id"
+            ).fetchall()
+        }
+        strikes.update(_web_strikes(conn))
+        restricted: set[str] = set()
+        for r in conn.execute(
+            "SELECT user_id, discord_id FROM user_moderation_status WHERE is_active = 1 "
+            "AND (expires_at IS NULL OR expires_at > ?)",
+            (now,),
+        ).fetchall():
+            restricted.update(str(k) for k in r if k)
+    finally:
+        conn.close()
+
+    ql = q.lower()
+    ordered = sorted(rows, key=lambda r: (not str(r[1] or "").lower().startswith(ql), not r[3], str(r[1] or "").lower()))
+    results = []
+    for uid, ign, island_name, is_default in ordered:
+        uid = str(uid)
+        owner = names.get(uid) or {}
+        results.append({
+            "user_id": uid,
+            "ign": ign,
+            "island_name": island_name,
+            "is_default": bool(is_default),
+            "owner": owner.get("name"),
+            "avatar": owner.get("avatar"),
+            "strikes": int(strikes.get(uid, 0) or 0),
+            "restricted": uid in restricted,
+        })
+        if len(results) >= 8:
+            break
+    return jsonify({"results": results})
+
+
+MEMBER_FILTERS = {"all", "warned", "sanctioned"}
+
+
+@control_panel_bp.route("/members", methods=["GET"])
+@require_mod_auth
+def list_members():
+    """Members directory: website accounts with characters plus anyone warned or sanctioned.
+
+    filter=all|warned|sanctioned, q= matches name, ID, character or island, paged by limit/offset.
+    Linked accounts (Discord + website) are grouped into one row.
+    """
+    filt = (request.args.get("filter") or "all").strip().lower()
+    if filt not in MEMBER_FILTERS:
+        filt = "all"
+    q = (request.args.get("q") or "").strip().lower()
+    limit = max(1, min(int(request.args.get("limit", 50) or 50), 200))
+    offset = max(0, int(request.args.get("offset", 0) or 0))
+
+    conn = connect_db()
+    try:
+        ctx = _member_context(conn)
+        names = _account_names(conn)
+        last_warn = {
+            str(r[0]): int(r[1] or 0)
+            for r in conn.execute(
+                "SELECT user_id, MAX(timestamp) FROM warnings WHERE action_type IN ('WARN', 'TIMEOUT', 'BAN') GROUP BY user_id"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    aliases = ctx["user_alias_map"]
+    strikes = {str(k): int(v or 0) for k, v in ctx["strikes_map"].items() if k not in (None, "", "0", "None")}
+    restrictions = ctx["active_restr_by_user"]
+    if filt == "warned":
+        seeds = {k for k, v in strikes.items() if v > 0}
+    elif filt == "sanctioned":
+        seeds = set(restrictions)
+    else:
+        seeds = {str(k) for k in ctx["saved_chars_by_user"]} | {k for k, v in strikes.items() if v > 0} | set(restrictions)
+
+    seen: set[str] = set()
+    rows = []
+    for seed in sorted(seeds):
+        if seed in seen:
+            continue
+        group = {seed, *aliases.get(seed, set())} - {""}
+        seen |= group
+        ordered_ids = sorted(group)
+        primary = next((i for i in ordered_ids if i.isdigit()), ordered_ids[0])
+        chars, char_keys = [], set()
+        for i in ordered_ids:
+            for c in ctx["saved_chars_by_user"].get(i, []):
+                key = (str(c.get("ign") or "").lower(), str(c.get("island_name") or "").lower())
+                if key not in char_keys:
+                    char_keys.add(key)
+                    chars.append({"ign": c.get("ign"), "island_name": c.get("island_name"), "is_default": bool(c.get("is_default"))})
+        chars.sort(key=lambda c: not c["is_default"])
+        info = next((names[i] for i in ordered_ids if i in names), {})
+        restr = next((restrictions[i] for i in ordered_ids if i in restrictions), None)
+        row = {
+            "id": primary,
+            "ids": ordered_ids,
+            "name": info.get("name"),
+            "avatar": info.get("avatar"),
+            "characters": chars[:5],
+            "character_count": len(chars),
+            "strikes": sum(strikes.get(i, 0) for i in ordered_ids),
+            "last_warning_at": max((last_warn.get(i, 0) for i in ordered_ids), default=0) or None,
+            "restriction": ({"id": restr["id"], "action_type": restr["action_type"], "reason": restr["reason"],
+                             "created_at": restr["created_at"], "expires_at": restr["expires_at"]} if restr else None),
+        }
+        if q:
+            hay = " ".join([*ordered_ids, row["name"] or "",
+                            *[f"{c['ign'] or ''} {c['island_name'] or ''}" for c in chars]]).lower()
+            if q not in hay:
+                continue
+        rows.append(row)
+
+    if filt == "sanctioned":
+        rows.sort(key=lambda r: -int((r["restriction"] or {}).get("created_at") or 0))
+    elif filt == "warned":
+        rows.sort(key=lambda r: (-(r["last_warning_at"] or 0), -r["strikes"]))
+    else:
+        rows.sort(key=lambda r: (r["restriction"] is None, -r["strikes"], (r["name"] or r["id"]).lower()))
+
+    return jsonify({
+        "members": rows[offset:offset + limit],
+        "total": len(rows),
+        "limit": limit,
+        "offset": offset,
+        "filter": filt,
+    })
+
+
+REVOCABLE_WARNING_TYPES = {"WARN", "NOTE", "R1"}
+
+
+@control_panel_bp.route("/warnings/<int:warning_id>/revoke", methods=["POST"])
+@require_mod_auth
+def revoke_warning(warning_id: int):
+    """Delete a warning or staff note (e.g. issued by mistake). The removed row is kept in
+    dashboard_audit_events and the revoke is mirrored to Discord XLog."""
+    data = request.get_json(silent=True) or {}
+    reason = " ".join(str(data.get("reason") or "").split())[:300] or "Revoked by moderator"
+    user = _get_current_user() or {}
+    mod_name = user.get("username") or user.get("user_id") or "Moderator"
+    mod_id = str(user.get("user_id") or "system")
+    now = int(time.time())
+
+    conn = connect_db()
+    try:
+        row = conn.execute(
+            "SELECT id, user_id, reason, mod_name, timestamp, action_type, visit_id FROM warnings WHERE id = ?",
+            (warning_id,),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Warning not found"}), 404
+        _wid, target_user, old_reason, old_mod, old_ts, action_type, visit_id = row
+        action_type = str(action_type or "WARN").upper()
+        if action_type not in REVOCABLE_WARNING_TYPES:
+            return jsonify({"error": f"{action_type} entries can't be revoked here. Use Pardon for bans and timeouts."}), 409
+        conn.execute("DELETE FROM warnings WHERE id = ?", (warning_id,))
+        try:
+            conn.execute(
+                """
+                INSERT INTO dashboard_audit_events
+                (actor_user_id, actor_name, action, target, details, created_at)
+                VALUES (?, ?, 'CONTROL_PANEL_REVOKE_WARNING', ?, ?, ?)
+                """,
+                (
+                    mod_id, mod_name, f"user:{target_user}",
+                    json.dumps({"warning_id": warning_id, "action_type": action_type, "reason": old_reason,
+                                "issued_by": old_mod, "issued_at": old_ts, "visit_id": visit_id,
+                                "revoke_reason": reason}),
+                    now,
+                ),
+            )
+        except Exception:
+            pass
+        conn.commit()
+    finally:
+        conn.close()
+
+    try:
+        from utils.xlog_sync import post_xlog_event_async
+        post_xlog_event_async(
+            "revoke", mod_name, f"[{action_type}] {old_reason or ''}\nRevoked: {reason}",
+            discord_id=target_user if str(target_user or "").isdigit() else None,
+            user_id=target_user, visit_id=visit_id, source="Web Dashboard",
+        )
+    except Exception as exc:
+        logger.warning("[ControlPanel] Failed to dispatch revoke XLog sync: %s", exc)
+
+    return jsonify({"success": True, "warning_id": warning_id})

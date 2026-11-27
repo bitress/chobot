@@ -54,9 +54,14 @@ from utils.ops_status import (
     build_health_payload,
     create_sqlite_backup,
     get_active_data_manager,
+    ISLAND_NOTICE_STATUSES,
+    get_maintenance_settings,
+    island_notice,
     list_backups,
+    set_island_notices,
     update_maintenance_settings,
 )
+from utils.helpers import clean_text
 from utils import island_access, ota_update
 
 logger = logging.getLogger("Dashboard")
@@ -3841,6 +3846,10 @@ def api_islands_list():
             names.append(extra.strip().title() if extra.isupper() or extra.islower() else extra.strip())
 
     sub_names = get_sub_island_names()
+    try:
+        notice_map = get_maintenance_settings().get("islands") or {}
+    except Exception:
+        notice_map = {}
     result = []
     for port_index, raw_name in enumerate(names):
         island_id = raw_name.lower()
@@ -3886,8 +3895,218 @@ def api_islands_list():
             "required_roles": access_info.required_roles,
             "channel_id": access_info.channel_id,
             "access_source": access_info.access_source,
+            "notice": _dashboard_notice_for(notice_map.get(clean_text(raw_name))),
         })
     return jsonify(result)
+
+
+def _dashboard_notice_for(entry) -> dict | None:
+    notice = island_notice(entry)
+    if notice:
+        notice["set_by"] = entry.get("set_by")
+        notice["set_at"] = entry.get("set_at")
+    return notice
+
+
+NOTICE_MESSAGE_MAX = 180
+NOTICE_MAX_DAYS_AHEAD = 60
+
+
+@dashboard.route("/api/islands/notices", methods=["POST"])
+@api_auth_required
+def api_island_notices():
+    """Set or clear the member-facing notice on several islands at once.
+
+    Body: {islands: [name, ...], status: "updating"|"offline", message?, ends_at? (epoch s)}
+    or {islands: [...], clear: true}. A notice also pauses Dodo reveals and the queue for
+    those islands (see utils.ops_status.set_island_notices).
+    """
+    data = request.get_json(silent=True) or {}
+    names = data.get("islands")
+    if not isinstance(names, list) or not names:
+        return jsonify({"ok": False, "error": "Pick at least one island."}), 400
+    keys = sorted({clean_text(str(n))[:64] for n in names[:100] if str(n or "").strip()} - {""})
+    if not keys:
+        return jsonify({"ok": False, "error": "Pick at least one island."}), 400
+
+    clearing = bool(data.get("clear"))
+    notice = None
+    if not clearing:
+        status = str(data.get("status") or "").strip().lower()
+        if status not in ISLAND_NOTICE_STATUSES:
+            return jsonify({"ok": False, "error": "Status must be 'updating' or 'offline'."}), 400
+        message = " ".join(str(data.get("message") or "").split())[:NOTICE_MESSAGE_MAX]
+        ends_at = data.get("ends_at")
+        now = int(time.time())
+        if ends_at in (None, "", 0):
+            ends_at = None
+        else:
+            try:
+                ends_at = int(ends_at)
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "Return time is not a valid time."}), 400
+            if ends_at <= now or ends_at > now + NOTICE_MAX_DAYS_AHEAD * 86400:
+                return jsonify({"ok": False, "error": f"Return time must be in the next {NOTICE_MAX_DAYS_AHEAD} days."}), 400
+        _actor_id, actor_name = _dashboard_actor()
+        notice = {
+            "status": status,
+            "message": message,
+            "ends_at": ends_at,
+            "set_by": actor_name or "Moderator",
+            "set_at": now,
+        }
+
+    try:
+        set_island_notices(keys, notice)
+    except Exception as exc:
+        logger.exception("Island notice update failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    _record_audit_event(
+        "island_notice_clear" if clearing else "island_notice_set",
+        "islands",
+        {"islands": keys, **({} if clearing else {k: notice[k] for k in ("status", "message", "ends_at")})},
+    )
+    return jsonify({"ok": True, "updated": len(keys)})
+
+
+# Same SysBot actions as the Discord control panel (bots/cogs/control_panel_cog.py), minus Revive,
+# which relaunches a program on the bot host and stays in Discord.
+ISLAND_CONTROL_ACTIONS = {
+    "start": "Start bot",
+    "stop": "Stop bot",
+    "restart": "Restart connection",
+    "pause": "Pause requests",
+    "resume": "Resume requests",
+    "newdodo": "New Dodo code",
+    "screen": "Toggle screen",
+}
+ISLAND_CONTROL_COOLDOWN = 10.0
+ISLAND_CONTROL_TIMEOUT = 20
+_island_control_locks: dict[str, threading.Lock] = {}
+_island_control_last: dict[tuple[str, str], float] = {}
+_island_control_guard = threading.Lock()
+
+
+def _ensure_control_audit_table(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS control_panel_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            island_name TEXT,
+            action TEXT,
+            user_id TEXT,
+            user_name TEXT,
+            ok INTEGER,
+            message TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+@dashboard.route("/api/islands/<name>/control", methods=["POST"])
+@api_auth_required
+def api_island_control(name):
+    """Send one control action to an island's SysBot (the web twin of the Discord control panel)."""
+    from utils.sysbot_api import get_island_sysbot_client
+
+    island = Config.resolve_known_island(name)
+    if not island:
+        return jsonify({"ok": False, "error": "Unknown island."}), 404
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action") or "").strip().lower()
+    if action not in ISLAND_CONTROL_ACTIONS:
+        return jsonify({"ok": False, "error": "Unknown action."}), 400
+
+    with _island_control_guard:
+        lock = _island_control_locks.setdefault(island.lower(), threading.Lock())
+        last = _island_control_last.get((island.lower(), action), 0.0)
+    wait = ISLAND_CONTROL_COOLDOWN - (time.time() - last)
+    if wait > 0:
+        return jsonify({"ok": False, "error": f"{ISLAND_CONTROL_ACTIONS[action]} was just used. Try again in {int(wait) + 1}s."}), 429
+    if not lock.acquire(blocking=False):
+        return jsonify({"ok": False, "error": f"Another action is already running on {island}."}), 409
+
+    ok, message = False, ""
+    try:
+        _island_control_last[(island.lower(), action)] = time.time()
+        try:
+            client = get_island_sysbot_client(island, timeout=ISLAND_CONTROL_TIMEOUT)
+            res = client.control_action_sync(action)
+            if isinstance(res, dict):
+                message = str(res.get("message") or res.get("error") or "")
+                success = res.get("success")
+                ok = bool(success) if success is not None else not res.get("error")
+            else:
+                message = "Unexpected response from SysBot."
+        except Exception as exc:
+            logger.warning("Island control %s on %s failed: %s", action, island, exc)
+            message = "Couldn't reach SysBot."
+        if not ok:
+            _island_control_last.pop((island.lower(), action), None)   # a failure can be retried right away
+    finally:
+        lock.release()
+
+    actor_id, actor_name = _dashboard_actor()
+    db = get_db()
+    try:
+        _ensure_control_audit_table(db)
+        db.execute(
+            "INSERT INTO control_panel_audit (island_name, action, user_id, user_name, ok, message) VALUES (?, ?, ?, ?, ?, ?)",
+            (island, action, actor_id or "", f"{actor_name or 'Moderator'} (Web)", 1 if ok else 0, (message or "")[:500]),
+        )
+        db.commit()
+    except Exception as exc:
+        logger.warning("Could not write control_panel_audit: %s", exc)
+    finally:
+        db.close()
+    _record_audit_event("island_control", island, {"action": action, "ok": ok})
+
+    return jsonify({
+        "ok": ok,
+        "island": island,
+        "action": action,
+        "label": ISLAND_CONTROL_ACTIONS[action],
+        "message": message or ("Command sent." if ok else "No response from SysBot."),
+    })
+
+
+@dashboard.route("/api/islands/control-log", methods=["GET"])
+@api_auth_required
+def api_island_control_log():
+    """Recent SysBot control actions from both the web dashboard and the Discord control panel."""
+    limit = min(max(request.args.get("limit", 40, type=int), 1), 200)
+    island = Config.resolve_known_island(request.args.get("island") or "") if request.args.get("island") else None
+    db = get_db()
+    try:
+        _ensure_control_audit_table(db)
+        if island:
+            rows = db.execute(
+                "SELECT * FROM control_panel_audit WHERE LOWER(island_name) = LOWER(?) ORDER BY id DESC LIMIT ?",
+                (island, limit),
+            ).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM control_panel_audit ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    except Exception as exc:
+        logger.warning("Could not read control_panel_audit: %s", exc)
+        rows = []
+    finally:
+        db.close()
+    entries = []
+    for row in rows:
+        item = dict(row)
+        entries.append({
+            "id": item.get("id"),
+            "island": item.get("island_name"),
+            "action": item.get("action"),
+            "label": ISLAND_CONTROL_ACTIONS.get(str(item.get("action") or ""), str(item.get("action") or "").title()),
+            "user": item.get("user_name"),
+            "ok": bool(item.get("ok")),
+            "message": item.get("message") or "",
+            "created_at": str(item.get("created_at") or ""),
+        })
+    return jsonify({"entries": entries})
 
 
 @dashboard.route("/api/islands/role-status", methods=["GET"])

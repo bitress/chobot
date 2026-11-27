@@ -157,7 +157,19 @@ def fetch_guild_member_snapshot(user_id: str) -> dict:
         "is_admin": is_admin,
         "is_mod": island_access.is_mod(roles) or is_admin,
         "discord_checked_at": int(time.time()),
+        # Discord's own Timeout (Moderator actions > Timeout); chobot never records these
+        "timed_out_until": _iso_to_epoch(member.get("communication_disabled_until")),
     }
+
+
+def _iso_to_epoch(value) -> int | None:
+    if not value:
+        return None
+    try:
+        from datetime import datetime
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except (TypeError, ValueError):
+        return None
 
 
 def refresh_user_payload(user: dict) -> dict:

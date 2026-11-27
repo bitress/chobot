@@ -1583,6 +1583,25 @@ class SubRulesView(discord.ui.View):
         if guild and not isinstance(member, discord.Member):
             member = guild.get_member(interaction.user.id) or member
 
+        # A running timeout or ban (Discord's own Timeout, or one issued through chobot) keeps
+        # Island Access off until it ends; only a warn is cleared by accepting the rules again.
+        timed_out_until = None
+        if isinstance(member, discord.Member) and member.is_timed_out() and member.timed_out_until:
+            timed_out_until = int(member.timed_out_until.timestamp())
+        restriction = None
+        if not timed_out_until:
+            from utils.island_access_block import check_user_active_restriction
+            restriction = await asyncio.to_thread(check_user_active_restriction, None, str(interaction.user.id))
+        if timed_out_until or restriction:
+            kind = "timeout" if timed_out_until else str(restriction.get("action_type") or "restriction").lower()
+            ends = timed_out_until or (restriction or {}).get("expires_at")
+            await interaction.followup.send(
+                f"⛔ Your island access is suspended ({kind})."
+                + (f" You can accept the Sub Rules again <t:{int(ends)}:R>." if ends else " Please contact a moderator."),
+                ephemeral=True,
+            )
+            return
+
         already_has_role = False
         if isinstance(member, discord.Member):
             already_has_role = any(r.id == role_id for r in member.roles)
