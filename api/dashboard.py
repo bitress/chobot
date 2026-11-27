@@ -906,8 +906,13 @@ def api_auth_required(f):
         user = _dashboard_bearer_user()
         if not user:
             return jsonify({"error": "Unauthorized"}), 401
-        if not _is_dashboard_mod_user(user):
+        from utils.dashboard_access import LIMITED, LIMITED_DASHBOARD_ENDPOINTS, dashboard_access
+        access = dashboard_access(user)
+        if not access:
             return jsonify({"error": "Forbidden"}), 403
+        # Senior Mods get Flights / XLog / Bundles only
+        if access == LIMITED and request.endpoint not in LIMITED_DASHBOARD_ENDPOINTS:
+            return jsonify({"error": "Forbidden: Islander role required", "code": "forbidden"}), 403
         return f(*args, **kwargs)
     return _decorated
 
@@ -1726,7 +1731,8 @@ def _internal_server_error(e):
 def api_session():
     """Return the current dashboard session state for a React dashboard."""
     user = _dashboard_bearer_user()
-    bearer_mod = _is_dashboard_mod_user(user)
+    from utils.dashboard_access import dashboard_access
+    bearer_mod = bool(dashboard_access(user))
     session_auth = _check_session()
     role = _get_session_role() if session_auth else ("admin" if bearer_mod else None)
     return jsonify({

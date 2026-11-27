@@ -1981,6 +1981,11 @@ def auth_callback():
         return redirect(f"{return_to}?error=auth_internal_error")
 
 
+def _dashboard_access(user: dict) -> Optional[str]:
+    from utils.dashboard_access import dashboard_access
+    return dashboard_access(user)
+
+
 @app.route("/api/auth/me")
 def auth_me():
     """Return the current authenticated user's info.
@@ -2071,6 +2076,8 @@ def auth_me():
         "roles":      user.get("roles", []),
         "is_admin":   user.get("is_admin", False),
         "is_mod":     user.get("is_mod", False),
+        # Mod Console: "full" (Islander / Baby Islander), "limited" (Senior Mod) or null
+        "dashboard_access": _dashboard_access(user),
         "sub_tier":   get_user_sub_tier(user),
         "connected_providers": connected,
         "connected_accounts": user.get("connected_accounts", {}),

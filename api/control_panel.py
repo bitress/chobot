@@ -450,8 +450,10 @@ def require_mod_auth(f):
         user = _get_current_user()
         if not user:
             return jsonify({"error": "Unauthorized", "code": "unauthorized"}), 401
-        if not _is_mod_user(user):
-            return jsonify({"error": "Forbidden: Moderator role required", "code": "forbidden"}), 403
+        # Islander / Baby Islander / Senior Mod; every route here is Flights or XLog
+        from utils.dashboard_access import dashboard_access
+        if not dashboard_access(user):
+            return jsonify({"error": "Forbidden: Islander or Senior Mod role required", "code": "forbidden"}), 403
         return f(*args, **kwargs)
     return decorated
 
