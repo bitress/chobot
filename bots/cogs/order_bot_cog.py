@@ -368,30 +368,35 @@ def build_order_text(lines: list[OrderLine]) -> str:
     """
     The `order` string for SysBot's POST /api/order.
 
-    Plain catalog names are sent as a name list ("Gold nugget 30, Royal crown"). As soon as one line
-    needs a hex code (a variant or a raw code) the whole order is sent as hex, because SysBot reads
-    an order as either names or hex, not a mix.
+    Orders are sent as hex whenever every line has a known item code. SysBot's NHSE name table is
+    older than the game, so newer items (carrots, 2.0 furniture...) fail by name with "Failed to
+    convert item ... for Language en"; hex always works. SysBot reads an order as either names or
+    hex, not a mix, so a name list ("Gold nugget 30, Royal crown") is only the fallback for an order
+    where some catalog name has no code.
     """
-    if all(not line.code for line in lines):
-        parts: list[str] = []
-        for line in lines:
-            if line.stack > 1 and line.qty > 1:
-                parts.append(f"{line.name} {line.qty}")
-            else:
-                parts.extend([line.name] * line.qty)   # a trailing " 1" makes NHSE's parser fail
-        return ", ".join(parts)
-
     from utils.data_manager import resolve_item_hex
-    tokens: list[str] = []
+    codes = [line.code or resolve_item_hex(line.name) or "" for line in lines]
+
+    if all(codes):
+        tokens: list[str] = []
+        for line, hex_code in zip(lines, codes):
+            if line.stack > 1 and line.qty > 1 and len(hex_code) == 4:
+                tokens.append(f"{line.qty - 1:08X}0000{hex_code.upper()}")   # count field holds quantity - 1
+            else:
+                tokens.extend([hex_code.upper()] * line.qty)
+        return " ".join(tokens)
+
+    if any(line.code for line in lines):
+        missing = next(line for line, c in zip(lines, codes) if not c)
+        raise ValueError(f"No item code found for {missing.name}.")
+
+    parts: list[str] = []
     for line in lines:
-        hex_code = line.code or resolve_item_hex(line.name) or ""
-        if not hex_code:
-            raise ValueError(f"No item code found for {line.name}.")
-        if line.stack > 1 and line.qty > 1 and len(hex_code) == 4:
-            tokens.append(f"{line.qty - 1:08X}0000{hex_code.upper()}")   # count field holds quantity - 1
+        if line.stack > 1 and line.qty > 1:
+            parts.append(f"{line.name} {line.qty}")
         else:
-            tokens.extend([hex_code.upper()] * line.qty)
-    return " ".join(tokens)
+            parts.extend([line.name] * line.qty)   # a trailing " 1" makes NHSE's parser fail
+    return ", ".join(parts)
 
 
 _BULK_ROW_RE = re.compile(r"^\s*(\d+)\s*[.)]\s*.*?[:=]\s*(\d+)\s*$")
