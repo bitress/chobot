@@ -3098,12 +3098,12 @@ def pardon_sanction():
     conn = connect_db()
     try:
         row = conn.execute(
-            "SELECT user_id, discord_id, action_type, is_active FROM user_moderation_status WHERE id = ?",
+            "SELECT user_id, discord_id, action_type, is_active, mod_id FROM user_moderation_status WHERE id = ?",
             (sanction_id,),
         ).fetchone()
         if not row:
             return jsonify({"error": "Sanction not found"}), 404
-        target_user, target_discord, action_type, is_active = row
+        target_user, target_discord, action_type, is_active, sanction_mod_id = row
         if not is_active:
             return jsonify({"error": "Sanction is already inactive"}), 409
         # Moderators can ban, so they can also lift bans (require_mod_auth checked the role)
@@ -3146,7 +3146,21 @@ def pardon_sanction():
     except Exception as exc:
         logger.warning("[ControlPanel] Failed to dispatch pardon XLog sync: %s", exc)
 
-    return jsonify({"success": True, "sanction_id": sanction_id, "message": "Sanction pardoned."})
+    # A timeout mirrored from Discord's own Timeout: lift it in Discord too, or the live
+    # check would still block the member from getting Island Access back.
+    lifted_in_discord = None
+    from utils.island_access_block import is_discord_timeout_row
+    if is_discord_timeout_row(sanction_mod_id) and target_discord:
+        from utils.discord_membership import clear_guild_member_timeout
+        lifted_in_discord = clear_guild_member_timeout(target_discord, f"Pardoned on the web dashboard by {mod_name}: {reason}")
+
+    return jsonify({
+        "success": True,
+        "sanction_id": sanction_id,
+        "message": "Sanction pardoned." + (" The Discord timeout was lifted too." if lifted_in_discord else
+                                            " Couldn't lift the Discord timeout; remove it in Discord." if lifted_in_discord is False else ""),
+        "lifted_in_discord": lifted_in_discord,
+    })
 
 
 @control_panel_bp.route("/xlog", methods=["GET"])

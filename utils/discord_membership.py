@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import urllib.error
+import urllib.parse
 
 from utils import island_access
 from utils.config import Config
@@ -234,6 +235,33 @@ def add_guild_member_role(user_id: int | str, role_id: int | str) -> bool:
         return True
     except Exception as exc:
         logger.warning("Failed to add Discord role %s to member %s: %s", rid, uid, exc)
+        return False
+
+
+def clear_guild_member_timeout(user_id: int | str, reason: str | None = None) -> bool:
+    """Lift a member's Discord timeout (communication_disabled_until) via REST."""
+    uid = str(user_id).strip()
+    guild_id = str(Config.GUILD_ID or "").strip()
+    if not uid.isdigit() or not guild_id:
+        return False
+    try:
+        headers = {**_bot_headers(), "Content-Type": "application/json"}
+    except Exception:
+        return False
+    if reason:
+        headers["X-Audit-Log-Reason"] = urllib.parse.quote(reason[:400])
+    try:
+        discord_request(
+            f"https://discord.com/api/v10/guilds/{guild_id}/members/{uid}",
+            method="PATCH",
+            headers=headers,
+            data=json.dumps({"communication_disabled_until": None}).encode("utf-8"),
+            timeout=8,
+        )
+        logger.info("Lifted Discord timeout for member %s", uid)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to lift Discord timeout for member %s: %s", uid, exc)
         return False
 
 

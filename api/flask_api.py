@@ -2388,11 +2388,8 @@ def reveal_dodo(name):
 
     # Check for active moderation suspension (Ban or Timeout from Control Panel)
     try:
-        from api.control_panel import check_user_active_restriction
-        active_rest = check_user_active_restriction(
-            user.get("user_id"),
-            user.get("discord_id") or user.get("id"),
-        )
+        from utils.island_access_block import account_restriction
+        active_rest = account_restriction(user)
         if active_rest:
             _log_dodo_reveal_attempt(
                 user,
@@ -2593,11 +2590,8 @@ def join_dodo_queue(name):
 
     # Check for active moderation suspension
     try:
-        from api.control_panel import check_user_active_restriction
-        active_rest = check_user_active_restriction(
-            user.get("user_id"),
-            user.get("discord_id") or user.get("id"),
-        )
+        from utils.island_access_block import account_restriction
+        active_rest = account_restriction(user)
         if active_rest:
             return jsonify({
                 "ok": False,
@@ -3469,11 +3463,8 @@ def api_island_drop(name):
 
     # Check for active moderation suspension
     try:
-        from api.control_panel import check_user_active_restriction
-        active_rest = check_user_active_restriction(
-            user.get("user_id"),
-            user.get("discord_id") or user.get("id"),
-        )
+        from utils.island_access_block import account_restriction
+        active_rest = account_restriction(user)
         if active_rest:
             return jsonify({
                 "success": False,
@@ -3599,11 +3590,8 @@ def api_island_villager_inject(name):
 
     # Check for active moderation suspension
     try:
-        from api.control_panel import check_user_active_restriction
-        active_rest = check_user_active_restriction(
-            user.get("user_id"),
-            user.get("discord_id") or user.get("id"),
-        )
+        from utils.island_access_block import account_restriction
+        active_rest = account_restriction(user)
         if active_rest:
             return jsonify({
                 "success": False,
@@ -5016,11 +5004,8 @@ def submit_order_to_bot():
     # Check for active moderation suspension (accounts only; guests are held by the limits above)
     if auth_user:
         try:
-            from api.control_panel import check_user_active_restriction
-            active_rest = check_user_active_restriction(
-                auth_user.get("user_id"),
-                auth_user.get("discord_id") or auth_user.get("id"),
-            )
+            from utils.island_access_block import account_restriction
+            active_rest = account_restriction(auth_user)
             if active_rest:
                 return jsonify({
                     "success": False,

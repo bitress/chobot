@@ -3289,6 +3289,62 @@ class FlightLoggerCog(commands.Cog):
         except Exception as exc:
             logger.warning(f"[FLIGHT] Could not record nickname change for {after.id}: {exc}")
 
+    @commands.Cog.listener("on_member_update")
+    async def sync_discord_timeout(self, before: discord.Member, after: discord.Member):
+        """Mirror Discord's own Timeout (member profile > Timeout) into chobot.
+
+        A new timeout is recorded in user_moderation_status (so the website and the Sub Rules
+        button refuse to give Island Access back, and the dashboard lists it) and removes Island
+        Access, the same as a chobot timeout. Lifting it early closes the record; a timeout that
+        simply runs out needs nothing, since the record carries its end time.
+        """
+        if Config.GUILD_ID and str(after.guild.id) != str(Config.GUILD_ID):
+            return
+        if before.timed_out_until == after.timed_out_until:
+            return
+        from utils.island_access_block import end_discord_timeout, record_discord_timeout
+
+        if after.is_timed_out() and after.timed_out_until:
+            until = int(after.timed_out_until.timestamp())
+            actor, reason = await self._timeout_audit_entry(after)
+            try:
+                is_new = await asyncio.to_thread(
+                    record_discord_timeout, after.id, until,
+                    getattr(actor, "id", None), getattr(actor, "display_name", None), reason,
+                )
+            except Exception as exc:
+                logger.warning(f"[FLIGHT] Could not record Discord timeout for {after.id}: {exc}")
+                return
+            if is_new:
+                try:
+                    from utils.discord_membership import revoke_sub_rules_acceptance
+                    await asyncio.to_thread(revoke_sub_rules_acceptance, after.id)
+                except Exception as exc:
+                    logger.warning(f"[FLIGHT] Could not remove Island Access for timed-out {after.id}: {exc}")
+            logger.info(f"[FLIGHT] Discord timeout for {after.id} until {until} by {getattr(actor, 'id', '?')} (new={is_new})")
+        elif before.is_timed_out():
+            actor, _reason = await self._timeout_audit_entry(after)
+            try:
+                closed = await asyncio.to_thread(
+                    end_discord_timeout, after.id, f"{getattr(actor, 'display_name', None) or 'Discord'} (Discord)",
+                )
+                logger.info(f"[FLIGHT] Discord timeout lifted for {after.id}: closed {closed} record(s)")
+            except Exception as exc:
+                logger.warning(f"[FLIGHT] Could not close Discord timeout for {after.id}: {exc}")
+
+    async def _timeout_audit_entry(self, member: discord.Member):
+        """(moderator, reason) of the latest timeout change on this member, if the audit log is readable."""
+        try:
+            cutoff = discord.utils.utcnow() - datetime.timedelta(seconds=60)
+            async for entry in member.guild.audit_logs(limit=10, action=discord.AuditLogAction.member_update):
+                if entry.created_at < cutoff:
+                    break
+                if getattr(entry.target, "id", None) == member.id and hasattr(entry.after, "timed_out_until"):
+                    return entry.user, entry.reason
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.debug(f"[FLIGHT] Audit log unavailable for timeout of {member.id}: {exc}")
+        return None, None
+
     @commands.Cog.listener()
     async def on_member_ban(self, guild: discord.Guild, user: discord.User | discord.Member):
         """End the banned user's website sessions now instead of at the next membership refresh."""

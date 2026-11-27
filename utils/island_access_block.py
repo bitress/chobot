@@ -128,6 +128,90 @@ def discord_timeout_restriction(until: int) -> dict:
     }
 
 
+# user_moderation_status rows mirrored from Discord's own Timeout carry this mod_id prefix,
+# so they can be closed when the timeout is lifted (and lifted in Discord when pardoned).
+DISCORD_TIMEOUT_MOD_PREFIX = "discord_timeout:"
+
+
+def is_discord_timeout_row(mod_id: str | None) -> bool:
+    return str(mod_id or "").startswith(DISCORD_TIMEOUT_MOD_PREFIX)
+
+
+def record_discord_timeout(discord_id: str | int, until: int, actor_id: str | int | None = None,
+                           actor_name: str | None = None, reason: str | None = None) -> bool:
+    """Mirror a Discord timeout into user_moderation_status. Returns True for a new timeout,
+    False when an existing mirrored one was only extended or shortened."""
+    did = str(discord_id)
+    now = int(time.time())
+    conn = connect_db()
+    try:
+        row = conn.execute(
+            "SELECT id FROM user_moderation_status WHERE discord_id = ? AND is_active = 1 "
+            "AND mod_id LIKE ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC LIMIT 1",
+            (did, f"{DISCORD_TIMEOUT_MOD_PREFIX}%", now),
+        ).fetchone()
+        if row:
+            conn.execute("UPDATE user_moderation_status SET expires_at = ? WHERE id = ?", (int(until), row[0]))
+            conn.commit()
+            return False
+        text = f"Discord timeout: {reason}" if reason else "Timed out in Discord"
+        values = (did, did, text[:500], f"{DISCORD_TIMEOUT_MOD_PREFIX}{actor_id or 'unknown'}", now, int(until))
+        try:
+            conn.execute(
+                "INSERT INTO user_moderation_status "
+                "(user_id, discord_id, action_type, reason, mod_id, mod_name, created_at, expires_at, is_active) "
+                "VALUES (?, ?, 'timeout', ?, ?, ?, ?, ?, 1)",
+                values[:4] + (f"{actor_name or 'Moderator'} (Discord)",) + values[4:],
+            )
+        except Exception:
+            # Databases from before the mod_name column
+            conn.execute(
+                "INSERT INTO user_moderation_status "
+                "(user_id, discord_id, action_type, reason, mod_id, created_at, expires_at, is_active) "
+                "VALUES (?, ?, 'timeout', ?, ?, ?, ?, 1)",
+                values,
+            )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def end_discord_timeout(discord_id: str | int, ended_by: str | None = None) -> int:
+    """Close the mirrored rows for a Discord timeout that was lifted early. Returns rows closed."""
+    conn = connect_db()
+    try:
+        cur = conn.execute(
+            "UPDATE user_moderation_status SET is_active = 0, reverted_at = ?, reverted_by = ? "
+            "WHERE discord_id = ? AND is_active = 1 AND mod_id LIKE ?",
+            (int(time.time()), (ended_by or "Discord")[:255], str(discord_id), f"{DISCORD_TIMEOUT_MOD_PREFIX}%"),
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        conn.close()
+
+
+def account_restriction(user: dict | None) -> dict | None:
+    """Ban/timeout check for hot paths (Dodo reveal, queue, drops, orders): no Discord request.
+
+    Uses the shared table (which also holds Discord timeouts mirrored by the flight logger) and
+    the timed_out_until the login payload carries from its last membership refresh.
+    """
+    if not user:
+        return None
+    restriction = check_user_active_restriction(user.get("user_id"), user.get("discord_id") or user.get("id"))
+    if restriction:
+        return restriction
+    until = user.get("timed_out_until")
+    try:
+        if until and int(until) > time.time():
+            return discord_timeout_restriction(int(until))
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def island_access_block(user_id: str | None, discord_ids: Iterable[str | int | None] = ()) -> dict | None:
     """Why this member can't get Island Access back right now, or None if they can.
 
