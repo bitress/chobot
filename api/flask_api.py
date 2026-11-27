@@ -4914,12 +4914,19 @@ def _ensure_guest_order_column() -> None:
     global _guest_column_ready
     if _guest_column_ready:
         return
+    from utils.database import get_backend
     db = get_db()
     try:
-        cols = {row[1] for row in db.execute("PRAGMA table_info(order_bot_queue)").fetchall()}
+        # PRAGMA is SQLite-only: on MySQL (production) it failed, the column was never added, and
+        # every guest order lost its token, so guests couldn't track or cancel their orders.
+        if get_backend() == "mysql":
+            cols = {str(row[0]).lower() for row in db.execute("SHOW COLUMNS FROM order_bot_queue").fetchall()}
+        else:
+            cols = {str(row[1]).lower() for row in db.execute("PRAGMA table_info(order_bot_queue)").fetchall()}
         if "guest_token_hash" not in cols:
-            db.execute("ALTER TABLE order_bot_queue ADD COLUMN guest_token_hash TEXT")
+            db.execute("ALTER TABLE order_bot_queue ADD COLUMN guest_token_hash VARCHAR(64) DEFAULT NULL")
             db.commit()
+            logger.info("[OrderBot] Added order_bot_queue.guest_token_hash")
         _guest_column_ready = True
     except Exception as exc:
         logger.warning("[OrderBot] Could not add guest_token_hash column: %s", exc)
@@ -4953,6 +4960,10 @@ def _guest_order_token_ok(order_id: str) -> bool:
     db = get_db()
     try:
         row = db.execute("SELECT guest_token_hash FROM order_bot_queue WHERE id = ?", (order_id,)).fetchone()
+    except Exception as exc:
+        # Fail closed (no access) rather than a 500
+        logger.warning("[OrderBot] Guest token lookup failed for %s: %s", order_id, exc)
+        return False
     finally:
         db.close()
     stored = row["guest_token_hash"] if row else None
