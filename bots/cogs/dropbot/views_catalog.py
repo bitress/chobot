@@ -568,7 +568,7 @@ class CartManagerView(_OwnedView):
             lines.extend(warnings)
 
         if self.search_view.island_name:
-            lines.append(f"\n🏝️ **Target island:** [{self.search_view.island_name}]({_island_url(self.search_view.island_name)})")
+            lines.append(f"\n🪂 **Drops on:** [{self.search_view.island_name}]({_island_url(self.search_view.island_name)})")
 
         desc = "\n".join(lines)
         if notice:
@@ -1120,7 +1120,12 @@ class CatalogSearchView(_OwnedView):
         if self.language != cf.DEFAULT_LANGUAGE:
             desc += f"\n🌐 **Names:** {cf.LANGUAGE_LABELS.get(self.language, self.language)}"
         if self.island_name:
-            desc += f"\n🏝️ **Target island:** [{self.island_name}]({_island_url(self.island_name)})"
+            # "Target island" read as "the item is on this island": it is where the bot drops it
+            desc += (
+                f"\n🪂 **Drops on:** [{self.island_name}]({_island_url(self.island_name)})"
+                f"\n-# Results are the whole game catalog, not what {self.island_name} stocks. "
+                f"The bot spawns the item you pick at your feet on {self.island_name}."
+            )
             if self._presence_status:
                 desc += f"\n📍 **Presence:** {self._presence_status}"
             desc += "\n*Tap an item below to pick color, stack size, and drop or add to cart.*"
