@@ -147,15 +147,15 @@ async def _fetch_explorer_data() -> None:
     if not data:
         local_explorer_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "explorer.json"
+            "items_detail.json"  # same content as the site's explorer.json
         )
         if os.path.exists(local_explorer_path):
             try:
                 with open(local_explorer_path, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
-                logger.info("[ChopaengAI] Loaded explorer data from local explorer.json fallback.")
+                logger.info("[ChopaengAI] Loaded explorer data from local items_detail.json fallback.")
             except Exception as local_exc:
-                logger.warning(f"[ChopaengAI] Failed to load local explorer.json: {local_exc}")
+                logger.warning(f"[ChopaengAI] Failed to load local items_detail.json: {local_exc}")
 
     if data:
         items_list = data.get("items", [])

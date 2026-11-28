@@ -70,8 +70,6 @@ def _ensure_catalog_loaded() -> None:
         t0 = time.time()
         # 1. Load items_detail.json
         items_detail_file = os.path.join(_BASE_DIR, "items_detail.json")
-        if not os.path.exists(items_detail_file):
-            items_detail_file = os.path.join(_BASE_DIR, "explorer.json")
 
         if os.path.exists(items_detail_file):
             try:
