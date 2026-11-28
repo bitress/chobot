@@ -386,9 +386,9 @@ def get_user_moderation_notices(user_or_id: Any) -> dict:
 
 def _get_current_user() -> dict | None:
     """Extract authenticated user payload from Bearer token or session."""
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        token = auth[len("Bearer "):].strip()
+    from utils.auth_session import request_auth_token
+    token = request_auth_token()
+    if token:
         user = get_auth_user(token)
         # Sign-in is Discord only: sessions from the removed email / YouTube / Twitch /
         # Patreon logins are not accepted (the main API signs them out too)

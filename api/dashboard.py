@@ -830,10 +830,11 @@ def _check_bearer():
 
 
 def _dashboard_bearer_user() -> dict | None:
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    """The signed-in website user: Bearer token, or the HttpOnly session cookie."""
+    from utils.auth_session import request_auth_token
+    token = request_auth_token()
+    if not token:
         return None
-    token = auth[len("Bearer "):]
     user = get_auth_user(token)
     if not user:
         return None
@@ -898,10 +899,6 @@ def api_auth_required(f):
     def _decorated(*args, **kwargs):
         if _check_bearer() or _check_session():
             return f(*args, **kwargs)
-
-        auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return jsonify({"error": "Unauthorized"}), 401
 
         user = _dashboard_bearer_user()
         if not user:

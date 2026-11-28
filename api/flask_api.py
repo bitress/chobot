@@ -327,6 +327,20 @@ def _start_request_timer():
     request.environ["chobot.t0"] = time.perf_counter()
 
 
+@app.before_request
+def _refuse_cross_site_cookie_writes():
+    from utils.auth_session import cookie_csrf_problem
+    problem = cookie_csrf_problem(Config.FRONTEND_ORIGINS)
+    if problem:
+        return jsonify({"ok": False, "error": problem, "code": "csrf"}), 403
+
+
+@app.after_request
+def _no_edge_cache_for_cookie_sessions(resp):
+    from utils.auth_session import private_if_cookie_auth
+    return private_if_cookie_auth(resp)
+
+
 def _db_pool_status() -> str:
     try:
         from utils.database import get_backend, get_engine
@@ -618,10 +632,10 @@ def _current_auth_user(*, force_refresh: bool = False) -> dict | None:
                 "_internal_secret_auth": True,
             }
 
-    if not auth.startswith("Bearer "):
+    from utils.auth_session import request_auth_token
+    token = request_auth_token()
+    if not token:
         return None
-
-    token = auth[len("Bearer "):]
     user = get_auth_user(token)
     if not user:
         return None
@@ -1737,7 +1751,8 @@ def auth_discord():
     from api.sub_islands import make_oauth_state
 
     # Capture linking token if existing user is connecting their Discord
-    auth_token = request.args.get("auth_token", "").strip()
+    from utils.auth_session import request_auth_token
+    auth_token = request.args.get("auth_token", "").strip() or request_auth_token()
     active_user_id = None
     if auth_token:
         try:
@@ -1746,9 +1761,10 @@ def auth_discord():
                 active_user_id = curr_user.get("user_id")
         except Exception:
             pass
-        session["sub_link_token"] = auth_token
 
-    state = make_oauth_state(return_to, active_user_id=active_user_id, link_token=auth_token)
+    # Only the account id rides along: the state goes through Discord's URL, so the session
+    # token must not (the callback links by state "uid")
+    state = make_oauth_state(return_to, active_user_id=active_user_id)
     session["sub_oauth_state"] = state
     session["sub_return_to"] = return_to
 
@@ -1975,7 +1991,9 @@ def auth_callback():
         _record_website_login(login_event)
 
         logger.info("Website Discord login: user=%s is_mod=%s roles=%d", discord_username, is_mod_user, len(member_roles))
-        return redirect(f"{return_to}?token={urllib.parse.quote(token)}")
+        # The token never goes in a URL: the site trades this one-time code at /api/auth/session
+        from utils.auth_session import make_login_code
+        return redirect(f"{return_to}?code={urllib.parse.quote(make_login_code(token))}")
     except Exception as exc:
         logger.exception("Discord OAuth callback unhandled exception: %s", exc)
         return redirect(f"{return_to}?error=auth_internal_error")
@@ -2245,12 +2263,40 @@ def api_subscriptions():
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
-    """Invalidate the current auth token."""
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        token = auth[len("Bearer "):]
+    """Invalidate the current session (cookie or Bearer) and clear the cookie."""
+    from utils.auth_session import clear_session_cookie, request_auth_token
+    token = request_auth_token()
+    if token:
         revoke_auth_token(token)
-    return jsonify({"logged_out": True})
+    resp = jsonify({"logged_out": True})
+    clear_session_cookie(resp)
+    return resp
+
+
+@app.route("/api/auth/session", methods=["POST"])
+def auth_session_start():
+    """Put the sign-in into the HttpOnly session cookie.
+
+    Body {"code": ...}: the one-time code from the Discord callback redirect.
+    Or Authorization: Bearer <token>: a browser moving its old localStorage token into the cookie.
+    """
+    from utils.auth_session import bearer_token, consume_login_code, set_session_cookie
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if origin not in {o.rstrip("/") for o in Config.FRONTEND_ORIGINS}:
+        return jsonify({"ok": False, "error": "Unknown origin"}), 403
+
+    data = request.get_json(silent=True) or {}
+    code = str(data.get("code") or "").strip()
+    token = consume_login_code(code) if code else bearer_token()
+    user = get_auth_user(token) if token else None
+    if not user:
+        return jsonify({"ok": False, "error": "Sign-in expired. Please sign in again.", "code": "invalid_session"}), 401
+
+    from utils.auth_tokens import AUTH_TOKEN_TTL
+    resp = jsonify({"ok": True})
+    set_session_cookie(resp, token, AUTH_TOKEN_TTL)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/api/suggestions", methods=["POST"])
@@ -3139,7 +3185,8 @@ ISLANDS_EDGE_STALE_SECONDS = 30
 
 
 def _islands_cache_control() -> str:
-    if request.headers.get("Authorization") or request.headers.get("X-API-Key"):
+    from utils.auth_session import has_auth_credentials
+    if has_auth_credentials():
         return "private, no-store"
     return (
         f"public, max-age=0, s-maxage={ISLANDS_EDGE_CACHE_SECONDS}, "
@@ -3883,7 +3930,7 @@ def api_refresh():
         and Config.DASHBOARD_SECRET
         and _secrets.compare_digest(auth[len("Bearer "):], Config.DASHBOARD_SECRET)
     )
-    token_user = _current_auth_user() if auth.startswith("Bearer ") else None
+    token_user = _current_auth_user()
     mod_bearer_ok = bool(
         token_user
         and (
@@ -6883,9 +6930,9 @@ def api_update_discord_nickname():
         }), 500
 
     # Update in-memory auth token cache so subsequent profile calls return the new nickname immediately
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[len("Bearer "):]
+    from utils.auth_session import request_auth_token
+    token = request_auth_token()
+    if token:
         auth_user["nickname"] = new_nickname
         try:
             update_auth_user(token, auth_user)

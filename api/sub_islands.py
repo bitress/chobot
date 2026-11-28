@@ -176,11 +176,9 @@ def _get_island_state(island_name: str) -> Dict[str, Any]:
 
 
 def _get_auth_from_request() -> Optional[Dict[str, Any]]:
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[len("Bearer "):].strip()
-        return get_auth_user(token)
-    return None
+    from utils.auth_session import request_auth_token
+    token = request_auth_token()
+    return get_auth_user(token) if token else None
 
 
 # ============================================================================
@@ -426,8 +424,8 @@ def reset_sub_island(name: str):
 
 @sub_islands_bp.route("/api/auth/unlink/<provider>", methods=["DELETE", "POST"])
 def unlink_account(provider: str):
-    auth_header = request.headers.get("Authorization", "")
-    token = auth_header[len("Bearer "):].strip() if auth_header.startswith("Bearer ") else request.args.get("auth_token", "").strip()
+    from utils.auth_session import request_auth_token
+    token = request_auth_token() or request.args.get("auth_token", "").strip()
     if not token:
         return jsonify({"success": False, "error": "Authentication required"}), 401
 
