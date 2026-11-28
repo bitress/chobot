@@ -6955,7 +6955,10 @@ _RESERVED_HANDLES = frozenset({
     "login", "logout", "auth", "u", "user", "users", "islands", "island", "order", "drop", "membership",
     "tiers", "contact", "about", "privacy", "terms", "cookies", "null", "undefined", "resident", "guest",
 })
-_HANDLE_RE = re.compile(r"[a-z0-9_-]{3,30}")
+# 5-30 letters and numbers. A handle saved under the older rule (3+ chars, - and _ allowed) is kept: its owner
+# can keep saving it, but any new or changed handle must match this.
+_HANDLE_RE = re.compile(r"[a-z0-9]{5,30}")
+_LEGACY_HANDLE_RE = re.compile(r"[a-z0-9_-]{3,30}")
 _PASSPORT_COLUMNS_READY = False
 
 
@@ -6974,8 +6977,14 @@ def _ensure_passport_columns(conn) -> None:
 
 def _handle_problem(conn, handle: str, user_id: str) -> tuple[str, int] | None:
     """Why this public handle can't be used by this user, as (message, http status), or None if fine."""
+    kept = conn.execute(
+        "SELECT 1 FROM user_public_passports WHERE user_id = ? AND LOWER(username) = ?",
+        (user_id, handle),
+    ).fetchone() if user_id else None
+    if kept and _LEGACY_HANDLE_RE.fullmatch(handle):
+        return None  # the user's own handle from before the 5-character rule
     if not _HANDLE_RE.fullmatch(handle):
-        return "Choose a username of 3-30 letters, numbers, hyphens or underscores.", 400
+        return "Choose a username of 5-30 letters and numbers, with no spaces or symbols.", 400
     if handle in _RESERVED_HANDLES:
         return "That username is reserved. Please choose another.", 400
     taken = conn.execute(
@@ -7019,13 +7028,10 @@ def api_user_passport():
     """Get or save authenticated user public passport and profile customizer data."""
     auth_user = _current_auth_user()
     user_id = str(auth_user.get("user_id") or auth_user.get("discord_id") or "") if auth_user else ""
-    username = str(auth_user.get("discord_name") or auth_user.get("username") or "") if auth_user else ""
     if not user_id:
         client_header = request.headers.get("x-client-id") or ""
         ip = request.remote_addr or "127.0.0.1"
         user_id = f"client_{client_header}_{ip}"[:64]
-        if not username:
-            username = user_id
 
     conn = get_db()
     try:
@@ -7039,15 +7045,12 @@ def api_user_passport():
             return jsonify({"ok": True, "success": True})
 
         if request.method == "GET":
+            # By account ID only. The handle is chosen freely, so looking it up by the Discord name handed
+            # whoever shared that name someone else's passport, private fields included.
             row = conn.execute(
                 "SELECT * FROM user_public_passports WHERE user_id = ?",
                 (user_id,)
             ).fetchone()
-            if not row and username:
-                row = conn.execute(
-                    "SELECT * FROM user_public_passports WHERE LOWER(username) = LOWER(?)",
-                    (username,)
-                ).fetchone()
 
             if not row:
                 return jsonify({"ok": True, "passport": None})
@@ -7078,7 +7081,10 @@ def api_user_passport():
             }
             return jsonify({"ok": True, "passport": passport})
 
-        # POST: Save passport
+        # POST: Save passport. Signed-in only: a guest "account" is just a client id + IP, which let anyone
+        # without an account claim public handles.
+        if not auth_user:
+            return jsonify({"ok": False, "success": False, "error": "Sign in to save your profile."}), 401
         data = request.get_json(silent=True) or {}
         p = data.get("passport") or data.get("public_passport") or data
         # The public handle is always chosen by the user; never derived from Discord, IGN or island name.
@@ -7162,8 +7168,9 @@ def api_public_passport_get(username: str):
         return jsonify({"error": "Username is required"}), 400
 
     auth_user = _current_auth_user()
-    current_uid = str(auth_user.get("user_id") or "") if auth_user else ""
-    current_uname = str(auth_user.get("discord_name") or auth_user.get("username") or "").lower() if auth_user else ""
+    # Rows are keyed by user_id, falling back to discord_id (see api_user_passport). Never by name: the
+    # handle is chosen freely, so a matching Discord name must not unlock a private passport.
+    owner_ids = {str(auth_user.get(k) or "") for k in ("user_id", "discord_id")} - {""} if auth_user else set()
 
     conn = get_db()
     try:
@@ -7177,7 +7184,7 @@ def api_public_passport_get(username: str):
         if not row:
             return jsonify({"error": "Passport not found", "passport": None}), 404
 
-        is_owner = (current_uid and row["user_id"] == current_uid) or (current_uname and row["username"].lower() == current_uname)
+        is_owner = str(row["user_id"]) in owner_ids
         if not bool(row["is_public"]) and not is_owner:
             return jsonify({"error": "This profile is private", "isPrivate": True}), 403
 
@@ -7679,9 +7686,10 @@ def api_presence_heartbeat():
             has_public_passport = 0
 
             _ensure_passport_columns(conn)
+            # By account ID only: the handle is chosen freely, so a Discord name can match a stranger's passport.
             pass_row = conn.execute(
-                "SELECT * FROM user_public_passports WHERE user_id = ? OR LOWER(username) = LOWER(?)",
-                (user_id, username)
+                "SELECT * FROM user_public_passports WHERE user_id = ?",
+                (user_id,)
             ).fetchone()
             if pass_row:
                 # Keep the passport's crown in step with the user's current subscription.
@@ -7974,6 +7982,23 @@ def api_presence_online():
         )
         viewer_uid = str((viewer or {}).get("user_id") or (viewer or {}).get("discord_id") or "")
 
+        # Public passport handles by account. The roster's username is the Discord name, which is not the
+        # passport link (handles are chosen freely), so the Passport button needs the handle itself.
+        passport_handles: dict[str, str] = {}
+        member_ids = sorted({str(r.get("user_id")) for r in people if r.get("user_id") and not r.get("is_guest")})
+        if signed_in and member_ids:
+            try:
+                for i in range(0, len(member_ids), 500):
+                    chunk = member_ids[i:i + 500]
+                    for row in conn.execute(
+                        f"SELECT user_id, username FROM user_public_passports WHERE is_public = 1 "
+                        f"AND user_id IN ({','.join('?' for _ in chunk)})",
+                        tuple(chunk),
+                    ).fetchall():
+                        passport_handles[str(row["user_id"])] = str(row["username"])
+            except Exception as handle_err:
+                logger.debug("[Presence] Passport handle lookup failed: %s", handle_err)
+
         def to_resident(r: dict) -> dict:
             minutes_ago = max(0, int((now - (r["created_at"] or now)) / 60))
             is_self = (bool(viewer_session) and r["session_id"] == viewer_session) or (
@@ -7993,7 +8018,8 @@ def api_presence_online():
                 "currentActivity": r["current_activity"] or "Browsing ChoPaeng",
                 "currentIsland": r["current_island"] or "",
                 "currentPath": r["current_path"] or "/",
-                "hasPublicPassport": bool(r["has_public_passport"]),
+                "hasPublicPassport": str(r.get("user_id") or "") in passport_handles,
+                "passportHandle": passport_handles.get(str(r.get("user_id") or ""), ""),
                 "isGuest": bool(r["is_guest"]),
                 "isSubscriber": int(r.get("sub_tier") or 0) > 0,
                 "subTier": int(r.get("sub_tier") or 0),
